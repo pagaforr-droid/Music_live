@@ -334,15 +334,28 @@ export default function DesignTools() {
                         Imagen generada en resolución 8K
                       </p>
                     </div>
-                    <a 
-                      href={resultUrl} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
+                    <button 
+                      onClick={async () => {
+                        try {
+                          const res = await fetch(resultUrl);
+                          const blob = await res.blob();
+                          const blobUrl = URL.createObjectURL(blob);
+                          const link = document.createElement('a');
+                          link.href = blobUrl;
+                          link.download = `Tandu_Studio_8K_${Date.now()}.png`;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(blobUrl);
+                        } catch (err) {
+                          window.open(resultUrl, '_blank');
+                        }
+                      }}
                       className="bg-white/10 hover:bg-white/20 text-white p-3 rounded-xl transition-colors flex items-center space-x-2"
                     >
                       <Download size={20} />
                       <span className="text-sm font-medium">Descargar</span>
-                    </a>
+                    </button>
                   </div>
                   
                   <div className="relative bg-black h-[500px] flex items-center justify-center p-4">
