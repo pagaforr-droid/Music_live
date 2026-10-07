@@ -186,11 +186,11 @@ class Predictor(BasePredictor):
         output_format: str = Input(
             description="Formato de salida", choices=["wav", "flac", "mp3"], default="wav"
         ),
-        seed: Optional[int] = Input(description="Semilla para reproducibilidad (opcional)", default=None),
+        seed: int = Input(description="Semilla para reproducibilidad (-1 para aleatorio)", default=-1),
     ) -> Output:
         self._cleanup_previous_runs()
         work_dir = tempfile.mkdtemp(prefix=TMP_PREFIX)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(None if seed == -1 else seed)
         t0 = time.time()
 
         print("[1/5] Cargando y remuestreando audio...")
