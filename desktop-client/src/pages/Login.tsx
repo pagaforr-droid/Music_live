@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { LogIn, KeySquare, Loader2 } from 'lucide-react';
+import { LogIn, Command, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export default function Login() {
   const [email, setEmail] = useState('admin@tandu.com');
@@ -13,7 +14,6 @@ export default function Login() {
     setLoading(true);
     setError(null);
 
-    // Intentamos hacer SignIn primero
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -21,16 +21,14 @@ export default function Login() {
 
     if (signInError) {
       if (signInError.message.includes('Invalid login credentials')) {
-        // Si no existe, intentamos registrar este superusuario de pruebas automáticamente
         const { error: signUpError } = await supabase.auth.signUp({
           email,
           password,
         });
         
         if (signUpError) {
-          setError('Error al crear el superusuario: ' + signUpError.message);
+          setError('Error: ' + signUpError.message);
         } else {
-          // Registro exitoso, forzamos login
           const { error: retryError } = await supabase.auth.signInWithPassword({
             email,
             password,
@@ -45,74 +43,111 @@ export default function Login() {
     setLoading(false);
   };
 
+  // Emil Kowalski inspired spring transitions
+  const springConfig = { type: "spring", stiffness: 400, damping: 30 };
+  const staggerVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.1, ...springConfig } }
+  };
+  const itemVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0, transition: springConfig }
+  };
+
   return (
-    <div className="min-h-screen w-full bg-[#0a0a0a] flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background Decorators */}
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-600/20 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/20 rounded-full blur-[120px] pointer-events-none"></div>
+    <div className="min-h-screen w-full bg-black text-white flex items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-white/30">
+      
+      {/* Impeccable Design: Subtle atmospheric lighting instead of generic blobs */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-white/[0.03] rounded-full blur-[120px] pointer-events-none" />
 
-      <div className="w-full max-w-md relative z-10">
-        <div className="backdrop-blur-xl bg-white/[0.02] border border-white/10 p-8 rounded-3xl shadow-2xl">
-          
-          <div className="flex justify-center mb-8">
-            <div className="p-4 bg-white/5 rounded-2xl ring-1 ring-white/10">
-              <KeySquare size={48} className="text-blue-400" />
-            </div>
-          </div>
-
-          <h1 className="text-3xl font-bold text-center text-white mb-2 tracking-tight">
+      <motion.div 
+        initial="hidden"
+        animate="visible"
+        variants={staggerVariants}
+        className="w-full max-w-[400px] relative z-10"
+      >
+        <div className="flex flex-col items-center mb-12">
+          <motion.div 
+            variants={itemVariants}
+            className="w-14 h-14 bg-gradient-to-br from-white/10 to-white/5 border border-white/10 rounded-2xl flex items-center justify-center mb-6 shadow-2xl"
+          >
+            <Command size={24} className="text-white" />
+          </motion.div>
+          <motion.h1 variants={itemVariants} className="text-3xl font-medium tracking-tight mb-2">
             Tandu Live Hub
-          </h1>
-          <p className="text-center text-gray-400 mb-8 font-light">
-            Plataforma de Autenticación Premium
-          </p>
+          </motion.h1>
+          <motion.p variants={itemVariants} className="text-sm text-[#888888]">
+            Plataforma de Autenticación
+          </motion.p>
+        </div>
 
-          <form onSubmit={handleLogin} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">Correo Electrónico</label>
+        <motion.div 
+          variants={itemVariants}
+          className="bg-[#0A0A0A] border border-white/[0.08] p-8 rounded-[24px] shadow-2xl"
+        >
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div className="space-y-1.5">
+              <label className="text-[13px] font-medium text-[#888888] ml-1">Email</label>
               <input 
                 type="email" 
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded-2xl px-4 py-3.5 text-sm text-white placeholder-[#444444] focus:outline-none focus:border-white/20 focus:bg-white/[0.05] transition-colors duration-200"
                 placeholder="admin@tandu.com"
                 required
               />
             </div>
             
-            <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">Contraseña</label>
+            <div className="space-y-1.5">
+              <label className="text-[13px] font-medium text-[#888888] ml-1">Password</label>
               <input 
                 type="password" 
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-                placeholder="123456"
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded-2xl px-4 py-3.5 text-sm text-white placeholder-[#444444] focus:outline-none focus:border-white/20 focus:bg-white/[0.05] transition-colors duration-200"
+                placeholder="••••••"
                 required
               />
             </div>
 
-            {error && (
-              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                {error}
-              </div>
-            )}
+            <AnimatePresence>
+              {error && (
+                <motion.div 
+                  initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                  animate={{ opacity: 1, height: 'auto', marginTop: 16 }}
+                  exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-[13px]">
+                    {error}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-            <button 
+            <motion.button 
+              whileTap={{ scale: 0.98 }}
               type="submit" 
               disabled={loading}
-              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-medium py-3 rounded-xl transition-all shadow-lg shadow-blue-500/25 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-white hover:bg-[#EAEAEA] text-black font-medium py-3.5 rounded-2xl transition-colors duration-200 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
-              {loading ? <Loader2 size={20} className="animate-spin" /> : <LogIn size={20} />}
+              {loading ? (
+                <Loader2 size={18} className="animate-spin text-black/50" />
+              ) : (
+                <LogIn size={18} />
+              )}
               <span>{loading ? 'Autenticando...' : 'Iniciar Sesión'}</span>
-            </button>
+            </motion.button>
           </form>
+        </motion.div>
 
-          <p className="text-center text-gray-500 text-xs mt-8">
-            * Se ha pre-configurado la cuenta de pruebas. Si no existe, se creará automáticamente al iniciar sesión.
-          </p>
-        </div>
-      </div>
+        <motion.p 
+          variants={itemVariants}
+          className="text-center text-[#555555] text-xs mt-8 px-4"
+        >
+          Cuenta de pruebas preconfigurada. Si no existe, se creará automáticamente.
+        </motion.p>
+      </motion.div>
     </div>
   );
 }
