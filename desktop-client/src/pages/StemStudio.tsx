@@ -6,6 +6,15 @@ import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCi
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
+type DspFormat = 'wav' | 'flac' | 'mp3';
+const DSP_MIME: Record<DspFormat, string> = { wav: 'audio/wav', flac: 'audio/flac', mp3: 'audio/mpeg' };
+const DSP_POLL_MS = 5000;
+const DSP_MAX_POLLS = 720; // 60 min (incluye cold boot de la GPU)
+
+/** Supabase Storage rechaza acentos y varios símbolos en las rutas. */
+const sanitizeFileName = (name: string) =>
+  name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '_');
+
 export default function StemStudio() {
   const [songs, setSongs] = useState<any[]>([]);
   const [selectedSongId, setSelectedSongId] = useState<string | null>(null);
@@ -27,6 +36,10 @@ export default function StemStudio() {
   const [watermarkJobStatus, setWatermarkJobStatus] = useState<'idle' | 'pending' | 'processing' | 'completed' | 'failed'>('idle');
   const [cleanAudioUrl, setCleanAudioUrl] = useState<string | null>(null);
   const [dspMessage, setDspMessage] = useState<string | null>(null);
+  const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
+  const dspBusyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const selectedSongRef = useRef<string | null>(null);
 
   // AI Splitter State
   const [isSplitting, setIsSplitting] = useState(false);
@@ -55,6 +68,7 @@ export default function StemStudio() {
   }, []);
 
   useEffect(() => {
+    selectedSongRef.current = selectedSongId;
     if (selectedSongId) {
       fetchStems(selectedSongId);
       // Stop playing if song changes
@@ -62,102 +76,165 @@ export default function StemStudio() {
         audioRef.current.pause();
         setPlayingStemId(null);
       }
-      // Reset DSP state for new song
-      setWatermarkJobStatus('idle');
-      setCleanAudioUrl(null);
-      setDspMessage(null);
+      // Reset DSP state for new song (unless a job is still running; its result
+      // will be saved into the song where it was started)
+      if (!dspBusyRef.current) {
+        setWatermarkJobStatus('idle');
+        setCleanAudioUrl(null);
+        setDspMessage(null);
+      }
     } else {
       setStems([]);
     }
   }, [selectedSongId]);
 
-  // Realtime subscription for Watermark Jobs
+  // Stop DSP polling when the page unmounts
   useEffect(() => {
-    const channel = supabase
-      .channel('watermark-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'watermark_jobs',
-        },
-        async (payload) => {
-          const { status, clean_file_url } = payload.new;
-          setWatermarkJobStatus(status);
-          
-          if (status === 'completed' && clean_file_url) {
-            // Get the signed URL for download
-            const { data } = await supabase.storage.from('clean-audio').createSignedUrl(clean_file_url, 3600);
-            if (data) {
-               setCleanAudioUrl(data.signedUrl);
-               setDspMessage("¡Procesamiento DSP completado con éxito!");
-            }
-          } else if (status === 'failed') {
-            setDspMessage(`Error: ${payload.new.error_message || 'Desconocido'}`);
-          } else if (status === 'processing') {
-            setDspMessage("Decorrelacionando audio y extrayendo stems...");
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
   }, []);
 
   const [isUploadingWatermark, setIsUploadingWatermark] = useState(false);
 
+  /**
+   * DSP Watermark flow:
+   *  1. Sube el original a Storage (bucket `audios`, carpeta temp).
+   *  2. Crea una URL firmada de subida para el resultado dentro de la carpeta de la canción.
+   *  3. Lanza el worker en Replicate (/api/ai/watermark) y hace polling (/api/ai/watermark-status).
+   *  4. El worker sube el resultado directo a Supabase (sin pasar por el navegador).
+   *     Si eso falla, el cliente descarga la salida de Replicate y la sube él mismo.
+   *  5. Registra el resultado como un nuevo stem de la canción.
+   */
   const handleUploadAndProcessWatermark = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const inputEl = e.target;
+    const file = inputEl.files?.[0];
+    if (!file || !selectedSongId || dspBusyRef.current) return;
 
+    const targetSongId = selectedSongId;
+    const format = dspFormat;
+    const mime = DSP_MIME[format];
+    const ts = Date.now();
+    const baseName = file.name.replace(/\.[^.]+$/, '') || file.name;
+    const inputPath = `${FAKE_BAND_ID}/temp/dsp_${ts}_${sanitizeFileName(file.name)}`;
+    const outputPath = `${FAKE_BAND_ID}/${targetSongId}/${ts}_${sanitizeFileName(baseName)}_DSP.${format}`;
+    let inputUploaded = false;
+
+    dspBusyRef.current = true;
     setWatermarkJobStatus('pending');
     setIsUploadingWatermark(true);
     setDspMessage("Subiendo archivo original...");
     setCleanAudioUrl(null);
 
     try {
-      // 1. Upload to Supabase Storage (raw-audio bucket)
-      const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
-      const { error: uploadError } = await supabase.storage.from('raw-audio').upload(fileName, file);
-      
-      if (uploadError) {
-        throw new Error(`Error subiendo audio: ${uploadError.message}`);
-      }
+      // 1. Upload original
+      const { error: uploadError } = await supabase.storage
+        .from('audios')
+        .upload(inputPath, file, { contentType: file.type || undefined });
+      if (uploadError) throw new Error(`Error subiendo audio: ${uploadError.message}`);
+      inputUploaded = true;
+      const audioUrl = supabase.storage.from('audios').getPublicUrl(inputPath).data.publicUrl;
 
-      // 2. Get Public URL
-      const { data: publicUrlData } = supabase.storage.from('raw-audio').getPublicUrl(fileName);
-      const fileUrl = publicUrlData.publicUrl;
+      // 2. Signed upload URL so the GPU worker can write the result directly
+      const { data: signed, error: signError } = await supabase.storage
+        .from('audios')
+        .createSignedUploadUrl(outputPath);
+      if (signError) console.warn('[DSP] Sin URL firmada, se usará la salida de Replicate:', signError.message);
 
+      setIsUploadingWatermark(false);
       setDspMessage("Iniciando procesamiento en GPU...");
 
-      // 3. Trigger Edge Function
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-watermark`,
-        {
+      // 3. Start Replicate job
+      const startRes = await fetch('/api/ai/watermark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioUrl, uploadUrl: signed?.signedUrl, jobId: String(ts), outputFormat: format })
+      });
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok) throw new Error(startData.error || `Error ${startRes.status} al iniciar el job DSP`);
+      const { predictionId } = startData;
+
+      // 4. Poll
+      let output: any = null;
+      for (let poll = 1; poll <= DSP_MAX_POLLS; poll++) {
+        await new Promise(r => setTimeout(r, DSP_POLL_MS));
+        if (!mountedRef.current) return;
+
+        const statusRes = await fetch('/api/ai/watermark-status', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session?.access_token || ''}`
-          },
-          body: JSON.stringify({ fileUrl })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ predictionId })
+        });
+        const statusData = await statusRes.json().catch(() => ({}));
+        if (!statusRes.ok) throw new Error(statusData.error || `Error ${statusRes.status} consultando el job`);
+
+        if (statusData.done) {
+          if (statusData.failed) throw new Error(statusData.error || 'El worker DSP falló');
+          output = statusData.output;
+          break;
         }
-      );
-      
-      if (!res.ok) {
-        throw new Error('Error al iniciar el job en Supabase');
+
+        if (statusData.status === 'starting') {
+          setWatermarkJobStatus('pending');
+          setDspMessage(`Despertando GPU (cold boot, puede tardar 2-5 min)... (${poll})`);
+        } else {
+          setWatermarkJobStatus('processing');
+          setDspMessage(statusData.step ? `GPU ${statusData.step}` : `Decorrelacionando audio y extrayendo stems... (${poll})`);
+        }
       }
-      
+      if (output == null) throw new Error('Tiempo de espera agotado para el job DSP');
+
+      // 5. Resolve final file in Storage
+      setDspMessage("Guardando resultado...");
+      const uploadedByWorker = signed && (output?.uploaded === true || output === 'uploaded');
+      if (!uploadedByWorker) {
+        const replicateUrl = typeof output === 'string' ? output : output?.file;
+        if (typeof replicateUrl !== 'string' || !replicateUrl.startsWith('http')) {
+          throw new Error('El worker no devolvió un archivo válido');
+        }
+        const fileRes = await fetch(replicateUrl);
+        if (!fileRes.ok) throw new Error(`Replicate devolvió error ${fileRes.status} al descargar el resultado`);
+        const blob = await fileRes.blob();
+        const { error: saveError } = await supabase.storage
+          .from('audios')
+          .upload(outputPath, blob, { contentType: mime, upsert: true });
+        if (saveError) throw new Error(`Error guardando el resultado en Storage: ${saveError.message}`);
+      }
+      const finalUrl = supabase.storage.from('audios').getPublicUrl(outputPath).data.publicUrl;
+
+      const { error: stemError } = await supabase.from('stems').insert({
+        song_id: targetSongId,
+        name: `${baseName} (DSP Clean)`,
+        file_url: finalUrl,
+        type: 'Audio',
+        metadata: {
+          original_name: `${baseName}_DSP.${format}`,
+          format: mime,
+          is_master: false,
+          dsp_watermark: true,
+          prediction_id: predictionId
+        }
+      });
+      if (stemError) throw new Error(`Error registrando el stem: ${stemError.message}`);
+
+      if (!mountedRef.current) return;
+      setCleanAudioUrl(finalUrl);
+      setWatermarkJobStatus('completed');
+      setDspMessage("¡Procesamiento DSP completado con éxito! Guardado como nueva pista.");
+      if (selectedSongRef.current === targetSongId) fetchStems(targetSongId);
+
     } catch (error: any) {
-      console.error(error);
-      setWatermarkJobStatus('failed');
-      setDspMessage(`Falló el proceso: ${error.message}`);
+      console.error('[DSP]', error);
+      if (mountedRef.current) {
+        setWatermarkJobStatus('failed');
+        setDspMessage(`Falló el proceso: ${error.message}`);
+      }
     } finally {
-      setIsUploadingWatermark(false);
-      if (e.target) e.target.value = ''; // Reset input
+      dspBusyRef.current = false;
+      if (mountedRef.current) setIsUploadingWatermark(false);
+      inputEl.value = ''; // Reset input
+      if (inputUploaded) {
+        supabase.storage.from('audios').remove([inputPath]).catch(() => {}); // Limpiar temporal
+      }
     }
   };
 
@@ -809,10 +886,24 @@ export default function StemStudio() {
                       </div>
                     )}
 
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Formato Salida:</span>
+                      <select
+                        value={dspFormat}
+                        onChange={(e) => setDspFormat(e.target.value as DspFormat)}
+                        disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                        className="bg-[#09090b] text-xs text-zinc-300 border border-zinc-800 rounded px-2 py-1 outline-none cursor-pointer"
+                      >
+                        <option value="wav">WAV 16-bit (Máxima compatibilidad)</option>
+                        <option value="flac">FLAC 24-bit (Sin pérdida, ~50% menos)</option>
+                        <option value="mp3">MP3 320k (Ahorra espacio)</option>
+                      </select>
+                    </div>
+
                     <div className="relative w-full h-[32px] group bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/30 text-blue-400 rounded flex items-center justify-center transition-colors overflow-hidden">
                       <input 
                         type="file" 
-                        accept="audio/mpeg, audio/wav, audio/mp3" 
+                        accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg" 
                         onChange={handleUploadAndProcessWatermark} 
                         disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark} 
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" 
@@ -828,7 +919,7 @@ export default function StemStudio() {
                     </div>
                     
                     {dspMessage && (
-                      <div className={`text-[10px] px-2 py-1.5 rounded border truncate ${watermarkJobStatus === 'failed' ? 'bg-red-900/10 text-red-400 border-red-900/30' : watermarkJobStatus === 'completed' ? 'bg-green-900/10 text-green-400 border-green-900/30' : 'bg-blue-900/10 text-blue-400 border-blue-900/30'}`}>
+                      <div className={`text-[10px] px-2 py-1.5 rounded border break-words ${watermarkJobStatus === 'failed' ? 'bg-red-900/10 text-red-400 border-red-900/30' : watermarkJobStatus === 'completed' ? 'bg-green-900/10 text-green-400 border-green-900/30' : 'bg-blue-900/10 text-blue-400 border-blue-900/30'}`}>
                         {dspMessage}
                       </div>
                     )}
