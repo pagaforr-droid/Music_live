@@ -123,7 +123,7 @@ export default function DesignTools() {
     }
   };
 
-  const springConfig = { type: "spring", stiffness: 300, damping: 25 };
+  const springConfig = { type: "spring" as const, stiffness: 300, damping: 25 };
 
   return (
     <div className="h-full overflow-y-auto p-8 custom-scrollbar">
