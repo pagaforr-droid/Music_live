@@ -9,7 +9,7 @@ const token =
 const replicate = new Replicate({ auth: token });
 
 // "owner/name" del modelo publicado por .github/workflows/replicate.yml
-const MODEL = process.env.REPLICATE_WATERMARK_MODEL || 'pagaforr-droid/tandu-watermark';
+const MODEL = process.env.REPLICATE_WATERMARK_MODEL || 'pagaforr-droid/tandu-watermark2';
 // Opcional: fijar una versión concreta (si no, se usa la última publicada)
 const PINNED_VERSION = process.env.REPLICATE_WATERMARK_VERSION;
 
