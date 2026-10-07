@@ -44,7 +44,7 @@ export default function Login() {
   };
 
   // Emil Kowalski inspired spring transitions
-  const springConfig = { type: "spring", stiffness: 400, damping: 30 };
+  const springConfig = { type: "spring" as const, stiffness: 400, damping: 30 };
   const staggerVariants = {
     hidden: { opacity: 0, y: 10 },
     visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.1, ...springConfig } }
