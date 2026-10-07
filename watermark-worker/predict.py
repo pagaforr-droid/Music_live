@@ -180,8 +180,8 @@ class Predictor(BasePredictor):
         self,
         audio_file: Path = Input(description="Archivo de audio (URL o archivo). MP3, WAV, FLAC, M4A..."),
         job_id: str = Input(description="Identificador del job (se usa en el nombre del archivo)", default="job"),
-        upload_url: Optional[str] = Input(
-            description="URL firmada de subida de Supabase Storage (opcional)", default=None
+        upload_url: str = Input(
+            description="URL firmada de subida de Supabase Storage (opcional)", default=""
         ),
         output_format: str = Input(
             description="Formato de salida", choices=["wav", "flac", "mp3"], default="wav"
