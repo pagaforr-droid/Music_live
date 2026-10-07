@@ -10,6 +10,7 @@ import LiveConcert from './pages/LiveConcert';
 import MobileInEar from './pages/MobileInEar';
 import MusicHub from './pages/MusicHub';
 import AdminCMS from './pages/AdminCMS';
+import DesignTools from './pages/DesignTools';
 import './App.css';
 
 // Protected Route Wrapper
@@ -49,6 +50,7 @@ function AppRoutes() {
         <Route path="/studio" element={<StemStudio />} />
         <Route path="/setlists" element={<SetlistBuilder />} />
         <Route path="/admin/cms" element={<AdminCMS />} />
+        <Route path="/design" element={<DesignTools />} />
       </Route>
       
       {/* Public Landing Page */}

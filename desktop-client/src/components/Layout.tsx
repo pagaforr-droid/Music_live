@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight } from 'lucide-react';
+import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2 } from 'lucide-react';
 
 export default function Layout() {
   const { user, signOut } = useAuth();
@@ -90,6 +90,21 @@ export default function Layout() {
           >
             <ListMusic size={20} className="shrink-0" />
             {isSidebarOpen && <span className="font-medium whitespace-nowrap">Setlists</span>}
+          </NavLink>
+
+          <NavLink 
+            to="/design" 
+            className={({ isActive }) => 
+              `flex items-center ${isSidebarOpen ? 'space-x-3 px-4' : 'justify-center px-0'} py-3 rounded-xl transition-all duration-300 ${
+                isActive 
+                  ? 'bg-indigo-500/20 text-indigo-400 shadow-inner border border-indigo-500/20' 
+                  : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              }`
+            }
+            title="Herramientas de Diseño"
+          >
+            <Wand2 size={20} className="shrink-0" />
+            {isSidebarOpen && <span className="font-medium whitespace-nowrap">Diseño y Fotorrealismo</span>}
           </NavLink>
 
           <a 
