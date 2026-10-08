@@ -29,7 +29,7 @@ export default function MobileInEar() {
   const [bandVolume, setBandVolume] = useState(0.8);
 
   // Initialize AudioContext on first tap
-  const handleConnect = () => {
+  const handleConnect = async () => {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     const ctx = new AudioContextClass();
     
@@ -52,6 +52,15 @@ export default function MobileInEar() {
     source.buffer = silentBuffer;
     source.connect(ctx.destination);
     source.start();
+
+    // Mantener la pantalla encendida para que iOS/Android no duerman el AudioContext
+    try {
+      if ('wakeLock' in navigator) {
+        await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (err) {
+      console.warn('Wake Lock error:', err);
+    }
   };
 
   useEffect(() => {
@@ -65,7 +74,10 @@ export default function MobileInEar() {
   // Load new song when Master says LOAD_SONG
   useEffect(() => {
     if (songData && audioCtx) {
-      loadAudio(songData.cue_mix_url, songData.foh_mix_url);
+      // Usar los MP3 ligeros (Modo Ensayo) si existen, si no caer al WAV original
+      const cueTarget = songData.cue_mobile_url || songData.cue_mix_url;
+      const fohTarget = songData.foh_mobile_url || songData.foh_mix_url;
+      loadAudio(cueTarget, fohTarget);
     }
   }, [songData, audioCtx]);
 

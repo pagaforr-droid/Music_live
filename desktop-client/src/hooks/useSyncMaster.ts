@@ -46,7 +46,8 @@ export function useSyncMaster(bandId: string) {
         event: 'sync_response',
         payload: {
           t0: payload.t0,
-          t1: Date.now()
+          t1: Date.now(),
+          clientId: payload.clientId
         }
       });
     });

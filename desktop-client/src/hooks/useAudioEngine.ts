@@ -864,12 +864,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       const renderedBuffer = await offlineCtx.startRendering();
       
       onProgress(`Codificando WAV ${isFoh ? 'FOH' : 'CUE'}...`);
-      return audioBufferToWavBlob(renderedBuffer);
+      const blob = audioBufferToWavBlob(renderedBuffer);
+      return { buffer: renderedBuffer, blob };
     };
 
     try {
-      const fohBlob = await renderMix(true);
-      const cueBlob = await renderMix(false);
+      const fohResult = await renderMix(true);
+      const cueResult = await renderMix(false);
+
+      const fohBlob = fohResult.blob;
+      const cueBlob = cueResult.blob;
 
       const fohPath = `${bandId}/${songId}/mixes/foh_${Date.now()}.wav`;
       const { error: fohError } = await import('../lib/supabase').then(m => m.supabase.storage
@@ -886,10 +890,25 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (cueError) throw cueError;
       const cueUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(cuePath).data.publicUrl);
 
+      // MP3 Uploads (Versión Ligera Móvil)
+      onProgress('Codificando MP3 FOH Ligero (Modo Ensayo)...');
+      const fohMp3Blob = await audioBufferToMp3Blob(fohResult.buffer, 192);
+      const fohMp3Path = `${bandId}/${songId}/mixes/foh_mobile_${Date.now()}.mp3`;
+      await import('../lib/supabase').then(m => m.supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, { contentType: 'audio/mpeg', upsert: true }));
+      const fohMobileUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl);
+
+      onProgress('Codificando MP3 CUE Ligero (Modo Ensayo)...');
+      const cueMp3Blob = await audioBufferToMp3Blob(cueResult.buffer, 192);
+      const cueMp3Path = `${bandId}/${songId}/mixes/cue_mobile_${Date.now()}.mp3`;
+      await import('../lib/supabase').then(m => m.supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, { contentType: 'audio/mpeg', upsert: true }));
+      const cueMobileUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl);
+
       onProgress('Guardando URLs en la base de datos...');
       await import('../lib/supabase').then(m => m.supabase.from('songs').update({
         foh_mix_url: fohUrl,
-        cue_mix_url: cueUrl
+        cue_mix_url: cueUrl,
+        foh_mobile_url: fohMobileUrl,
+        cue_mobile_url: cueMobileUrl
       }).eq('id', songId));
 
       onProgress('¡Exportación completada exitosamente!');
@@ -1467,3 +1486,42 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     getBuffer
   };
 };
+ 
+ e x p o r t   c o n s t   a u d i o B u f f e r T o M p 3 B l o b   =   a s y n c   ( r e n d e r e d B u f f e r :   A u d i o B u f f e r ,   b i t r a t e :   n u m b e r   =   1 9 2 ) :   P r o m i s e < B l o b >   = >   {  
+     i f   ( ! ( w i n d o w   a s   a n y ) . l a m e j s )   {  
+             c o n s t   l a m e j s S r c   =   a w a i t   i m p o r t ( ' l a m e j s / l a m e . a l l . j s ? r a w ' ) ;  
+             c o n s t   s c r i p t   =   d o c u m e n t . c r e a t e E l e m e n t ( ' s c r i p t ' ) ;  
+             s c r i p t . i n n e r H T M L   =   l a m e j s S r c . d e f a u l t   +   ' \ n w i n d o w . l a m e j s   =   l a m e j s ; ' ;  
+             d o c u m e n t . h e a d . a p p e n d C h i l d ( s c r i p t ) ;  
+     }  
+     c o n s t   l a m e j s   =   ( w i n d o w   a s   a n y ) . l a m e j s ;  
+     c o n s t   c h a n n e l s   =   r e n d e r e d B u f f e r . n u m b e r O f C h a n n e l s ;  
+     c o n s t   s a m p l e R a t e M p 3   =   r e n d e r e d B u f f e r . s a m p l e R a t e ;  
+     c o n s t   e n c o d e r   =   n e w   l a m e j s . M p 3 E n c o d e r ( c h a n n e l s ,   s a m p l e R a t e M p 3 ,   b i t r a t e ) ;  
+     c o n s t   l e f t   =   r e n d e r e d B u f f e r . g e t C h a n n e l D a t a ( 0 ) ;  
+     c o n s t   r i g h t   =   c h a n n e l s   >   1   ?   r e n d e r e d B u f f e r . g e t C h a n n e l D a t a ( 1 )   :   l e f t ;  
+     c o n s t   s a m p l e B l o c k S i z e   =   1 1 5 2 ;  
+     c o n s t   m p 3 D a t a :   I n t 8 A r r a y [ ]   =   [ ] ;  
+     c o n s t   f l o a t T o 1 6 B i t P C M   =   ( i n p u t :   F l o a t 3 2 A r r a y ,   o u t p u t :   I n t 1 6 A r r a y ,   o f f s e t :   n u m b e r ,   l e n g t h :   n u m b e r )   = >   {  
+             f o r   ( l e t   i   =   0 ;   i   <   l e n g t h ;   i + + )   {  
+                     c o n s t   s   =   M a t h . m a x ( - 1 ,   M a t h . m i n ( 1 ,   i n p u t [ o f f s e t   +   i ] ) ) ;  
+                     o u t p u t [ i ]   =   s   <   0   ?   s   *   0 x 8 0 0 0   :   s   *   0 x 7 F F F ;  
+             }  
+     } ;  
+     l e t   s a m p l e O f f s e t   =   0 ;  
+     w h i l e   ( s a m p l e O f f s e t   <   l e f t . l e n g t h )   {  
+             c o n s t   l e n g t h   =   M a t h . m i n ( s a m p l e B l o c k S i z e ,   l e f t . l e n g t h   -   s a m p l e O f f s e t ) ;  
+             c o n s t   l e f t C h u n k 1 6   =   n e w   I n t 1 6 A r r a y ( l e n g t h ) ;  
+             c o n s t   r i g h t C h u n k 1 6   =   n e w   I n t 1 6 A r r a y ( l e n g t h ) ;  
+             f l o a t T o 1 6 B i t P C M ( l e f t ,   l e f t C h u n k 1 6 ,   s a m p l e O f f s e t ,   l e n g t h ) ;  
+             f l o a t T o 1 6 B i t P C M ( r i g h t ,   r i g h t C h u n k 1 6 ,   s a m p l e O f f s e t ,   l e n g t h ) ;  
+             c o n s t   m p 3 b u f   =   e n c o d e r . e n c o d e B u f f e r ( l e f t C h u n k 1 6 ,   r i g h t C h u n k 1 6 ) ;  
+             i f   ( m p 3 b u f . l e n g t h   >   0 )   m p 3 D a t a . p u s h ( m p 3 b u f ) ;  
+             s a m p l e O f f s e t   + =   s a m p l e B l o c k S i z e ;  
+             i f   ( s a m p l e O f f s e t   %   ( s a m p l e B l o c k S i z e   *   1 0 0 )   = = =   0 )   a w a i t   n e w   P r o m i s e ( r e s o l v e   = >   s e t T i m e o u t ( r e s o l v e ,   0 ) ) ;  
+     }  
+     c o n s t   m p 3 b u f   =   e n c o d e r . f l u s h ( ) ;  
+     i f   ( m p 3 b u f . l e n g t h   >   0 )   m p 3 D a t a . p u s h ( m p 3 b u f ) ;  
+     r e t u r n   n e w   B l o b ( m p 3 D a t a ,   {   t y p e :   ' a u d i o / m p e g '   } ) ;  
+ } ;  
+ 

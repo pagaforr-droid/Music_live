@@ -19,6 +19,9 @@ export default function LiveConcert() {
   const [totalDuration, setTotalDuration] = useState(0);
   const [routingMode, setRoutingMode] = useState<'StereoSplit' | 'MultiChannel'>('StereoSplit');
   const [masterVolume, setMasterVolume] = useState<number>(1.0);
+  const [playbackMode, setPlaybackMode] = useState<'LIVE' | 'REHEARSAL'>('LIVE');
+  const playbackModeRef = useRef<'LIVE' | 'REHEARSAL'>('LIVE');
+  useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
 
   // Network Sync
   const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID);
@@ -119,7 +122,7 @@ export default function LiveConcert() {
       .from('setlist_songs')
       .select(`
         position,
-        song:songs (id, title, foh_mix_url, cue_mix_url, prompter_data)
+        song:songs (id, title, foh_mix_url, cue_mix_url, foh_mobile_url, cue_mobile_url, prompter_data)
       `)
       .eq('setlist_id', setId)
       .order('position', { ascending: true });
@@ -165,26 +168,30 @@ export default function LiveConcert() {
     fohBufferRef.current = null;
     cueBufferRef.current = null;
     
-    if (!song.foh_mix_url || !song.cue_mix_url) {
-       setLoadStatus('Error: Faltan archivos exportados (FOH/CUE) para esta canción.');
+    const mode = playbackModeRef.current;
+    const targetFohUrl = mode === 'REHEARSAL' && song.foh_mobile_url ? song.foh_mobile_url : song.foh_mix_url;
+    const targetCueUrl = mode === 'REHEARSAL' && song.cue_mobile_url ? song.cue_mobile_url : song.cue_mix_url;
+
+    if (!targetFohUrl || !targetCueUrl) {
+       setLoadStatus('Error: Faltan archivos exportados para esta canción en este modo.');
        return;
     }
 
     setIsLoading(true);
-    setLoadStatus('Descargando FOH Mix...');
+    setLoadStatus(mode === 'REHEARSAL' ? 'Descargando FOH Ligero (MP3)...' : 'Descargando FOH Mix...');
     
     try {
       // Load FOH
-      const fohRes = await fetch(song.foh_mix_url);
+      const fohRes = await fetch(targetFohUrl);
       const fohArray = await fohRes.arrayBuffer();
-      setLoadStatus('Decodificando FOH Mix...');
+      setLoadStatus(mode === 'REHEARSAL' ? 'Decodificando FOH Ligero...' : 'Decodificando FOH Mix...');
       fohBufferRef.current = await audioCtxRef.current.decodeAudioData(fohArray);
       
       // Load CUE
-      setLoadStatus('Descargando CUE Mix...');
-      const cueRes = await fetch(song.cue_mix_url);
+      setLoadStatus(mode === 'REHEARSAL' ? 'Descargando CUE Ligero (MP3)...' : 'Descargando CUE Mix...');
+      const cueRes = await fetch(targetCueUrl);
       const cueArray = await cueRes.arrayBuffer();
-      setLoadStatus('Decodificando CUE Mix...');
+      setLoadStatus(mode === 'REHEARSAL' ? 'Decodificando CUE Ligero...' : 'Decodificando CUE Mix...');
       cueBufferRef.current = await audioCtxRef.current.decodeAudioData(cueArray);
       
       setTotalDuration(fohBufferRef.current.duration);
@@ -210,15 +217,19 @@ export default function LiveConcert() {
   /** Pre-carga silenciosa del siguiente track en RAM para transición instantánea */
   const prefetchNextSong = async (nextSong: any) => {
     if (!audioCtxRef.current || isPrefetchingRef.current) return;
-    if (!nextSong?.foh_mix_url || !nextSong?.cue_mix_url) return;
+    const mode = playbackModeRef.current;
+    const targetFohUrl = mode === 'REHEARSAL' && nextSong.foh_mobile_url ? nextSong.foh_mobile_url : nextSong.foh_mix_url;
+    const targetCueUrl = mode === 'REHEARSAL' && nextSong.cue_mobile_url ? nextSong.cue_mobile_url : nextSong.cue_mix_url;
+
+    if (!targetFohUrl || !targetCueUrl) return;
 
     isPrefetchingRef.current = true;
     console.log('[LiveConcert] 🔄 Pre-cargando silenciosamente:', nextSong.title);
 
     try {
       const [fohRes, cueRes] = await Promise.all([
-        fetch(nextSong.foh_mix_url),
-        fetch(nextSong.cue_mix_url),
+        fetch(targetFohUrl),
+        fetch(targetCueUrl),
       ]);
       const [fohArray, cueArray] = await Promise.all([
         fohRes.arrayBuffer(),
@@ -467,6 +478,25 @@ export default function LiveConcert() {
             <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-50">
               ▼
             </div>
+          </div>
+          
+          {/* Selector de Modo */}
+          <div 
+            onClick={() => {
+              if (isPlaying) return; // No permitir cambio en plena reproducción
+              setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
+            }}
+            className={`flex items-center space-x-2 px-4 py-2.5 rounded-xl border transition-all cursor-pointer ${
+              playbackMode === 'LIVE' 
+                ? 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20' 
+                : 'bg-yellow-500/10 border-yellow-500/30 hover:bg-yellow-500/20'
+            } ${isPlaying ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={isPlaying ? "No se puede cambiar el modo mientras se reproduce" : "Cambiar entre alta calidad (WAV) y modo ligero (MP3)"}
+          >
+            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-red-500' : 'bg-yellow-500'}`}></div>
+            <span className={`text-xs font-bold uppercase tracking-wider ${playbackMode === 'LIVE' ? 'text-red-400' : 'text-yellow-400'}`}>
+              {playbackMode === 'LIVE' ? 'EN VIVO' : 'ENSAYO'}
+            </span>
           </div>
         </div>
 

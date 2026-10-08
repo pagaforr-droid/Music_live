@@ -12,18 +12,20 @@ export function useSyncSlave(bandId: string) {
   const [isPlaying, setIsPlaying] = useState(false);
   
   // Transport control signals triggered by Master
-  const [playTrigger, setPlayTrigger] = useState<{ startAt: number, offset: number } | null>(null);
-  const [pauseTrigger, setPauseTrigger] = useState<boolean>(false);
-  const [seekTrigger, setSeekTrigger] = useState<{ offset: number } | null>(null);
+  const [playTrigger, setPlayTrigger] = useState<{ startAt: number, offset: number, ts: number } | null>(null);
+  const [pauseTrigger, setPauseTrigger] = useState<{ ts: number } | null>(null);
+  const [seekTrigger, setSeekTrigger] = useState<{ offset: number, ts: number } | null>(null);
   const [clockOffset, setClockOffset] = useState<number>(0);
 
   useEffect(() => {
     if (!bandId) return;
 
+    const clientId = `slave-${Math.random().toString(36).substr(2, 9)}`;
+
     const channel = supabase.channel(`sync-${bandId}`, {
       config: {
         presence: {
-          key: `slave-${Math.random().toString(36).substr(2, 9)}`,
+          key: clientId,
         },
       },
     });
@@ -38,22 +40,22 @@ export function useSyncSlave(bandId: string) {
               setCurrentSongId(msg.songId);
               setSongData(msg.songData);
               setIsPlaying(false);
-              setPauseTrigger(true);
+              setPauseTrigger({ ts: Date.now() });
             }
             break;
           case 'PLAY':
             if (msg.startAt !== undefined && msg.offset !== undefined) {
-              setPlayTrigger({ startAt: msg.startAt, offset: msg.offset });
+              setPlayTrigger({ startAt: msg.startAt, offset: msg.offset, ts: Date.now() });
               setIsPlaying(true);
             }
             break;
           case 'PAUSE':
-            setPauseTrigger(true);
+            setPauseTrigger({ ts: Date.now() });
             setIsPlaying(false);
             break;
           case 'SEEK':
             if (msg.offset !== undefined) {
-              setSeekTrigger({ offset: msg.offset });
+              setSeekTrigger({ offset: msg.offset, ts: Date.now() });
             }
             break;
         }
@@ -61,6 +63,7 @@ export function useSyncSlave(bandId: string) {
 
     // NTP Synchronization (Slave Side)
     channel.on('broadcast', { event: 'sync_response' }, ({ payload }) => {
+      if (payload.clientId !== clientId) return; // FIX: Solo mi respuesta
       const t2 = Date.now();
       const rtt = t2 - payload.t0; // Round trip time
       const latency = rtt / 2; // One-way latency
@@ -76,8 +79,19 @@ export function useSyncSlave(bandId: string) {
         channel.send({
           type: 'broadcast',
           event: 'sync_request',
-          payload: { t0: Date.now() }
+          payload: { t0: Date.now(), clientId }
         });
+        
+        // Pings periódicos para mantener el offset fresco y preciso
+        const intervalId = setInterval(() => {
+           channel.send({
+             type: 'broadcast',
+             event: 'sync_request',
+             payload: { t0: Date.now(), clientId }
+           });
+        }, 30000); // Cada 30s
+        
+        return () => clearInterval(intervalId);
       }
     });
 
