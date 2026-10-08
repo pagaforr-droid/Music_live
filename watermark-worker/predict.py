@@ -154,13 +154,28 @@ class Predictor(BasePredictor):
         # Usamos float64 para mayor estabilidad en los filtros IIR de baja frecuencia
         y_processed = y_processed.astype(np.float64)
         
-        # 5. Analog tape saturation (Soft clipping) & Subtle Background Noise
-        # Enmascara las frecuencias delatoras en los agudos.
+        # 5. Analog tape saturation (Soft clipping), Ruido Rosa & Analog Hum
+        # Enmascara las frecuencias delatoras en los agudos y graves de manera orgánica.
         drive = 1.5
         y_processed = np.tanh(drive * y_processed) / np.tanh(drive)
-        bg_noise = rng.normal(0, 1, y_processed.shape).astype(np.float64)
-        bg_noise_level = 10 ** (-70 / 20)  # -70 dBFS ruido de fondo constante
-        y_processed += bg_noise * bg_noise_level
+        
+        # 5.a Generar Ruido Rosa (oscureciendo ruido blanco para textura de cinta analógica)
+        white_noise = rng.normal(0, 1, y_processed.shape).astype(np.float64)
+        b_pink, a_pink = signal.butter(1, 2000 / (sr / 2), btype='lowpass')
+        pink_noise = signal.filtfilt(b_pink, a_pink, white_noise, axis=-1)
+        # Normalizar picos a 1.0 (0 dBFS) y ajustar al volumen deseado
+        pink_noise = pink_noise / np.max(np.abs(pink_noise))
+        pink_noise_level = 10 ** (-40 / 20)  # -40 dBFS
+        y_processed += pink_noise * pink_noise_level
+        
+        # 5.b Zumbido Eléctrico (Analog Hum de Transformador a 60Hz + armónicos)
+        t_hum = np.arange(y_processed.shape[-1])
+        hum_60 = np.sin(2 * np.pi * 60 * t_hum / sr)
+        hum_120 = 0.5 * np.sin(2 * np.pi * 120 * t_hum / sr)
+        hum_180 = 0.25 * np.sin(2 * np.pi * 180 * t_hum / sr)
+        hum = (hum_60 + hum_120 + hum_180).astype(np.float64)
+        hum_level = 10 ** (-55 / 20)  # -55 dBFS para un equilibrio profundo pero imperceptible
+        y_processed += hum * hum_level
 
         # 6. Mid/Side Processor
         # Colapsar frecuencias bajas (bombo y bajo < 120Hz) a mono y ecualizar Side
