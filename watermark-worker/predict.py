@@ -79,6 +79,12 @@ class Predictor(BasePredictor):
         2. Dynamic Spectral Shaping (LFO EQ)
         3. Cascaded All-Pass Filters
         4. Psychoacoustic Noise Injection
+        AND applies the requested DSP modifications for asynchronous correlation:
+        - Tape Saturation & Background Noise
+        - Mid/Side Processing (Mono lows, Side EQ)
+        - Dynamic EQ / Multiband for Bass
+        - Aggressive LPF & Master HPF/LPF
+        - Dithering
         """
         from scipy import signal
         import numpy as np
@@ -136,13 +142,66 @@ class Predictor(BasePredictor):
             
             y_processed = signal.lfilter(b, a, y_processed, axis=-1)
             
-        # 4. Inaudible Noise Injection (Dithering)
+        # 4. Inaudible Noise Injection (Dithering from original)
         # Masks spread-spectrum data hidden in the noise floor.
         noise = rng.normal(0, 1, y_processed.shape).astype(np.float32)
         b_noise, a_noise = signal.butter(1, 8000 / (sr / 2), btype='lowpass')
         noise = signal.lfilter(b_noise, a_noise, noise, axis=-1)
         noise_level = 10 ** (-60 / 20)  # -60 dBFS
         y_processed += noise * noise_level
+
+        # --- APLICAMOS LA CADENA DE MASTERIZACIÓN SOLICITADA ---
+        # Usamos float64 para mayor estabilidad en los filtros IIR de baja frecuencia
+        y_processed = y_processed.astype(np.float64)
+        
+        # 5. Analog tape saturation (Soft clipping) & Subtle Background Noise
+        # Enmascara las frecuencias delatoras en los agudos.
+        drive = 1.5
+        y_processed = np.tanh(drive * y_processed) / np.tanh(drive)
+        bg_noise = rng.normal(0, 1, y_processed.shape).astype(np.float64)
+        bg_noise_level = 10 ** (-70 / 20)  # -70 dBFS ruido de fondo constante
+        y_processed += bg_noise * bg_noise_level
+
+        # 6. Mid/Side Processor
+        # Colapsar frecuencias bajas (bombo y bajo < 120Hz) a mono y ecualizar Side
+        if y_processed.shape[0] == 2:
+            mid = (y_processed[0] + y_processed[1]) / 2.0
+            side = (y_processed[0] - y_processed[1]) / 2.0
+            
+            # Filtro de paso alto en Side a 120Hz (colapsa graves a mono)
+            b_hp_side, a_hp_side = signal.butter(4, 120 / (sr / 2), btype='highpass')
+            side = signal.filtfilt(b_hp_side, a_hp_side, side)
+            
+            # Ecualización en Side para darle amplitud real (realce de frecuencias altas)
+            b_side_eq, a_side_eq = signal.butter(2, 4000 / (sr / 2), btype='highpass')
+            side_highs = signal.filtfilt(b_side_eq, a_side_eq, side)
+            side = side + 0.5 * side_highs
+            
+            y_processed[0] = mid + side
+            y_processed[1] = mid - side
+            
+        # 7. Ecualizador dinámico / Compresor multibanda (Atenuar graves 60Hz - 250Hz)
+        b_bass, a_bass = signal.butter(2, [60 / (sr / 2), 250 / (sr / 2)], btype='bandpass')
+        bass_band = signal.filtfilt(b_bass, a_bass, y_processed, axis=-1)
+        attenuation_linear = 10 ** (-4 / 20) # Atenúa en aprox 4dB la región
+        y_processed = y_processed - bass_band + (bass_band * attenuation_linear)
+
+        # 8. Filtro de paso bajo (Low-Pass) cortando agresivamente por encima de los 13 kHz
+        b_agg_lp, a_agg_lp = signal.butter(6, 13000 / (sr / 2), btype='lowpass')
+        y_processed = signal.filtfilt(b_agg_lp, a_agg_lp, y_processed, axis=-1)
+
+        # 9. Filtros en el canal maestro: Paso alto (<30Hz) y Paso bajo (>17.5kHz)
+        b_hp_master, a_hp_master = signal.butter(4, 30 / (sr / 2), btype='highpass')
+        y_processed = signal.filtfilt(b_hp_master, a_hp_master, y_processed, axis=-1)
+        
+        # Filtro de paso bajo a 17.5kHz
+        b_lp_master, a_lp_master = signal.butter(4, 17500 / (sr / 2), btype='lowpass')
+        y_processed = signal.filtfilt(b_lp_master, a_lp_master, y_processed, axis=-1)
+        
+        # 10. Dithering al exportar
+        dither_noise = rng.normal(0, 1, y_processed.shape).astype(np.float64)
+        dither_level = 10 ** (-80 / 20)  # -80 dBFS
+        y_processed += dither_noise * dither_level
 
         return y_processed.astype(np.float32)
 
