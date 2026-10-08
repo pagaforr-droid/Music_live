@@ -8,7 +8,7 @@ const token =
   process.env.VITE_REPLICATE_API_STEMS;
 const replicate = new Replicate({ auth: token });
 
-const MODEL_CLARITY = 'nightmareai/real-esrgan';
+const MODEL_CLARITY = 'philz1337x/clarity-pro-upscaler';
 const MODEL_CRYSTAL = 'sczhou/codeformer';
 
 async function resolveVersion(modelName: string): Promise<string> {
@@ -36,7 +36,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log(`[UPSCALE] Iniciando ${modelName} con modo ${mode}`);
 
-    // Inputs adaptados a los modelos de philz1337x
     let input: Record<string, unknown> = {};
 
     if (isPortrait) {
@@ -48,11 +47,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         codeformer_fidelity: 0.5
       };
     } else {
+      // Retornamos al modelo generativo SDXL (Magnific-style) que lee el prompt
       input = {
         image: imageUrl,
-        scale: 4,
-        face_enhance: true
+        prompt: prompt || 'high quality, 8k, photorealistic, professional photography',
       };
+      if (creativity !== undefined) {
+        input.creativity = parseFloat(creativity);
+      }
     }
 
     const prediction = await replicate.predictions.create({ version, input });
