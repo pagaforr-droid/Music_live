@@ -665,7 +665,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; // 5 seconds tail
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
 
-    const renderMix = async (isFoh: boolean): Promise<Blob> => {
+    const renderMix = async (isFoh: boolean): Promise<{ buffer: AudioBuffer, blob: Blob }> => {
       onProgress(`Preparando renderizado ${isFoh ? 'FOH' : 'CUE'}...`);
       const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
       
