@@ -8,8 +8,8 @@ const token =
   process.env.VITE_REPLICATE_API_STEMS;
 const replicate = new Replicate({ auth: token });
 
-const MODEL_CLARITY = 'philz1337x/clarity-pro-upscaler';
-const MODEL_CRYSTAL = 'philz1337x/crystal-upscaler';
+const MODEL_CLARITY = 'nightmareai/real-esrgan';
+const MODEL_CRYSTAL = 'sczhou/codeformer';
 
 async function resolveVersion(modelName: string): Promise<string> {
   const [owner, name] = modelName.split('/');
@@ -37,14 +37,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[UPSCALE] Iniciando ${modelName} con modo ${mode}`);
 
     // Inputs adaptados a los modelos de philz1337x
-    const input: Record<string, unknown> = {
-      image: imageUrl,
-      prompt: prompt || 'high quality, 8k, photorealistic, professional photography',
-    };
+    let input: Record<string, unknown> = {};
 
-    // Agregar creatividad solo si no es crystal (Crystal es más restrictivo para preservar rostros)
-    if (!isPortrait && creativity !== undefined) {
-      input.creativity = parseFloat(creativity);
+    if (isPortrait) {
+      input = {
+        image: imageUrl,
+        upscale: 2,
+        face_upsample: true,
+        background_enhance: true,
+        codeformer_fidelity: 0.5
+      };
+    } else {
+      input = {
+        image: imageUrl,
+        scale: 4,
+        face_enhance: true
+      };
     }
 
     const prediction = await replicate.predictions.create({ version, input });
