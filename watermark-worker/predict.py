@@ -74,15 +74,50 @@ class Predictor(BasePredictor):
     def _apply_dsp_watermark(wav: np.ndarray, sr: int, rng: np.random.Generator) -> np.ndarray:
         """
         wav: (channels, time) np.ndarray
-        Applies Varispeed and Cascaded All-Pass Filters to decorrelate the master track.
+        Applies Military-Grade DSP decorrelation:
+        1. Wow & Flutter (Dynamic Varispeed via non-linear interpolation)
+        2. Dynamic Spectral Shaping (LFO EQ)
+        3. Cascaded All-Pass Filters
+        4. Psychoacoustic Noise Injection
         """
-        # 1. Varispeed (0.8% to 1.5% speed/pitch up)
-        speed_factor = rng.uniform(1.008, 1.015)
+        from scipy import signal
+        import numpy as np
         
-        # Resample to apply varispeed (changes speed while preserving phase perfect)
-        y_processed = librosa.resample(wav, orig_sr=sr * speed_factor, target_sr=sr, axis=-1)
+        length = wav.shape[-1]
+        t = np.arange(length)
         
-        # 2. Cascaded All-Pass Filters to alter global phase imperceptibly
+        # 1. Wow & Flutter (Dynamic Varispeed)
+        # Bends time continuously. Completely breaks relative-timing fingerprinting.
+        wow_freq = rng.uniform(0.05, 0.2)
+        wow_depth = rng.uniform(0.003, 0.008)
+        base_speed = rng.uniform(1.008, 1.015)
+        phase_offset = rng.uniform(0, 2 * np.pi)
+        
+        w = 2 * np.pi * wow_freq / sr
+        t_warp = base_speed * t - (wow_depth / w) * np.cos(w * t + phase_offset)
+        t_warp -= np.min(t_warp)
+        valid = t_warp < (length - 1)
+        t_warp = t_warp[valid]
+        
+        y_processed = np.zeros((wav.shape[0], len(t_warp)), dtype=np.float32)
+        for ch in range(wav.shape[0]):
+            y_processed[ch] = np.interp(t_warp, t, wav[ch])
+            
+        # 2. Dynamic Spectral Shaping (LFO EQ crossfading)
+        # Slowly shifts spectral energy to confuse magnitude-peak hashing.
+        b_high, a_high = signal.butter(2, 3000 / (sr / 2), btype='highpass')
+        y_high = signal.filtfilt(b_high, a_high, y_processed, axis=-1)
+        
+        b_low, a_low = signal.butter(2, 300 / (sr / 2), btype='lowpass')
+        y_low = signal.filtfilt(b_low, a_low, y_processed, axis=-1)
+        
+        eq_lfo = np.sin(2 * np.pi * rng.uniform(0.02, 0.1) * np.arange(y_processed.shape[-1]) / sr)
+        eq_depth = rng.uniform(0.05, 0.15)
+        # Vectorized crossfade
+        y_processed = y_processed + (eq_depth * eq_lfo * y_high) - (eq_depth * eq_lfo * y_low)
+
+        # 3. Cascaded All-Pass Filters
+        # Obliterates phase-coded watermarks.
         for _ in range(3):
             fc = rng.uniform(300, 8000)
             Q = rng.uniform(0.5, 1.5)
@@ -101,7 +136,15 @@ class Predictor(BasePredictor):
             
             y_processed = signal.lfilter(b, a, y_processed, axis=-1)
             
-        return y_processed
+        # 4. Inaudible Noise Injection (Dithering)
+        # Masks spread-spectrum data hidden in the noise floor.
+        noise = rng.normal(0, 1, y_processed.shape).astype(np.float32)
+        b_noise, a_noise = signal.butter(1, 8000 / (sr / 2), btype='lowpass')
+        noise = signal.lfilter(b_noise, a_noise, noise, axis=-1)
+        noise_level = 10 ** (-60 / 20)  # -60 dBFS
+        y_processed += noise * noise_level
+
+        return y_processed.astype(np.float32)
 
     @staticmethod
     def _encode(downmix: np.ndarray, sr: int, out_dir: str, job_id: str, fmt: str) -> str:
