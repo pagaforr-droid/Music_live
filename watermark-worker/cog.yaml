@@ -12,8 +12,4 @@ build:
     - "soundfile==0.12.1"
     - "requests==2.31.0"
     - "numpy==1.26.4"
-  run:
-    # Pre-cache HTDemucs weights inside the image to avoid downloading them on every cold boot
-    - "python -c \"from demucs.pretrained import get_model; get_model('htdemucs')\""
-
 predict: "predict.py:Predictor"
