@@ -320,42 +320,80 @@ export default function LyricStudio() {
   };
 
   const [isDetecting, setIsDetecting] = useState(false);
+  const [replicateKey, setReplicateKey] = useState(() => localStorage.getItem('replicate_api_key') || '');
 
-  // Motor de Detección con IA (Arquitectura Preparada)
   const handleAutoDetect = async () => {
     if (!songData || !songData.foh_mix_url) {
       alert("Por favor selecciona una canción con un archivo de audio válido primero.");
       return;
     }
+    if (!replicateKey) {
+      const key = prompt("Por favor ingresa tu Replicate API Token (r8_...):");
+      if (!key) return;
+      localStorage.setItem('replicate_api_key', key);
+      setReplicateKey(key);
+    }
     
     setIsDetecting(true);
     
-    // SIMULACIÓN: Aquí se integrará la llamada a una API de Speech-to-Text
-    // como Whisper (OpenAI) o Deepgram que devuelve timestamps por palabra.
-    // Ej: const response = await fetch('https://api.deepgram.com/v1/listen', ...)
-    
-    setTimeout(() => {
-      // Mock de respuesta de una IA que detectó las frases y tiempos
-      const detectedPhrases = [
-        { text: "ESTA ES UNA PRUEBA", startMs: 1500, durationMs: 2500 },
-        { text: "DEL MOTOR DE INTELIGENCIA", startMs: 4200, durationMs: 3000 },
-        { text: "ARTIFICIAL DE LETRAS", startMs: 7500, durationMs: 2800 }
-      ];
+    try {
+      // 1. Crear la predicción usando el modelo victor-upmeet/whisperx
+      const response = await fetch("https://api.replicate.com/v1/predictions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${replicateKey || localStorage.getItem('replicate_api_key')}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          version: "84d2cb0a12d5fda904529d1a93eea14389fb13b19280d9ee6cc04a0e9803d366", // victor-upmeet/whisperx
+          input: {
+            audio: songData.foh_mix_url,
+            batch_size: 64,
+            align_output: true
+          }
+        })
+      });
+
+      let prediction = await response.json();
+      if (prediction.error) throw new Error(prediction.error);
+
+      // 2. Polling (Esperar a que termine de procesar)
+      while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollResponse = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+          headers: { "Authorization": `Bearer ${replicateKey || localStorage.getItem('replicate_api_key')}` }
+        });
+        prediction = await pollResponse.json();
+      }
+
+      if (prediction.status === "failed") throw new Error("La transcripción falló en Replicate.");
+
+      // 3. Mapear los segmentos devueltos a nuestro motor de letras
+      // WhisperX devuelve segments: [{ text: "...", start: 0.0, end: 2.0 }, ...]
+      const segments = prediction.output?.segments || [];
       
-      const aiLyrics: LyricLine[] = detectedPhrases.map((phrase, idx) => ({
+      const aiLyrics: LyricLine[] = segments.map((seg: any, idx: number) => ({
         id: `ai-${Date.now()}-${idx}`,
-        text: phrase.text,
-        startMs: phrase.startMs,
-        durationMs: phrase.durationMs,
-        // Valores por defecto elegantes para que el usuario solo edite
+        text: seg.text.trim().toUpperCase(),
+        startMs: Math.round(seg.start * 1000),
+        durationMs: Math.round((seg.end - seg.start) * 1000),
+        // Alternamos efectos para dar un look dinámico automático
         effect: idx % 2 === 0 ? 'kinetic' : 'smooth-blur', 
         fontFamily: 'Montserrat'
       }));
       
       setLyrics([...lyrics, ...aiLyrics]);
+      alert("¡Letras sincronizadas exitosamente vía Replicate (WhisperX)!");
+      
+    } catch (err: any) {
+      alert(`Error al contactar a Replicate: ${err.message}`);
+      if (err.message.includes("Token")) {
+         localStorage.removeItem('replicate_api_key');
+         setReplicateKey('');
+      }
+    } finally {
       setIsDetecting(false);
-      alert("¡Letras detectadas exitosamente! Revisa el secuenciador para aplicar tus formatos de élite.");
-    }, 2500); // Simulando el tiempo de procesamiento
+    }
   };
 
   const handleSave = async () => {
@@ -523,6 +561,7 @@ export default function LyricStudio() {
     </div>
   );
 }
+
 
 
 
