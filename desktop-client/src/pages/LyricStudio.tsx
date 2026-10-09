@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Play, Pause, Save, Download, Type, Plus, Trash2, Settings2 } from 'lucide-react';
+import { Play, Pause, Save, Download, Type, Plus, Trash2, Settings2, Wand2, Loader2 } from 'lucide-react';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -319,6 +319,45 @@ export default function LyricStudio() {
     }
   };
 
+  const [isDetecting, setIsDetecting] = useState(false);
+
+  // Motor de Detección con IA (Arquitectura Preparada)
+  const handleAutoDetect = async () => {
+    if (!songData || !songData.foh_mix_url) {
+      alert("Por favor selecciona una canción con un archivo de audio válido primero.");
+      return;
+    }
+    
+    setIsDetecting(true);
+    
+    // SIMULACIÓN: Aquí se integrará la llamada a una API de Speech-to-Text
+    // como Whisper (OpenAI) o Deepgram que devuelve timestamps por palabra.
+    // Ej: const response = await fetch('https://api.deepgram.com/v1/listen', ...)
+    
+    setTimeout(() => {
+      // Mock de respuesta de una IA que detectó las frases y tiempos
+      const detectedPhrases = [
+        { text: "ESTA ES UNA PRUEBA", startMs: 1500, durationMs: 2500 },
+        { text: "DEL MOTOR DE INTELIGENCIA", startMs: 4200, durationMs: 3000 },
+        { text: "ARTIFICIAL DE LETRAS", startMs: 7500, durationMs: 2800 }
+      ];
+      
+      const aiLyrics: LyricLine[] = detectedPhrases.map((phrase, idx) => ({
+        id: `ai-${Date.now()}-${idx}`,
+        text: phrase.text,
+        startMs: phrase.startMs,
+        durationMs: phrase.durationMs,
+        // Valores por defecto elegantes para que el usuario solo edite
+        effect: idx % 2 === 0 ? 'kinetic' : 'smooth-blur', 
+        fontFamily: 'Montserrat'
+      }));
+      
+      setLyrics([...lyrics, ...aiLyrics]);
+      setIsDetecting(false);
+      alert("¡Letras detectadas exitosamente! Revisa el secuenciador para aplicar tus formatos de élite.");
+    }, 2500); // Simulando el tiempo de procesamiento
+  };
+
   const handleSave = async () => {
     if (!songData) return;
     const newPrompterData = { ...songData.prompter_data, lyrics };
@@ -388,14 +427,24 @@ export default function LyricStudio() {
       <div className="flex-1 flex overflow-hidden">
         {/* Editor Sidebar */}
         <div className="w-[450px] bg-[#09090b] border-r border-white/5 flex flex-col">
-          <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
+                    <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
             <div>
               <h2 className="font-bold text-gray-200 uppercase tracking-widest text-xs">Secuencia de Letras</h2>
               <p className="text-[10px] text-gray-500 mt-0.5">Control por palabra, fuente y efecto</p>
             </div>
-            <button onClick={addLine} className="bg-white/10 hover:bg-white/20 p-2 rounded-lg text-white transition-colors">
-              <Plus size={16} />
-            </button>
+            <div className="flex space-x-2">
+              <button 
+                onClick={handleAutoDetect} 
+                disabled={isDetecting || !songData}
+                className="bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 p-2 rounded-lg transition-colors border border-indigo-500/20 disabled:opacity-50 flex items-center justify-center"
+                title="Detectar con Inteligencia Artificial"
+              >
+                {isDetecting ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+              </button>
+              <button onClick={addLine} className="bg-white/10 hover:bg-white/20 p-2 rounded-lg text-white transition-colors" title="Agregar Frase Manual">
+                <Plus size={16} />
+              </button>
+            </div>
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
@@ -474,4 +523,7 @@ export default function LyricStudio() {
     </div>
   );
 }
+
+
+
 
