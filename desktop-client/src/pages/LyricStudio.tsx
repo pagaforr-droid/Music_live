@@ -95,10 +95,12 @@ export default function LyricStudio() {
   };
 
   const stopAudio = () => {
+    if (isPlayingRef.current && audioCtxRef.current) {
+      pauseTimeRef.current = audioCtxRef.current.currentTime - startTimeRef.current;
+    }
     if (sourceNodeRef.current) {
       try { sourceNodeRef.current.stop(); } catch(e) {}
     }
-    if (audioCtxRef.current) pauseTimeRef.current = audioCtxRef.current.currentTime - startTimeRef.current;
     
     setIsPlaying(false);
     isPlayingRef.current = false;
@@ -106,7 +108,7 @@ export default function LyricStudio() {
   };
 
   const seek = (timeS: number) => {
-    const wasPlaying = isPlaying;
+    const wasPlaying = isPlayingRef.current;
     stopAudio();
     pauseTimeRef.current = timeS;
     setCurrentTime(timeS * 1000);
@@ -709,6 +711,7 @@ export default function LyricStudio() {
     </div>
   );
 }
+
 
 
 
