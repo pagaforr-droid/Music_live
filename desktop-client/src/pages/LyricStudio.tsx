@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Play, Pause, Save, Download, Type, Plus, Trash2, Settings2, Wand2, Loader2 } from 'lucide-react';
+import { Play, Pause, Save, Download, Type, Plus, Trash2, Settings2, Wand2, Loader2, Music } from 'lucide-react';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -556,7 +556,69 @@ export default function LyricStudio() {
                 </div>
               )}
            </div>
-           <p className="mt-6 text-gray-600 text-xs font-medium tracking-widest uppercase">Motor Generativo en Tiempo Real</p></div></div>      {showTokenModal && (
+           <p className="mt-6 text-gray-600 text-xs font-medium tracking-widest uppercase">Motor Generativo en Tiempo Real</p>
+        </div>
+      </div>
+
+      {/* Timeline Grid Gráfico */}
+      <div className="h-48 bg-[#09090b] border-t border-white/10 flex flex-col relative overflow-hidden shrink-0">
+         <div className="p-2 border-b border-white/5 flex justify-between items-center bg-black/50">
+           <span className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2"><Music size={12}/> Grilla de Sincronización Interactiva</span>
+           <span className="text-[10px] text-gray-500">Haz clic en la línea de tiempo para desplazarte (1 click = mover playhead).</span>
+         </div>
+         
+         <div 
+           className="flex-1 relative overflow-x-auto overflow-y-hidden custom-scrollbar bg-[#050505]"
+           onMouseDown={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const clickX = e.clientX - rect.left + e.currentTarget.scrollLeft;
+              const clickedTimeS = clickX / 50;
+              const audioEl = document.querySelector('audio');
+              if(audioEl) audioEl.currentTime = clickedTimeS;
+           }}
+         >
+           <div className="absolute top-0 bottom-0 h-full" style={{ width: Math.max(3000, 300 * 50) }}>
+             
+             {/* Background Grid (Segundos) */}
+             <div className="absolute inset-0" style={{
+               backgroundImage: `linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)`,
+               backgroundSize: `50px 100%, 10px 100%`
+             }}></div>
+
+             {/* Second Markers */}
+             {Array.from({ length: 300 }).map((_, i) => (
+               i % 5 === 0 && (
+                 <span key={i} className="absolute top-1 text-[9px] text-gray-600 font-mono pointer-events-none" style={{ left: i * 50 + 4 }}>
+                   00:{(i).toString().padStart(2, '0')}
+                 </span>
+               )
+             ))}
+
+             {/* Lyrics Blocks Tracks */}
+             <div className="absolute top-8 bottom-6 left-0 right-0 pointer-events-none">
+               {lyrics.map((line, idx) => (
+                 <div 
+                   key={line.id}
+                   className="absolute h-8 bg-indigo-600/30 border border-indigo-500/50 rounded-md backdrop-blur-sm flex items-center px-2 shadow-lg"
+                   style={{ 
+                     left: (line.startMs / 1000) * 50,
+                     width: Math.max(10, (line.durationMs / 1000) * 50),
+                     top: (idx % 3) * 36
+                   }}
+                 >
+                   <span className="text-[10px] font-bold text-white whitespace-nowrap truncate">{line.text}</span>
+                 </div>
+               ))}
+             </div>
+
+             {/* Playhead (Current Time) */}
+             <div className="absolute top-0 bottom-0 w-px bg-red-500 z-30 pointer-events-none" style={{ left: (currentTime / 1000) * 50 }}>
+               <div className="w-3 h-3 bg-red-500 absolute -top-1.5 -left-[5px] rounded-full shadow-[0_0_10px_red]"></div>
+             </div>
+
+           </div>
+         </div>
+      </div>      {showTokenModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center">
           <div className="bg-[#09090b] border border-white/10 rounded-2xl p-8 max-w-md w-full shadow-2xl relative">
             <h3 className="text-xl font-bold text-white mb-2">Conexión con Replicate (IA)</h3>
@@ -610,6 +672,8 @@ export default function LyricStudio() {
     </div>
   );
 }
+
+
 
 
 
