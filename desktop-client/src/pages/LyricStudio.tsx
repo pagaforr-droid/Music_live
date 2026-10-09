@@ -340,7 +340,7 @@ export default function LyricStudio() {
     setIsDetecting(true);
     
     try {
-      const response = await fetch("https://api.replicate.com/v1/predictions", {
+      const response = await fetch("/api/replicate-predict", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${activeToken}`,
@@ -361,7 +361,7 @@ export default function LyricStudio() {
 
       // 2. Polling (Esperar a que termine de procesar)
       while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-        await new Promise(r => setTimeout(r, 2000));        const pollResponse = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+        await new Promise(r => setTimeout(r, 2000));        const pollResponse = await fetch(`/api/replicate-poll?id=${prediction.id}`, {
           headers: { "Authorization": `Bearer ${activeToken}` }
         });
         prediction = await pollResponse.json();
@@ -610,5 +610,6 @@ export default function LyricStudio() {
     </div>
   );
 }
+
 
 
