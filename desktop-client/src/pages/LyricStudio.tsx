@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { Play, Pause, Save, Download, Type, Plus, Trash2, Settings2 } from 'lucide-react';
 
@@ -399,7 +399,7 @@ export default function LyricStudio() {
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-            {lyrics.map((line, idx) => (
+            {lyrics.map((line) => (
               <div key={line.id} className="bg-white/[0.03] border border-white/10 rounded-xl p-4 flex flex-col gap-3 relative group">
                 <button onClick={() => removeLine(line.id)} className="absolute top-3 right-3 text-red-500/50 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
                   <Trash2 size={14} />
@@ -474,3 +474,4 @@ export default function LyricStudio() {
     </div>
   );
 }
+

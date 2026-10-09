@@ -17,8 +17,6 @@ interface LyricVisualizerProps {
 
 export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({ currentTime, lyrics, isPlaying }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number>(0);
-  const lastTimeRef = useRef<number>(0);
 
   // We need to continuously render if isPlaying is true.
   // Because currentTime comes as a prop, it might be updated only every 100ms or 50ms depending on the parent.
@@ -27,7 +25,6 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({ currentTime, l
   
   useEffect(() => {
     let animationFrameId: number;
-    let localTime = currentTime * 1000; // converting to ms? 
     // Wait, in LiveConcert.tsx, currentTime is in seconds!
     // Let's verify: formatTime(currentTime) -> mins = Math.floor(time/60). So currentTime is in seconds.
     // In LyricStudio.tsx, currentTime is in ms. We need to convert.
@@ -220,3 +217,4 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({ currentTime, l
     />
   );
 };
+
