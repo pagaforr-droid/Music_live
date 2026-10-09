@@ -177,8 +177,7 @@ export default function LyricStudio() {
     const canvasW = canvasRef.current.width;
     const canvasH = canvasRef.current.height;
 
-    const timeMs = isPlaying 
-      ? (audioCtxRef.current.currentTime - startTimeRef.current) * 1000 
+    const timeMs = isPlayingRef.current ? (audioCtxRef.current.currentTime - startTimeRef.current) * 1000 
       : pauseTimeRef.current * 1000;
     
     setCurrentTime(timeMs);
@@ -711,6 +710,7 @@ export default function LyricStudio() {
     </div>
   );
 }
+
 
 
 
