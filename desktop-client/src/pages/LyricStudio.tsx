@@ -95,6 +95,18 @@ export default function LyricStudio() {
     cancelAnimationFrame(rafRef.current);
   };
 
+  const seek = (timeS: number) => {
+    const wasPlaying = isPlaying;
+    stopAudio();
+    pauseTimeRef.current = timeS;
+    setCurrentTime(timeS * 1000);
+    if (wasPlaying) {
+      playAudio();
+    } else {
+      renderCanvas(); // Update canvas instantly even if paused
+    }
+  };
+
   const startExport = () => {
     if (!canvasRef.current) return;
     setIsRecording(true);
@@ -570,11 +582,28 @@ export default function LyricStudio() {
          <div 
            className="flex-1 relative overflow-x-auto overflow-y-hidden custom-scrollbar bg-[#050505]"
            onMouseDown={(e) => {
+              if (e.button !== 0) return; // Only left click for seeking
               const rect = e.currentTarget.getBoundingClientRect();
               const clickX = e.clientX - rect.left + e.currentTarget.scrollLeft;
               const clickedTimeS = clickX / 50;
-              const audioEl = document.querySelector('audio');
-              if(audioEl) audioEl.currentTime = clickedTimeS;
+              seek(clickedTimeS);
+           }}
+           onContextMenu={(e) => {
+              e.preventDefault();
+              const rect = e.currentTarget.getBoundingClientRect();
+              const clickX = e.clientX - rect.left + e.currentTarget.scrollLeft;
+              const clickedTimeMs = (clickX / 50) * 1000;
+              
+              const newLine = {
+                id: `lyric-${Date.now()}`,
+                text: "NUEVA LETRA",
+                startMs: clickedTimeMs,
+                durationMs: 3000,
+                effect: 'kinetic' as any,
+                fontFamily: 'Montserrat' as any
+              };
+              
+              setLyrics(prev => [...prev, newLine].sort((a, b) => a.startMs - b.startMs));
            }}
          >
            <div className="absolute top-0 bottom-0 h-full" style={{ width: Math.max(3000, 300 * 50) }}>
@@ -672,6 +701,8 @@ export default function LyricStudio() {
     </div>
   );
 }
+
+
 
 
 
