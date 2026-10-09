@@ -11,6 +11,7 @@ import MobileInEar from './pages/MobileInEar';
 import MusicHub from './pages/MusicHub';
 import AdminCMS from './pages/AdminCMS';
 import DesignTools from './pages/DesignTools';
+import LyricStudio from './pages/LyricStudio';
 import './App.css';
 
 // Protected Route Wrapper
@@ -51,6 +52,7 @@ function AppRoutes() {
         <Route path="/setlists" element={<SetlistBuilder />} />
         <Route path="/admin/cms" element={<AdminCMS />} />
         <Route path="/design" element={<DesignTools />} />
+        <Route path="/lyrics" element={<LyricStudio />} />
       </Route>
       
       {/* Public Landing Page */}

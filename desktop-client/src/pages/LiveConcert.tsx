@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Prompter } from '../components/Prompter';
-import { Play, Pause, Square, SkipBack, SkipForward, MonitorSpeaker, Music, LayoutList, Wifi, Users } from 'lucide-react';
+import { LyricVisualizer } from '../components/LyricVisualizer';
+import { Play, Pause, Square, SkipBack, SkipForward, MonitorSpeaker, Music, LayoutList, Wifi, Users, Type } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -9,6 +10,7 @@ const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 export default function LiveConcert() {
   const [setlists, setSetlists] = useState<any[]>([]);
   const [selectedSetlistId, setSelectedSetlistId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'prompter' | 'lyrics'>('prompter');
   
   const [songs, setSongs] = useState<any[]>([]);
   const [currentSongIndex, setCurrentSongIndex] = useState<number>(0);
@@ -679,6 +681,29 @@ export default function LiveConcert() {
 
         {/* PROMPTER AREA */}
         <div className="flex-1 bg-black flex flex-col relative overflow-hidden">
+          
+          {/* View Mode Toggle */}
+          <div className="absolute top-6 right-8 z-30 flex space-x-2 bg-white/5 p-1 rounded-xl backdrop-blur-md border border-white/10">
+            <button 
+              onClick={() => setViewMode('prompter')}
+              className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition-all ${viewMode === 'prompter' ? 'bg-red-600 text-white shadow-[0_0_15px_rgba(239,68,68,0.4)]' : 'text-gray-400 hover:text-white'}`}
+            >
+              <div className="flex items-center space-x-2">
+                <Music size={14} />
+                <span>Acordes</span>
+              </div>
+            </button>
+            <button 
+              onClick={() => setViewMode('lyrics')}
+              className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition-all ${viewMode === 'lyrics' ? 'bg-indigo-600 text-white shadow-[0_0_15px_rgba(79,70,229,0.4)]' : 'text-gray-400 hover:text-white'}`}
+            >
+              <div className="flex items-center space-x-2">
+                <Type size={14} />
+                <span>Visuals (Live)</span>
+              </div>
+            </button>
+          </div>
+
           <div className="flex-1 p-8 overflow-hidden flex flex-col relative">
             {/* Background Glow */}
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-red-900/10 rounded-full blur-[120px] pointer-events-none opacity-50"></div>
@@ -690,17 +715,25 @@ export default function LiveConcert() {
 
             {currentSong ? (
               <div className="h-full relative z-10 w-full max-w-7xl mx-auto rounded-3xl overflow-hidden border border-white/5 shadow-2xl bg-[#09090b]/80 backdrop-blur-sm">
-                <Prompter 
-                  currentTime={currentTime}
-                  bpm={currentSong.prompter_data?.bpm || 0}
-                  timeSignature={currentSong.prompter_data?.timeSignature}
-                  baseOffset={currentSong.prompter_data?.firstBeatOffset}
-                  beatTimes={currentSong.prompter_data?.beatTimes}
-                  chords={currentSong.prompter_data?.chords || []}
-                  sections={currentSong.prompter_data?.sections || []}
-                  isVamping={false}
-                  isEditing={false}
-                />
+                {viewMode === 'prompter' ? (
+                  <Prompter 
+                    currentTime={currentTime}
+                    bpm={currentSong.prompter_data?.bpm || 0}
+                    timeSignature={currentSong.prompter_data?.timeSignature}
+                    baseOffset={currentSong.prompter_data?.firstBeatOffset}
+                    beatTimes={currentSong.prompter_data?.beatTimes}
+                    chords={currentSong.prompter_data?.chords || []}
+                    sections={currentSong.prompter_data?.sections || []}
+                    isVamping={false}
+                    isEditing={false}
+                  />
+                ) : (
+                  <LyricVisualizer 
+                    currentTime={currentTime}
+                    lyrics={currentSong.prompter_data?.lyrics || []}
+                    isPlaying={isPlaying}
+                  />
+                )}
               </div>
             ) : (
               <div className="h-full flex items-center justify-center text-gray-500/50 text-2xl font-bold tracking-[0.5em] blur-transition">
@@ -714,3 +747,5 @@ export default function LiveConcert() {
     </div>
   );
 }
+
+
