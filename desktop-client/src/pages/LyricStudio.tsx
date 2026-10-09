@@ -18,7 +18,10 @@ export default function LyricStudio() {
   const [selectedSongId, setSelectedSongId] = useState<string>('');
   const [songData, setSongData] = useState<any>(null);
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
+  const lyricsRef = useRef(lyrics);
+  useEffect(() => { lyricsRef.current = lyrics; }, [lyrics]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const isPlayingRef = useRef(false);
   const [isRecording, setIsRecording] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
 
@@ -68,9 +71,12 @@ export default function LyricStudio() {
     }
   };
 
+
   const playAudio = () => {
     if (!audioCtxRef.current || !audioBufferRef.current) return;
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+
+    stopAudio(); // clear previous
 
     sourceNodeRef.current = audioCtxRef.current.createBufferSource();
     sourceNodeRef.current.buffer = audioBufferRef.current;
@@ -82,7 +88,9 @@ export default function LyricStudio() {
 
     sourceNodeRef.current.start(0, pauseTimeRef.current);
     startTimeRef.current = audioCtxRef.current.currentTime - pauseTimeRef.current;
+    
     setIsPlaying(true);
+    isPlayingRef.current = true;
     renderCanvas();
   };
 
@@ -91,7 +99,9 @@ export default function LyricStudio() {
       try { sourceNodeRef.current.stop(); } catch(e) {}
     }
     if (audioCtxRef.current) pauseTimeRef.current = audioCtxRef.current.currentTime - startTimeRef.current;
+    
     setIsPlaying(false);
+    isPlayingRef.current = false;
     cancelAnimationFrame(rafRef.current);
   };
 
@@ -183,7 +193,7 @@ export default function LyricStudio() {
     ctx.fillRect(0, 0, canvasW, canvasH);
 
     // Draw Lyrics (Elite Engine)
-    lyrics.forEach(line => {
+    lyricsRef.current.forEach(line => {
       if (timeMs >= line.startMs && timeMs <= line.startMs + line.durationMs) {
         const progress = (timeMs - line.startMs) / line.durationMs;
         
@@ -326,9 +336,7 @@ export default function LyricStudio() {
       }
     });
 
-    if (isPlaying) {
-      rafRef.current = requestAnimationFrame(renderCanvas);
-    }
+    if (isPlayingRef.current) { rafRef.current = requestAnimationFrame(renderCanvas); }
   };
 
   const [isDetecting, setIsDetecting] = useState(false);
@@ -701,6 +709,9 @@ export default function LyricStudio() {
     </div>
   );
 }
+
+
+
 
 
 
