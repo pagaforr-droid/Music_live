@@ -321,27 +321,29 @@ export default function LyricStudio() {
 
   const [isDetecting, setIsDetecting] = useState(false);
   const [replicateKey, setReplicateKey] = useState(() => localStorage.getItem('replicate_api_key') || '');
+  const [showTokenModal, setShowTokenModal] = useState(false);
 
   const handleAutoDetect = async () => {
     if (!songData || !songData.foh_mix_url) {
       alert("Por favor selecciona una canción con un archivo de audio válido primero.");
       return;
     }
-    if (!replicateKey) {
-      const key = prompt("Por favor ingresa tu Replicate API Token (r8_...):");
-      if (!key) return;
-      localStorage.setItem('replicate_api_key', key);
-      setReplicateKey(key);
+    
+    const envToken = import.meta.env.VITE_REPLICATE_API_TOKEN;
+    const activeToken = envToken || replicateKey;
+    
+    if (!activeToken) {
+      setShowTokenModal(true);
+      return;
     }
     
     setIsDetecting(true);
     
     try {
-      // 1. Crear la predicción usando el modelo victor-upmeet/whisperx
       const response = await fetch("https://api.replicate.com/v1/predictions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${replicateKey || localStorage.getItem('replicate_api_key')}`,
+          "Authorization": `Bearer ${activeToken}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
@@ -359,9 +361,8 @@ export default function LyricStudio() {
 
       // 2. Polling (Esperar a que termine de procesar)
       while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-        await new Promise(r => setTimeout(r, 2000));
-        const pollResponse = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-          headers: { "Authorization": `Bearer ${replicateKey || localStorage.getItem('replicate_api_key')}` }
+        await new Promise(r => setTimeout(r, 2000));        const pollResponse = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+          headers: { "Authorization": `Bearer ${activeToken}` }
         });
         prediction = await pollResponse.json();
       }
@@ -555,14 +556,59 @@ export default function LyricStudio() {
                 </div>
               )}
            </div>
-           <p className="mt-6 text-gray-600 text-xs font-medium tracking-widest uppercase">Motor Generativo en Tiempo Real</p>
+           <p className="mt-6 text-gray-600 text-xs font-medium tracking-widest uppercase">Motor Generativo en Tiempo Real</p></div></div>      {showTokenModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-[#09090b] border border-white/10 rounded-2xl p-8 max-w-md w-full shadow-2xl relative">
+            <h3 className="text-xl font-bold text-white mb-2">Conexión con Replicate (IA)</h3>
+            <p className="text-gray-400 text-sm mb-6">
+              Para generar las letras automáticamente, necesitamos conectar con el modelo WhisperX de Replicate.
+            </p>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                  API Token (r8_...)
+                </label>
+                <input 
+                  type="password" 
+                  value={replicateKey}
+                  onChange={(e) => setReplicateKey(e.target.value)}
+                  placeholder="r8_..."
+                  className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+              
+              <div className="flex space-x-3 pt-2">
+                <button 
+                  onClick={() => setShowTokenModal(false)}
+                  className="flex-1 px-4 py-3 rounded-xl font-bold text-sm bg-white/5 hover:bg-white/10 text-white transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => {
+                    if (replicateKey) {
+                      localStorage.setItem('replicate_api_key', replicateKey);
+                      setShowTokenModal(false);
+                      // Reintentar la detección automáticamente
+                      handleAutoDetect();
+                    }
+                  }}
+                  className="flex-1 px-4 py-3 rounded-xl font-bold text-sm bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-[0_0_20px_rgba(79,70,229,0.3)]"
+                >
+                  Guardar y Detectar
+                </button>
+              </div>
+            </div>
+            
+            <div className="mt-6 pt-4 border-t border-white/5 text-xs text-gray-500 text-center">
+              Alternativa: Configura <code className="text-indigo-400">VITE_REPLICATE_API_TOKEN</code> en las variables de entorno de tu servidor (Vercel) para omitir este paso.
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
-
-
-
 
 
