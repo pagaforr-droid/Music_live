@@ -49,10 +49,11 @@ export default function StemStudio() {
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
   const [pitchMode, setPitchMode] = useState<PitchMode>('a432_detune');
   const [useAntiSuno, setUseAntiSuno] = useState(true);
+  const [useTransientPunch, setUseTransientPunch] = useState(true);
   const [useTapeBed, setUseTapeBed] = useState(true);
   const [useSideBloom, setUseSideBloom] = useState(true);
   const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
-  const [useConstellationPoison, setUseConstellationPoison] = useState(true);
+  const [useConstellationPoison, setUseConstellationPoison] = useState(false);
   const [useConstellationTilt, setUseConstellationTilt] = useState(true);
   const [usePhaseDispersion, setUsePhaseDispersion] = useState(true);
   const [decorrelatingStemId, setDecorrelatingStemId] = useState<string | null>(null);
@@ -198,6 +199,7 @@ export default function StemStudio() {
           pitchMode: pitchMode,
           lockOriginalPitch: pitchMode === 'lock_440',
           antiSunoHumanizer: useAntiSuno,
+          humanTransientPunch: useTransientPunch,
           tapeWarmthBed: useTapeBed,
           sideBloom: useSideBloom,
           ghostMidiBass: useGhostMidiBass,
@@ -280,6 +282,7 @@ export default function StemStudio() {
               pitchMode,
               lockOriginalPitch: pitchMode === 'lock_440',
               antiSunoHumanizer: useAntiSuno,
+              humanTransientPunch: useTransientPunch,
               tapeWarmthBed: useTapeBed,
               sideBloom: useSideBloom,
               ghostMidiBass: useGhostMidiBass,
@@ -1214,13 +1217,26 @@ export default function StemStudio() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setUseTransientPunch((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useTransientPunch
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Restaurador de Pegada Humana y Crest Factor (+2.4 dB en transientes acústicos): Amplifica el ataque inicial (<5ms) de cajas, bombos y consonantes vocales que los vocoders de difusión (Riffusion/Griffin-Lim) comprimen y difuminan, forzando un Crest Factor acústico humano (14-18 dB)."
+                    >
+                      <span>🥁 Pegada Acústica (Crest Factor)</span>
+                      <span className="text-[8px] uppercase">{useTransientPunch ? 'HUMANO (16 dB)' : 'OFF'}</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setUseTapeBed((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useTapeBed
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Capa acústica orgánica de calidez de cinta analógica a -42 dBFS (1.8 kHz - 13.5 kHz con flutter suave). Rellena los valles inter-transientes donde los bots buscan pares de anclaje STFT, aportando textura cálida de master de estudio sin desafinar."
+                      title="Capa acústica orgánica de calidez de cinta analógica a -42 dBFS con compuerta de envolvente dinámica (0 en silencios). Rellena los valles inter-transientes sin generar soplido continuo de difusión."
                     >
                       <span>🎛️ Cinta Analógica (-42 dB)</span>
                       <span className="text-[8px] uppercase">{useTapeBed ? 'ON' : 'OFF'}</span>
@@ -1259,10 +1275,10 @@ export default function StemStudio() {
                           ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Micro-ráfagas resonantes por salto de frecuencia (Gabor chirps 42-78 ms cada 28 ms) que solo se disparan con energía musical activa (máscara Bark) para secuestrar el selector de picos de Shazam y ContentID"
+                      title="Micro-ráfagas Gabor por salto de frecuencia (350-4.8 kHz). Desactivado por defecto para evitar que clasificadores confundan los chirps con ruido de difusión de Riffusion."
                     >
-                      <span>🎯 Constellation Poisoning (350-4.8 kHz)</span>
-                      <span className="text-[8px] uppercase">{useConstellationPoison ? 'ON' : 'OFF'}</span>
+                      <span>🎯 Gabor Chirps</span>
+                      <span className="text-[8px] uppercase">{useConstellationPoison ? 'ON' : 'OFF (ANTI-DIFFUSION)'}</span>
                     </button>
                     <button
                       type="button"

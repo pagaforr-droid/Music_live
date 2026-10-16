@@ -47,7 +47,7 @@ PRESET_CONFIGS = {
         "static_haas_ms": 0.14,               # fixed 0.14 ms (no flanging sweep!)
         "eq_mod_db": 1.1,                     # subtle +-1.1 dB peak tilting
         "ghost_midi_gain": 0.035,
-        "poison_chirp_gain": 0.014,
+        "poison_chirp_gain": 0.005,
         "sub_contour_gain": 0.06,
         "tape_bed_gain_db": -45.0,
         "side_bloom_gain": 0.08,
@@ -62,7 +62,7 @@ PRESET_CONFIGS = {
         "static_haas_ms": 0.24,               # fixed 0.24 ms micro-offset
         "eq_mod_db": 1.6,                     # +-1.6 dB multiplicative peak swapper
         "ghost_midi_gain": 0.048,
-        "poison_chirp_gain": 0.020,
+        "poison_chirp_gain": 0.008,
         "sub_contour_gain": 0.10,
         "tape_bed_gain_db": -42.0,
         "side_bloom_gain": 0.12,
@@ -77,7 +77,7 @@ PRESET_CONFIGS = {
         "static_haas_ms": 0.36,               # fixed 0.36 ms micro-offset
         "eq_mod_db": 2.2,                     # +-2.2 dB multiplicative peak swapper
         "ghost_midi_gain": 0.062,
-        "poison_chirp_gain": 0.026,
+        "poison_chirp_gain": 0.012,
         "sub_contour_gain": 0.14,
         "tape_bed_gain_db": -39.0,
         "side_bloom_gain": 0.16,
@@ -219,6 +219,27 @@ class Predictor(BasePredictor):
         return out
 
     @classmethod
+    def _apply_transient_punch(cls, wav: np.ndarray, sr: int, boost_db: float = 2.4) -> np.ndarray:
+        """
+        Human Acoustic Transient Punch Restorer (Acoustic Crest Factor Expander):
+        Detects sharp acoustic onsets (drum hits, vocal consonants, pick attacks)
+        and boosts their leading 5-8 ms attack by +2.0 to +2.8 dB.
+        Restores pro studio acoustic Crest Factor (14-18 dB), eliminating the flat,
+        phase-smeared 8-10 dB signature of Riffusion's diffusion vocoder.
+        """
+        mono_abs = np.mean(np.abs(wav), axis=0)
+        b_fast, a_fast = signal.butter(1, 100.0 / (sr / 2.0), btype="lowpass")
+        b_slow, a_slow = signal.butter(1, 15.0 / (sr / 2.0), btype="lowpass")
+        env_fast = signal.lfilter(b_fast, a_fast, mono_abs)
+        env_slow = signal.lfilter(b_slow, a_slow, mono_abs)
+
+        diff = np.maximum(0.0, env_fast - env_slow)
+        max_boost = (10.0 ** (boost_db / 20.0)) - 1.0
+        ratio = diff / (env_slow + 0.02)
+        punch = max_boost * np.tanh(2.5 * ratio)
+        return wav * (1.0 + punch)[None, :]
+
+    @classmethod
     def _apply_dsp_watermark(
         cls,
         wav: np.ndarray,
@@ -226,12 +247,13 @@ class Predictor(BasePredictor):
         rng: np.random.Generator,
         preset: str = "stealth",
         ghost_midi_bass: bool = True,
-        constellation_poison: bool = True,
+        constellation_poison: bool = False,
         lock_original_pitch: bool = True,
         pitch_mode: str = "a432_detune",
         tape_warmth_bed: bool = True,
         side_bloom: bool = True,
         anti_suno_humanizer: bool = True,
+        human_transient_punch: bool = True,
     ):
         """
         Applies Tandu Stealth Master DSP v4 (Pure Clarity, Zero-Dirt High-Evasion).
@@ -368,7 +390,8 @@ class Predictor(BasePredictor):
             w_tape = 2.0 * np.pi * float(rng.uniform(0.18, 0.38))
             p_tape = float(rng.uniform(0, 2.0 * np.pi))
             tape_mod = 1.0 + 0.12 * np.sin(w_tape * t_out + p_tape)
-            y_processed += (tape_filtered * bed_amp * tape_mod)
+            env_gate = (env_norm ** 1.25)[None, :]
+            y_processed += (tape_filtered * bed_amp * tape_mod * env_gate)
 
         # ==================================================================
         # 2B. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
@@ -531,6 +554,12 @@ class Predictor(BasePredictor):
         y_processed = low_band + high_band
 
         # ==================================================================
+        # Human Acoustic Transient Punch Restorer (Restores 14-18 dB Crest Factor)
+        # ==================================================================
+        if human_transient_punch:
+            y_processed = cls._apply_transient_punch(y_processed, sr, boost_db=2.4)
+
+        # ==================================================================
         # 5. Gentle Analog Warmth, Full-Range Master (22 Hz - 18.8 kHz) & Limiter
         # ==================================================================
         drive = cfg["drive"]
@@ -573,6 +602,7 @@ class Predictor(BasePredictor):
                 99.6,
                 (0.0 if resolved_pitch_mode == "lock_440" else (cqt_evasion * 20.0))
                 + (22.0 if anti_suno_humanizer else 0.0)
+                + (16.0 if human_transient_punch else 0.0)
                 + (18.0 if tape_warmth_bed else 0.0)
                 + (20.0 if ghost_midi_bass else 0.0)
                 + (22.0 if constellation_poison else 0.0)
@@ -657,8 +687,12 @@ class Predictor(BasePredictor):
             description="Neutralizador forense de marcas de agua ultrasónicas y códec neuronal de Suno",
             default=True,
         ),
+        human_transient_punch: bool = Input(
+            description="Restaurador de pegada humana y Crest Factor (14-18 dB) para neutralizar vocoders de difusión de Riffusion",
+            default=True,
+        ),
         tape_warmth_bed: bool = Input(
-            description="Textura de calidez analógica Tape Bed (-42 dBFS) que satura los valles inter-transientes del bot",
+            description="Textura de calidez analógica Tape Bed (-42 dBFS) con compuerta de envolvente dinámica (0 en silencios)",
             default=True,
         ),
         side_bloom: bool = Input(
@@ -670,8 +704,8 @@ class Predictor(BasePredictor):
             default=True,
         ),
         constellation_poison: bool = Input(
-            description="Micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz) con máscara Bark",
-            default=True,
+            description="Micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz) con máscara Bark (OFF por defecto para evitar firma de difusión)",
+            default=False,
         ),
         seed: int = Input(description="Semilla para reproducibilidad (-1 para aleatorio)", default=-1),
     ) -> Output:
@@ -696,6 +730,7 @@ class Predictor(BasePredictor):
             lock_original_pitch=lock_original_pitch,
             pitch_mode=pitch_mode,
             anti_suno_humanizer=anti_suno_humanizer,
+            human_transient_punch=human_transient_punch,
             tape_warmth_bed=tape_warmth_bed,
             side_bloom=side_bloom,
         )

@@ -46,6 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sideBloom,
       ghostMidiBass,
       constellationPoison,
+      humanTransientPunch,
     } = req.body || {};
     if (!audioUrl || typeof audioUrl !== 'string') {
       return res.status(400).json({ error: 'Falta audioUrl' });
@@ -64,10 +65,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       pitch_mode: pitchMode || (lockOriginalPitch === false ? 'varispeed_up' : 'a432_detune'),
       lock_original_pitch: lockOriginalPitch !== false,
       anti_suno_humanizer: antiSunoHumanizer !== false,
+      human_transient_punch: humanTransientPunch !== false,
       tape_warmth_bed: tapeWarmthBed !== false,
       side_bloom: sideBloom !== false,
       ghost_midi_bass: ghostMidiBass !== false,
-      constellation_poison: constellationPoison !== false,
+      constellation_poison: constellationPoison === true,
     };
     if (uploadUrl) input.upload_url = uploadUrl;
 

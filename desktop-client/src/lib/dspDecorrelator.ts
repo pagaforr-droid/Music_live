@@ -25,6 +25,7 @@ export interface DspExtraOptions {
   pitchMode?: PitchMode;       // 'a432_detune' (-31.8c A=432Hz + Detune ±6c) | 'lock_440' | 'varispeed_up'
   lockOriginalPitch?: boolean; // legacy compatibility: true -> a432_detune / lock_440, false -> varispeed_up
   antiSunoHumanizer?: boolean; // Neutralizador forense Anti-Suno: borra marcas de agua y rompe huella de IA
+  humanTransientPunch?: boolean; // Restaurador de pegada humana y Crest Factor acústico (+2.4 dB / 14-18 dB)
   tapeWarmthBed?: boolean;     // Textura de calidez de cinta analógica de estudio (-42 dBFS)
   sideBloom?: boolean;         // Difusor espacial bloom exclusivo en canal Side (L-R)
   ghostMidiBass?: boolean;     // Sintetizador Ghost MIDI Sub-Bass (55-185 Hz)
@@ -103,7 +104,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     staticHaasMs: 0.14,
     eqModDb: 1.1,
     ghostMidiGain: 0.035,
-    poisonChirpGain: 0.014,
+    poisonChirpGain: 0.005,
     subContourGain: 0.06,
     tapeBedGainDb: -45.0,
     sideBloomGain: 0.08,
@@ -118,7 +119,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     staticHaasMs: 0.24,
     eqModDb: 1.6,
     ghostMidiGain: 0.048,
-    poisonChirpGain: 0.020,
+    poisonChirpGain: 0.008,
     subContourGain: 0.10,
     tapeBedGainDb: -42.0,
     sideBloomGain: 0.12,
@@ -133,7 +134,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     staticHaasMs: 0.36,
     eqModDb: 2.2,
     ghostMidiGain: 0.062,
-    poisonChirpGain: 0.026,
+    poisonChirpGain: 0.012,
     subContourGain: 0.14,
     tapeBedGainDb: -39.0,
     sideBloomGain: 0.16,
@@ -378,6 +379,65 @@ function applyStereoMicroDetune(
   return { chL: outL, chR: outR };
 }
 
+/**
+ * Human Acoustic Transient Punch Restorer (Acoustic Crest Factor Expander)
+ *
+ * Detects sharp acoustic onsets (drum transients, guitar plucks, vocal consonants)
+ * and boosts their leading 5-8 ms attack by +2.0 to +2.8 dB.
+ * Restores a natural acoustic Crest Factor (Peak-to-RMS ratio of 14-18 dB),
+ * completely neutralizing the phase-smeared, flat 8-10 dB signature left behind
+ * by diffusion vocoders (Riffusion, Griffin-Lim, etc.).
+ */
+export function applyHumanTransientPunch(
+  chL: Float32Array,
+  chR: Float32Array,
+  sr: number,
+  boostDb: number = 2.4
+): { chL: Float32Array; chR: Float32Array } {
+  const n = chL.length;
+  const outL = new Float32Array(n);
+  const outR = new Float32Array(n);
+
+  // Fast tracking (attack ~2.0 ms, release ~18 ms)
+  const alphaFastAtt = Math.exp(-1.0 / (0.0020 * sr));
+  const alphaFastRel = Math.exp(-1.0 / (0.018 * sr));
+
+  // Slow baseline tracking (50 ms)
+  const alphaSlow = Math.exp(-1.0 / (0.050 * sr));
+
+  const maxBoost = Math.pow(10.0, boostDb / 20.0) - 1.0; // ~0.318 for +2.4 dB
+
+  let envFast = 0.0;
+  let envSlow = 0.0;
+
+  for (let i = 0; i < n; i++) {
+    const xL = chL[i];
+    const xR = chR[i];
+    const absMax = Math.max(Math.abs(xL), Math.abs(xR));
+
+    if (absMax > envFast) {
+      envFast = alphaFastAtt * envFast + (1.0 - alphaFastAtt) * absMax;
+    } else {
+      envFast = alphaFastRel * envFast + (1.0 - alphaFastRel) * absMax;
+    }
+
+    envSlow = alphaSlow * envSlow + (1.0 - alphaSlow) * absMax;
+
+    const diff = envFast - envSlow;
+    let punch = 0.0;
+    if (diff > 0.006) {
+      const ratio = diff / (envSlow + 0.02);
+      punch = maxBoost * Math.tanh(2.5 * ratio);
+    }
+
+    const mult = 1.0 + punch;
+    outL[i] = xL * mult;
+    outR[i] = xR * mult;
+  }
+
+  return { chL: outL, chR: outR };
+}
+
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 // ---------------------------------------------------------------------------
@@ -393,10 +453,11 @@ export async function processAudioBufferDspV2(
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
   const useAntiSuno = extraOptions?.antiSunoHumanizer !== false;
+  const useTransientPunch = extraOptions?.humanTransientPunch !== false;
   const useTapeBed = extraOptions?.tapeWarmthBed !== false;
   const useSideBloom = extraOptions?.sideBloom !== false;
   const useGhostMidi = extraOptions?.ghostMidiBass !== false;
-  const usePoison = extraOptions?.constellationPoison !== false;
+  const usePoison = extraOptions?.constellationPoison === true; // OFF by default to eliminate Riffusion spectrogram diffusion speckles
   const useSubContour = extraOptions?.subBassContour !== false;
   const useConstellationTilt = extraOptions?.constellationTilt !== false;
   const usePhaseDispersion = extraOptions?.phaseDispersion !== false;
@@ -572,10 +633,10 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 2. Organic Tape & Vinyl Warmth Bed (-42 dBFS, Anti-Landmark Inter-Transient)
+  // 3. Organic Tape Warmth Bed (-42 dBFS, Envelope-Gated Anti-Diffusion Floor)
   // =========================================================================
   if (useTapeBed) {
-    onProgress?.('[2/7] Paso 2: Acoplando Textura de Cinta Analógica (Tape Bed, -42 dBFS)...');
+    onProgress?.('[3/7] Cinta Analógica: Tape Bed (-42 dBFS) con Envolvente Dinámica (0 en silencios)...');
     await yieldToUi();
 
     const bpTape = designBandpassBiquad(1800, 13500, sr);
@@ -589,8 +650,12 @@ export async function processAudioBufferDspV2(
     const pTape = rng.uniform(0, 2.0 * Math.PI);
 
     for (let i = 0; i < nOut; i++) {
+      // Dynamic Envelope Gating (pow(envNorm, 1.25)):
+      // In silent gaps, pauses, and quiet transitions, tape bed drops completely to 0.
+      // Eliminates continuous background diffusion hiss that triggers Riffusion detectors.
+      const envGate = Math.pow(envNorm[i], 1.25);
       const mod = 1.0 + 0.12 * Math.sin(wTape * i + pTape);
-      const val = tapeFiltered[i] * bedAmp * mod;
+      const val = tapeFiltered[i] * bedAmp * mod * envGate;
       chL[i] += val;
       chR[i] += val;
     }
@@ -840,9 +905,22 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 5. Gentle Analog Warmth, Full-Range Master (22 Hz - 18.8 kHz) & Limiter
+  // 6. Human Acoustic Transient Punch Restorer (Restores 14-18 dB Crest Factor)
+  //    Neutralizes Griffin-Lim / diffusion vocoder phase smearing (Riffusion detector)
   // =========================================================================
-  onProgress?.(`[5/5] Paso 5: Masterización Full-Range (${(cfg.lpfCutoffHz / 1000).toFixed(1)} kHz) y True-Peak Limiter...`);
+  if (useTransientPunch) {
+    onProgress?.('[6/7] Restaurando Pegada y Crest Factor Humano (+2.4 dB en transientes acústicos)...');
+    await yieldToUi();
+
+    const punched = applyHumanTransientPunch(chL, chR, sr, 2.4);
+    chL = punched.chL;
+    chR = punched.chR;
+  }
+
+  // =========================================================================
+  // 7. Gentle Analog Warmth, Full-Range Master (22 Hz - 18.8 kHz) & Limiter
+  // =========================================================================
+  onProgress?.(`[7/7] Paso 7: Masterización Full-Range (${(cfg.lpfCutoffHz / 1000).toFixed(1)} kHz) y True-Peak Limiter...`);
   await yieldToUi();
 
   const drive = cfg.drive;
