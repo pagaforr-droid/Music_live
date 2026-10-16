@@ -46,7 +46,8 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
-  const [useSubBassContour, setUseSubBassContour] = useState(true);
+  const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
+  const [useConstellationPoison, setUseConstellationPoison] = useState(true);
   const [useConstellationTilt, setUseConstellationTilt] = useState(true);
   const [usePhaseDispersion, setUsePhaseDispersion] = useState(true);
   const [decorrelatingStemId, setDecorrelatingStemId] = useState<string | null>(null);
@@ -189,7 +190,8 @@ export default function StemStudio() {
           if (mountedRef.current) setDspMessage(`DSP v4 • ${stepMsg}`);
         },
         {
-          subBassContour: useSubBassContour,
+          ghostMidiBass: useGhostMidiBass,
+          constellationPoison: useConstellationPoison,
           constellationTilt: useConstellationTilt,
           phaseDispersion: usePhaseDispersion,
         }
@@ -1098,7 +1100,7 @@ export default function StemStudio() {
                 
                 <div className="flex flex-col gap-4 flex-1 justify-between">
                   <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    Arquitectura de claridad de estudio sin ensuciar el audio: <code className="text-blue-400">Desplazamiento CQT de Cuarto de Tono (+2.0% a +4.35%) + Macro-Rubato Ultra-Lento (22-45s)</code>, <code className="text-blue-400">Tilt Espectral Multiplicativo de 6 Bandas (0 Ruido Aditivo)</code>, <code className="text-blue-400">Contorno Sub-Grave Armónico en Tono (55-145 Hz)</code> y <code className="text-blue-400">Red All-Pass Estática de 0.0 dB (Sin Flanger ni Rotación Mareante)</code> manteniendo agudos cristalinos hasta 18.8 kHz.
+                    Ataque psicoacústico quirúrgico sin ensuciar el audio: <code className="text-blue-400">🎹 Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)</code>, <code className="text-blue-400">🎯 Constellation Poisoning (Gabor 350-4800 Hz con máscara Bark)</code>, <code className="text-blue-400">Desplazamiento CQT (+2.0% a +4.35%)</code> y <code className="text-blue-400">🛡️ Dispersión All-Pass Estática (0.0 dB plana, cero flanger)</code> manteniendo agudos cristalinos hasta 18.8 kHz.
                   </p>
 
                   {/* 3 Preset Selector Cards */}
@@ -1138,35 +1140,48 @@ export default function StemStudio() {
                     })}
                   </div>
 
-                  {/* Clean Studio Countermeasures Toggles */}
+                  {/* Psychoacoustic & Stealth Countermeasures Toggles */}
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mr-1">
-                      Módulos Limpios:
+                      Módulos Activos:
                     </span>
                     <button
                       type="button"
-                      onClick={() => setUseSubBassContour((v) => !v)}
+                      onClick={() => setUseGhostMidiBass((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
-                        useSubBassContour
+                        useGhostMidiBass
                           ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Extrae el propio bajo de la canción (55-145 Hz) y modula suavemente su contorno armónico 100% en tono, sin notas falsas desafinadas"
+                      title="Genera algorítmicamente una línea de notas MIDI de bajo sintético polirrítmica (fundamental + 2º y 3er armónico con envolvente Hann sin clics) sincronizada debajo de la envolvente de la canción con máscara Fletcher-Munson"
                     >
-                      <span>🎸 Contorno Sub-Grave en Tono (55-145 Hz)</span>
-                      <span className="text-[8px] uppercase">{useSubBassContour ? 'ON' : 'OFF'}</span>
+                      <span>🎹 Ghost MIDI Sub-Bass (55-185 Hz)</span>
+                      <span className="text-[8px] uppercase">{useGhostMidiBass ? 'ON' : 'OFF'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseConstellationPoison((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useConstellationPoison
+                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Micro-ráfagas resonantes por salto de frecuencia (Gabor chirps 42-78 ms cada 28 ms) que solo se disparan con energía musical activa (máscara Bark) para secuestrar el selector de picos de Shazam y ContentID"
+                    >
+                      <span>🎯 Constellation Poisoning (350-4.8 kHz)</span>
+                      <span className="text-[8px] uppercase">{useConstellationPoison ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setUseConstellationTilt((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useConstellationTilt
-                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
                       title="Intercambia la dominancia de picos espectrales en 6 bandas usando ecualización dinámica multiplicativa lenta (15-25s) idéntica en L y R, con cero ruido añadido"
                     >
-                      <span>🎛️ Tilt Espectral Multiplicativo (6 Bandas, 0 Ruido)</span>
+                      <span>🎛️ Tilt Espectral Multiplicativo (6 Bandas)</span>
                       <span className="text-[8px] uppercase">{useConstellationTilt ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
@@ -1179,7 +1194,7 @@ export default function StemStudio() {
                       }`}
                       title="Red All-Pass estática invariante en el tiempo con respuesta de magnitud 0.0 dB plana: rota la fase interna de los bloques STFT sin flanger ni paneo giratorio"
                     >
-                      <span>🛡️ Dispersión de Fase Estática (0.0 dB Plana, Sin Flanger)</span>
+                      <span>🛡️ Dispersión de Fase Estática (0.0 dB)</span>
                       <span className="text-[8px] uppercase">{usePhaseDispersion ? 'ON' : 'OFF'}</span>
                     </button>
                   </div>

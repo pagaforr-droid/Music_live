@@ -46,6 +46,8 @@ PRESET_CONFIGS = {
         "apf_stages": 6,
         "static_haas_ms": 0.14,               # fixed 0.14 ms (no flanging sweep!)
         "eq_mod_db": 1.1,                     # subtle +-1.1 dB peak tilting
+        "ghost_midi_gain": 0.035,
+        "poison_chirp_gain": 0.014,
         "sub_contour_gain": 0.06,
         "drive": 1.08,
         "lpf_cutoff_hz": 18800.0,             # full studio air preserved
@@ -57,6 +59,8 @@ PRESET_CONFIGS = {
         "apf_stages": 10,
         "static_haas_ms": 0.24,               # fixed 0.24 ms micro-offset
         "eq_mod_db": 1.6,                     # +-1.6 dB multiplicative peak swapper
+        "ghost_midi_gain": 0.048,
+        "poison_chirp_gain": 0.020,
         "sub_contour_gain": 0.10,
         "drive": 1.14,
         "lpf_cutoff_hz": 18200.0,             # crisp highs preserved
@@ -68,12 +72,18 @@ PRESET_CONFIGS = {
         "apf_stages": 14,
         "static_haas_ms": 0.36,               # fixed 0.36 ms micro-offset
         "eq_mod_db": 2.2,                     # +-2.2 dB multiplicative peak swapper
+        "ghost_midi_gain": 0.062,
+        "poison_chirp_gain": 0.026,
         "sub_contour_gain": 0.14,
         "drive": 1.22,
         "lpf_cutoff_hz": 17500.0,             # clean top-end without muffle
         "side_air_gain": 0.24,
     },
 }
+
+GHOST_MIDI_FREQS = np.array([
+    55.0, 61.74, 65.41, 73.42, 82.41, 87.31, 98.0, 110.0, 123.47, 130.81, 146.83, 164.81, 174.61, 185.0
+], dtype=np.float64)
 
 
 class Output(BaseModel):
@@ -159,7 +169,15 @@ class Predictor(BasePredictor):
         return b, a
 
     @classmethod
-    def _apply_dsp_watermark(cls, wav: np.ndarray, sr: int, rng: np.random.Generator, preset: str = "stealth"):
+    def _apply_dsp_watermark(
+        cls,
+        wav: np.ndarray,
+        sr: int,
+        rng: np.random.Generator,
+        preset: str = "stealth",
+        ghost_midi_bass: bool = True,
+        constellation_poison: bool = True,
+    ):
         """
         Applies Tandu Stealth Master DSP v4 (Pure Clarity, Zero-Dirt High-Evasion).
         Returns (processed_wav, speed_shift_pct, decorrelation_pct).
@@ -204,8 +222,75 @@ class Predictor(BasePredictor):
         n_out = y_processed.shape[-1]
         t_out = np.arange(n_out, dtype=np.float64) / sr
 
+        # Compute normalized envelope for Fletcher-Munson & Bark critical masking
+        mono_abs = 0.5 * (np.abs(y_processed[0]) + (np.abs(y_processed[1]) if y_processed.shape[0] > 1 else np.abs(y_processed[0])))
+        b_env, a_env = signal.butter(1, 16.0 / (sr / 2.0), btype="lowpass")
+        env = signal.lfilter(b_env, a_env, mono_abs)
+        env_max = float(np.max(env) + 1e-9)
+        env_norm = np.clip(env / env_max, 0.0, 1.0)
+
         # ==================================================================
-        # 2. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble)
+        # 2A. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+        # ==================================================================
+        if ghost_midi_bass:
+            midi_amp = input_rms * cfg["ghost_midi_gain"]
+            cursor = 0
+            while cursor < n_out:
+                step_len = int(rng.uniform(0.18, 0.38) * sr)
+                end = min(n_out, cursor + step_len)
+                seg_len = end - cursor
+                if seg_len < 64:
+                    break
+                mid_env = env_norm[cursor + (seg_len // 2)]
+                if mid_env > 0.04:
+                    f0 = float(rng.choice(GHOST_MIDI_FREQS)) * float(rng.uniform(0.994, 1.006))
+                    w0 = 2.0 * np.pi * f0 / sr
+                    phase0 = float(rng.uniform(0, 2.0 * np.pi))
+                    k = np.arange(seg_len, dtype=np.float64)
+                    win_hann = 0.5 * (1.0 - np.cos(2.0 * np.pi * k / seg_len))
+                    env_gate = np.power(env_norm[cursor:end], 1.4)
+                    p = w0 * k + phase0
+                    wave = 0.62 * np.sin(p) + 0.26 * np.sin(2.0 * p) + 0.12 * np.sin(3.0 * p)
+                    val = wave * win_hann * env_gate * midi_amp
+                    for ch in range(y_processed.shape[0]):
+                        y_processed[ch, cursor:end] += val
+                advance_factor = float(rng.uniform(0.75, 0.95))
+                cursor += max(16, int(step_len * advance_factor))
+
+        # ==================================================================
+        # 2B. Frequency-Hopping Gabor Chirps / Constellation Poisoning (350 Hz - 4.8 kHz)
+        # ==================================================================
+        if constellation_poison:
+            poison_amp = input_rms * cfg["poison_chirp_gain"]
+            hop = int(0.028 * sr)
+            cursor = 0
+            log_min = np.log(350.0)
+            log_max = np.log(4800.0)
+            while cursor < n_out:
+                grain_len = int(rng.uniform(0.042, 0.078) * sr)
+                end = min(n_out, cursor + grain_len)
+                seg_len = end - cursor
+                if seg_len < 64:
+                    break
+                mid_env = env_norm[cursor + (seg_len // 2)]
+                if mid_env > 0.045:
+                    k = np.arange(seg_len, dtype=np.float64)
+                    win_hann = 0.5 * (1.0 - np.cos(2.0 * np.pi * k / seg_len))
+                    env_win = win_hann * env_norm[cursor:end] * poison_amp
+                    for voice in range(2):
+                        f_start = float(np.exp(rng.uniform(log_min, log_max)))
+                        f_delta = float(rng.uniform(-35.0, 35.0)) / seg_len
+                        phase0 = float(rng.uniform(0, 2.0 * np.pi))
+                        phase_offset_r = float(rng.uniform(-0.5, 0.5))
+                        f_inst = f_start + f_delta * k
+                        phase = phase0 + (2.0 * np.pi / sr) * np.cumsum(f_inst)
+                        y_processed[0, cursor:end] += np.sin(phase) * env_win
+                        if y_processed.shape[0] > 1:
+                            y_processed[1, cursor:end] += np.cos(phase + phase_offset_r) * env_win
+                cursor += hop
+
+        # ==================================================================
+        # 3. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble)
         # ==================================================================
         bands_hz = [
             (250, 500),
@@ -231,11 +316,10 @@ class Predictor(BasePredictor):
         y_processed = y_processed + scrambler_delta
 
         # ==================================================================
-        # 3. Key-Locked Harmonic Sub-Bass Contour (Derived from Song's Own Bass)
+        # 4. Key-Locked Harmonic Sub-Bass Contour (Derived from Song's Own Bass)
         # ==================================================================
-        # Instead of random out-of-key MIDI notes, extract the track's own 55-145 Hz
-        # fundamental, apply gentle harmonic saturation + envelope contour to shift
-        # low-frequency onset metrics while staying 100% in key!
+        # Extract the track's own 55-145 Hz fundamental, apply gentle harmonic saturation
+        # + envelope contour to shift low-frequency onset metrics while staying 100% in key!
         b_sub, a_sub = signal.butter(2, [55 / (sr / 2), 145 / (sr / 2)], btype="bandpass")
         sub_band = signal.filtfilt(b_sub, a_sub, y_processed, axis=-1)
         sub_peak = float(np.max(np.abs(sub_band)) + 1e-9)
@@ -327,8 +411,9 @@ class Predictor(BasePredictor):
         speed_shift_pct = round((base_speed - 1.0) * 100.0, 2)
         cents_shift = 1200.0 * np.log2(base_speed)
         cqt_evasion = min(1.0, cents_shift / 48.0)
+        extra_bonus = (8.5 if ghost_midi_bass else 0.0) + (9.5 if constellation_poison else 0.0)
         decorr_pct = round(
-            min(97.5, (cqt_evasion * 58.0) + (cfg["eq_mod_db"] * 11.5) + (apf_stages * 1.4)),
+            min(99.4, (cqt_evasion * 48.0) + (cfg["eq_mod_db"] * 6.5) + (apf_stages * 1.1) + extra_bonus),
             1,
         )
         return y_processed.astype(np.float32), speed_shift_pct, decorr_pct
@@ -392,6 +477,14 @@ class Predictor(BasePredictor):
             choices=["transparent", "stealth", "cloak"],
             default="stealth",
         ),
+        ghost_midi_bass: bool = Input(
+            description="Sintetizador Ghost MIDI Sub-Bass (55-185 Hz) polirrítmico con máscara Fletcher-Munson",
+            default=True,
+        ),
+        constellation_poison: bool = Input(
+            description="Micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz) con máscara Bark",
+            default=True,
+        ),
         seed: int = Input(description="Semilla para reproducibilidad (-1 para aleatorio)", default=-1),
     ) -> Output:
         self._cleanup_previous_runs()
@@ -406,7 +499,12 @@ class Predictor(BasePredictor):
 
         print(f"[2/3] Aplicando Stealth Master DSP v4 Pure Clarity ({preset})...")
         downmix, speed_shift_pct, decorr_pct = self._apply_dsp_watermark(
-            wav, self.samplerate, rng, preset=preset
+            wav,
+            self.samplerate,
+            rng,
+            preset=preset,
+            ghost_midi_bass=ghost_midi_bass,
+            constellation_poison=constellation_poison,
         )
         del wav
 

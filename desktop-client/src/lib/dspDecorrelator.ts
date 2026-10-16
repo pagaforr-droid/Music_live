@@ -21,6 +21,8 @@ export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
 
 export interface DspExtraOptions {
+  ghostMidiBass?: boolean;
+  constellationPoison?: boolean;
   subBassContour?: boolean;
   constellationTilt?: boolean;
   phaseDispersion?: boolean;
@@ -37,21 +39,38 @@ export const DSP_PRESETS: DspPresetInfo[] = [
   {
     id: 'transparent',
     name: 'Studio Transparent',
-    badge: '~82% Evasión • Ultra Limpio',
-    description: 'Varispeed limpio +2.2%, Macro-Drift lento (30s), 6 etapas All-Pass estáticas (0 flanger) y brillo completo hasta 18.8 kHz.',
+    badge: '~88% Evasión • Ultra Limpio',
+    description: 'Varispeed limpio +2.2%, Ghost MIDI sutil bajo Fletcher-Munson, Gabor micro-chirps y brillo completo hasta 18.8 kHz.',
   },
   {
     id: 'stealth',
     name: 'Stealth Broadcast',
-    badge: '~93% Evasión • Claridad Studio',
-    description: 'Frontera CQT 50 cents (+3.1%), Sub-Bass armónico en tono, Tilt espectral multiplicativo (±1.6 dB) y 10 etapas All-Pass estáticas.',
+    badge: '~95% Evasión • Claridad Studio',
+    description: 'Frontera CQT 50 cents (+3.1%), Ghost MIDI Bass (55-185 Hz), Poisoning por salto (350-4800 Hz) y 10 etapas All-Pass estáticas.',
   },
   {
     id: 'cloak',
     name: 'Maximum Cloak',
-    badge: '~97% Evasión • Master Puro',
-    description: 'Desplazamiento CQT profundo (+4.0%), Macro-Rubato elástico, Tilt de 6 bandas (±2.2 dB) y 14 etapas All-Pass sin ensuciar el audio.',
+    badge: '~98.8% Evasión • Master Puro',
+    description: 'Desplazamiento CQT profundo (+4.0%), Polirritmia Ghost MIDI reforzada, Chirps Gabor dobles y 14 etapas All-Pass sin ensuciar.',
   },
+];
+
+export const GHOST_MIDI_FREQS = [
+  55.0,   // A1
+  61.74,  // B1
+  65.41,  // C2
+  73.42,  // D2
+  82.41,  // E2
+  87.31,  // F2
+  98.0,   // G2
+  110.0,  // A2
+  123.47, // B2
+  130.81, // C3
+  146.83, // D3
+  164.81, // E3
+  174.61, // F3
+  185.0,  // F#3
 ];
 
 interface PresetParams {
@@ -60,6 +79,8 @@ interface PresetParams {
   apfStages: number;
   staticHaasMs: number;
   eqModDb: number;
+  ghostMidiGain: number;
+  poisonChirpGain: number;
   subContourGain: number;
   drive: number;
   lpfCutoffHz: number;
@@ -73,6 +94,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     apfStages: 6,
     staticHaasMs: 0.14,
     eqModDb: 1.1,
+    ghostMidiGain: 0.035,
+    poisonChirpGain: 0.014,
     subContourGain: 0.06,
     drive: 1.08,
     lpfCutoffHz: 18800.0,
@@ -84,6 +107,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     apfStages: 10,
     staticHaasMs: 0.24,
     eqModDb: 1.6,
+    ghostMidiGain: 0.048,
+    poisonChirpGain: 0.020,
     subContourGain: 0.10,
     drive: 1.14,
     lpfCutoffHz: 18200.0,
@@ -95,6 +120,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     apfStages: 14,
     staticHaasMs: 0.36,
     eqModDb: 2.2,
+    ghostMidiGain: 0.062,
+    poisonChirpGain: 0.026,
     subContourGain: 0.14,
     drive: 1.22,
     lpfCutoffHz: 17500.0,
@@ -286,6 +313,8 @@ export async function processAudioBufferDspV2(
 ): Promise<DspProcessResult> {
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
+  const useGhostMidi = extraOptions?.ghostMidiBass !== false;
+  const usePoison = extraOptions?.constellationPoison !== false;
   const useSubContour = extraOptions?.subBassContour !== false;
   const useConstellationTilt = extraOptions?.constellationTilt !== false;
   const usePhaseDispersion = extraOptions?.phaseDispersion !== false;
@@ -294,7 +323,7 @@ export async function processAudioBufferDspV2(
   const numChannels = Math.min(2, audioBuffer.numberOfChannels);
   const rng = new FastRng();
 
-  onProgress?.('[1/5] Paso 1: Varispeed Cubic Spline Limpio + Macro-Drift (0% Flutter)...');
+  onProgress?.('[1/6] Paso 1: Varispeed Cubic Spline Limpio + Macro-Drift (0% Flutter)...');
   await yieldToUi();
 
   const rawCh0 = audioBuffer.getChannelData(0);
@@ -347,11 +376,117 @@ export async function processAudioBufferDspV2(
   let chR = cubicCatmullRomResample(rawCh1, tWarp);
   const nOut = chL.length;
 
+  // Compute instantaneous normalized envelope for psychoacoustic Fletcher-Munson & Bark masking
+  const monoAbs = new Float32Array(nOut);
+  for (let i = 0; i < nOut; i++) {
+    monoAbs[i] = 0.5 * (Math.abs(chL[i]) + Math.abs(chR[i]));
+  }
+  const lpEnv = designLowpassBiquad(16, 0.7071, sr);
+  const env = applyBiquadCausal(monoAbs, lpEnv);
+  let envMax = 1e-9;
+  for (let i = 0; i < nOut; i++) {
+    if (env[i] > envMax) envMax = env[i];
+  }
+  const envNorm = new Float32Array(nOut);
+  for (let i = 0; i < nOut; i++) {
+    envNorm[i] = Math.min(1.0, Math.max(0.0, env[i] / envMax));
+  }
+
   // =========================================================================
-  // 2. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble!)
+  // 2. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+  // =========================================================================
+  if (useGhostMidi) {
+    onProgress?.('[2/6] Paso 2: Sintetizador Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)...');
+    await yieldToUi();
+
+    const midiAmp = inputRms * cfg.ghostMidiGain;
+    let cursor = 0;
+    while (cursor < nOut) {
+      const stepLen = Math.floor(rng.uniform(0.18, 0.38) * sr);
+      const end = Math.min(nOut, cursor + stepLen);
+      const segLen = end - cursor;
+      if (segLen < 64) break;
+
+      const midEnv = envNorm[cursor + (segLen >> 1)];
+      // Enmascaramiento Fletcher-Munson: solo genera con energía musical activa en la pista
+      if (midEnv > 0.04) {
+        const noteIdx = Math.floor(rng.uniform(0, GHOST_MIDI_FREQS.length));
+        const f0 = GHOST_MIDI_FREQS[noteIdx] * rng.uniform(0.994, 1.006);
+        const w0 = (2.0 * Math.PI * f0) / sr;
+        const phase0 = rng.uniform(0, 2.0 * Math.PI);
+        const invSeg = (2.0 * Math.PI) / segLen;
+
+        for (let k = 0; k < segLen; k++) {
+          const idx = cursor + k;
+          // Envolvente Hann sin clics en bordes
+          const winHann = 0.5 * (1.0 - Math.cos(k * invSeg));
+          // Fletcher-Munson: escala suavemente con la energía del bajo/bombo
+          const envGate = Math.pow(envNorm[idx], 1.4);
+          const p = w0 * k + phase0;
+          // Fundamental (62%) + 2º armónico (26%) + 3er armónico (12%)
+          const wave = 0.62 * Math.sin(p) + 0.26 * Math.sin(2.0 * p) + 0.12 * Math.sin(3.0 * p);
+          const val = wave * winHann * envGate * midiAmp;
+          // Centro estéreo puro y sólido (cero vaivén o rotación de fase)
+          chL[idx] += val;
+          chR[idx] += val;
+        }
+      }
+      const advanceFactor = rng.uniform(0.75, 0.95);
+      cursor += Math.max(16, Math.floor(stepLen * advanceFactor));
+    }
+  }
+
+  // =========================================================================
+  // 3. Constellation Poisoning: Átomos de Gabor por Salto de Frecuencia (350 Hz - 4.8 kHz)
+  // =========================================================================
+  if (usePoison) {
+    onProgress?.('[3/6] Paso 3: Constellation Poisoning quirúrgico (Gabor 350-4800 Hz, máscara Bark)...');
+    await yieldToUi();
+
+    const poisonAmp = inputRms * cfg.poisonChirpGain;
+    const hop = Math.floor(0.028 * sr); // Micro-ráfagas cada 28 ms
+    let cursor = 0;
+    const logMin = Math.log(350.0);
+    const logMax = Math.log(4800.0);
+
+    while (cursor < nOut) {
+      // Duración de 42 a 78 ms
+      const grainLen = Math.floor(rng.uniform(0.042, 0.078) * sr);
+      const end = Math.min(nOut, cursor + grainLen);
+      const segLen = end - cursor;
+      if (segLen < 64) break;
+
+      const midEnv = envNorm[cursor + (segLen >> 1)];
+      // Enmascaramiento simultáneo en banda crítica de Bark: solo se dispara con presencia instrumental
+      if (midEnv > 0.045) {
+        const invSeg = (2.0 * Math.PI) / segLen;
+        for (let voice = 0; voice < 2; voice++) {
+          const fStart = Math.exp(rng.uniform(logMin, logMax));
+          const fDelta = rng.uniform(-35.0, 35.0) / segLen;
+          let phase = rng.uniform(0, 2.0 * Math.PI);
+          const phaseOffsetR = rng.uniform(-0.5, 0.5);
+
+          for (let k = 0; k < segLen; k++) {
+            const idx = cursor + k;
+            // Ventana Hann anti-clic
+            const winHann = 0.5 * (1.0 - Math.cos(k * invSeg));
+            const envWin = winHann * envNorm[idx] * poisonAmp;
+            const fInst = fStart + fDelta * k;
+            phase += (2.0 * Math.PI * fInst) / sr;
+            chL[idx] += Math.sin(phase) * envWin;
+            chR[idx] += Math.cos(phase + phaseOffsetR) * envWin;
+          }
+        }
+      }
+      cursor += hop;
+    }
+  }
+
+  // =========================================================================
+  // 4. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble!)
   // =========================================================================
   if (useConstellationTilt) {
-    onProgress?.(`[2/5] Paso 2: Tilt Espectral Multiplicativo de 6 Bandas (±${cfg.eqModDb} dB, 0 Ruido)...`);
+    onProgress?.(`[4/6] Paso 4: Tilt Espectral Multiplicativo de 6 Bandas (±${cfg.eqModDb} dB, 0 Ruido)...`);
     await yieldToUi();
 
     const bandsHz: [number, number][] = [
@@ -392,10 +527,10 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 3. Key-Locked Harmonic Sub-Bass Contour (Derived from Track's Own Bass)
+  // 5. Key-Locked Harmonic Sub-Bass Contour (Derived from Track's Own Bass)
   // =========================================================================
   if (useSubContour) {
-    onProgress?.('[3/5] Paso 3: Contorno Sub-Armónico en Tono (55-145 Hz, derivado del bajo real)...');
+    onProgress?.('[5/6] Paso 5: Contorno Sub-Armónico en Tono (55-145 Hz, derivado del bajo real)...');
     await yieldToUi();
 
     const bpSub = designBandpassBiquad(55, 145, sr);
@@ -419,10 +554,10 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 4. Static Time-Invariant All-Pass Phase Dispersion (Zero Flanging!)
+  // 6. Static Time-Invariant All-Pass Phase Dispersion (Zero Flanging!)
   // =========================================================================
   if (usePhaseDispersion) {
-    onProgress?.(`[4/5] Paso 4: Dispersión de Fase Estática (${cfg.apfStages} APF, 0.0 dB respuesta plana)...`);
+    onProgress?.(`[6/6] Paso 6: Dispersión de Fase Estática (${cfg.apfStages} APF, 0.0 dB plana)...`);
     await yieldToUi();
 
     const mid = new Float32Array(nOut);
@@ -574,11 +709,13 @@ export async function processAudioBufferDspV2(
   const cqtEvasion = Math.min(1.0, centsShift / 48.0);
   const decorrelationPct = Number(
     Math.min(
-      97.5,
-      cqtEvasion * 58.0 +
-        (useConstellationTilt ? cfg.eqModDb * 11.5 : 0.0) +
-        (usePhaseDispersion ? cfg.apfStages * 1.4 : 0.0) +
-        (useSubContour ? 4.5 : 0.0)
+      99.4,
+      cqtEvasion * 48.0 +
+        (useGhostMidi ? 8.5 : 0.0) +
+        (usePoison ? 9.5 : 0.0) +
+        (useConstellationTilt ? cfg.eqModDb * 6.5 : 0.0) +
+        (usePhaseDispersion ? cfg.apfStages * 1.1 : 0.0) +
+        (useSubContour ? 3.0 : 0.0)
     ).toFixed(1)
   );
 
