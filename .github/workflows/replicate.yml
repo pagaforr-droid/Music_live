@@ -13,7 +13,6 @@ jobs:
   push_to_replicate:
     runs-on: ubuntu-latest
     steps:
-      # CUDA + torch images exceed the default free disk of GitHub runners
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
@@ -28,6 +27,17 @@ jobs:
         with:
           token: ${{ secrets.REPLICATE_API_TOKEN }}
 
-      - name: Push to Replicate
+      - name: Push to Replicate (with retry on r8.im timeout)
         working-directory: watermark-worker
-        run: cog push r8.im/pagaforr-droid/tandu-watermark2
+        run: |
+          for attempt in 1 2 3 4 5; do
+            echo "=== [Intento $attempt/5] Subiendo imagen a r8.im/pagaforr-droid/tandu-watermark2 ==="
+            if cog push r8.im/pagaforr-droid/tandu-watermark2; then
+              echo "=== Push completado con éxito en el intento $attempt ==="
+              exit 0
+            fi
+            echo "Fallo temporal en r8.im (timeout). Reintentando en $((attempt * 10)) segundos..."
+            sleep $((attempt * 10))
+          done
+          echo "Error: No se pudo subir la imagen tras 5 intentos."
+          exit 1

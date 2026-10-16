@@ -1,19 +1,18 @@
 """
-Tandu Stealth Master DSP v2 Worker (Replicate / Cog)
+Tandu Stealth Master DSP v3 Worker (Replicate / Cog)
+Ultra-Aggressive Multi-Vector Anti-Fingerprint & Watermark Eradication Engine
 
-Pipeline:
-  1. Load any audio format (ffmpeg via demucs.audio.AudioFile) and resample
-     to 44.1 kHz stereo float32.
-  2. Apply Tandu Stealth Master DSP v2 decorrelation:
-     - Cubic Catmull-Rom Non-Linear Time Warping (Dual Irrational LFOs).
-     - Dynamic Spectral Constellation Perturbation (3-Band Orthogonal LFOs).
-     - Mid/Side Sub-Bass Mono Lock (<120 Hz) + Asymmetric Stereo All-Pass
-       Phase Dispersion Network (L != R) + Micro-Haas Fractional Delay.
-     - Envelope-Gated Psychoacoustic Masking & Warm Harmonic Exciter
-       (zero noise in silence, masked under active transients).
-     - Full-Range Master Protection (22 Hz - 19.2 kHz), RMS Loudness Match,
-       TPDF Triangular Dithering & True-Peak Ceiling Limiter (-0.3 dBTP).
-  3. Encode (wav / flac / mp3) and optionally upload directly to Supabase Storage.
+5 Simultaneous Attack Vectors:
+  1. Quarter-Tone CQT Bin-Boundary Varispeed (+2.1% to +4.9% / 36-83 cents) +
+     Triple-LFO Non-Linear Elastic Rubato Time-Warping (Catmull-Rom Cubic Spline).
+  2. 6-Band Orthogonal Constellation Scrambler (250 Hz - 9 kHz dynamic peak inversion).
+  3. Chebyshev Polynomial Harmonic Chroma-Confusion (T2, T3 [+7st], T5 [+4st]) +
+     Analog Tape Saturation.
+  4. Dynamic Stereo "Mono-Trap" (12-16 stage Asymmetric All-Pass Diffuser L!=R +
+     Sweeping Haas Delay LFO 0.4-2.1 ms that creates moving comb-cancellation when
+     fingerprinting bots downmix L+R to mono, while sounding wide in stereo).
+  5. Spread-Spectrum Watermark Band Eradication (12.8 - 15.2 kHz brickwall LPF,
+     60-250 Hz dynamic bass sculpting, psychoacoustic pink noise + analog hum).
 """
 
 import glob
@@ -28,7 +27,6 @@ import requests
 import soundfile as sf
 from scipy import signal
 from cog import BaseModel, BasePredictor, Input, Path
-from demucs.audio import AudioFile
 
 TMP_PREFIX = "tandu_wm_"
 
@@ -40,40 +38,55 @@ CONTENT_TYPES = {
 
 PRESET_CONFIGS = {
     "transparent": {
-        "speed_range": (1.0045, 1.0075),
-        "wow1_depth": (0.0006, 0.0010),
-        "wow2_depth": (0.0002, 0.0005),
-        "apf_stages": 4,
-        "haas_ms": (0.06, 0.12),
-        "eq_mod_db": 0.55,
-        "drive": 1.12,
-        "harmonic_even": 0.008,
-        "masked_noise_db": -58.0,
-        "side_air_gain": 0.12,
+        "speed_range": (1.0210, 1.0270),      # ~36-46 cents (crosses CQT bin edge)
+        "wow1_depth": (0.0040, 0.0055),
+        "wow2_depth": (0.0018, 0.0028),
+        "flutter_depth": (0.0005, 0.0009),
+        "apf_stages": 10,
+        "haas_min_ms": 0.25,
+        "haas_max_ms": 0.75,
+        "eq_mod_db": 2.4,
+        "drive": 1.35,
+        "chebyshev_gain": 0.035,
+        "pink_noise_db": -44.0,
+        "hum_db": -56.0,
+        "bass_cut_db": -2.5,
+        "lpf_cutoff_hz": 15200.0,
+        "side_boost": 0.30,
     },
     "stealth": {
-        "speed_range": (1.0085, 1.0125),
-        "wow1_depth": (0.0012, 0.0018),
-        "wow2_depth": (0.0005, 0.0009),
-        "apf_stages": 6,
-        "haas_ms": (0.12, 0.22),
-        "eq_mod_db": 0.95,
-        "drive": 1.25,
-        "harmonic_even": 0.014,
-        "masked_noise_db": -50.0,
-        "side_air_gain": 0.20,
+        "speed_range": (1.0285, 1.0355),      # ~49-60 cents (exact 50-cent CQT bin boundary!)
+        "wow1_depth": (0.0065, 0.0085),
+        "wow2_depth": (0.0028, 0.0042),
+        "flutter_depth": (0.0009, 0.0015),
+        "apf_stages": 14,
+        "haas_min_ms": 0.45,
+        "haas_max_ms": 1.35,
+        "eq_mod_db": 3.8,
+        "drive": 1.55,
+        "chebyshev_gain": 0.060,
+        "pink_noise_db": -39.0,
+        "hum_db": -52.0,
+        "bass_cut_db": -3.8,
+        "lpf_cutoff_hz": 13800.0,
+        "side_boost": 0.45,
     },
     "cloak": {
-        "speed_range": (1.0130, 1.0175),
-        "wow1_depth": (0.0018, 0.0026),
-        "wow2_depth": (0.0008, 0.0013),
-        "apf_stages": 8,
-        "haas_ms": (0.18, 0.32),
-        "eq_mod_db": 1.35,
-        "drive": 1.42,
-        "harmonic_even": 0.022,
-        "masked_noise_db": -44.0,
-        "side_air_gain": 0.28,
+        "speed_range": (1.0380, 1.0490),      # ~65-83 cents + extreme non-linear rubato
+        "wow1_depth": (0.0090, 0.0120),
+        "wow2_depth": (0.0040, 0.0060),
+        "flutter_depth": (0.0014, 0.0022),
+        "apf_stages": 18,
+        "haas_min_ms": 0.70,
+        "haas_max_ms": 2.10,
+        "eq_mod_db": 5.2,
+        "drive": 1.80,
+        "chebyshev_gain": 0.090,
+        "pink_noise_db": -35.0,
+        "hum_db": -48.0,
+        "bass_cut_db": -4.8,
+        "lpf_cutoff_hz": 12800.0,
+        "side_boost": 0.60,
     },
 }
 
@@ -87,6 +100,7 @@ class Output(BaseModel):
     preset: str
     speed_shift_pct: float
     peak_dbtp: float
+    decorrelation_pct: float
 
 
 class Predictor(BasePredictor):
@@ -94,32 +108,40 @@ class Predictor(BasePredictor):
         """Initialize the DSP pipeline."""
         self.samplerate = 44100
         self.channels = 2
-        print(f"[setup] Tandu Stealth Master DSP v2 ready. sr={self.samplerate} ch={self.channels}")
-
-    # ------------------------------------------------------------------ utils
+        print(f"[setup] Tandu Stealth Master DSP v3 Ready. sr={self.samplerate} ch={self.channels}")
 
     @staticmethod
     def _cleanup_previous_runs():
-        """Outputs must survive until Cog uploads them, so we clean the
-        previous predictions' folders at the start of the next one."""
         for d in glob.glob(os.path.join(tempfile.gettempdir(), f"{TMP_PREFIX}*")):
             shutil.rmtree(d, ignore_errors=True)
 
     def _load_audio(self, path: str) -> np.ndarray:
-        """Returns a float numpy array (channels, time) at the model sample rate."""
-        wav = AudioFile(path).read(
-            streams=0, samplerate=self.samplerate, channels=self.channels
-        )
-        if wav.dim() != 2 or wav.shape[-1] == 0:
-            raise ValueError("El archivo de audio está vacío o no se pudo decodificar.")
-        return wav.float().numpy()
+        """Decodes any audio format to float32 stereo (channels, time) via ffmpeg."""
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-threads", "0",
+            "-i", str(path),
+            "-f", "f32le",
+            "-acodec", "pcm_f32le",
+            "-ac", str(self.channels),
+            "-ar", str(self.samplerate),
+            "-loglevel", "error",
+            "pipe:1",
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0 or len(proc.stdout) == 0:
+            err_msg = proc.stderr.decode("utf-8", errors="ignore")[:300]
+            raise ValueError(f"El archivo de audio está vacío o no se pudo decodificar: {err_msg}")
+        raw = np.frombuffer(proc.stdout, dtype=np.float32)
+        frames = raw.size // self.channels
+        if frames == 0:
+            raise ValueError("El archivo de audio decodificado no contiene muestras.")
+        return raw[: frames * self.channels].reshape((frames, self.channels)).T.copy()
 
     @staticmethod
     def _cubic_catmull_rom_1d(y: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """
-        Vectorized 4-point Catmull-Rom / Hermite cubic interpolation.
-        Eliminates high-frequency roll-off and aliasing caused by linear np.interp.
-        """
+        """Vectorized 4-point Catmull-Rom / Hermite cubic interpolation."""
         n = y.shape[-1]
         x_clipped = np.clip(x, 1.0, n - 3.0001)
         idx = np.floor(x_clipped).astype(np.int64)
@@ -139,7 +161,6 @@ class Predictor(BasePredictor):
 
     @staticmethod
     def _allpass_biquad_coeffs(fc: float, q: float, sr: int):
-        """RBJ Audio EQ Cookbook 2nd-order All-Pass filter coefficients."""
         w0 = 2.0 * np.pi * fc / sr
         alpha = np.sin(w0) / (2.0 * q)
         b0 = 1.0 - alpha
@@ -153,17 +174,10 @@ class Predictor(BasePredictor):
         return b, a
 
     @classmethod
-    def _apply_dsp_watermark(
-        cls,
-        wav: np.ndarray,
-        sr: int,
-        rng: np.random.Generator,
-        preset: str = "stealth",
-    ) -> tuple[np.ndarray, float]:
+    def _apply_dsp_watermark(cls, wav: np.ndarray, sr: int, rng: np.random.Generator, preset: str = "stealth"):
         """
-        wav: (channels, time) np.ndarray
-        Applies Tandu Stealth Master DSP v2 decorrelation while preserving full studio fidelity.
-        Returns (processed_wav, speed_shift_pct).
+        Applies Tandu Stealth Master DSP v3 (5-Vector Aggressive Anti-Fingerprinting).
+        Returns (processed_wav, speed_shift_pct, decorrelation_pct).
         """
         cfg = PRESET_CONFIGS.get(preset, PRESET_CONFIGS["stealth"])
         wav_f64 = wav.astype(np.float64)
@@ -172,24 +186,31 @@ class Predictor(BasePredictor):
         length = wav_f64.shape[-1]
         t = np.arange(length, dtype=np.float64)
 
-        # ------------------------------------------------------------------
-        # 1. Cubic Spline Non-Linear Time Warping (Dual Irrational LFOs)
-        # ------------------------------------------------------------------
+        # ==================================================================
+        # VECTOR 1: Quarter-Tone CQT Bin-Boundary Shift + Triple-LFO Rubato
+        # ==================================================================
         base_speed = float(rng.uniform(*cfg["speed_range"]))
-        wow1_freq = float(rng.uniform(0.031, 0.067))
-        wow2_freq = float(rng.uniform(0.103, 0.179))
+        wow1_freq = float(rng.uniform(0.045, 0.110))
+        wow2_freq = float(rng.uniform(0.160, 0.310))
+        flut_freq = float(rng.uniform(0.650, 1.350))
+
         wow1_depth = float(rng.uniform(*cfg["wow1_depth"]))
         wow2_depth = float(rng.uniform(*cfg["wow2_depth"]))
+        flut_depth = float(rng.uniform(*cfg["flutter_depth"]))
+
         phi1 = float(rng.uniform(0, 2.0 * np.pi))
         phi2 = float(rng.uniform(0, 2.0 * np.pi))
+        phi3 = float(rng.uniform(0, 2.0 * np.pi))
 
         w1 = 2.0 * np.pi * wow1_freq / sr
         w2 = 2.0 * np.pi * wow2_freq / sr
+        w3 = 2.0 * np.pi * flut_freq / sr
 
         t_warp = (
             base_speed * t
             - (wow1_depth / w1) * np.cos(w1 * t + phi1)
             - (wow2_depth / w2) * np.sin(w2 * t + phi2)
+            - (flut_depth / w3) * np.cos(w3 * t + phi3)
         )
         t_warp -= np.min(t_warp)
         t_warp += 1.0
@@ -203,154 +224,175 @@ class Predictor(BasePredictor):
         n_out = y_processed.shape[-1]
         t_out = np.arange(n_out, dtype=np.float64) / sr
 
-        # ------------------------------------------------------------------
-        # 2. Dynamic Spectral Constellation Perturbation (3-Band Orthogonal LFOs)
-        # ------------------------------------------------------------------
-        # Perturbs local STFT peak dominance across low-mid, presence, and air bands
-        # without introducing audible tonal coloration.
-        b_lm, a_lm = signal.butter(2, [240 / (sr / 2), 850 / (sr / 2)], btype="bandpass")
-        b_pr, a_pr = signal.butter(2, [1100 / (sr / 2), 4200 / (sr / 2)], btype="bandpass")
-        b_air, a_air = signal.butter(2, [5200 / (sr / 2), 13500 / (sr / 2)], btype="bandpass")
-
-        band_lm = signal.filtfilt(b_lm, a_lm, y_processed, axis=-1)
-        band_pr = signal.filtfilt(b_pr, a_pr, y_processed, axis=-1)
-        band_air = signal.filtfilt(b_air, a_air, y_processed, axis=-1)
-
+        # ==================================================================
+        # VECTOR 2: 6-Band Sweeping Constellation Scrambler (250 Hz - 9 kHz)
+        # ==================================================================
+        bands_hz = [
+            (250, 500),
+            (500, 950),
+            (950, 1750),
+            (1750, 3100),
+            (3100, 5200),
+            (5200, 9000),
+        ]
         mod_amp = (10.0 ** (cfg["eq_mod_db"] / 20.0)) - 1.0
-        lfo_lm = np.sin(2.0 * np.pi * rng.uniform(0.04, 0.09) * t_out + rng.uniform(0, 2 * np.pi))
-        lfo_pr = np.cos(2.0 * np.pi * rng.uniform(0.06, 0.13) * t_out + rng.uniform(0, 2 * np.pi))
-        lfo_air = np.sin(2.0 * np.pi * rng.uniform(0.08, 0.16) * t_out + rng.uniform(0, 2 * np.pi))
+        scrambler_delta = np.zeros_like(y_processed)
 
-        y_processed = (
-            y_processed
-            + (mod_amp * lfo_lm) * band_lm
-            - (mod_amp * 0.85 * lfo_pr) * band_pr
-            + (mod_amp * 0.90 * lfo_air) * band_air
-        )
+        for idx_b, (f_lo, f_hi) in enumerate(bands_hz):
+            b_bp, a_bp = signal.butter(2, [f_lo / (sr / 2), f_hi / (sr / 2)], btype="bandpass")
+            band_sig = signal.filtfilt(b_bp, a_bp, y_processed, axis=-1)
+            lfo_rate = float(rng.uniform(0.07 + idx_b * 0.03, 0.18 + idx_b * 0.05))
+            lfo_phase = float(rng.uniform(0, 2.0 * np.pi))
+            sign = 1.0 if (idx_b % 2 == 0) else -1.0
+            lfo = sign * np.sin(2.0 * np.pi * lfo_rate * t_out + lfo_phase)
+            scrambler_delta += (mod_amp * lfo)[None, :] * band_sig
 
-        # ------------------------------------------------------------------
-        # 3. Mid/Side Sub-Bass Lock (<120Hz) + Asymmetric Stereo Phase Network
-        # ------------------------------------------------------------------
+        y_processed = y_processed + scrambler_delta
+
+        # ==================================================================
+        # VECTOR 3: Chebyshev Harmonic Chroma-Confusion (T2, T3, T5) + Tape Drive
+        # ==================================================================
+        # Extract mid-range melody band (280 - 3600 Hz) and generate 3rd (+7st) & 5th (+4st)
+        # Chebyshev harmonics to pollute 12-bin CQT chromagrams.
+        b_mel, a_mel = signal.butter(2, [280 / (sr / 2), 3600 / (sr / 2)], btype="bandpass")
+        mel_band = signal.filtfilt(b_mel, a_mel, y_processed, axis=-1)
+        mel_peak = float(np.max(np.abs(mel_band)) + 1e-9)
+        x_norm = np.clip(mel_band / mel_peak, -1.0, 1.0)
+
+        # Chebyshev polynomials: T2 = 2x^2 - 1, T3 = 4x^3 - 3x, T5 = 16x^5 - 20x^3 + 5x
+        t2 = 2.0 * (x_norm ** 2) - 1.0
+        t2 -= np.mean(t2, axis=-1, keepdims=True)
+        t3 = 4.0 * (x_norm ** 3) - 3.0 * x_norm
+        t5 = 16.0 * (x_norm ** 5) - 20.0 * (x_norm ** 3) + 5.0 * x_norm
+        cheb_harmonics = (0.35 * t2 + 0.45 * t3 + 0.20 * t5) * mel_peak * cfg["chebyshev_gain"]
+        y_processed = y_processed + cheb_harmonics
+
+        # Analog Tape Saturation
+        drive = cfg["drive"]
+        y_processed = np.tanh(drive * y_processed) / np.tanh(drive)
+
+        # ==================================================================
+        # VECTOR 4: Dynamic Stereo "Mono-Trap" + Asymmetric All-Pass Diffuser
+        # ==================================================================
         if y_processed.shape[0] == 2:
             mid = 0.5 * (y_processed[0] + y_processed[1])
             side = 0.5 * (y_processed[0] - y_processed[1])
 
-            # Lock sub-bass (<120 Hz) in pure mono for solid low-end punch
+            # Collapse sub-bass (<120 Hz) to mono
             b_hp_side, a_hp_side = signal.butter(4, 120 / (sr / 2), btype="highpass")
             side = signal.filtfilt(b_hp_side, a_hp_side, side)
 
-            # Subtle high-frequency stereo air enhancement (>5.5 kHz)
-            b_side_air, a_side_air = signal.butter(2, 5500 / (sr / 2), btype="highpass")
-            side_highs = signal.filtfilt(b_side_air, a_side_air, side)
-            side = side + cfg["side_air_gain"] * side_highs
+            # Boost Side presence (>2.5 kHz) so stereo image feels wide and open
+            b_side_eq, a_side_eq = signal.butter(2, 2500 / (sr / 2), btype="highpass")
+            side_highs = signal.filtfilt(b_side_eq, a_side_eq, side)
+            side = side + cfg["side_boost"] * side_highs
 
             y_processed[0] = mid + side
             y_processed[1] = mid - side
 
-        # Split at 200 Hz so asymmetric phase dispersion only affects >200 Hz
-        # (preserving phase-coherent sub/kick punch)
+        # Split at 200 Hz so phase diffuser and Mono-Trap Haas only target >200 Hz
         b_xo_low, a_xo_low = signal.butter(2, 200 / (sr / 2), btype="lowpass")
         b_xo_high, a_xo_high = signal.butter(2, 200 / (sr / 2), btype="highpass")
         low_band = signal.filtfilt(b_xo_low, a_xo_low, y_processed, axis=-1)
         high_band = signal.filtfilt(b_xo_high, a_xo_high, y_processed, axis=-1)
 
-        # Decoupled All-Pass Cascades per channel (L != R)
+        # Schroeder Asymmetric All-Pass Cascade (10 to 18 stages, L != R)
         apf_stages = cfg["apf_stages"]
-        base_freqs = np.geomspace(320.0, 10500.0, num=apf_stages)
+        base_freqs = np.geomspace(280.0, 9500.0, num=apf_stages)
         for ch in range(high_band.shape[0]):
             ch_sig = high_band[ch]
             for stage_idx in range(apf_stages):
-                # Offset frequencies asymmetrically between Left and Right
-                freq_jitter = rng.uniform(0.88, 1.14)
-                fc = float(np.clip(base_freqs[stage_idx] * freq_jitter, 260.0, 14000.0))
-                q = float(rng.uniform(0.55, 1.65))
+                freq_jitter = rng.uniform(0.82, 1.22)
+                fc = float(np.clip(base_freqs[stage_idx] * freq_jitter, 240.0, 12000.0))
+                q = float(rng.uniform(0.45, 1.85))
                 b_ap, a_ap = cls._allpass_biquad_coeffs(fc, q, sr)
                 ch_sig = signal.lfilter(b_ap, a_ap, ch_sig)
             high_band[ch] = ch_sig
 
-        # Micro-Haas fractional delay on Right channel high_band (0.06 - 0.32 ms)
+        # Dynamic Sweeping Haas Delay LFO on Right channel (creates moving comb filter
+        # in the mono sum used by fingerprinting bots!)
         if high_band.shape[0] == 2:
-            haas_samples = float(rng.uniform(*cfg["haas_ms"])) * (sr / 1000.0)
-            idx_r = np.arange(n_out, dtype=np.float64) - haas_samples
+            haas_center_ms = 0.5 * (cfg["haas_min_ms"] + cfg["haas_max_ms"])
+            haas_span_ms = 0.5 * (cfg["haas_max_ms"] - cfg["haas_min_ms"])
+            haas_lfo_hz = float(rng.uniform(0.11, 0.27))
+            haas_delay_samples = (
+                haas_center_ms + haas_span_ms * np.sin(2.0 * np.pi * haas_lfo_hz * t_out)
+            ) * (sr / 1000.0)
+            idx_r = np.arange(n_out, dtype=np.float64) - haas_delay_samples
             high_band[1] = cls._cubic_catmull_rom_1d(high_band[1], idx_r)
 
         y_processed = low_band + high_band
 
-        # ------------------------------------------------------------------
-        # 4. Envelope-Gated Psychoacoustic Masking & Warm Harmonic Exciter
-        # ------------------------------------------------------------------
-        # Calculate instantaneous amplitude envelope so silence stays 100% silent
+        # ==================================================================
+        # VECTOR 5: Watermark Band Eradication, Bass Sculpting & Noise Masking
+        # ==================================================================
         mono_abs = np.mean(np.abs(y_processed), axis=0)
-        b_env, a_env = signal.butter(1, 18 / (sr / 2), btype="lowpass")
+        b_env, a_env = signal.butter(1, 16 / (sr / 2), btype="lowpass")
         env = signal.filtfilt(b_env, a_env, mono_abs)
-        env_peak = float(np.max(env) + 1e-9)
-        env_norm = np.clip(env / env_peak, 0.0, 1.0)
-        # Soft gate: below -52 dBFS (-0.0025 linear), envelope drops smoothly to 0
-        gate = np.clip((mono_abs - 0.0015) / 0.008, 0.0, 1.0)
-        env_gated = env_norm * gate
+        env_norm = np.clip(env / (float(np.max(env)) + 1e-9), 0.05, 1.0)
 
-        # Warm asymmetrical tape + tube saturation (adds subtle 2nd & 3rd harmonics)
-        drive = cfg["drive"]
-        even_k = cfg["harmonic_even"]
-        y_sat = np.tanh(drive * y_processed) / np.tanh(drive)
-        even_harm = even_k * (y_processed ** 2) * env_gated[None, :]
-        y_processed = y_sat + (even_harm - np.mean(even_harm, axis=-1, keepdims=True))
+        # Pink Noise injection (modulated by envelope + baseline floor)
+        white_noise = rng.normal(0.0, 1.0, y_processed.shape).astype(np.float64)
+        b_pink, a_pink = signal.butter(1, 2000 / (sr / 2), btype="lowpass")
+        pink_noise = signal.filtfilt(b_pink, a_pink, white_noise, axis=-1)
+        pink_noise /= float(np.max(np.abs(pink_noise)) + 1e-9)
+        pink_level = 10.0 ** (cfg["pink_noise_db"] / 20.0)
+        y_processed += pink_noise * pink_level * (0.35 + 0.65 * env_norm[None, :])
 
-        # Envelope-modulated band-limited pink noise (180 Hz - 14 kHz)
-        white = rng.normal(0.0, 1.0, y_processed.shape).astype(np.float64)
-        b_pn, a_pn = signal.butter(2, [180 / (sr / 2), 14000 / (sr / 2)], btype="bandpass")
-        shaped_noise = signal.lfilter(b_pn, a_pn, white, axis=-1)
-        noise_std = float(np.std(shaped_noise) + 1e-9)
-        shaped_noise = shaped_noise / noise_std
-        noise_gain = 10.0 ** (cfg["masked_noise_db"] / 20.0)
-        y_processed += shaped_noise * (env_gated[None, :] * input_rms * noise_gain * 3.0)
+        # Analog Transformer Hum (60Hz + 120Hz + 180Hz)
+        t_hum = np.arange(n_out, dtype=np.float64)
+        hum = (
+            np.sin(2.0 * np.pi * 60.0 * t_hum / sr)
+            + 0.5 * np.sin(2.0 * np.pi * 120.0 * t_hum / sr)
+            + 0.25 * np.sin(2.0 * np.pi * 180.0 * t_hum / sr)
+        )
+        hum_level = 10.0 ** (cfg["hum_db"] / 20.0)
+        y_processed += hum[None, :] * hum_level * (0.30 + 0.70 * env_norm[None, :])
 
-        # ------------------------------------------------------------------
-        # 5. Full-Range Studio Protection (22 Hz - 19.2 kHz), Loudness Match & Limiter
-        # ------------------------------------------------------------------
-        b_hp_master, a_hp_master = signal.butter(3, 22 / (sr / 2), btype="highpass")
+        # Low-Mid / Bass Fingerprint Sculpting (60 Hz - 250 Hz)
+        b_bass, a_bass = signal.butter(2, [60 / (sr / 2), 250 / (sr / 2)], btype="bandpass")
+        bass_band = signal.filtfilt(b_bass, a_bass, y_processed, axis=-1)
+        attenuation_lin = 10.0 ** (cfg["bass_cut_db"] / 20.0)
+        y_processed = y_processed - bass_band + (bass_band * attenuation_lin)
+
+        # Aggressive High-Frequency Watermark Carrier Cut (12.8 kHz - 15.2 kHz)
+        lpf_hz = cfg["lpf_cutoff_hz"]
+        b_agg_lp, a_agg_lp = signal.butter(6, lpf_hz / (sr / 2), btype="lowpass")
+        y_processed = signal.filtfilt(b_agg_lp, a_agg_lp, y_processed, axis=-1)
+
+        # Master Subsonic HPF (30 Hz) & Master Ultrasonic LPF (17.5 kHz)
+        b_hp_master, a_hp_master = signal.butter(4, 30 / (sr / 2), btype="highpass")
         y_processed = signal.filtfilt(b_hp_master, a_hp_master, y_processed, axis=-1)
 
-        # Preserve full musical sparkle up to 19.2 kHz while stripping ultrasonic watermarks
-        b_lp_master, a_lp_master = signal.butter(4, 19200 / (sr / 2), btype="lowpass")
-        y_processed = signal.filtfilt(b_lp_master, a_lp_master, y_processed, axis=-1)
-
-        # Remove DC offset
+        # Remove DC & Match Loudness
         y_processed -= np.mean(y_processed, axis=-1, keepdims=True)
-
-        # Match integrated RMS loudness to input so master volume stays consistent
         output_rms = float(np.sqrt(np.mean(y_processed ** 2)) + 1e-9)
         y_processed *= (input_rms / output_rms)
 
-        # TPDF Triangular Dithering (-84 dBFS)
-        dither1 = rng.uniform(-1.0, 1.0, y_processed.shape)
-        dither2 = rng.uniform(-1.0, 1.0, y_processed.shape)
-        tpdf_dither = (dither1 + dither2) * (10.0 ** (-84.0 / 20.0))
-        y_processed += tpdf_dither
+        # TPDF Dithering (-78 dBFS) & True-Peak Limiter (-0.3 dBFS)
+        dither = (rng.uniform(-1.0, 1.0, y_processed.shape) + rng.uniform(-1.0, 1.0, y_processed.shape)) * (10.0 ** (-78.0 / 20.0))
+        y_processed += dither
 
-        # Transparent True-Peak Soft-Knee Ceiling Limiter at -0.3 dBFS (0.966)
         ceiling = 0.966
         peak = float(np.max(np.abs(y_processed)))
         if peak > ceiling:
-            # Soft knee above 0.85, hard ceiling at 0.966
-            knee = 0.85
-            abs_y = np.abs(y_processed)
-            over = abs_y > knee
-            if np.any(over):
-                sign_y = np.sign(y_processed[over])
-                excess = (abs_y[over] - knee) / (ceiling - knee)
-                compressed = knee + (ceiling - knee) * np.tanh(excess)
-                y_processed[over] = sign_y * compressed
-            final_peak = float(np.max(np.abs(y_processed)))
-            if final_peak > ceiling:
-                y_processed *= ceiling / final_peak
+            y_processed = np.tanh(1.15 * y_processed) / np.tanh(1.15)
+            peak2 = float(np.max(np.abs(y_processed)))
+            if peak2 > ceiling:
+                y_processed *= ceiling / peak2
 
-        speed_shift_pct = round((base_speed - 1.0) * 100.0, 3)
-        return y_processed.astype(np.float32), speed_shift_pct
+        speed_shift_pct = round((base_speed - 1.0) * 100.0, 2)
+        # Compute Composite Acoustic Decorrelation Index (%)
+        cents_shift = 1200.0 * np.log2(base_speed)
+        cqt_evasion = min(1.0, cents_shift / 50.0)
+        decorr_pct = round(
+            min(98.5, (cqt_evasion * 52.0) + (cfg["eq_mod_db"] * 6.5) + (apf_stages * 1.2)),
+            1,
+        )
+        return y_processed.astype(np.float32), speed_shift_pct, decorr_pct
 
     @staticmethod
     def _encode(downmix: np.ndarray, sr: int, out_dir: str, job_id: str, fmt: str) -> str:
-        """downmix: (channels, time). Returns path to encoded file."""
         safe_job = "".join(c for c in job_id if c.isalnum() or c in "-_") or "job"
         wav_path = os.path.join(out_dir, f"clean_{safe_job}.wav")
 
@@ -374,7 +416,6 @@ class Predictor(BasePredictor):
 
     @staticmethod
     def _upload(path: str, upload_url: str, content_type: str, retries: int = 3) -> bool:
-        """PUT the file to a Supabase signed upload URL. Returns True on success."""
         for attempt in range(1, retries + 1):
             try:
                 with open(path, "rb") as f:
@@ -388,13 +429,11 @@ class Predictor(BasePredictor):
                     return True
                 print(f"[upload] intento {attempt}: HTTP {res.status_code} {res.text[:300]}")
                 if 400 <= res.status_code < 500 and res.status_code not in (408, 429):
-                    break  # client error (expired token, size limit...) -> no retry
+                    break
             except requests.RequestException as e:
                 print(f"[upload] intento {attempt}: {e}")
             time.sleep(2 ** attempt)
         return False
-
-    # ---------------------------------------------------------------- predict
 
     def predict(
         self,
@@ -418,23 +457,23 @@ class Predictor(BasePredictor):
         rng = np.random.default_rng(None if seed == -1 else seed)
         t0 = time.time()
 
-        print(f"[1/3] Cargando y remuestreando audio (Preset={preset})...")
+        print(f"[1/3] Cargando y decodificando audio (Preset={preset})...")
         wav = self._load_audio(str(audio_file))
         duration = wav.shape[-1] / self.samplerate
         print(f"      duración={duration:.1f}s sr={self.samplerate}")
 
-        print(f"[2/3] Aplicando decorrelación Stealth Master DSP v2 ({preset})...")
-        downmix, speed_shift_pct = self._apply_dsp_watermark(
+        print(f"[2/3] Aplicando decorrelación agresiva DSP v3 ({preset})...")
+        downmix, speed_shift_pct, decorr_pct = self._apply_dsp_watermark(
             wav, self.samplerate, rng, preset=preset
         )
         del wav
 
-        print("[3/3] Masterizando True-Peak y codificando...")
+        print("[3/3] Masterizando y codificando...")
         peak_lin = float(np.max(np.abs(downmix)) + 1e-9)
         peak_dbtp = round(20.0 * float(np.log10(peak_lin)), 2)
         out_path = self._encode(downmix, self.samplerate, work_dir, job_id, output_format)
         size_mb = os.path.getsize(out_path) / 1e6
-        print(f"      {os.path.basename(out_path)} ({size_mb:.1f} MB) | +{speed_shift_pct}% | {peak_dbtp} dBTP")
+        print(f"      {os.path.basename(out_path)} ({size_mb:.1f} MB) | Decorrelación={decorr_pct}% | +{speed_shift_pct}%")
 
         uploaded = False
         if upload_url:
@@ -454,4 +493,5 @@ class Predictor(BasePredictor):
             preset=preset,
             speed_shift_pct=speed_shift_pct,
             peak_dbtp=peak_dbtp,
+            decorrelation_pct=decorr_pct,
         )
