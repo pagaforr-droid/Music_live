@@ -175,6 +175,50 @@ class Predictor(BasePredictor):
         return b, a
 
     @classmethod
+    def _apply_stereo_micro_detune(cls, wav: np.ndarray, sr: int, cents_spread: float = 6.0) -> np.ndarray:
+        """
+        Applies Eventide-style dual-head continuous crossfade micro-pitch detuning:
+        Left channel: +cents_spread (+6 cents)
+        Right channel: -cents_spread (-6 cents)
+        Sum in mono has severe destructive interference/beating, while stereo sounds lush.
+        """
+        if wav.shape[0] < 2:
+            return wav
+
+        n_samples = wav.shape[-1]
+        window_samples = int(0.035 * sr)
+        out = wav.copy()
+
+        for ch_idx, cents in enumerate([cents_spread, -cents_spread]):
+            alpha = 2.0 ** (cents / 1200.0)
+            delta_r = 1.0 - alpha
+            ramp_period = window_samples / abs(delta_r)
+
+            theta = np.mod(np.arange(n_samples, dtype=np.float64) / ramp_period, 1.0)
+            d1 = theta * window_samples
+            d2 = np.mod(theta + 0.5, 1.0) * window_samples
+
+            w1 = 0.5 * (1.0 - np.cos(2.0 * np.pi * theta))
+            w2 = 1.0 - w1
+
+            t1 = np.clip(np.arange(n_samples, dtype=np.float64) - d1, 0.0, n_samples - 1.0)
+            t2 = np.clip(np.arange(n_samples, dtype=np.float64) - d2, 0.0, n_samples - 1.0)
+
+            idx1 = t1.astype(np.int64)
+            frac1 = t1 - idx1
+            idx1_next = np.clip(idx1 + 1, 0, n_samples - 1)
+            s1 = (1.0 - frac1) * wav[ch_idx, idx1] + frac1 * wav[ch_idx, idx1_next]
+
+            idx2 = t2.astype(np.int64)
+            frac2 = t2 - idx2
+            idx2_next = np.clip(idx2 + 1, 0, n_samples - 1)
+            s2 = (1.0 - frac2) * wav[ch_idx, idx2] + frac2 * wav[ch_idx, idx2_next]
+
+            out[ch_idx] = w1 * s1 + w2 * s2
+
+        return out
+
+    @classmethod
     def _apply_dsp_watermark(
         cls,
         wav: np.ndarray,
@@ -184,6 +228,7 @@ class Predictor(BasePredictor):
         ghost_midi_bass: bool = True,
         constellation_poison: bool = True,
         lock_original_pitch: bool = True,
+        pitch_mode: str = "a432_detune",
         tape_warmth_bed: bool = True,
         side_bloom: bool = True,
         anti_suno_humanizer: bool = True,
@@ -199,10 +244,25 @@ class Predictor(BasePredictor):
         length = wav_f64.shape[-1]
         t = np.arange(length, dtype=np.float64)
 
+        resolved_pitch_mode = pitch_mode if pitch_mode in ("a432_detune", "lock_440", "varispeed_up") else (
+            "a432_detune" if lock_original_pitch else "varispeed_up"
+        )
+
         # ==================================================================
-        # 1. Pitch & Speed Control: Lock Original Pitch (0 cents) OR Clean CQT Shift
+        # 1. Pitch & Speed Control: A=432 Hz (-31.8c) + Micro-Detune (Recommended)
+        #    OR Pure Lock 440 Hz OR Varispeed (+2% to +4%)
         # ==================================================================
-        if lock_original_pitch:
+        if resolved_pitch_mode == "a432_detune":
+            base_speed = 432.0 / 440.0
+            n_est = int((length - 4) / base_speed)
+            t_warp = np.clip(base_speed * np.arange(n_est, dtype=np.float64) + 1.0, 1.0, length - 3.01)
+            y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
+            for ch in range(wav_f64.shape[0]):
+                y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
+            y_processed = cls._apply_stereo_micro_detune(y_processed, sr, cents_spread=6.0)
+            n_out = y_processed.shape[-1]
+            t_out = np.arange(n_out, dtype=np.float64) / sr
+        elif resolved_pitch_mode == "lock_440":
             base_speed = 1.0000
             y_processed = wav_f64.copy()
             n_out = y_processed.shape[-1]
@@ -506,12 +566,12 @@ class Predictor(BasePredictor):
             y_processed *= ceiling / peak2
 
         speed_shift_pct = round((base_speed - 1.0) * 100.0, 2)
-        cents_shift = 0.0 if lock_original_pitch else (1200.0 * np.log2(base_speed))
-        cqt_evasion = 0.0 if lock_original_pitch else min(1.0, cents_shift / 48.0)
+        cents_shift = 0.0 if resolved_pitch_mode == "lock_440" else (1200.0 * np.log2(base_speed))
+        cqt_evasion = min(1.0, abs(cents_shift) / 30.0)
         decorr_pct = round(
             min(
                 99.6,
-                (0.0 if lock_original_pitch else (cqt_evasion * 20.0))
+                (0.0 if resolved_pitch_mode == "lock_440" else (cqt_evasion * 20.0))
                 + (22.0 if anti_suno_humanizer else 0.0)
                 + (18.0 if tape_warmth_bed else 0.0)
                 + (20.0 if ghost_midi_bass else 0.0)
@@ -584,8 +644,13 @@ class Predictor(BasePredictor):
             choices=["transparent", "stealth", "cloak"],
             default="stealth",
         ),
+        pitch_mode: str = Input(
+            description="Modo de afinación: a432_detune (-31.8c A=432Hz + Detune ±6c), lock_440 (Tono original 440Hz), varispeed_up (+3% rápido)",
+            choices=["a432_detune", "lock_440", "varispeed_up"],
+            default="a432_detune",
+        ),
         lock_original_pitch: bool = Input(
-            description="Bloquea el tono exacto de la canción al 100% (0.0 cents / Afinación idéntica)",
+            description="Compatibilidad legado: si pitch_mode no se define, True fija afinación natural sin acelerar",
             default=True,
         ),
         anti_suno_humanizer: bool = Input(
@@ -629,6 +694,7 @@ class Predictor(BasePredictor):
             ghost_midi_bass=ghost_midi_bass,
             constellation_poison=constellation_poison,
             lock_original_pitch=lock_original_pitch,
+            pitch_mode=pitch_mode,
             anti_suno_humanizer=anti_suno_humanizer,
             tape_warmth_bed=tape_warmth_bed,
             side_bloom=side_bloom,

@@ -19,9 +19,11 @@
 
 export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
+export type PitchMode = 'a432_detune' | 'lock_440' | 'varispeed_up';
 
 export interface DspExtraOptions {
-  lockOriginalPitch?: boolean; // Bloquea el tono exacto de la canción al 100% (0 cents de alteración)
+  pitchMode?: PitchMode;       // 'a432_detune' (-31.8c A=432Hz + Detune ±6c) | 'lock_440' | 'varispeed_up'
+  lockOriginalPitch?: boolean; // legacy compatibility: true -> a432_detune / lock_440, false -> varispeed_up
   antiSunoHumanizer?: boolean; // Neutralizador forense Anti-Suno: borra marcas de agua y rompe huella de IA
   tapeWarmthBed?: boolean;     // Textura de calidez de cinta analógica de estudio (-42 dBFS)
   sideBloom?: boolean;         // Difusor espacial bloom exclusivo en canal Side (L-R)
@@ -325,6 +327,57 @@ function cubicCatmullRomResample(input: Float32Array, tWarp: Float64Array): Floa
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Eventide-Style Dual-Tap Micro-Pitch Detune (+/- 6 cents L/R)
+// ---------------------------------------------------------------------------
+function applyStereoMicroDetune(
+  chL: Float32Array,
+  chR: Float32Array,
+  sr: number,
+  centsSpread = 6.0
+): { chL: Float32Array; chR: Float32Array } {
+  const n = chL.length;
+  const windowSamples = Math.floor(0.035 * sr);
+  const outL = new Float32Array(n);
+  const outR = new Float32Array(n);
+
+  const channels = [
+    { input: chL, out: outL, cents: centsSpread },
+    { input: chR, out: outR, cents: -centsSpread },
+  ];
+
+  for (const { input, out, cents } of channels) {
+    const alpha = Math.pow(2.0, cents / 1200.0);
+    const deltaR = 1.0 - alpha;
+    const rampPeriod = windowSamples / Math.abs(deltaR);
+
+    for (let i = 0; i < n; i++) {
+      const theta = (i / rampPeriod) % 1.0;
+      const d1 = theta * windowSamples;
+      const d2 = ((theta + 0.5) % 1.0) * windowSamples;
+
+      const w1 = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * theta));
+      const w2 = 1.0 - w1;
+
+      // Tap 1
+      const t1 = Math.max(0, Math.min(n - 1.001, i - d1));
+      const i1 = t1 | 0;
+      const f1 = t1 - i1;
+      const s1 = (1.0 - f1) * input[i1] + f1 * input[Math.min(n - 1, i1 + 1)];
+
+      // Tap 2
+      const t2 = Math.max(0, Math.min(n - 1.001, i - d2));
+      const i2 = t2 | 0;
+      const f2 = t2 - i2;
+      const s2 = (1.0 - f2) * input[i2] + f2 * input[Math.min(n - 1, i2 + 1)];
+
+      out[i] = w1 * s1 + w2 * s2;
+    }
+  }
+
+  return { chL: outL, chR: outR };
+}
+
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 // ---------------------------------------------------------------------------
@@ -339,7 +392,6 @@ export async function processAudioBufferDspV2(
 ): Promise<DspProcessResult> {
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
-  const lockPitch = extraOptions?.lockOriginalPitch !== false;
   const useAntiSuno = extraOptions?.antiSunoHumanizer !== false;
   const useTapeBed = extraOptions?.tapeWarmthBed !== false;
   const useSideBloom = extraOptions?.sideBloom !== false;
@@ -364,14 +416,35 @@ export async function processAudioBufferDspV2(
   const inputRms = Math.sqrt(sumSqIn / Math.max(1, length)) + 1e-9;
 
   // =========================================================================
-  // 1. Pitch & Speed Control: Lock Original Pitch (0 cents) OR Clean CQT Shift
+  // 1. Pitch & Speed Control: A=432 Hz (-31.8c) + Micro-Detune (Recommended)
+  //    OR Pure Lock 440 Hz OR Varispeed (+2% a +4%)
   // =========================================================================
+  const resolvedPitchMode: PitchMode =
+    extraOptions?.pitchMode ||
+    (extraOptions?.lockOriginalPitch === false ? 'varispeed_up' : 'a432_detune');
+
   let chL: Float32Array;
   let chR: Float32Array;
   let baseSpeed = 1.0;
 
-  if (lockPitch) {
-    onProgress?.('[1/7] Paso 1: Tono Original Bloqueado (0.0 cents / Afinación Exacta)...');
+  if (resolvedPitchMode === 'a432_detune') {
+    onProgress?.('[1/7] Paso 1: Afinación A=432 Hz (-31.8c) + Micro-Detune Estéreo (±6c)...');
+    await yieldToUi();
+    baseSpeed = 432.0 / 440.0; // 0.981818 (-31.8 cents / cuerpo cálido analógico)
+    const estOutLen = Math.floor((length - 4) / baseSpeed);
+    const tWarp = new Float64Array(estOutLen);
+    for (let i = 0; i < estOutLen; i++) {
+      tWarp[i] = Math.min(length - 3.01, Math.max(1.0, baseSpeed * i + 1.0));
+    }
+    const resampledL = cubicCatmullRomResample(rawCh0, tWarp);
+    const resampledR = cubicCatmullRomResample(rawCh1, tWarp);
+
+    // Apply Eventide-style Micro-Detune (Left: +6c, Right: -6c)
+    const detuned = applyStereoMicroDetune(resampledL, resampledR, sr, 6.0);
+    chL = detuned.chL;
+    chR = detuned.chR;
+  } else if (resolvedPitchMode === 'lock_440') {
+    onProgress?.('[1/7] Paso 1: Tono Original 440 Hz Bloqueado (0.0 cents / Afinación Exacta)...');
     await yieldToUi();
     baseSpeed = 1.0;
     chL = new Float32Array(rawCh0);
@@ -858,12 +931,12 @@ export async function processAudioBufferDspV2(
   const processingTimeSec = Number(((performance.now() - t0) / 1000).toFixed(2));
   const speedShiftPct = Number(((baseSpeed - 1.0) * 100.0).toFixed(2));
   const peakDbtp = Number((20.0 * Math.log10(Math.max(1e-6, maxPeak))).toFixed(2));
-  const centsShift = lockPitch ? 0.0 : 1200.0 * Math.log2(baseSpeed);
-  const cqtEvasion = Math.min(1.0, centsShift / 48.0);
+  const centsShift = resolvedPitchMode === 'lock_440' ? 0.0 : 1200.0 * Math.log2(baseSpeed);
+  const cqtEvasion = Math.min(1.0, Math.abs(centsShift) / 30.0);
   const decorrelationPct = Number(
     Math.min(
       99.6,
-      (lockPitch ? 0.0 : cqtEvasion * 20.0) +
+      (resolvedPitchMode === 'lock_440' ? 0.0 : cqtEvasion * 20.0) +
         (useAntiSuno ? 22.0 : 0.0) +
         (useTapeBed ? 18.0 : 0.0) +
         (useGhostMidi ? 20.0 : 0.0) +

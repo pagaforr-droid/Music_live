@@ -7,6 +7,7 @@ import {
   processAudioBufferDspV2,
   type DspFormat,
   type DspPreset,
+  type PitchMode,
 } from '../lib/dspDecorrelator';
 import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud } from 'lucide-react';
 
@@ -46,7 +47,7 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
-  const [lockOriginalPitch, setLockOriginalPitch] = useState(true);
+  const [pitchMode, setPitchMode] = useState<PitchMode>('a432_detune');
   const [useAntiSuno, setUseAntiSuno] = useState(true);
   const [useTapeBed, setUseTapeBed] = useState(true);
   const [useSideBloom, setUseSideBloom] = useState(true);
@@ -194,7 +195,8 @@ export default function StemStudio() {
           if (mountedRef.current) setDspMessage(`DSP v4 • ${stepMsg}`);
         },
         {
-          lockOriginalPitch: lockOriginalPitch,
+          pitchMode: pitchMode,
+          lockOriginalPitch: pitchMode === 'lock_440',
           antiSunoHumanizer: useAntiSuno,
           tapeWarmthBed: useTapeBed,
           sideBloom: useSideBloom,
@@ -275,7 +277,8 @@ export default function StemStudio() {
               jobId: String(ts),
               outputFormat: format,
               preset,
-              lockOriginalPitch,
+              pitchMode,
+              lockOriginalPitch: pitchMode === 'lock_440',
               antiSunoHumanizer: useAntiSuno,
               tapeWarmthBed: useTapeBed,
               sideBloom: useSideBloom,
@@ -1161,16 +1164,40 @@ export default function StemStudio() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setLockOriginalPitch((v) => !v)}
+                      onClick={() =>
+                        setPitchMode((m) =>
+                          m === 'a432_detune' ? 'lock_440' : m === 'lock_440' ? 'varispeed_up' : 'a432_detune'
+                        )
+                      }
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
-                        lockOriginalPitch
+                        pitchMode === 'a432_detune'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.2)]'
+                          : pitchMode === 'lock_440'
                           ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.15)]'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/50'
                       }`}
-                      title="Mantiene la afinación, escala y velocidad de la canción al 100% idénticos al original (0.0 cents). Evita que la voz o instrumentos suenen más agudos o acelerados."
+                      title={
+                        pitchMode === 'a432_detune'
+                          ? 'Afinación clásica A=432 Hz (-31.8 cents) con Micro-Detune estéreo opuesto (+6 cents L / -6 cents R). Voz más cálida y con cuerpo (sin acelerar ni sonar chillona) y destrucción de la huella espectral de Riffusion/Suno.'
+                          : pitchMode === 'lock_440'
+                          ? 'Mantiene la afinación A=440 Hz al 100% idéntica al original (0.0 cents).'
+                          : 'Acelera la canción (+2% a +4% / +50 cents).'
+                      }
                     >
-                      <span>🔒 Tono Original (0 Cents)</span>
-                      <span className="text-[8px] uppercase">{lockOriginalPitch ? 'EXACTO' : '+50 CENTS'}</span>
+                      <span>
+                        {pitchMode === 'a432_detune'
+                          ? '🎻 A=432 Hz + Detune'
+                          : pitchMode === 'lock_440'
+                          ? '🔒 Tono 440 Hz (Exacto)'
+                          : '⚡ Varispeed (+50 Cents)'}
+                      </span>
+                      <span className="text-[8px] uppercase">
+                        {pitchMode === 'a432_detune'
+                          ? '-31.8C • ±6C'
+                          : pitchMode === 'lock_440'
+                          ? '0.0 CENTS'
+                          : '+50 CENTS'}
+                      </span>
                     </button>
                     <button
                       type="button"
