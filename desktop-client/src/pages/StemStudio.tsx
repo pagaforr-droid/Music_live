@@ -2,14 +2,25 @@ import { useEffect, useState, useRef } from 'react';
 import './StemStudio.css';
 import { supabase } from '../lib/supabase';
 import StemUploader from '../components/StemUploader';
-import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus } from 'lucide-react';
+import {
+  DSP_PRESETS,
+  processAudioBufferDspV2,
+  type DspFormat,
+  type DspPreset,
+} from '../lib/dspDecorrelator';
+import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud } from 'lucide-react';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
-type DspFormat = 'wav' | 'flac' | 'mp3';
 const DSP_MIME: Record<DspFormat, string> = { wav: 'audio/wav', flac: 'audio/flac', mp3: 'audio/mpeg' };
 const DSP_POLL_MS = 5000;
 const DSP_MAX_POLLS = 720; // 60 min (incluye cold boot de la GPU)
+
+const PRESET_SHORT_LABEL: Record<DspPreset, string> = {
+  transparent: 'Transparent',
+  stealth: 'Stealth',
+  cloak: 'MaxCloak',
+};
 
 /** Supabase Storage rechaza acentos y varios símbolos en las rutas. */
 const sanitizeFileName = (name: string) =>
@@ -26,17 +37,23 @@ export default function StemStudio() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [aiSuccessMessage, setAiSuccessMessage] = useState<string | null>(null);
   const [manualKey, setManualKey] = useState<string>('');
-  
-
-
-
   const [timeSignature, setTimeSignature] = useState<string>('4/4');
 
-  // Watermark DSP state
+  // Watermark DSP v2 state
   const [watermarkJobStatus, setWatermarkJobStatus] = useState<'idle' | 'pending' | 'processing' | 'completed' | 'failed'>('idle');
   const [cleanAudioUrl, setCleanAudioUrl] = useState<string | null>(null);
   const [dspMessage, setDspMessage] = useState<string | null>(null);
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
+  const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
+  const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
+  const [decorrelatingStemId, setDecorrelatingStemId] = useState<string | null>(null);
+  const [dspTelemetry, setDspTelemetry] = useState<{
+    preset: string;
+    speedShiftPct: number;
+    peakDbtp: number;
+    engine: string;
+    timeSec?: number;
+  } | null>(null);
   const dspBusyRef = useRef(false);
   const mountedRef = useRef(true);
   const selectedSongRef = useRef<string | null>(null);
@@ -82,6 +99,7 @@ export default function StemStudio() {
         setWatermarkJobStatus('idle');
         setCleanAudioUrl(null);
         setDspMessage(null);
+        setDspTelemetry(null);
       }
     } else {
       setStems([]);
@@ -97,131 +115,236 @@ export default function StemStudio() {
   const [isUploadingWatermark, setIsUploadingWatermark] = useState(false);
 
   /**
-   * DSP Watermark flow:
-   *  1. Sube el original a Storage (bucket `audios`, carpeta temp).
-   *  2. Crea una URL firmada de subida para el resultado dentro de la carpeta de la canción.
-   *  3. Lanza el worker en Replicate (/api/ai/watermark) y hace polling (/api/ai/watermark-status).
-   *  4. El worker sube el resultado directo a Supabase (sin pasar por el navegador).
-   *     Si eso falla, el cliente descarga la salida de Replicate y la sube él mismo.
-   *  5. Registra el resultado como un nuevo stem de la canción.
+   * Ejecuta la decorrelación Stealth Master DSP v2 tanto para un archivo subido
+   * como para una pista ya existente en el proyecto (1-Click Track Decorrelation).
    */
-  const handleUploadAndProcessWatermark = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const inputEl = e.target;
-    const file = inputEl.files?.[0];
-    if (!file || !selectedSongId || dspBusyRef.current) return;
+  const executeDspDecorrelation = async (params: {
+    file?: File;
+    existingStem?: any;
+  }) => {
+    const { file, existingStem } = params;
+    if ((!file && !existingStem) || !selectedSongId || dspBusyRef.current) return;
 
     const targetSongId = selectedSongId;
     const format = dspFormat;
+    const preset = dspPreset;
+    const engine = dspEngine;
     const mime = DSP_MIME[format];
     const ts = Date.now();
-    const baseName = file.name.replace(/\.[^.]+$/, '') || file.name;
-    const inputPath = `${FAKE_BAND_ID}/temp/dsp_${ts}_${sanitizeFileName(file.name)}`;
-    const outputPath = `${FAKE_BAND_ID}/${targetSongId}/${ts}_${sanitizeFileName(baseName)}_DSP.${format}`;
+
+    const rawName = file ? file.name : (existingStem?.name || 'Track');
+    const baseName = rawName.replace(/\.[^.]+$/, '').replace(/\s*\(DSP[^)]*\)\s*$/i, '') || rawName;
+    const presetLabel = PRESET_SHORT_LABEL[preset];
+    const outputPath = `${FAKE_BAND_ID}/${targetSongId}/${ts}_${sanitizeFileName(baseName)}_DSP_${preset}.${format}`;
+
+    let inputPath = '';
     let inputUploaded = false;
 
     dspBusyRef.current = true;
+    if (existingStem?.id) setDecorrelatingStemId(existingStem.id);
     setWatermarkJobStatus('pending');
-    setIsUploadingWatermark(true);
-    setDspMessage("Subiendo archivo original...");
     setCleanAudioUrl(null);
+    setDspTelemetry(null);
+
+    const runLocalPipeline = async (): Promise<{
+      finalUrl: string;
+      speedShiftPct: number;
+      peakDbtp: number;
+      timeSec: number;
+    }> => {
+      setWatermarkJobStatus('processing');
+      setDspMessage(
+        file
+          ? '[1/5] Decodificando archivo de audio en motor local...'
+          : `[1/5] Descargando y decodificando "${existingStem.name}"...`
+      );
+
+      const arrayBuffer = file
+        ? await file.arrayBuffer()
+        : await (async () => {
+            const res = await fetch(existingStem.file_url);
+            if (!res.ok) throw new Error(`No se pudo descargar la pista (${res.status})`);
+            return res.arrayBuffer();
+          })();
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 44100 });
+      let decodedBuffer: AudioBuffer;
+      try {
+        decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      } finally {
+        audioCtx.close().catch(() => {});
+      }
+
+      const result = await processAudioBufferDspV2(
+        decodedBuffer,
+        preset,
+        format,
+        (stepMsg) => {
+          if (mountedRef.current) setDspMessage(`Motor Local • ${stepMsg}`);
+        }
+      );
+
+      if (mountedRef.current) {
+        setIsUploadingWatermark(true);
+        setDspMessage('Subiendo Master Decorrelacionado a Supabase Storage...');
+      }
+
+      const { error: saveError } = await supabase.storage
+        .from('audios')
+        .upload(outputPath, result.blob, { contentType: mime, upsert: true });
+      if (saveError) throw new Error(`Error guardando el resultado en Storage: ${saveError.message}`);
+
+      const finalUrl = supabase.storage.from('audios').getPublicUrl(outputPath).data.publicUrl;
+      return {
+        finalUrl,
+        speedShiftPct: result.speedShiftPct,
+        peakDbtp: result.peakDbtp,
+        timeSec: result.processingTimeSec,
+      };
+    };
 
     try {
-      // 1. Upload original
-      const { error: uploadError } = await supabase.storage
-        .from('audios')
-        .upload(inputPath, file, { contentType: file.type || undefined });
-      if (uploadError) throw new Error(`Error subiendo audio: ${uploadError.message}`);
-      inputUploaded = true;
-      const audioUrl = supabase.storage.from('audios').getPublicUrl(inputPath).data.publicUrl;
+      let finalUrl = '';
+      let speedShiftPct = 1.05;
+      let peakDbtp = -0.3;
+      let usedEngine: 'local' | 'cloud' = engine;
+      let timeSec: number | undefined;
+      let predictionId: string | undefined;
 
-      // 2. Signed upload URL so the GPU worker can write the result directly
-      const { data: signed, error: signError } = await supabase.storage
-        .from('audios')
-        .createSignedUploadUrl(outputPath);
-      if (signError) console.warn('[DSP] Sin URL firmada, se usará la salida de Replicate:', signError.message);
+      if (engine === 'local') {
+        const localRes = await runLocalPipeline();
+        finalUrl = localRes.finalUrl;
+        speedShiftPct = localRes.speedShiftPct;
+        peakDbtp = localRes.peakDbtp;
+        timeSec = localRes.timeSec;
+      } else {
+        // Cloud Replicate Pipeline
+        const tCloud0 = performance.now();
+        let audioUrl = existingStem?.file_url || '';
 
-      setIsUploadingWatermark(false);
-      setDspMessage("Iniciando procesamiento en GPU...");
+        if (file) {
+          setIsUploadingWatermark(true);
+          setDspMessage('Subiendo archivo original para GPU Cloud...');
+          inputPath = `${FAKE_BAND_ID}/temp/dsp_${ts}_${sanitizeFileName(file.name)}`;
+          const { error: uploadError } = await supabase.storage
+            .from('audios')
+            .upload(inputPath, file, { contentType: file.type || undefined });
+          if (uploadError) throw new Error(`Error subiendo audio: ${uploadError.message}`);
+          inputUploaded = true;
+          audioUrl = supabase.storage.from('audios').getPublicUrl(inputPath).data.publicUrl;
+        }
 
-      // 3. Start Replicate job
-      const startRes = await fetch('/api/ai/watermark', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audioUrl, uploadUrl: signed?.signedUrl, jobId: String(ts), outputFormat: format })
-      });
-      const startData = await startRes.json().catch(() => ({}));
-      if (!startRes.ok) throw new Error(startData.error || `Error ${startRes.status} al iniciar el job DSP`);
-      const { predictionId } = startData;
+        const { data: signed, error: signError } = await supabase.storage
+          .from('audios')
+          .createSignedUploadUrl(outputPath);
+        if (signError) console.warn('[DSP] Sin URL firmada, se usará la salida de Replicate:', signError.message);
 
-      // 4. Poll
-      let output: any = null;
-      for (let poll = 1; poll <= DSP_MAX_POLLS; poll++) {
-        await new Promise(r => setTimeout(r, DSP_POLL_MS));
-        if (!mountedRef.current) return;
+        setIsUploadingWatermark(false);
+        setDspMessage(`Iniciando job Cloud GPU (${presetLabel})...`);
 
-        const statusRes = await fetch('/api/ai/watermark-status', {
+        const startRes = await fetch('/api/ai/watermark', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ predictionId })
+          body: JSON.stringify({
+            audioUrl,
+            uploadUrl: signed?.signedUrl,
+            jobId: String(ts),
+            outputFormat: format,
+            preset,
+          }),
         });
-        const statusData = await statusRes.json().catch(() => ({}));
-        if (!statusRes.ok) throw new Error(statusData.error || `Error ${statusRes.status} consultando el job`);
+        const startData = await startRes.json().catch(() => ({}));
+        if (!startRes.ok) throw new Error(startData.error || `Error ${startRes.status} al iniciar el job DSP`);
+        predictionId = startData.predictionId;
 
-        if (statusData.done) {
-          if (statusData.failed) throw new Error(statusData.error || 'El worker DSP falló');
-          output = statusData.output;
-          break;
-        }
+        let output: any = null;
+        for (let poll = 1; poll <= DSP_MAX_POLLS; poll++) {
+          await new Promise((r) => setTimeout(r, DSP_POLL_MS));
+          if (!mountedRef.current) return;
 
-        if (statusData.status === 'starting') {
-          setWatermarkJobStatus('pending');
-          setDspMessage(`Despertando GPU (cold boot, puede tardar 2-5 min)... (${poll})`);
-        } else {
-          setWatermarkJobStatus('processing');
-          setDspMessage(statusData.step ? `GPU ${statusData.step}` : `Decorrelacionando audio y extrayendo stems... (${poll})`);
+          const statusRes = await fetch('/api/ai/watermark-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ predictionId }),
+          });
+          const statusData = await statusRes.json().catch(() => ({}));
+          if (!statusRes.ok) throw new Error(statusData.error || `Error ${statusRes.status} consultando el job`);
+
+          if (statusData.done) {
+            if (statusData.failed) throw new Error(statusData.error || 'El worker DSP falló');
+            output = statusData.output;
+            break;
+          }
+
+          if (statusData.status === 'starting') {
+            setWatermarkJobStatus('pending');
+            setDspMessage(`Despertando GPU Cloud (cold boot)... (${poll})`);
+          } else {
+            setWatermarkJobStatus('processing');
+            setDspMessage(
+              statusData.step
+                ? `Cloud GPU ${statusData.step}`
+                : `Decorrelacionando audio en Cloud (${presetLabel})... (${poll})`
+            );
+          }
         }
+        if (output == null) throw new Error('Tiempo de espera agotado para el job DSP');
+
+        setDspMessage('Guardando resultado en Storage...');
+        const uploadedByWorker = signed && (output?.uploaded === true || output === 'uploaded');
+        if (!uploadedByWorker) {
+          const replicateUrl = typeof output === 'string' ? output : output?.file;
+          if (typeof replicateUrl !== 'string' || !replicateUrl.startsWith('http')) {
+            throw new Error('El worker no devolvió un archivo válido');
+          }
+          const fileRes = await fetch(replicateUrl);
+          if (!fileRes.ok) throw new Error(`Replicate devolvió error ${fileRes.status} al descargar el resultado`);
+          const blob = await fileRes.blob();
+          const { error: saveError } = await supabase.storage
+            .from('audios')
+            .upload(outputPath, blob, { contentType: mime, upsert: true });
+          if (saveError) throw new Error(`Error guardando el resultado en Storage: ${saveError.message}`);
+        }
+        finalUrl = supabase.storage.from('audios').getPublicUrl(outputPath).data.publicUrl;
+        if (typeof output?.speed_shift_pct === 'number') speedShiftPct = output.speed_shift_pct;
+        if (typeof output?.peak_dbtp === 'number') peakDbtp = output.peak_dbtp;
+        timeSec = Number(((performance.now() - tCloud0) / 1000).toFixed(1));
       }
-      if (output == null) throw new Error('Tiempo de espera agotado para el job DSP');
-
-      // 5. Resolve final file in Storage
-      setDspMessage("Guardando resultado...");
-      const uploadedByWorker = signed && (output?.uploaded === true || output === 'uploaded');
-      if (!uploadedByWorker) {
-        const replicateUrl = typeof output === 'string' ? output : output?.file;
-        if (typeof replicateUrl !== 'string' || !replicateUrl.startsWith('http')) {
-          throw new Error('El worker no devolvió un archivo válido');
-        }
-        const fileRes = await fetch(replicateUrl);
-        if (!fileRes.ok) throw new Error(`Replicate devolvió error ${fileRes.status} al descargar el resultado`);
-        const blob = await fileRes.blob();
-        const { error: saveError } = await supabase.storage
-          .from('audios')
-          .upload(outputPath, blob, { contentType: mime, upsert: true });
-        if (saveError) throw new Error(`Error guardando el resultado en Storage: ${saveError.message}`);
-      }
-      const finalUrl = supabase.storage.from('audios').getPublicUrl(outputPath).data.publicUrl;
 
       const { error: stemError } = await supabase.from('stems').insert({
         song_id: targetSongId,
-        name: `${baseName} (DSP Clean)`,
+        name: `${baseName} (DSP ${presetLabel})`,
         file_url: finalUrl,
         type: 'Audio',
         metadata: {
-          original_name: `${baseName}_DSP.${format}`,
+          original_name: `${baseName}_DSP_${preset}.${format}`,
           format: mime,
           is_master: false,
           dsp_watermark: true,
-          prediction_id: predictionId
-        }
+          dsp_preset: preset,
+          dsp_engine: usedEngine,
+          speed_shift_pct: speedShiftPct,
+          peak_dbtp: peakDbtp,
+          prediction_id: predictionId,
+        },
       });
       if (stemError) throw new Error(`Error registrando el stem: ${stemError.message}`);
 
       if (!mountedRef.current) return;
       setCleanAudioUrl(finalUrl);
+      setDspTelemetry({
+        preset: presetLabel,
+        speedShiftPct,
+        peakDbtp,
+        engine: usedEngine === 'local' ? 'Local DSP v2' : 'Cloud GPU',
+        timeSec,
+      });
       setWatermarkJobStatus('completed');
-      setDspMessage("¡Procesamiento DSP completado con éxito! Guardado como nueva pista.");
+      setDspMessage(
+        `¡Decorrelación ${presetLabel} completada${timeSec ? ` en ${timeSec}s` : ''}! Guardado como "${baseName} (DSP ${presetLabel})".`
+      );
       if (selectedSongRef.current === targetSongId) fetchStems(targetSongId);
-
     } catch (error: any) {
       console.error('[DSP]', error);
       if (mountedRef.current) {
@@ -230,12 +353,30 @@ export default function StemStudio() {
       }
     } finally {
       dspBusyRef.current = false;
-      if (mountedRef.current) setIsUploadingWatermark(false);
-      inputEl.value = ''; // Reset input
-      if (inputUploaded) {
-        supabase.storage.from('audios').remove([inputPath]).catch(() => {}); // Limpiar temporal
+      if (mountedRef.current) {
+        setIsUploadingWatermark(false);
+        setDecorrelatingStemId(null);
+      }
+      if (inputUploaded && inputPath) {
+        supabase.storage.from('audios').remove([inputPath]).catch(() => {});
       }
     }
+  };
+
+  const handleUploadAndProcessWatermark = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = e.target;
+    const file = inputEl.files?.[0];
+    if (!file) return;
+    try {
+      await executeDspDecorrelation({ file });
+    } finally {
+      inputEl.value = '';
+    }
+  };
+
+  const handleDecorrelateExistingStem = async (stem: any) => {
+    if (!stem?.file_url || dspBusyRef.current) return;
+    await executeDspDecorrelation({ existingStem: stem });
   };
 
   const handleCreateNewProject = async () => {
@@ -796,7 +937,7 @@ export default function StemStudio() {
                 <div className="flex items-center px-4 py-2 bg-[#121214] border-b border-zinc-800">
                    <div className="w-[320px] text-[10px] font-bold text-zinc-500 uppercase tracking-widest shrink-0">Track Name</div>
                    <div className="flex-1 text-[10px] font-bold text-zinc-500 uppercase tracking-widest pl-4">Waveform</div>
-                   <div className="w-[100px] text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right pr-2 shrink-0">Controls</div>
+                   <div className="w-[136px] text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right pr-2 shrink-0">Controls</div>
                 </div>
 
                 {loadingStems ? (
@@ -814,112 +955,236 @@ export default function StemStudio() {
                   </div>
                 ) : (
                   <div className="flex flex-col divide-y divide-zinc-800/50">
-                    {stems.map((stem) => (
-                      <div key={stem.id} className="flex min-h-[64px] bg-[#09090b] hover:bg-[#121214] transition-colors group">
-                        {/* Track Info (Left panel of DAW track) */}
-                        <div className="w-[320px] px-4 py-3 flex flex-col justify-center border-r border-zinc-800/50 bg-[#101012] group-hover:bg-[#141417] shrink-0">
-                           <div className="flex items-start gap-2.5">
-                             <div className="w-5 h-5 shrink-0 rounded flex items-center justify-center bg-zinc-800 text-zinc-400 mt-0.5">
-                               <FileAudio size={11} />
+                    {stems.map((stem) => {
+                      const isThisDecorrelating = decorrelatingStemId === stem.id;
+                      const isDspBusy = watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark;
+                      const isDspTrack = Boolean(stem.metadata?.dsp_watermark);
+                      return (
+                        <div key={stem.id} className="flex min-h-[64px] bg-[#09090b] hover:bg-[#121214] transition-colors group">
+                          {/* Track Info (Left panel of DAW track) */}
+                          <div className="w-[320px] px-4 py-3 flex flex-col justify-center border-r border-zinc-800/50 bg-[#101012] group-hover:bg-[#141417] shrink-0">
+                             <div className="flex items-start gap-2.5">
+                               <div className={`w-5 h-5 shrink-0 rounded flex items-center justify-center mt-0.5 ${isDspTrack ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'bg-zinc-800 text-zinc-400'}`}>
+                                 {isDspTrack ? <Shield size={11} /> : <FileAudio size={11} />}
+                               </div>
+                               <span className="text-[13px] font-semibold text-zinc-200 leading-snug whitespace-normal break-words">{stem.name}</span>
                              </div>
-                             <span className="text-[13px] font-semibold text-zinc-200 leading-snug whitespace-normal break-words">{stem.name}</span>
-                           </div>
-                           <span className="text-[9px] text-zinc-600 pl-7 uppercase tracking-wider font-bold mt-1.5">{stem.type || 'Audio'}</span>
-                        </div>
-                        
-                        {/* Fake Waveform area (Center) */}
-                        <div className="flex-1 flex items-center px-4 py-2 relative">
-                          <div className="absolute inset-y-2 left-4 right-4 bg-[#141417] border border-zinc-800/50 rounded flex items-center justify-center overflow-hidden">
-                             {/* A purely visual fake waveform representation for DAW feel */}
-                             <div className={`w-full h-full flex items-center gap-[1px] opacity-[0.15] px-1 transition-opacity duration-300 ${playingStemId === stem.id ? 'opacity-[0.8] animate-pulse' : ''}`}>
-                                {Array.from({length: 80}).map((_, i) => (
-                                  <div key={i} className={`flex-1 ${playingStemId === stem.id ? 'bg-emerald-400' : 'bg-emerald-500'} rounded-sm`} style={{ height: `${10 + Math.random() * 80}%` }}></div>
-                                ))}
+                             <div className="flex items-center gap-2 pl-7 mt-1.5">
+                               <span className="text-[9px] text-zinc-600 uppercase tracking-wider font-bold">{stem.type || 'Audio'}</span>
+                               {isDspTrack && (
+                                 <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                   DSP {stem.metadata?.dsp_preset ? String(stem.metadata.dsp_preset).toUpperCase() : 'CLEAN'}
+                                 </span>
+                               )}
                              </div>
                           </div>
-                        </div>
+                          
+                          {/* Fake Waveform area (Center) */}
+                          <div className="flex-1 flex items-center px-4 py-2 relative">
+                            <div className="absolute inset-y-2 left-4 right-4 bg-[#141417] border border-zinc-800/50 rounded flex items-center justify-center overflow-hidden">
+                               {/* A purely visual fake waveform representation for DAW feel */}
+                               <div className={`w-full h-full flex items-center gap-[1px] opacity-[0.15] px-1 transition-opacity duration-300 ${playingStemId === stem.id ? 'opacity-[0.8] animate-pulse' : ''}`}>
+                                  {Array.from({length: 80}).map((_, i) => (
+                                    <div key={i} className={`flex-1 ${playingStemId === stem.id ? 'bg-emerald-400' : isDspTrack ? 'bg-blue-400' : 'bg-emerald-500'} rounded-sm`} style={{ height: `${10 + ((i * 37) % 80)}%` }}></div>
+                                  ))}
+                               </div>
+                            </div>
+                          </div>
 
-                        {/* Controls (Right) */}
-                        <div className="w-[100px] flex items-center justify-end px-4 gap-1 shrink-0">
-                          <button 
-                            onClick={() => togglePlay(stem)}
-                            className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                            title={playingStemId === stem.id ? "Pause" : "Play"}
-                          >
-                            {playingStemId === stem.id ? <Pause size={15} /> : <Play size={15} />}
-                          </button>
-                          <button 
-                            onClick={() => deleteStem(stem.id)}
-                            className="w-8 h-8 flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                            title="Delete Track"
-                          >
-                            <Trash2 size={15} />
-                          </button>
+                          {/* Controls (Right) */}
+                          <div className="w-[136px] flex items-center justify-end px-4 gap-1 shrink-0">
+                            <button 
+                              onClick={() => togglePlay(stem)}
+                              className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                              title={playingStemId === stem.id ? "Pause" : "Play"}
+                            >
+                              {playingStemId === stem.id ? <Pause size={15} /> : <Play size={15} />}
+                            </button>
+                            <button
+                              onClick={() => handleDecorrelateExistingStem(stem)}
+                              disabled={isDspBusy}
+                              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                                isThisDecorrelating
+                                  ? 'text-blue-400 bg-blue-500/20'
+                                  : 'text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10 disabled:opacity-40 disabled:cursor-not-allowed'
+                              }`}
+                              title={`Decorrelacionar "${stem.name}" con preset ${PRESET_SHORT_LABEL[dspPreset]}`}
+                            >
+                              {isThisDecorrelating ? <Loader2 size={14} className="animate-spin" /> : <Shield size={14} />}
+                            </button>
+                            <button 
+                              onClick={() => deleteStem(stem.id)}
+                              className="w-8 h-8 flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                              title="Delete Track"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
-              {/* DSP Watermark Module */}
-              <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-4 flex flex-col gap-4">
-                <div className="flex items-center justify-between pb-2 border-b border-zinc-800/50">
-                  <div className="flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                    <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">DSP Watermark Process</h3>
+              {/* DSP Watermark Module (Stealth Master DSP v2) */}
+              <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-5 flex flex-col gap-4 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-800/60">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.7)]" />
+                    <h3 className="text-[11px] font-bold text-zinc-200 uppercase tracking-widest">
+                      Stealth Master DSP v2 — Decorrelación Psicoacústica
+                    </h3>
+                  </div>
+
+                  {/* Dual-Engine Switcher */}
+                  <div className="flex items-center bg-[#09090b] p-0.5 rounded-md border border-zinc-800">
+                    <button
+                      type="button"
+                      onClick={() => setDspEngine('local')}
+                      disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                        dspEngine === 'local'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/40 shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                      title="Procesa en el cliente en 2-4 segundos sin esperas de Cold Boot"
+                    >
+                      <Zap size={11} />
+                      Motor Local (&lt;3s)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDspEngine('cloud')}
+                      disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                        dspEngine === 'cloud'
+                          ? 'bg-purple-600/20 text-purple-300 border border-purple-500/40 shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                      title="Ejecuta en el worker remoto de Replicate"
+                    >
+                      <Cloud size={11} />
+                      Cloud Worker
+                    </button>
                   </div>
                 </div>
                 
-                <div className="flex flex-col gap-3 flex-1 justify-between">
-                  <p className="text-[10px] text-zinc-500 leading-tight">
-                    Decorrelación asíncrona mediante HTDemucs y manipulaciones de Phase Vocoder para proteger el master.
+                <div className="flex flex-col gap-4 flex-1 justify-between">
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Time-Warping Polifásico Cubic Spline con doble LFO irracional, dispersión de fase estéreo asimétrica (<code className="text-blue-400">L ≠ R</code>), graves anclados en mono (<code className="text-zinc-300">&lt;120 Hz</code>), enmascaramiento psicoacústico dinámico (0 ruido en silencios) y respuesta completa hasta <code className="text-zinc-300">19.2 kHz</code>. Puedes subir un archivo nuevo o pulsar el icono <Shield size={11} className="inline text-blue-400 mx-0.5" /> en cualquier pista de arriba.
                   </p>
+
+                  {/* 3 Preset Selector Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                    {DSP_PRESETS.map((p) => {
+                      const active = dspPreset === p.id;
+                      const isBusy = watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => setDspPreset(p.id)}
+                          className={`text-left p-3 rounded-lg border transition-all flex flex-col justify-between gap-1.5 ${
+                            active
+                              ? 'bg-blue-950/25 border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.12)]'
+                              : 'bg-[#101013] border-zinc-800/80 hover:border-zinc-700 hover:bg-[#141418]'
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-xs font-bold ${active ? 'text-blue-300' : 'text-zinc-300'}`}>
+                              {p.name}
+                            </span>
+                            <span
+                              className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                                active
+                                  ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                                  : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                              }`}
+                            >
+                              {p.badge}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-500 leading-snug">{p.description}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
                   
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-3 pt-1">
                     {cleanAudioUrl && (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">Master Limpio:</span>
-                        <audio controls src={cleanAudioUrl} className="w-full h-7 opacity-70 hover:opacity-100 transition invert grayscale">
+                      <div className="flex flex-col gap-2 bg-[#09090b] border border-zinc-800/80 rounded-lg p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <CheckCircle size={12} />
+                            Master Decorrelacionado Listo
+                          </span>
+                          {dspTelemetry && (
+                            <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider">
+                              <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                {dspTelemetry.preset}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                                +{dspTelemetry.speedShiftPct}% Varispeed
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                                {dspTelemetry.peakDbtp} dBTP
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800">
+                                {dspTelemetry.engine}{dspTelemetry.timeSec ? ` • ${dspTelemetry.timeSec}s` : ''}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <audio controls src={cleanAudioUrl} className="w-full h-8 opacity-85 hover:opacity-100 transition invert grayscale">
                           Tu navegador no soporta audio.
                         </audio>
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between px-1">
-                      <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Formato Salida:</span>
-                      <select
-                        value={dspFormat}
-                        onChange={(e) => setDspFormat(e.target.value as DspFormat)}
-                        disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
-                        className="bg-[#09090b] text-xs text-zinc-300 border border-zinc-800 rounded px-2 py-1 outline-none cursor-pointer"
-                      >
-                        <option value="wav">WAV 16-bit (Máxima compatibilidad)</option>
-                        <option value="flac">FLAC 24-bit (Sin pérdida, ~50% menos)</option>
-                        <option value="mp3">MP3 320k (Ahorra espacio)</option>
-                      </select>
-                    </div>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                      <div className="flex items-center justify-between sm:justify-start gap-2 bg-[#09090b] border border-zinc-800 rounded px-3 py-1.5 shrink-0">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Formato Salida:</span>
+                        <select
+                          value={dspFormat}
+                          onChange={(e) => setDspFormat(e.target.value as DspFormat)}
+                          disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                          className="bg-transparent text-xs text-zinc-200 font-medium outline-none cursor-pointer"
+                        >
+                          <option value="wav" className="bg-[#09090b]">WAV 16-bit (Máxima compatibilidad)</option>
+                          <option value="flac" className="bg-[#09090b]">FLAC 24-bit (Sin pérdida Studio)</option>
+                          <option value="mp3" className="bg-[#09090b]">MP3 320k CBR (Ahorra espacio)</option>
+                        </select>
+                      </div>
 
-                    <div className="relative w-full h-[32px] group bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/30 text-blue-400 rounded flex items-center justify-center transition-colors overflow-hidden">
-                      <input 
-                        type="file" 
-                        accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg" 
-                        onChange={handleUploadAndProcessWatermark} 
-                        disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark} 
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" 
-                      />
-                      <div className="flex items-center gap-2 pointer-events-none z-0 text-xs font-bold">
-                        {(watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark) ? (
-                          <RefreshCw className="animate-spin" size={14} />
-                        ) : (
-                          <Sparkles size={14} />
-                        )}
-                        {isUploadingWatermark ? "Subiendo..." : watermarkJobStatus === 'pending' ? "Iniciando Job..." : watermarkJobStatus === 'processing' ? "Procesando en GPU..." : "Subir y Decorrelacionar Audio"}
+                      <div className="relative flex-1 h-[36px] group bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/40 text-blue-300 rounded flex items-center justify-center transition-colors overflow-hidden">
+                        <input 
+                          type="file" 
+                          accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg" 
+                          onChange={handleUploadAndProcessWatermark} 
+                          disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark} 
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" 
+                        />
+                        <div className="flex items-center gap-2 pointer-events-none z-0 text-xs font-bold">
+                          {(watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark) ? (
+                            <RefreshCw className="animate-spin" size={14} />
+                          ) : (
+                            <Sparkles size={14} />
+                          )}
+                          {isUploadingWatermark
+                            ? "Subiendo Master..."
+                            : watermarkJobStatus === 'pending'
+                            ? "Iniciando DSP v2..."
+                            : watermarkJobStatus === 'processing'
+                            ? (dspEngine === 'local' ? "Procesando en Motor Local..." : "Procesando en Cloud GPU...")
+                            : `Subir y Decorrelacionar Audio (${PRESET_SHORT_LABEL[dspPreset]})`}
+                        </div>
                       </div>
                     </div>
                     
                     {dspMessage && (
-                      <div className={`text-[10px] px-2 py-1.5 rounded border break-words ${watermarkJobStatus === 'failed' ? 'bg-red-900/10 text-red-400 border-red-900/30' : watermarkJobStatus === 'completed' ? 'bg-green-900/10 text-green-400 border-green-900/30' : 'bg-blue-900/10 text-blue-400 border-blue-900/30'}`}>
+                      <div className={`text-[10px] px-3 py-2 rounded border break-words font-medium ${watermarkJobStatus === 'failed' ? 'bg-red-900/10 text-red-400 border-red-900/30' : watermarkJobStatus === 'completed' ? 'bg-emerald-900/10 text-emerald-400 border-emerald-900/30' : 'bg-blue-900/10 text-blue-400 border-blue-900/30'}`}>
                         {dspMessage}
                       </div>
                     )}
