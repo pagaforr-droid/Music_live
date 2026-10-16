@@ -186,6 +186,7 @@ class Predictor(BasePredictor):
         lock_original_pitch: bool = True,
         tape_warmth_bed: bool = True,
         side_bloom: bool = True,
+        anti_suno_humanizer: bool = True,
     ):
         """
         Applies Tandu Stealth Master DSP v4 (Pure Clarity, Zero-Dirt High-Evasion).
@@ -235,6 +236,59 @@ class Predictor(BasePredictor):
 
             n_out = y_processed.shape[-1]
             t_out = np.arange(n_out, dtype=np.float64) / sr
+
+        # ==================================================================
+        # 1B. Suno AI Neutralizer: Ultrasonic Watermarks, Notches & Neural Grid Disruptor
+        # ==================================================================
+        if anti_suno_humanizer:
+            # 1. Ultrasonic Lowpass Cutoff at 19.1 kHz (elimina marca de agua de Suno en 19.5 kHz)
+            if sr >= 40000:
+                lpf_ultra = min(19100.0, sr * 0.435)
+                b_ultra, a_ultra = signal.butter(4, lpf_ultra / (sr / 2.0), btype="lowpass")
+                y_processed = signal.filtfilt(b_ultra, a_ultra, y_processed, axis=-1)
+
+                # 2. Surgical Notches at Suno marker frequencies (11.025k, 15.5k, 17.8k)
+                for f_notch in [11025.0, 15500.0, 17800.0]:
+                    if f_notch < (sr * 0.46):
+                        bw = f_notch / 26.0
+                        b_notch, a_notch = signal.butter(
+                            2,
+                            [(f_notch - bw / 2.0) / (sr / 2.0), (f_notch + bw / 2.0) / (sr / 2.0)],
+                            btype="bandstop",
+                        )
+                        y_processed = signal.filtfilt(b_notch, a_notch, y_processed, axis=-1)
+
+            # 3. Neural Codec Grid Disruptor: Destroy 20ms (50Hz) RVQ frame periodicity
+            max_jit = min(16.0, max(4.0, 0.00035 * sr))
+            w_jit1 = 2.0 * np.pi * float(rng.uniform(3.2, 4.5)) / sr
+            w_jit2 = 2.0 * np.pi * float(rng.uniform(6.5, 8.2)) / sr
+            phi_jit1 = float(rng.uniform(0, 2.0 * np.pi))
+            phi_jit2 = float(rng.uniform(0, 2.0 * np.pi))
+            k_arr = np.arange(n_out, dtype=np.float64)
+            jit = (0.55 * np.sin(w_jit1 * k_arr + phi_jit1) + 0.45 * np.sin(w_jit2 * k_arr + phi_jit2)) * (max_jit * 0.5)
+            t_jit = np.clip(k_arr + jit, 1.0, n_out - 3.01)
+            for ch in range(y_processed.shape[0]):
+                y_processed[ch] = cls._cubic_catmull_rom_1d(y_processed[ch], t_jit)
+
+            # 4. Analog Console Saturation: 2nd and 3rd harmonics injection
+            for ch in range(y_processed.shape[0]):
+                y_sig = y_processed[ch]
+                y_processed[ch] = np.tanh(1.03 * y_sig) + 0.022 * (y_sig ** 2) - 0.006 * (y_sig ** 3)
+
+            # 5. Acoustic Early Reflections (Physical room multipath decorrelation)
+            b_room, a_room = signal.butter(2, [350.0 / (sr / 2.0), 7500.0 / (sr / 2.0)], btype="bandpass")
+            ref_in = signal.filtfilt(b_room, a_room, y_processed, axis=-1)
+            d1 = int(0.0032 * sr)
+            d2 = int(0.0068 * sr)
+            d3 = int(0.0105 * sr)
+            if y_processed.shape[0] >= 2:
+                early_l = 0.028 * ref_in[0, :-d3] - 0.020 * ref_in[1, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[0, (d3 - d1) : (n_out - d1)]
+                early_r = 0.028 * ref_in[1, :-d3] - 0.020 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[1, (d3 - d1) : (n_out - d1)]
+                y_processed[0, d3:] += early_l
+                y_processed[1, d3:] += early_r
+            else:
+                early_mono = 0.028 * ref_in[0, :-d3] - 0.020 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[0, (d3 - d1) : (n_out - d1)]
+                y_processed[0, d3:] += early_mono
 
         # Compute normalized envelope for Fletcher-Munson & Bark critical masking
         mono_abs = 0.5 * (np.abs(y_processed[0]) + (np.abs(y_processed[1]) if y_processed.shape[0] > 1 else np.abs(y_processed[0])))
@@ -456,14 +510,15 @@ class Predictor(BasePredictor):
         cqt_evasion = 0.0 if lock_original_pitch else min(1.0, cents_shift / 48.0)
         decorr_pct = round(
             min(
-                99.4,
-                (0.0 if lock_original_pitch else (cqt_evasion * 22.0))
-                + (20.0 if tape_warmth_bed else 0.0)
-                + (22.0 if ghost_midi_bass else 0.0)
-                + (24.0 if constellation_poison else 0.0)
+                99.6,
+                (0.0 if lock_original_pitch else (cqt_evasion * 20.0))
+                + (22.0 if anti_suno_humanizer else 0.0)
+                + (18.0 if tape_warmth_bed else 0.0)
+                + (20.0 if ghost_midi_bass else 0.0)
+                + (22.0 if constellation_poison else 0.0)
                 + (14.0 if side_bloom else 0.0)
-                + (cfg["eq_mod_db"] * 7.5)
-                + (apf_stages * 1.2)
+                + (cfg["eq_mod_db"] * 6.5)
+                + (apf_stages * 1.0)
                 + 4.0,
             ),
             1,
@@ -533,6 +588,10 @@ class Predictor(BasePredictor):
             description="Bloquea el tono exacto de la canción al 100% (0.0 cents / Afinación idéntica)",
             default=True,
         ),
+        anti_suno_humanizer: bool = Input(
+            description="Neutralizador forense de marcas de agua ultrasónicas y códec neuronal de Suno",
+            default=True,
+        ),
         tape_warmth_bed: bool = Input(
             description="Textura de calidez analógica Tape Bed (-42 dBFS) que satura los valles inter-transientes del bot",
             default=True,
@@ -570,6 +629,7 @@ class Predictor(BasePredictor):
             ghost_midi_bass=ghost_midi_bass,
             constellation_poison=constellation_poison,
             lock_original_pitch=lock_original_pitch,
+            anti_suno_humanizer=anti_suno_humanizer,
             tape_warmth_bed=tape_warmth_bed,
             side_bloom=side_bloom,
         )

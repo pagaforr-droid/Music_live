@@ -47,6 +47,7 @@ export default function StemStudio() {
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
   const [lockOriginalPitch, setLockOriginalPitch] = useState(true);
+  const [useAntiSuno, setUseAntiSuno] = useState(true);
   const [useTapeBed, setUseTapeBed] = useState(true);
   const [useSideBloom, setUseSideBloom] = useState(true);
   const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
@@ -194,6 +195,7 @@ export default function StemStudio() {
         },
         {
           lockOriginalPitch: lockOriginalPitch,
+          antiSunoHumanizer: useAntiSuno,
           tapeWarmthBed: useTapeBed,
           sideBloom: useSideBloom,
           ghostMidiBass: useGhostMidiBass,
@@ -274,6 +276,7 @@ export default function StemStudio() {
               outputFormat: format,
               preset,
               lockOriginalPitch,
+              antiSunoHumanizer: useAntiSuno,
               tapeWarmthBed: useTapeBed,
               sideBloom: useSideBloom,
               ghostMidiBass: useGhostMidiBass,
@@ -1168,6 +1171,19 @@ export default function StemStudio() {
                     >
                       <span>🔒 Tono Original (0 Cents)</span>
                       <span className="text-[8px] uppercase">{lockOriginalPitch ? 'EXACTO' : '+50 CENTS'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseAntiSuno((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useAntiSuno
+                          ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.15)]'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Neutralizador Forense Anti-Suno: Elimina marcas de agua ultrasónicas (19.5 kHz), notches quirúrgicos en 11k, 15.5k y 17.8k, destruye la cuadrícula de 20ms del códec neuronal con micro-jitter estocástico e inyecta saturación analógica de consola."
+                    >
+                      <span>🛡️ Anti-Suno Shield</span>
+                      <span className="text-[8px] uppercase">{useAntiSuno ? 'HUMANIZADO' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"

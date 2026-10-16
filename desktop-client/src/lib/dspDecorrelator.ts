@@ -22,6 +22,7 @@ export type DspFormat = 'wav' | 'flac' | 'mp3';
 
 export interface DspExtraOptions {
   lockOriginalPitch?: boolean; // Bloquea el tono exacto de la canción al 100% (0 cents de alteración)
+  antiSunoHumanizer?: boolean; // Neutralizador forense Anti-Suno: borra marcas de agua y rompe huella de IA
   tapeWarmthBed?: boolean;     // Textura de calidez de cinta analógica de estudio (-42 dBFS)
   sideBloom?: boolean;         // Difusor espacial bloom exclusivo en canal Side (L-R)
   ghostMidiBass?: boolean;     // Sintetizador Ghost MIDI Sub-Bass (55-185 Hz)
@@ -245,6 +246,20 @@ function designAllpassBiquad(fc: number, q: number, sr: number): BiquadCoeffs {
   };
 }
 
+function designNotchBiquad(fc: number, q: number, sr: number): BiquadCoeffs {
+  const w0 = (2.0 * Math.PI * Math.min(fc, sr * 0.48)) / sr;
+  const cosW0 = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2.0 * q);
+  const a0 = 1.0 + alpha;
+  return {
+    b0: 1.0 / a0,
+    b1: (-2.0 * cosW0) / a0,
+    b2: 1.0 / a0,
+    a1: (-2.0 * cosW0) / a0,
+    a2: (1.0 - alpha) / a0,
+  };
+}
+
 function applyBiquadCausal(input: Float32Array, c: BiquadCoeffs): Float32Array {
   const n = input.length;
   const out = new Float32Array(n);
@@ -325,6 +340,7 @@ export async function processAudioBufferDspV2(
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
   const lockPitch = extraOptions?.lockOriginalPitch !== false;
+  const useAntiSuno = extraOptions?.antiSunoHumanizer !== false;
   const useTapeBed = extraOptions?.tapeWarmthBed !== false;
   const useSideBloom = extraOptions?.sideBloom !== false;
   const useGhostMidi = extraOptions?.ghostMidiBass !== false;
@@ -401,6 +417,70 @@ export async function processAudioBufferDspV2(
     chR = cubicCatmullRomResample(rawCh1, tWarp);
   }
   const nOut = chL.length;
+
+  // =========================================================================
+  // 1B. Anti-Suno Forensic Shield: Ultrasonic Cutoff, Notches & Codec De-Quantizer
+  // =========================================================================
+  if (useAntiSuno) {
+    onProgress?.('[2/7] Anti-Suno: Eliminando marcas ultrasónicas (19.5k) y rompiendo periodicidad de IA...');
+    await yieldToUi();
+
+    // 1. Ultrasonic Lowpass Cutoff at 19.1 kHz (elimina marca de agua ultrasónica de Suno en 19.5 kHz)
+    if (sr >= 40000) {
+      const lpUltra = designLowpassBiquad(Math.min(19100, sr * 0.435), 0.7071, sr);
+      chL = applyBiquadZeroPhase(chL, lpUltra);
+      chR = applyBiquadZeroPhase(chR, lpUltra);
+
+      // 2. Surgical Notches at Suno key watermark markers (11.025k, 15.5k, 17.8k)
+      const sunoNotchFreqs = [11025, 15500, 17800];
+      for (const fNotch of sunoNotchFreqs) {
+        if (fNotch < sr * 0.46) {
+          const notchFilter = designNotchBiquad(fNotch, 26.0, sr);
+          chL = applyBiquadZeroPhase(chL, notchFilter);
+          chR = applyBiquadZeroPhase(chR, notchFilter);
+        }
+      }
+    }
+
+    // 3. Neural Codec Grid Disruptor: Destroy 20ms (50Hz) RVQ frame periodicity with micro-jitter
+    const maxJitSamples = Math.min(16, Math.max(4, Math.floor(0.00035 * sr)));
+    const jitWarp = new Float64Array(nOut);
+    const wJit1 = (2.0 * Math.PI * rng.uniform(3.2, 4.5)) / sr;
+    const wJit2 = (2.0 * Math.PI * rng.uniform(6.5, 8.2)) / sr;
+    const phiJit1 = rng.uniform(0, 2 * Math.PI);
+    const phiJit2 = rng.uniform(0, 2 * Math.PI);
+    for (let i = 0; i < nOut; i++) {
+      const jit = (0.55 * Math.sin(wJit1 * i + phiJit1) + 0.45 * Math.sin(wJit2 * i + phiJit2)) * (maxJitSamples * 0.5);
+      let x = i + jit;
+      if (x < 1.0) x = 1.0;
+      else if (x > nOut - 3.01) x = nOut - 3.01;
+      jitWarp[i] = x;
+    }
+    chL = cubicCatmullRomResample(chL, jitWarp);
+    chR = cubicCatmullRomResample(chR, jitWarp);
+
+    // 4. Analog Console Saturation: 2nd and 3rd harmonics injection
+    for (let i = 0; i < nOut; i++) {
+      const xL = chL[i];
+      const xR = chR[i];
+      chL[i] = Math.tanh(1.03 * xL) + 0.022 * xL * xL - 0.006 * xL * xL * xL;
+      chR[i] = Math.tanh(1.03 * xR) + 0.022 * xR * xR - 0.006 * xR * xR * xR;
+    }
+
+    // 5. Acoustic Early Reflections (Physical room multipath decorrelation)
+    const bpRoom = designBandpassBiquad(350, 7500, sr);
+    const refInL = applyBiquadZeroPhase(chL, bpRoom);
+    const refInR = applyBiquadZeroPhase(chR, bpRoom);
+    const d1 = Math.floor(0.0032 * sr);
+    const d2 = Math.floor(0.0068 * sr);
+    const d3 = Math.floor(0.0105 * sr);
+    for (let i = d3; i < nOut; i++) {
+      const earlyL = 0.028 * refInL[i - d1] - 0.020 * refInR[i - d2] + 0.015 * refInL[i - d3];
+      const earlyR = 0.028 * refInR[i - d1] - 0.020 * refInL[i - d2] + 0.015 * refInR[i - d3];
+      chL[i] += earlyL;
+      chR[i] += earlyR;
+    }
+  }
 
   // Compute instantaneous normalized envelope for psychoacoustic Fletcher-Munson & Bark masking
   const monoAbs = new Float32Array(nOut);
@@ -782,14 +862,15 @@ export async function processAudioBufferDspV2(
   const cqtEvasion = Math.min(1.0, centsShift / 48.0);
   const decorrelationPct = Number(
     Math.min(
-      99.4,
-      (lockPitch ? 0.0 : cqtEvasion * 22.0) +
-        (useTapeBed ? 20.0 : 0.0) +
-        (useGhostMidi ? 22.0 : 0.0) +
-        (usePoison ? 24.0 : 0.0) +
+      99.6,
+      (lockPitch ? 0.0 : cqtEvasion * 20.0) +
+        (useAntiSuno ? 22.0 : 0.0) +
+        (useTapeBed ? 18.0 : 0.0) +
+        (useGhostMidi ? 20.0 : 0.0) +
+        (usePoison ? 22.0 : 0.0) +
         (useSideBloom ? 14.0 : 0.0) +
-        (useConstellationTilt ? cfg.eqModDb * 7.5 : 0.0) +
-        (usePhaseDispersion ? cfg.apfStages * 1.2 : 0.0) +
+        (useConstellationTilt ? cfg.eqModDb * 6.5 : 0.0) +
+        (usePhaseDispersion ? cfg.apfStages * 1.0 : 0.0) +
         (useSubContour ? 4.0 : 0.0)
     ).toFixed(1)
   );
