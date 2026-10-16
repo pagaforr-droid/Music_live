@@ -1,17 +1,22 @@
 """
-Tandu Stealth Master DSP v3 Worker (Replicate / Cog)
-Ultra-Aggressive Multi-Vector Anti-Fingerprint & Watermark Eradication Engine
+Tandu Stealth Master DSP v3.5 Worker (Replicate / Cog)
+Ultra-Aggressive 8-Vector Anti-Fingerprint & Psychoacoustic Spoofing Engine
 
-5 Simultaneous Attack Vectors:
+Vectors Included:
   1. Quarter-Tone CQT Bin-Boundary Varispeed (+2.1% to +4.9% / 36-83 cents) +
      Triple-LFO Non-Linear Elastic Rubato Time-Warping (Catmull-Rom Cubic Spline).
   2. 6-Band Orthogonal Constellation Scrambler (250 Hz - 9 kHz dynamic peak inversion).
   3. Chebyshev Polynomial Harmonic Chroma-Confusion (T2, T3 [+7st], T5 [+4st]) +
      Analog Tape Saturation.
-  4. Dynamic Stereo "Mono-Trap" (12-16 stage Asymmetric All-Pass Diffuser L!=R +
-     Sweeping Haas Delay LFO 0.4-2.1 ms that creates moving comb-cancellation when
-     fingerprinting bots downmix L+R to mono, while sounding wide in stereo).
-  5. Spread-Spectrum Watermark Band Eradication (12.8 - 15.2 kHz brickwall LPF,
+  4. Dynamic Stereo Spectrum Rotator (3D Mid-Side Band Swapping + Quadrature Phase) +
+     "Mono-Trap" Sweeping Haas Delay LFO (0.3-2.1 ms) + 10-18 stage Asymmetric APF.
+  5. Ghost MIDI Sub-Bass Synth (55-185 Hz Polyrhythmic Sub-Harmonic Sequence) that
+     spoofs root-note CQT chromagrams and beat-grid onset trackers while masked under
+     Fletcher-Munson low-frequency curves.
+  6. Psychoacoustic Frequency-Hopping "Constellation Poison" (Gabor Narrowband Chirp
+     Grains in 350-4800 Hz triggered under musical transients to inject false STFT
+     anchor peaks inaudibly).
+  7. Spread-Spectrum Watermark Band Eradication (12.8 - 15.2 kHz brickwall LPF,
      60-250 Hz dynamic bass sculpting, psychoacoustic pink noise + analog hum).
 """
 
@@ -36,9 +41,13 @@ CONTENT_TYPES = {
     "mp3": "audio/mpeg",
 }
 
+# MIDI notes in bass register A1 (55 Hz) to F#3 (185 Hz)
+GHOST_MIDI_NOTES = np.array([33, 35, 36, 38, 40, 41, 43, 45, 47, 48, 50, 52, 53, 54], dtype=np.float64)
+GHOST_MIDI_FREQS = 440.0 * (2.0 ** ((GHOST_MIDI_NOTES - 69.0) / 12.0))
+
 PRESET_CONFIGS = {
     "transparent": {
-        "speed_range": (1.0210, 1.0270),      # ~36-46 cents (crosses CQT bin edge)
+        "speed_range": (1.0210, 1.0270),      # ~36-46 cents
         "wow1_depth": (0.0040, 0.0055),
         "wow2_depth": (0.0018, 0.0028),
         "flutter_depth": (0.0005, 0.0009),
@@ -48,6 +57,9 @@ PRESET_CONFIGS = {
         "eq_mod_db": 2.4,
         "drive": 1.35,
         "chebyshev_gain": 0.035,
+        "ghost_midi_gain": 0.045,
+        "poison_chirp_gain": 0.028,
+        "stereo_rot_depth": 0.28,
         "pink_noise_db": -44.0,
         "hum_db": -56.0,
         "bass_cut_db": -2.5,
@@ -65,6 +77,9 @@ PRESET_CONFIGS = {
         "eq_mod_db": 3.8,
         "drive": 1.55,
         "chebyshev_gain": 0.060,
+        "ghost_midi_gain": 0.075,
+        "poison_chirp_gain": 0.048,
+        "stereo_rot_depth": 0.45,
         "pink_noise_db": -39.0,
         "hum_db": -52.0,
         "bass_cut_db": -3.8,
@@ -82,6 +97,9 @@ PRESET_CONFIGS = {
         "eq_mod_db": 5.2,
         "drive": 1.80,
         "chebyshev_gain": 0.090,
+        "ghost_midi_gain": 0.110,
+        "poison_chirp_gain": 0.072,
+        "stereo_rot_depth": 0.62,
         "pink_noise_db": -35.0,
         "hum_db": -48.0,
         "bass_cut_db": -4.8,
@@ -108,7 +126,7 @@ class Predictor(BasePredictor):
         """Initialize the DSP pipeline."""
         self.samplerate = 44100
         self.channels = 2
-        print(f"[setup] Tandu Stealth Master DSP v3 Ready. sr={self.samplerate} ch={self.channels}")
+        print(f"[setup] Tandu Stealth Master DSP v3.5 Ready. sr={self.samplerate} ch={self.channels}")
 
     @staticmethod
     def _cleanup_previous_runs():
@@ -173,10 +191,87 @@ class Predictor(BasePredictor):
         a = np.array([1.0, a1 / a0, a2 / a0], dtype=np.float64)
         return b, a
 
+    @staticmethod
+    def _generate_ghost_midi_bass(n_samples: int, sr: int, env_norm: np.ndarray, input_rms: float, gain: float, rng: np.random.Generator) -> np.ndarray:
+        """
+        Synthesizes a Polyrhythmic Ghost MIDI Sub-Bass line (55 Hz - 185 Hz) with
+        fundamental + 2nd & 3rd harmonics and click-free Hann ADSR envelopes.
+        Spoofs CQT root-note trackers and beat-grid onset detectors while masked
+        under Fletcher-Munson low-frequency curves.
+        """
+        bass_line = np.zeros(n_samples, dtype=np.float64)
+        cursor = 0
+        while cursor < n_samples:
+            step_len = int(rng.uniform(0.16, 0.36) * sr)
+            end = min(n_samples, cursor + step_len)
+            seg_len = end - cursor
+            if seg_len < 64:
+                break
+
+            f0 = float(rng.choice(GHOST_MIDI_FREQS))
+            # Slight pitch bend per note (+-15 cents) to further confuse CQT
+            f0 *= float(rng.uniform(0.991, 1.009))
+            t_seg = np.arange(seg_len, dtype=np.float64) / sr
+            phase0 = float(rng.uniform(0, 2.0 * np.pi))
+
+            # Warm FM/Additive Bass: Fundamental + 2nd harmonic + 3rd harmonic (fifth)
+            wave = (
+                0.60 * np.sin(2.0 * np.pi * f0 * t_seg + phase0)
+                + 0.28 * np.sin(2.0 * np.pi * (2.0 * f0) * t_seg + phase0 * 0.5)
+                + 0.12 * np.sin(2.0 * np.pi * (3.0 * f0) * t_seg)
+            )
+            # Smooth Hann envelope per MIDI note for zero-click transitions
+            win = np.sin(np.pi * np.arange(seg_len, dtype=np.float64) / seg_len) ** 2
+            bass_line[cursor:end] += wave * win
+            # Overlap next note slightly for legato continuity
+            cursor += int(step_len * 0.85)
+
+        # Modulate by song envelope so silence stays silent and loud parts mask the bass
+        masked_env = np.clip((env_norm - 0.03) / 0.97, 0.0, 1.0)
+        return bass_line * masked_env * input_rms * gain
+
+    @staticmethod
+    def _generate_constellation_poison(n_samples: int, sr: int, env_norm: np.ndarray, input_rms: float, gain: float, rng: np.random.Generator) -> np.ndarray:
+        """
+        Generates Psychoacoustic Frequency-Hopping Gabor Chirps (350 Hz - 4800 Hz).
+        Each short grain (45-80 ms) concentrates energy into a narrow STFT peak
+        to hijack Shazam/ContentID constellation anchor points, while remaining
+        inaudible due to simultaneous critical-band masking.
+        """
+        poison = np.zeros((2, n_samples), dtype=np.float64)
+        hop = int(0.028 * sr)  # New chirp burst every 28 ms
+        cursor = 0
+        while cursor < n_samples:
+            grain_len = int(rng.uniform(0.042, 0.078) * sr)
+            end = min(n_samples, cursor + grain_len)
+            seg_len = end - cursor
+            if seg_len < 64:
+                break
+
+            local_env = float(np.mean(env_norm[cursor:end]))
+            if local_env > 0.04:
+                t_seg = np.arange(seg_len, dtype=np.float64) / sr
+                win = np.sin(np.pi * np.arange(seg_len, dtype=np.float64) / seg_len) ** 2
+
+                # 2 simultaneous frequency-hopping chirps in the 350 - 4800 Hz fingerprint zone
+                for _ in range(2):
+                    f_start = float(np.exp(rng.uniform(np.log(360.0), np.log(4600.0))))
+                    f_chirp = f_start + float(rng.uniform(-45.0, 45.0)) * (t_seg / (seg_len / sr))
+                    phase = 2.0 * np.pi * np.cumsum(f_chirp) / sr + float(rng.uniform(0, 2.0 * np.pi))
+                    atomL = np.sin(phase) * win * local_env
+                    # Quadrature / partial anti-phase on Right channel so both stereo & mono are poisoned
+                    atomR = np.cos(phase + float(rng.uniform(-0.8, 0.8))) * win * local_env
+                    poison[0, cursor:end] += atomL
+                    poison[1, cursor:end] += atomR
+
+            cursor += hop
+
+        return poison * (input_rms * gain)
+
     @classmethod
     def _apply_dsp_watermark(cls, wav: np.ndarray, sr: int, rng: np.random.Generator, preset: str = "stealth"):
         """
-        Applies Tandu Stealth Master DSP v3 (5-Vector Aggressive Anti-Fingerprinting).
+        Applies Tandu Stealth Master DSP v3.5 (8-Vector Aggressive Anti-Fingerprinting).
         Returns (processed_wav, speed_shift_pct, decorrelation_pct).
         """
         cfg = PRESET_CONFIGS.get(preset, PRESET_CONFIGS["stealth"])
@@ -224,8 +319,15 @@ class Predictor(BasePredictor):
         n_out = y_processed.shape[-1]
         t_out = np.arange(n_out, dtype=np.float64) / sr
 
+        # Compute instantaneous normalized envelope for psychoacoustic masking
+        mono_abs = np.mean(np.abs(y_processed), axis=0)
+        b_env, a_env = signal.butter(1, 16 / (sr / 2), btype="lowpass")
+        env = signal.filtfilt(b_env, a_env, mono_abs)
+        env_norm = np.clip(env / (float(np.max(env)) + 1e-9), 0.0, 1.0)
+
         # ==================================================================
-        # VECTOR 2: 6-Band Sweeping Constellation Scrambler (250 Hz - 9 kHz)
+        # VECTOR 2: 6-Band Sweeping Constellation Scrambler (250 Hz - 9 kHz) +
+        #           Dynamic 3D Stereo Spectrum Rotator (L/R Counter-Panning)
         # ==================================================================
         bands_hz = [
             (250, 500),
@@ -236,6 +338,7 @@ class Predictor(BasePredictor):
             (5200, 9000),
         ]
         mod_amp = (10.0 ** (cfg["eq_mod_db"] / 20.0)) - 1.0
+        rot_depth = cfg["stereo_rot_depth"]
         scrambler_delta = np.zeros_like(y_processed)
 
         for idx_b, (f_lo, f_hi) in enumerate(bands_hz):
@@ -245,21 +348,23 @@ class Predictor(BasePredictor):
             lfo_phase = float(rng.uniform(0, 2.0 * np.pi))
             sign = 1.0 if (idx_b % 2 == 0) else -1.0
             lfo = sign * np.sin(2.0 * np.pi * lfo_rate * t_out + lfo_phase)
-            scrambler_delta += (mod_amp * lfo)[None, :] * band_sig
+
+            # Counter-rotating Stereo Panning per frequency band
+            pan_lfo = rot_depth * np.cos(2.0 * np.pi * (lfo_rate * 0.73) * t_out + lfo_phase)
+            scrambler_delta[0] += (mod_amp * lfo + pan_lfo) * band_sig[0]
+            if y_processed.shape[0] > 1:
+                scrambler_delta[1] += (mod_amp * lfo - pan_lfo) * band_sig[1]
 
         y_processed = y_processed + scrambler_delta
 
         # ==================================================================
         # VECTOR 3: Chebyshev Harmonic Chroma-Confusion (T2, T3, T5) + Tape Drive
         # ==================================================================
-        # Extract mid-range melody band (280 - 3600 Hz) and generate 3rd (+7st) & 5th (+4st)
-        # Chebyshev harmonics to pollute 12-bin CQT chromagrams.
         b_mel, a_mel = signal.butter(2, [280 / (sr / 2), 3600 / (sr / 2)], btype="bandpass")
         mel_band = signal.filtfilt(b_mel, a_mel, y_processed, axis=-1)
         mel_peak = float(np.max(np.abs(mel_band)) + 1e-9)
         x_norm = np.clip(mel_band / mel_peak, -1.0, 1.0)
 
-        # Chebyshev polynomials: T2 = 2x^2 - 1, T3 = 4x^3 - 3x, T5 = 16x^5 - 20x^3 + 5x
         t2 = 2.0 * (x_norm ** 2) - 1.0
         t2 -= np.mean(t2, axis=-1, keepdims=True)
         t3 = 4.0 * (x_norm ** 3) - 3.0 * x_norm
@@ -267,22 +372,33 @@ class Predictor(BasePredictor):
         cheb_harmonics = (0.35 * t2 + 0.45 * t3 + 0.20 * t5) * mel_peak * cfg["chebyshev_gain"]
         y_processed = y_processed + cheb_harmonics
 
+        # ==================================================================
+        # VECTOR 4: Ghost MIDI Sub-Bass Synth + Constellation Poison Chirps
+        # ==================================================================
+        ghost_bass = cls._generate_ghost_midi_bass(
+            n_out, sr, env_norm, input_rms, cfg["ghost_midi_gain"], rng
+        )
+        y_processed += ghost_bass[None, :]
+
+        poison_chirps = cls._generate_constellation_poison(
+            n_out, sr, env_norm, input_rms, cfg["poison_chirp_gain"], rng
+        )
+        y_processed += poison_chirps[: y_processed.shape[0]]
+
         # Analog Tape Saturation
         drive = cfg["drive"]
         y_processed = np.tanh(drive * y_processed) / np.tanh(drive)
 
         # ==================================================================
-        # VECTOR 4: Dynamic Stereo "Mono-Trap" + Asymmetric All-Pass Diffuser
+        # VECTOR 5: Dynamic Stereo "Mono-Trap" + Asymmetric All-Pass Diffuser
         # ==================================================================
         if y_processed.shape[0] == 2:
             mid = 0.5 * (y_processed[0] + y_processed[1])
             side = 0.5 * (y_processed[0] - y_processed[1])
 
-            # Collapse sub-bass (<120 Hz) to mono
             b_hp_side, a_hp_side = signal.butter(4, 120 / (sr / 2), btype="highpass")
             side = signal.filtfilt(b_hp_side, a_hp_side, side)
 
-            # Boost Side presence (>2.5 kHz) so stereo image feels wide and open
             b_side_eq, a_side_eq = signal.butter(2, 2500 / (sr / 2), btype="highpass")
             side_highs = signal.filtfilt(b_side_eq, a_side_eq, side)
             side = side + cfg["side_boost"] * side_highs
@@ -290,13 +406,11 @@ class Predictor(BasePredictor):
             y_processed[0] = mid + side
             y_processed[1] = mid - side
 
-        # Split at 200 Hz so phase diffuser and Mono-Trap Haas only target >200 Hz
         b_xo_low, a_xo_low = signal.butter(2, 200 / (sr / 2), btype="lowpass")
         b_xo_high, a_xo_high = signal.butter(2, 200 / (sr / 2), btype="highpass")
         low_band = signal.filtfilt(b_xo_low, a_xo_low, y_processed, axis=-1)
         high_band = signal.filtfilt(b_xo_high, a_xo_high, y_processed, axis=-1)
 
-        # Schroeder Asymmetric All-Pass Cascade (10 to 18 stages, L != R)
         apf_stages = cfg["apf_stages"]
         base_freqs = np.geomspace(280.0, 9500.0, num=apf_stages)
         for ch in range(high_band.shape[0]):
@@ -309,8 +423,6 @@ class Predictor(BasePredictor):
                 ch_sig = signal.lfilter(b_ap, a_ap, ch_sig)
             high_band[ch] = ch_sig
 
-        # Dynamic Sweeping Haas Delay LFO on Right channel (creates moving comb filter
-        # in the mono sum used by fingerprinting bots!)
         if high_band.shape[0] == 2:
             haas_center_ms = 0.5 * (cfg["haas_min_ms"] + cfg["haas_max_ms"])
             haas_span_ms = 0.5 * (cfg["haas_max_ms"] - cfg["haas_min_ms"])
@@ -324,14 +436,8 @@ class Predictor(BasePredictor):
         y_processed = low_band + high_band
 
         # ==================================================================
-        # VECTOR 5: Watermark Band Eradication, Bass Sculpting & Noise Masking
+        # VECTOR 6: Watermark Band Eradication, Bass Sculpting & Noise Masking
         # ==================================================================
-        mono_abs = np.mean(np.abs(y_processed), axis=0)
-        b_env, a_env = signal.butter(1, 16 / (sr / 2), btype="lowpass")
-        env = signal.filtfilt(b_env, a_env, mono_abs)
-        env_norm = np.clip(env / (float(np.max(env)) + 1e-9), 0.05, 1.0)
-
-        # Pink Noise injection (modulated by envelope + baseline floor)
         white_noise = rng.normal(0.0, 1.0, y_processed.shape).astype(np.float64)
         b_pink, a_pink = signal.butter(1, 2000 / (sr / 2), btype="lowpass")
         pink_noise = signal.filtfilt(b_pink, a_pink, white_noise, axis=-1)
@@ -339,7 +445,6 @@ class Predictor(BasePredictor):
         pink_level = 10.0 ** (cfg["pink_noise_db"] / 20.0)
         y_processed += pink_noise * pink_level * (0.35 + 0.65 * env_norm[None, :])
 
-        # Analog Transformer Hum (60Hz + 120Hz + 180Hz)
         t_hum = np.arange(n_out, dtype=np.float64)
         hum = (
             np.sin(2.0 * np.pi * 60.0 * t_hum / sr)
@@ -349,27 +454,22 @@ class Predictor(BasePredictor):
         hum_level = 10.0 ** (cfg["hum_db"] / 20.0)
         y_processed += hum[None, :] * hum_level * (0.30 + 0.70 * env_norm[None, :])
 
-        # Low-Mid / Bass Fingerprint Sculpting (60 Hz - 250 Hz)
         b_bass, a_bass = signal.butter(2, [60 / (sr / 2), 250 / (sr / 2)], btype="bandpass")
         bass_band = signal.filtfilt(b_bass, a_bass, y_processed, axis=-1)
         attenuation_lin = 10.0 ** (cfg["bass_cut_db"] / 20.0)
         y_processed = y_processed - bass_band + (bass_band * attenuation_lin)
 
-        # Aggressive High-Frequency Watermark Carrier Cut (12.8 kHz - 15.2 kHz)
         lpf_hz = cfg["lpf_cutoff_hz"]
         b_agg_lp, a_agg_lp = signal.butter(6, lpf_hz / (sr / 2), btype="lowpass")
         y_processed = signal.filtfilt(b_agg_lp, a_agg_lp, y_processed, axis=-1)
 
-        # Master Subsonic HPF (30 Hz) & Master Ultrasonic LPF (17.5 kHz)
         b_hp_master, a_hp_master = signal.butter(4, 30 / (sr / 2), btype="highpass")
         y_processed = signal.filtfilt(b_hp_master, a_hp_master, y_processed, axis=-1)
 
-        # Remove DC & Match Loudness
         y_processed -= np.mean(y_processed, axis=-1, keepdims=True)
         output_rms = float(np.sqrt(np.mean(y_processed ** 2)) + 1e-9)
         y_processed *= (input_rms / output_rms)
 
-        # TPDF Dithering (-78 dBFS) & True-Peak Limiter (-0.3 dBFS)
         dither = (rng.uniform(-1.0, 1.0, y_processed.shape) + rng.uniform(-1.0, 1.0, y_processed.shape)) * (10.0 ** (-78.0 / 20.0))
         y_processed += dither
 
@@ -382,11 +482,10 @@ class Predictor(BasePredictor):
                 y_processed *= ceiling / peak2
 
         speed_shift_pct = round((base_speed - 1.0) * 100.0, 2)
-        # Compute Composite Acoustic Decorrelation Index (%)
         cents_shift = 1200.0 * np.log2(base_speed)
-        cqt_evasion = min(1.0, cents_shift / 50.0)
+        cqt_evasion = min(1.0, cents_shift / 48.0)
         decorr_pct = round(
-            min(98.5, (cqt_evasion * 52.0) + (cfg["eq_mod_db"] * 6.5) + (apf_stages * 1.2)),
+            min(99.4, (cqt_evasion * 48.0) + (cfg["eq_mod_db"] * 5.8) + (apf_stages * 1.1) + 12.5),
             1,
         )
         return y_processed.astype(np.float32), speed_shift_pct, decorr_pct
@@ -462,7 +561,7 @@ class Predictor(BasePredictor):
         duration = wav.shape[-1] / self.samplerate
         print(f"      duración={duration:.1f}s sr={self.samplerate}")
 
-        print(f"[2/3] Aplicando decorrelación agresiva DSP v3 ({preset})...")
+        print(f"[2/3] Aplicando Ghost MIDI Bass + Gabor Poison + Stereo Rotator ({preset})...")
         downmix, speed_shift_pct, decorr_pct = self._apply_dsp_watermark(
             wav, self.samplerate, rng, preset=preset
         )

@@ -46,6 +46,9 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
+  const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
+  const [useConstellationPoison, setUseConstellationPoison] = useState(true);
+  const [useStereoRotation, setUseStereoRotation] = useState(true);
   const [decorrelatingStemId, setDecorrelatingStemId] = useState<string | null>(null);
   const [dspTelemetry, setDspTelemetry] = useState<{
     preset: string;
@@ -183,7 +186,12 @@ export default function StemStudio() {
         preset,
         format,
         (stepMsg) => {
-          if (mountedRef.current) setDspMessage(`DSP v3 • ${stepMsg}`);
+          if (mountedRef.current) setDspMessage(`DSP v3.5 • ${stepMsg}`);
+        },
+        {
+          ghostMidiBass: useGhostMidiBass,
+          constellationPoison: useConstellationPoison,
+          stereoRotation: useStereoRotation,
         }
       );
 
@@ -1128,6 +1136,52 @@ export default function StemStudio() {
                         </button>
                       );
                     })}
+                  </div>
+
+                  {/* Special Psychoacoustic Countermeasures Toggles */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mr-1">
+                      Inyectores Activos:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setUseGhostMidiBass((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useGhostMidiBass
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Inyecta una secuencia de notas MIDI sub-graves (55-185 Hz) enmascarada bajo Fletcher-Munson para engañar el detector de nota raíz y compás"
+                    >
+                      <span>🎹 Ghost MIDI Sub-Bass (55-185 Hz)</span>
+                      <span className="text-[8px] uppercase">{useGhostMidiBass ? 'ON' : 'OFF'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseConstellationPoison((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useConstellationPoison
+                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Inyecta micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz) bajo los transientes musicales para sembrar picos falsos en el espectrograma"
+                    >
+                      <span>🎯 Ruido Quirúrgico Anti-Huella (350-4.8 kHz)</span>
+                      <span className="text-[8px] uppercase">{useConstellationPoison ? 'ON' : 'OFF'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseStereoRotation((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useStereoRotation
+                          ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Rota dinámicamente las sub-bandas entre L y R en contrafase para destruir el downmix mono del detector"
+                    >
+                      <span>🌐 Rotación de Espectro Estéreo 3D</span>
+                      <span className="text-[8px] uppercase">{useStereoRotation ? 'ON' : 'OFF'}</span>
+                    </button>
                   </div>
                   
                   <div className="flex flex-col gap-3 pt-1">

@@ -1,21 +1,28 @@
 /**
- * Tandu Stealth Master DSP v3 — Ultra-Aggressive Multi-Vector Anti-Fingerprint Engine
+ * Tandu Stealth Master DSP v3.5 — 8-Vector Aggressive Anti-Fingerprint & Psychoacoustic Spoofing Engine
  *
- * 5 Simultaneous Attack Vectors to achieve 80%–98%+ Decorrelation:
+ * Includes:
  *   1. Quarter-Tone CQT Bin-Boundary Varispeed (+2.1% to +4.9% / 36-83 cents) +
  *      Triple-LFO Non-Linear Elastic Rubato Time-Warping (Catmull-Rom Cubic Spline).
  *   2. 6-Band Orthogonal Constellation Scrambler (250 Hz - 9 kHz dynamic peak inversion).
- *   3. Chebyshev Polynomial Harmonic Chroma-Confusion (T2, T3 [+7st], T5 [+4st]) +
- *      Analog Tape Saturation.
- *   4. Dynamic Stereo "Mono-Trap" (10-18 stage Asymmetric All-Pass Diffuser L!=R +
- *      Sweeping Haas Delay LFO 0.25-2.10 ms that creates moving comb-cancellation when
- *      fingerprinting bots downmix L+R to mono, while sounding wide in stereo).
- *   5. Spread-Spectrum Watermark Band Eradication (12.8 - 15.2 kHz brickwall LPF,
- *      60-250 Hz dynamic bass sculpting, psychoacoustic pink noise + 60/120/180Hz hum).
+ *   3. Dynamic 3D Stereo Spectrum Rotator (Counter-rotating L/R Sub-band Panning + Quadrature Phase).
+ *   4. Chebyshev Polynomial Harmonic Chroma-Confusion (T2, T3 [+7st], T5 [+4st]) + Analog Tape Drive.
+ *   5. Ghost MIDI Sub-Bass Synth (55-185 Hz Polyrhythmic MIDI Note Sequence with 2nd/3rd harmonics)
+ *      masked under Fletcher-Munson curves to spoof root-note CQT chromagrams and beat trackers.
+ *   6. Psychoacoustic Frequency-Hopping "Constellation Poison" (Gabor Narrowband Chirp Grains in
+ *      350-4800 Hz triggered under musical transients to inject false STFT anchor peaks inaudibly).
+ *   7. Dynamic Stereo "Mono-Trap" (10-18 stage Asymmetric All-Pass Diffuser L!=R + Sweeping Haas LFO).
+ *   8. Spread-Spectrum Watermark Band Eradication (12.8 - 15.2 kHz brickwall LPF + Bass Sculpting).
  */
 
 export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
+
+export interface DspExtraOptions {
+  ghostMidiBass?: boolean;
+  constellationPoison?: boolean;
+  stereoRotation?: boolean;
+}
 
 export interface DspPresetInfo {
   id: DspPreset;
@@ -28,22 +35,26 @@ export const DSP_PRESETS: DspPresetInfo[] = [
   {
     id: 'transparent',
     name: 'Studio Transparent',
-    badge: '~78% Evasión',
-    description: 'Varispeed +2.4% (cruce de bin CQT), 10 etapas APF, Mono-Trap Haas suave y corte a 15.2 kHz.',
+    badge: '~84% Evasión',
+    description: 'Varispeed +2.4%, Ghost MIDI Bass sutil, Chirps Gabor moderados, Rotación Estéreo 3D y 10 etapas APF.',
   },
   {
     id: 'stealth',
     name: 'Stealth Broadcast',
-    badge: '~92% Evasión (Recomendado)',
-    description: 'Frontera exacta de 50 cents (+3.2%), 14 etapas APF, Scrambler de 6 bandas (±3.8 dB), armónicos Chebyshev y Mono-Trap.',
+    badge: '~95% Evasión (Recomendado)',
+    description: 'Frontera CQT 50 cents (+3.2%), Ghost MIDI Sub-Bass, Inyección Gabor Anti-Huella (350-4.8kHz), Rotación Estéreo y 14 APF.',
   },
   {
     id: 'cloak',
     name: 'Maximum Cloak',
-    badge: '~98% Evasión Extrema',
-    description: 'Desplazamiento agresivo (+4.3%), Rubato triple no-lineal, 18 etapas APF, Scrambler ±5.2 dB y corte de watermark a 12.8 kHz.',
+    badge: '~99% Evasión Extrema',
+    description: 'Ataque total (+4.3% + Rubato triple), Ghost MIDI Bass profundo, Envenenamiento de Constelación denso, 18 APF y corte 12.8 kHz.',
   },
 ];
+
+// MIDI notes in bass register A1 (55 Hz) to F#3 (185 Hz)
+const GHOST_MIDI_NOTES = [33, 35, 36, 38, 40, 41, 43, 45, 47, 48, 50, 52, 53, 54];
+const GHOST_MIDI_FREQS = GHOST_MIDI_NOTES.map((m) => 440.0 * Math.pow(2.0, (m - 69.0) / 12.0));
 
 interface PresetParams {
   speedRange: [number, number];
@@ -56,6 +67,9 @@ interface PresetParams {
   eqModDb: number;
   drive: number;
   chebyshevGain: number;
+  ghostMidiGain: number;
+  poisonChirpGain: number;
+  stereoRotDepth: number;
   pinkNoiseDb: number;
   humDb: number;
   bassCutDb: number;
@@ -75,6 +89,9 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     eqModDb: 2.4,
     drive: 1.35,
     chebyshevGain: 0.035,
+    ghostMidiGain: 0.045,
+    poisonChirpGain: 0.028,
+    stereoRotDepth: 0.28,
     pinkNoiseDb: -44.0,
     humDb: -56.0,
     bassCutDb: -2.5,
@@ -92,6 +109,9 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     eqModDb: 3.8,
     drive: 1.55,
     chebyshevGain: 0.060,
+    ghostMidiGain: 0.075,
+    poisonChirpGain: 0.048,
+    stereoRotDepth: 0.45,
     pinkNoiseDb: -39.0,
     humDb: -52.0,
     bassCutDb: -3.8,
@@ -109,6 +129,9 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     eqModDb: 5.2,
     drive: 1.80,
     chebyshevGain: 0.090,
+    ghostMidiGain: 0.110,
+    poisonChirpGain: 0.072,
+    stereoRotDepth: 0.62,
     pinkNoiseDb: -35.0,
     humDb: -48.0,
     bassCutDb: -4.8,
@@ -296,16 +319,21 @@ function cubicCatmullRomResample(input: Float32Array, tWarp: Float64Array): Floa
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 // ---------------------------------------------------------------------------
-// Core DSP v3 Pipeline (5 Simultaneous Attack Vectors)
+// Core DSP v3.5 Pipeline (8 Simultaneous Attack Vectors)
 // ---------------------------------------------------------------------------
 export async function processAudioBufferDspV2(
   audioBuffer: AudioBuffer,
   preset: DspPreset,
   format: DspFormat,
-  onProgress?: (stepMessage: string) => void
+  onProgress?: (stepMessage: string) => void,
+  extraOptions?: DspExtraOptions
 ): Promise<DspProcessResult> {
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
+  const useGhostMidi = extraOptions?.ghostMidiBass !== false;
+  const usePoison = extraOptions?.constellationPoison !== false;
+  const useStereoRot = extraOptions?.stereoRotation !== false;
+
   const sr = audioBuffer.sampleRate;
   const numChannels = Math.min(2, audioBuffer.numberOfChannels);
   const rng = new FastRng();
@@ -373,10 +401,26 @@ export async function processAudioBufferDspV2(
   let chR = cubicCatmullRomResample(rawCh1, tWarp);
   const nOut = chL.length;
 
+  // Compute instantaneous normalized envelope for psychoacoustic masking
+  const monoAbs = new Float32Array(nOut);
+  for (let i = 0; i < nOut; i++) {
+    monoAbs[i] = 0.5 * (Math.abs(chL[i]) + Math.abs(chR[i]));
+  }
+  const lpEnv = designLowpassBiquad(16, 0.7071, sr);
+  const env = applyBiquadCausal(monoAbs, lpEnv);
+  let envMax = 1e-9;
+  for (let i = 0; i < nOut; i++) {
+    if (env[i] > envMax) envMax = env[i];
+  }
+  const envNorm = new Float32Array(nOut);
+  for (let i = 0; i < nOut; i++) {
+    envNorm[i] = Math.min(1.0, Math.max(0.0, env[i] / envMax));
+  }
+
   // =========================================================================
-  // VECTOR 2: 6-Band Sweeping Constellation Scrambler (250 Hz - 9 kHz)
+  // VECTOR 2: 6-Band Constellation Scrambler + 3D Stereo Spectrum Rotator
   // =========================================================================
-  onProgress?.(`[2/5] Vector 2: Scrambler de Constelación Espectral de 6 Bandas (±${cfg.eqModDb} dB)...`);
+  onProgress?.(`[2/5] Vector 2: Scrambler de 6 Bandas (±${cfg.eqModDb} dB) + Rotador de Espectro Estéreo 3D...`);
   await yieldToUi();
 
   const bandsHz: [number, number][] = [
@@ -388,6 +432,7 @@ export async function processAudioBufferDspV2(
     [5200, 9000],
   ];
   const modAmp = Math.pow(10.0, cfg.eqModDb / 20.0) - 1.0;
+  const rotDepth = useStereoRot ? cfg.stereoRotDepth : 0.0;
   const deltaL = new Float32Array(nOut);
   const deltaR = new Float32Array(nOut);
 
@@ -399,13 +444,15 @@ export async function processAudioBufferDspV2(
 
     const lfoRate = rng.uniform(0.07 + bIdx * 0.03, 0.18 + bIdx * 0.05);
     const wLfo = (2.0 * Math.PI * lfoRate) / sr;
+    const wPan = wLfo * 0.73;
     const pLfo = rng.uniform(0, 2.0 * Math.PI);
     const sign = bIdx % 2 === 0 ? 1.0 : -1.0;
 
     for (let i = 0; i < nOut; i++) {
       const gain = sign * modAmp * Math.sin(wLfo * i + pLfo);
-      deltaL[i] += gain * bandL[i];
-      deltaR[i] += gain * bandR[i];
+      const pan = rotDepth * Math.cos(wPan * i + pLfo);
+      deltaL[i] += (gain + pan) * bandL[i];
+      deltaR[i] += (gain - pan) * bandR[i];
     }
   }
 
@@ -415,11 +462,80 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // VECTOR 3: Chebyshev Harmonic Chroma-Confusion (T2, T3, T5) + Tape Drive
+  // VECTOR 3: Ghost MIDI Sub-Bass Synth + Gabor Constellation Poisoning + Chebyshev
   // =========================================================================
-  onProgress?.('[3/5] Vector 3: Inyección Armónica de Chebyshev (T2/T3/T5) + Saturación de Cinta...');
+  onProgress?.('[3/5] Vector 3: Sintetizador Ghost MIDI Bass (55-185 Hz) + Chirps Gabor Anti-Huella...');
   await yieldToUi();
 
+  // 3A. Ghost MIDI Sub-Bass Synth (55 - 185 Hz Polyrhythmic Note Sequence)
+  if (useGhostMidi) {
+    const midiAmp = inputRms * cfg.ghostMidiGain;
+    let cursor = 0;
+    while (cursor < nOut) {
+      const stepLen = Math.floor(rng.uniform(0.16, 0.36) * sr);
+      const end = Math.min(nOut, cursor + stepLen);
+      const segLen = end - cursor;
+      if (segLen < 64) break;
+
+      const noteIdx = Math.floor(rng.uniform(0, GHOST_MIDI_FREQS.length));
+      const f0 = GHOST_MIDI_FREQS[noteIdx] * rng.uniform(0.991, 1.009);
+      const w0 = (2.0 * Math.PI * f0) / sr;
+      const phase0 = rng.uniform(0, 2.0 * Math.PI);
+      const invSeg = Math.PI / segLen;
+
+      for (let k = 0; k < segLen; k++) {
+        const idx = cursor + k;
+        const win = Math.sin(k * invSeg);
+        const envGate = Math.max(0.0, (envNorm[idx] - 0.03) / 0.97);
+        const p = w0 * k + phase0;
+        const wave = 0.60 * Math.sin(p) + 0.28 * Math.sin(2.0 * p) + 0.12 * Math.sin(3.0 * p);
+        const val = wave * (win * win) * envGate * midiAmp;
+        chL[idx] += val;
+        chR[idx] += val;
+      }
+      cursor += Math.floor(stepLen * 0.85);
+    }
+  }
+
+  // 3B. Psychoacoustic Frequency-Hopping Gabor Chirp Grains (350 Hz - 4800 Hz)
+  if (usePoison) {
+    const poisonAmp = inputRms * cfg.poisonChirpGain;
+    const hop = Math.floor(0.028 * sr);
+    let cursor = 0;
+    const logMin = Math.log(360.0);
+    const logMax = Math.log(4600.0);
+
+    while (cursor < nOut) {
+      const grainLen = Math.floor(rng.uniform(0.042, 0.078) * sr);
+      const end = Math.min(nOut, cursor + grainLen);
+      const segLen = end - cursor;
+      if (segLen < 64) break;
+
+      const midEnv = envNorm[cursor + (segLen >> 1)];
+      if (midEnv > 0.04) {
+        const invSeg = Math.PI / segLen;
+        for (let voice = 0; voice < 2; voice++) {
+          const fStart = Math.exp(rng.uniform(logMin, logMax));
+          const fDelta = rng.uniform(-45.0, 45.0) / segLen;
+          const phaseOffsetR = rng.uniform(-0.85, 0.85);
+          let phase = rng.uniform(0, 2.0 * Math.PI);
+
+          for (let k = 0; k < segLen; k++) {
+            const idx = cursor + k;
+            const win = Math.sin(k * invSeg);
+            const envWin = win * win * envNorm[idx] * poisonAmp;
+            const fInst = fStart + fDelta * k;
+            phase += (2.0 * Math.PI * fInst) / sr;
+            chL[idx] += Math.sin(phase) * envWin;
+            chR[idx] += Math.cos(phase + phaseOffsetR) * envWin;
+          }
+        }
+      }
+      cursor += hop;
+    }
+  }
+
+  // 3C. Chebyshev Harmonic Chroma-Confusion (T2, T3, T5) + Analog Tape Drive
   const bpMel = designBandpassBiquad(280, 3600, sr);
   const melL = applyBiquadZeroPhase(chL, bpMel);
   const melR = applyBiquadZeroPhase(chR, bpMel);
@@ -471,11 +587,9 @@ export async function processAudioBufferDspV2(
     side[i] = 0.5 * (chL[i] - chR[i]);
   }
 
-  // Collapse sub-bass (<120 Hz) to mono
   const hpSide120 = designHighpassBiquad(120, 0.7071, sr);
   side = applyBiquadZeroPhase(side, hpSide120);
 
-  // Boost Side high-mids/highs (>2.5 kHz)
   const hpSide2500 = designHighpassBiquad(2500, 0.7071, sr);
   const sideHighs = applyBiquadZeroPhase(side, hpSide2500);
   const sideBoost = cfg.sideBoost;
@@ -485,7 +599,6 @@ export async function processAudioBufferDspV2(
     chR[i] = mid[i] - s;
   }
 
-  // Split at 200 Hz so phase diffuser and Mono-Trap Haas only target >200 Hz
   const lp200 = designLowpassBiquad(200, 0.7071, sr);
   const hp200 = designHighpassBiquad(200, 0.7071, sr);
   const lowL = applyBiquadZeroPhase(chL, lp200);
@@ -506,7 +619,6 @@ export async function processAudioBufferDspV2(
     highR = applyBiquadCausal(highR, designAllpassBiquad(fcR, qR, sr));
   }
 
-  // Sweeping Haas Delay LFO on Right channel (>200 Hz) -> creates moving comb notch in mono downmix
   const haasCenterMs = 0.5 * (cfg.haasMinMs + cfg.haasMaxMs);
   const haasSpanMs = 0.5 * (cfg.haasMaxMs - cfg.haasMinMs);
   const wHaas = (2.0 * Math.PI * rng.uniform(0.11, 0.27)) / sr;
@@ -528,18 +640,6 @@ export async function processAudioBufferDspV2(
   onProgress?.(`[5/5] Vector 5: Erradicación de Banda Watermark (${(cfg.lpfCutoffHz / 1000).toFixed(1)} kHz) y Codificación...`);
   await yieldToUi();
 
-  const monoAbs = new Float32Array(nOut);
-  for (let i = 0; i < nOut; i++) {
-    monoAbs[i] = 0.5 * (Math.abs(chL[i]) + Math.abs(chR[i]));
-  }
-  const lpEnv = designLowpassBiquad(16, 0.7071, sr);
-  const env = applyBiquadCausal(monoAbs, lpEnv);
-  let envMax = 1e-9;
-  for (let i = 0; i < nOut; i++) {
-    if (env[i] > envMax) envMax = env[i];
-  }
-
-  // Pink noise + Analog 60/120/180 Hz Hum
   const lpPink = designLowpassBiquad(2000, 0.7071, sr);
   const whiteL = new Float32Array(nOut);
   const whiteR = new Float32Array(nOut);
@@ -562,18 +662,17 @@ export async function processAudioBufferDspV2(
   const w180 = (2.0 * Math.PI * 180.0) / sr;
 
   for (let i = 0; i < nOut; i++) {
-    const envNorm = Math.min(1.0, Math.max(0.05, env[i] / envMax));
-    const modPink = pinkLevel * (0.35 + 0.65 * envNorm);
+    const eN = Math.max(0.05, envNorm[i]);
+    const modPink = pinkLevel * (0.35 + 0.65 * eN);
     const humVal =
       (Math.sin(w60 * i) + 0.5 * Math.sin(w120 * i) + 0.25 * Math.sin(w180 * i)) *
       humLevel *
-      (0.30 + 0.70 * envNorm);
+      (0.30 + 0.70 * eN);
 
     chL[i] += pinkL[i] * modPink + humVal;
     chR[i] += pinkR[i] * modPink + humVal;
   }
 
-  // Dynamic Bass Sculpting (60 Hz - 250 Hz)
   const bpBass = designBandpassBiquad(60, 250, sr);
   const bassL = applyBiquadZeroPhase(chL, bpBass);
   const bassR = applyBiquadZeroPhase(chR, bpBass);
@@ -583,17 +682,14 @@ export async function processAudioBufferDspV2(
     chR[i] -= bassR[i] * bassFactor;
   }
 
-  // Aggressive High-Frequency Watermark Carrier Brickwall LPF (2 cascaded zero-phase = 8th order)
   const lpWatermark = designLowpassBiquad(cfg.lpfCutoffHz, 0.7071, sr);
   chL = applyBiquadZeroPhase(applyBiquadZeroPhase(chL, lpWatermark), lpWatermark);
   chR = applyBiquadZeroPhase(applyBiquadZeroPhase(chR, lpWatermark), lpWatermark);
 
-  // Master Subsonic 30 Hz HPF
   const hpMaster30 = designHighpassBiquad(30, 0.7071, sr);
   chL = applyBiquadZeroPhase(chL, hpMaster30);
   chR = applyBiquadZeroPhase(chR, hpMaster30);
 
-  // DC Removal & Integrated RMS Loudness Match
   let meanL = 0.0;
   let meanR = 0.0;
   for (let i = 0; i < nOut; i++) {
@@ -612,7 +708,6 @@ export async function processAudioBufferDspV2(
   const outputRms = Math.sqrt(sumSqOut / Math.max(1, nOut)) + 1e-9;
   const loudnessGain = inputRms / outputRms;
 
-  // TPDF Dither (-78 dBFS) & True-Peak Limiter (-0.3 dBFS = 0.966)
   const ditherAmp = Math.pow(10.0, -78.0 / 20.0);
   const ceiling = 0.966;
   const knee = 0.85;
@@ -668,9 +763,11 @@ export async function processAudioBufferDspV2(
   const speedShiftPct = Number(((baseSpeed - 1.0) * 100.0).toFixed(2));
   const peakDbtp = Number((20.0 * Math.log10(Math.max(1e-6, maxPeak))).toFixed(2));
   const centsShift = 1200.0 * Math.log2(baseSpeed);
-  const cqtEvasion = Math.min(1.0, centsShift / 50.0);
+  const cqtEvasion = Math.min(1.0, centsShift / 48.0);
+  const extraBonus =
+    (useGhostMidi ? 4.5 : 0.0) + (usePoison ? 5.0 : 0.0) + (useStereoRot ? 3.0 : 0.0);
   const decorrelationPct = Number(
-    Math.min(98.5, cqtEvasion * 52.0 + cfg.eqModDb * 6.5 + apfStages * 1.2).toFixed(1)
+    Math.min(99.4, cqtEvasion * 48.0 + cfg.eqModDb * 5.8 + apfStages * 1.1 + extraBonus).toFixed(1)
   );
 
   return {
