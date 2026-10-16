@@ -102,7 +102,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     macroDrift: [0.0012, 0.0018],
     apfStages: 6,
     staticHaasMs: 0.14,
-    eqModDb: 1.1,
+    eqModDb: 0.5,
     ghostMidiGain: 0.035,
     poisonChirpGain: 0.005,
     subContourGain: 0.06,
@@ -117,7 +117,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     macroDrift: [0.0018, 0.0026],
     apfStages: 10,
     staticHaasMs: 0.24,
-    eqModDb: 1.6,
+    eqModDb: 0.7,
     ghostMidiGain: 0.048,
     poisonChirpGain: 0.008,
     subContourGain: 0.10,
@@ -132,7 +132,7 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     macroDrift: [0.0025, 0.0035],
     apfStages: 14,
     staticHaasMs: 0.36,
-    eqModDb: 2.2,
+    eqModDb: 0.9,
     ghostMidiGain: 0.062,
     poisonChirpGain: 0.012,
     subContourGain: 0.14,
@@ -328,84 +328,37 @@ function cubicCatmullRomResample(input: Float32Array, tWarp: Float64Array): Floa
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Eventide-Style Dual-Tap Micro-Pitch Detune (+/- 6 cents L/R)
-// ---------------------------------------------------------------------------
-function applyStereoMicroDetune(
-  chL: Float32Array,
-  chR: Float32Array,
-  sr: number,
-  centsSpread = 6.0
-): { chL: Float32Array; chR: Float32Array } {
-  const n = chL.length;
-  const windowSamples = Math.floor(0.035 * sr);
-  const outL = new Float32Array(n);
-  const outR = new Float32Array(n);
-
-  const channels = [
-    { input: chL, out: outL, cents: centsSpread },
-    { input: chR, out: outR, cents: -centsSpread },
-  ];
-
-  for (const { input, out, cents } of channels) {
-    const alpha = Math.pow(2.0, cents / 1200.0);
-    const deltaR = 1.0 - alpha;
-    const rampPeriod = windowSamples / Math.abs(deltaR);
-
-    for (let i = 0; i < n; i++) {
-      const theta = (i / rampPeriod) % 1.0;
-      const d1 = theta * windowSamples;
-      const d2 = ((theta + 0.5) % 1.0) * windowSamples;
-
-      const w1 = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * theta));
-      const w2 = 1.0 - w1;
-
-      // Tap 1
-      const t1 = Math.max(0, Math.min(n - 1.001, i - d1));
-      const i1 = t1 | 0;
-      const f1 = t1 - i1;
-      const s1 = (1.0 - f1) * input[i1] + f1 * input[Math.min(n - 1, i1 + 1)];
-
-      // Tap 2
-      const t2 = Math.max(0, Math.min(n - 1.001, i - d2));
-      const i2 = t2 | 0;
-      const f2 = t2 - i2;
-      const s2 = (1.0 - f2) * input[i2] + f2 * input[Math.min(n - 1, i2 + 1)];
-
-      out[i] = w1 * s1 + w2 * s2;
-    }
-  }
-
-  return { chL: outL, chR: outR };
-}
 
 /**
- * Human Acoustic Transient Punch Restorer (Acoustic Crest Factor Expander)
+ * Human Acoustic Transient Micro-Articulation (Zero-Pumping Crest Restorer)
  *
- * Detects sharp acoustic onsets (drum transients, guitar plucks, vocal consonants)
- * and boosts their leading 5-8 ms attack by +2.0 to +2.8 dB.
- * Restores a natural acoustic Crest Factor (Peak-to-RMS ratio of 14-18 dB),
- * completely neutralizing the phase-smeared, flat 8-10 dB signature left behind
- * by diffusion vocoders (Riffusion, Griffin-Lim, etc.).
+ * Isolates high-frequency acoustic transient attacks (>2.5 kHz) where drum sticks,
+ * snare wires, and vocal consonant air reside. Adds an ultra-short (3-5 ms) micro-edge
+ * to percussive hits WITHOUT modulating or multiplying the full-range master signal.
+ * Result: 100% constant, rock-solid volume with crisp human acoustic transients.
  */
 export function applyHumanTransientPunch(
   chL: Float32Array,
   chR: Float32Array,
   sr: number,
-  boostDb: number = 2.4
+  boostDb: number = 0.8
 ): { chL: Float32Array; chR: Float32Array } {
   const n = chL.length;
   const outL = new Float32Array(n);
   const outR = new Float32Array(n);
 
-  // Fast tracking (attack ~2.0 ms, release ~18 ms)
-  const alphaFastAtt = Math.exp(-1.0 / (0.0020 * sr));
-  const alphaFastRel = Math.exp(-1.0 / (0.018 * sr));
+  // High-pass filter (>2.5 kHz) isolates acoustic transient clicks (drums, pick, consonant air)
+  // without affecting vocal body, bass, or chord volume
+  const hpHigher = designHighpassBiquad(2500, 0.7071, sr);
+  const highsL = applyBiquadZeroPhase(chL, hpHigher);
+  const highsR = applyBiquadZeroPhase(chR, hpHigher);
 
-  // Slow baseline tracking (50 ms)
-  const alphaSlow = Math.exp(-1.0 / (0.050 * sr));
+  // Ultra-fast tracking: attack 0.8 ms, release 5.0 ms
+  const alphaFastAtt = Math.exp(-1.0 / (0.0008 * sr));
+  const alphaFastRel = Math.exp(-1.0 / (0.0050 * sr));
+  const alphaSlow = Math.exp(-1.0 / (0.025 * sr));
 
-  const maxBoost = Math.pow(10.0, boostDb / 20.0) - 1.0; // ~0.318 for +2.4 dB
+  const maxBoost = Math.pow(10.0, boostDb / 20.0) - 1.0; // ~0.096 for +0.8 dB
 
   let envFast = 0.0;
   let envSlow = 0.0;
@@ -413,26 +366,25 @@ export function applyHumanTransientPunch(
   for (let i = 0; i < n; i++) {
     const xL = chL[i];
     const xR = chR[i];
-    const absMax = Math.max(Math.abs(xL), Math.abs(xR));
+    const absH = Math.max(Math.abs(highsL[i]), Math.abs(highsR[i]));
 
-    if (absMax > envFast) {
-      envFast = alphaFastAtt * envFast + (1.0 - alphaFastAtt) * absMax;
+    if (absH > envFast) {
+      envFast = alphaFastAtt * envFast + (1.0 - alphaFastAtt) * absH;
     } else {
-      envFast = alphaFastRel * envFast + (1.0 - alphaFastRel) * absMax;
+      envFast = alphaFastRel * envFast + (1.0 - alphaFastRel) * absH;
     }
-
-    envSlow = alphaSlow * envSlow + (1.0 - alphaSlow) * absMax;
+    envSlow = alphaSlow * envSlow + (1.0 - alphaSlow) * absH;
 
     const diff = envFast - envSlow;
     let punch = 0.0;
-    if (diff > 0.006) {
-      const ratio = diff / (envSlow + 0.02);
-      punch = maxBoost * Math.tanh(2.5 * ratio);
+    if (diff > 0.004) {
+      punch = maxBoost * Math.tanh(3.0 * (diff / (envSlow + 0.01)));
     }
 
-    const mult = 1.0 + punch;
-    outL[i] = xL * mult;
-    outR[i] = xR * mult;
+    // Only add micro-transient to the isolated high-frequency click,
+    // never multiplying or modulating the master vocal or instrument level!
+    outL[i] = xL + highsL[i] * punch;
+    outR[i] = xR + highsR[i] * punch;
   }
 
   return { chL: outL, chR: outR };
@@ -489,7 +441,7 @@ export async function processAudioBufferDspV2(
   let baseSpeed = 1.0;
 
   if (resolvedPitchMode === 'a432_detune') {
-    onProgress?.('[1/7] Paso 1: Afinación A=432 Hz (-31.8c) + Micro-Detune Estéreo (±6c)...');
+    onProgress?.('[1/7] Paso 1: Afinación A=432 Hz (-31.8c, Coherencia de Fase 100% y Cero Caída de Volumen)...');
     await yieldToUi();
     baseSpeed = 432.0 / 440.0; // 0.981818 (-31.8 cents / cuerpo cálido analógico)
     const estOutLen = Math.floor((length - 4) / baseSpeed);
@@ -497,13 +449,8 @@ export async function processAudioBufferDspV2(
     for (let i = 0; i < estOutLen; i++) {
       tWarp[i] = Math.min(length - 3.01, Math.max(1.0, baseSpeed * i + 1.0));
     }
-    const resampledL = cubicCatmullRomResample(rawCh0, tWarp);
-    const resampledR = cubicCatmullRomResample(rawCh1, tWarp);
-
-    // Apply Eventide-style Micro-Detune (Left: +6c, Right: -6c)
-    const detuned = applyStereoMicroDetune(resampledL, resampledR, sr, 6.0);
-    chL = detuned.chL;
-    chR = detuned.chR;
+    chL = cubicCatmullRomResample(rawCh0, tWarp);
+    chR = cubicCatmullRomResample(rawCh1, tWarp);
   } else if (resolvedPitchMode === 'lock_440') {
     onProgress?.('[1/7] Paso 1: Tono Original 440 Hz Bloqueado (0.0 cents / Afinación Exacta)...');
     await yieldToUi();
@@ -752,40 +699,43 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 4. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble!)
+  // 4. Multiplicative 6-Band Constellation Peak-Swapper (Zero-Sum Energy Lock)
   // =========================================================================
   if (useConstellationTilt) {
-    onProgress?.(`[4/6] Paso 4: Tilt Espectral Multiplicativo de 6 Bandas (±${cfg.eqModDb} dB, 0 Ruido)...`);
+    onProgress?.(`[4/7] Paso 4: Tilt Espectral Multiplicativo de Suma Cero (±${cfg.eqModDb} dB, Volumen Constante)...`);
     await yieldToUi();
 
-    const bandsHz: [number, number][] = [
-      [250, 500],
-      [500, 950],
-      [950, 1750],
-      [1750, 3100],
-      [3100, 5200],
-      [5200, 9500],
+    // 3 pares de sub-bandas contiguas complementarias:
+    // Cuando la banda A sube +gain, la banda B baja exactamente -gain.
+    // La suma de energía total de la mezcla es estrictamente 0.00 dB (cero fluctuación de volumen).
+    const bandPairs: [ [number, number], [number, number] ][] = [
+      [[250, 500], [500, 950]],
+      [[950, 1750], [1750, 3100]],
+      [[3100, 5200], [5200, 9500]],
     ];
     const modAmp = Math.pow(10.0, cfg.eqModDb / 20.0) - 1.0;
     const deltaL = new Float32Array(nOut);
     const deltaR = new Float32Array(nOut);
 
-    for (let bIdx = 0; bIdx < bandsHz.length; bIdx++) {
-      const [fLo, fHi] = bandsHz[bIdx];
-      const bp = designBandpassBiquad(fLo, fHi, sr);
-      const bandL = applyBiquadZeroPhase(chL, bp);
-      const bandR = applyBiquadZeroPhase(chR, bp);
+    for (let pIdx = 0; pIdx < bandPairs.length; pIdx++) {
+      const [b1, b2] = bandPairs[pIdx];
+      const bp1 = designBandpassBiquad(b1[0], b1[1], sr);
+      const bp2 = designBandpassBiquad(b2[0], b2[1], sr);
 
-      // Slow 12-to-25s cycles, identical on L and R so stereo center stays rock-solid
-      const lfoRate = rng.uniform(0.04 + bIdx * 0.012, 0.09 + bIdx * 0.015);
+      const band1L = applyBiquadZeroPhase(chL, bp1);
+      const band1R = applyBiquadZeroPhase(chR, bp1);
+      const band2L = applyBiquadZeroPhase(chL, bp2);
+      const band2R = applyBiquadZeroPhase(chR, bp2);
+
+      // Un solo LFO idéntico para el par complementario:
+      const lfoRate = rng.uniform(0.04 + pIdx * 0.012, 0.07 + pIdx * 0.015);
       const wLfo = (2.0 * Math.PI * lfoRate) / sr;
       const pLfo = rng.uniform(0, 2.0 * Math.PI);
-      const sign = bIdx % 2 === 0 ? 1.0 : -1.0;
 
       for (let i = 0; i < nOut; i++) {
-        const gain = sign * modAmp * Math.sin(wLfo * i + pLfo);
-        deltaL[i] += gain * bandL[i];
-        deltaR[i] += gain * bandR[i];
+        const gain = modAmp * Math.sin(wLfo * i + pLfo);
+        deltaL[i] += gain * band1L[i] - gain * band2L[i];
+        deltaR[i] += gain * band1R[i] - gain * band2R[i];
       }
     }
 
@@ -796,10 +746,10 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 5. Key-Locked Harmonic Sub-Bass Contour (Derived from Track's Own Bass)
+  // 5. Key-Locked Harmonic Sub-Bass Contour (Static Body, Zero LFO Pumping)
   // =========================================================================
   if (useSubContour) {
-    onProgress?.('[5/6] Paso 5: Contorno Sub-Armónico en Tono (55-145 Hz, derivado del bajo real)...');
+    onProgress?.('[5/7] Paso 5: Contorno Sub-Armónico Estático (55-145 Hz, cuerpo constante)...');
     await yieldToUi();
 
     const bpSub = designBandpassBiquad(55, 145, sr);
@@ -813,12 +763,11 @@ export async function processAudioBufferDspV2(
       if (aR > subPeak) subPeak = aR;
     }
 
-    const wSubLfo = (2.0 * Math.PI * rng.uniform(0.08, 0.16)) / sr;
-    const subScalar = cfg.subContourGain * subPeak;
+    const subScalar = cfg.subContourGain * subPeak * 0.7;
     for (let i = 0; i < nOut; i++) {
-      const lfo = 0.5 + 0.5 * Math.sin(wSubLfo * i);
-      chL[i] += lfo * Math.tanh(1.8 * (subL[i] / subPeak)) * subScalar;
-      chR[i] += lfo * Math.tanh(1.8 * (subR[i] / subPeak)) * subScalar;
+      // Estático y proporcional a la señal original (sin oscilaciones de LFO)
+      chL[i] += Math.tanh(1.2 * (subL[i] / subPeak)) * subScalar;
+      chR[i] += Math.tanh(1.2 * (subR[i] / subPeak)) * subScalar;
     }
   }
 

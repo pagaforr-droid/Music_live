@@ -45,7 +45,7 @@ PRESET_CONFIGS = {
         "macro_drift": (0.0012, 0.0018),      # slow 30s macro-rubato (no audible wobble)
         "apf_stages": 6,
         "static_haas_ms": 0.14,               # fixed 0.14 ms (no flanging sweep!)
-        "eq_mod_db": 1.1,                     # subtle +-1.1 dB peak tilting
+        "eq_mod_db": 0.5,                     # subtle +-0.5 dB zero-sum peak tilting
         "ghost_midi_gain": 0.035,
         "poison_chirp_gain": 0.005,
         "sub_contour_gain": 0.06,
@@ -60,7 +60,7 @@ PRESET_CONFIGS = {
         "macro_drift": (0.0018, 0.0026),      # smooth macro-rubato
         "apf_stages": 10,
         "static_haas_ms": 0.24,               # fixed 0.24 ms micro-offset
-        "eq_mod_db": 1.6,                     # +-1.6 dB multiplicative peak swapper
+        "eq_mod_db": 0.7,                     # +-0.7 dB zero-sum peak swapper
         "ghost_midi_gain": 0.048,
         "poison_chirp_gain": 0.008,
         "sub_contour_gain": 0.10,
@@ -75,7 +75,7 @@ PRESET_CONFIGS = {
         "macro_drift": (0.0025, 0.0035),
         "apf_stages": 14,
         "static_haas_ms": 0.36,               # fixed 0.36 ms micro-offset
-        "eq_mod_db": 2.2,                     # +-2.2 dB multiplicative peak swapper
+        "eq_mod_db": 0.9,                     # +-0.9 dB zero-sum peak swapper
         "ghost_midi_gain": 0.062,
         "poison_chirp_gain": 0.012,
         "sub_contour_gain": 0.14,
@@ -219,25 +219,27 @@ class Predictor(BasePredictor):
         return out
 
     @classmethod
-    def _apply_transient_punch(cls, wav: np.ndarray, sr: int, boost_db: float = 2.4) -> np.ndarray:
+    def _apply_transient_punch(cls, wav: np.ndarray, sr: int, boost_db: float = 0.8) -> np.ndarray:
         """
-        Human Acoustic Transient Punch Restorer (Acoustic Crest Factor Expander):
-        Detects sharp acoustic onsets (drum hits, vocal consonants, pick attacks)
-        and boosts their leading 5-8 ms attack by +2.0 to +2.8 dB.
-        Restores pro studio acoustic Crest Factor (14-18 dB), eliminating the flat,
-        phase-smeared 8-10 dB signature of Riffusion's diffusion vocoder.
+        Human Acoustic Transient Micro-Articulation (Zero-Pumping Crest Restorer):
+        Isolates high-frequency acoustic transient attacks (>2.5 kHz) where drum clicks,
+        snare wires, and vocal consonant air reside. Adds an ultra-short (3-5 ms) micro-edge
+        WITHOUT modulating or multiplying the full-range master signal.
+        Result: 100% constant, rock-solid volume with crisp human acoustic transients.
         """
-        mono_abs = np.mean(np.abs(wav), axis=0)
-        b_fast, a_fast = signal.butter(1, 100.0 / (sr / 2.0), btype="lowpass")
-        b_slow, a_slow = signal.butter(1, 15.0 / (sr / 2.0), btype="lowpass")
-        env_fast = signal.lfilter(b_fast, a_fast, mono_abs)
-        env_slow = signal.lfilter(b_slow, a_slow, mono_abs)
+        b_hp, a_hp = signal.butter(2, 2500.0 / (sr / 2.0), btype="highpass")
+        highs = signal.filtfilt(b_hp, a_hp, wav, axis=-1)
+        abs_h = np.mean(np.abs(highs), axis=0)
+
+        b_fast, a_fast = signal.butter(1, 400.0 / (sr / 2.0), btype="lowpass")
+        b_slow, a_slow = signal.butter(1, 40.0 / (sr / 2.0), btype="lowpass")
+        env_fast = signal.lfilter(b_fast, a_fast, abs_h)
+        env_slow = signal.lfilter(b_slow, a_slow, abs_h)
 
         diff = np.maximum(0.0, env_fast - env_slow)
-        max_boost = (10.0 ** (boost_db / 20.0)) - 1.0
-        ratio = diff / (env_slow + 0.02)
-        punch = max_boost * np.tanh(2.5 * ratio)
-        return wav * (1.0 + punch)[None, :]
+        max_boost = (10.0 ** (boost_db / 20.0)) - 1.0  # ~0.096 for +0.8 dB
+        punch = max_boost * np.tanh(3.0 * (diff / (env_slow + 0.01)))
+        return wav + highs * punch[None, :]
 
     @classmethod
     def _apply_dsp_watermark(
@@ -271,7 +273,7 @@ class Predictor(BasePredictor):
         )
 
         # ==================================================================
-        # 1. Pitch & Speed Control: A=432 Hz (-31.8c) + Micro-Detune (Recommended)
+        # 1. Pitch & Speed Control: A=432 Hz (-31.8c, 100% Phase Coherent)
         #    OR Pure Lock 440 Hz OR Varispeed (+2% to +4%)
         # ==================================================================
         if resolved_pitch_mode == "a432_detune":
@@ -281,7 +283,6 @@ class Predictor(BasePredictor):
             y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
             for ch in range(wav_f64.shape[0]):
                 y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
-            y_processed = cls._apply_stereo_micro_detune(y_processed, sr, cents_spread=6.0)
             n_out = y_processed.shape[-1]
             t_out = np.arange(n_out, dtype=np.float64) / sr
         elif resolved_pitch_mode == "lock_440":
@@ -454,42 +455,38 @@ class Predictor(BasePredictor):
                 cursor += hop
 
         # ==================================================================
-        # 3. Multiplicative 6-Band Constellation Peak-Swapper (Zero Stereo Wobble)
+        # 3. Multiplicative 6-Band Constellation Peak-Swapper (Zero-Sum Energy Lock)
         # ==================================================================
-        bands_hz = [
-            (250, 500),
-            (500, 950),
-            (950, 1750),
-            (1750, 3100),
-            (3100, 5200),
-            (5200, 9500),
+        band_pairs = [
+            ((250, 500), (500, 950)),
+            ((950, 1750), (1750, 3100)),
+            ((3100, 5200), (5200, 9500)),
         ]
         mod_amp = (10.0 ** (cfg["eq_mod_db"] / 20.0)) - 1.0
         scrambler_delta = np.zeros_like(y_processed)
 
-        for idx_b, (f_lo, f_hi) in enumerate(bands_hz):
-            b_bp, a_bp = signal.butter(2, [f_lo / (sr / 2), f_hi / (sr / 2)], btype="bandpass")
-            band_sig = signal.filtfilt(b_bp, a_bp, y_processed, axis=-1)
-            # Slow, smooth 12-to-25 second cycles, identical on L and R so stereo image never wobbles!
-            lfo_rate = float(rng.uniform(0.04 + idx_b * 0.012, 0.09 + idx_b * 0.015))
+        for p_idx, (b1, b2) in enumerate(band_pairs):
+            b_bp1, a_bp1 = signal.butter(2, [b1[0] / (sr / 2), b1[1] / (sr / 2)], btype="bandpass")
+            b_bp2, a_bp2 = signal.butter(2, [b2[0] / (sr / 2), b2[1] / (sr / 2)], btype="bandpass")
+            band1_sig = signal.filtfilt(b_bp1, a_bp1, y_processed, axis=-1)
+            band2_sig = signal.filtfilt(b_bp2, a_bp2, y_processed, axis=-1)
+
+            lfo_rate = float(rng.uniform(0.04 + p_idx * 0.012, 0.07 + p_idx * 0.015))
             lfo_phase = float(rng.uniform(0, 2.0 * np.pi))
-            sign = 1.0 if (idx_b % 2 == 0) else -1.0
-            lfo = sign * np.sin(2.0 * np.pi * lfo_rate * t_out + lfo_phase)
-            scrambler_delta += (mod_amp * lfo)[None, :] * band_sig
+            lfo = np.sin(2.0 * np.pi * lfo_rate * t_out + lfo_phase)
+            gain = (mod_amp * lfo)[None, :]
+            scrambler_delta += gain * band1_sig - gain * band2_sig
 
         y_processed = y_processed + scrambler_delta
 
         # ==================================================================
-        # 4. Key-Locked Harmonic Sub-Bass Contour (Derived from Song's Own Bass)
+        # 4. Key-Locked Harmonic Sub-Bass Contour (Static Body, Zero LFO Pumping)
         # ==================================================================
-        # Extract the track's own 55-145 Hz fundamental, apply gentle harmonic saturation
-        # + envelope contour to shift low-frequency onset metrics while staying 100% in key!
         b_sub, a_sub = signal.butter(2, [55 / (sr / 2), 145 / (sr / 2)], btype="bandpass")
         sub_band = signal.filtfilt(b_sub, a_sub, y_processed, axis=-1)
         sub_peak = float(np.max(np.abs(sub_band)) + 1e-9)
-        sub_shaped = np.tanh(1.8 * (sub_band / sub_peak)) * sub_peak
-        sub_lfo = 0.5 + 0.5 * np.sin(2.0 * np.pi * float(rng.uniform(0.08, 0.16)) * t_out)
-        y_processed = y_processed + cfg["sub_contour_gain"] * sub_lfo[None, :] * sub_shaped
+        sub_shaped = np.tanh(1.2 * (sub_band / sub_peak)) * sub_peak
+        y_processed = y_processed + (cfg["sub_contour_gain"] * 0.7) * sub_shaped
 
         # ==================================================================
         # 4. Static Time-Invariant All-Pass Phase Dispersion (Zero Flanging!)

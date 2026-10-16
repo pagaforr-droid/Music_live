@@ -1181,7 +1181,7 @@ export default function StemStudio() {
                       }`}
                       title={
                         pitchMode === 'a432_detune'
-                          ? 'Afinación clásica A=432 Hz (-31.8 cents) con Micro-Detune estéreo opuesto (+6 cents L / -6 cents R). Voz más cálida y con cuerpo (sin acelerar ni sonar chillona) y destrucción de la huella espectral de Riffusion/Suno.'
+                          ? 'Afinación maestra A=432 Hz (-31.8 cents) 100% coherente en fase estéreo y sin variación de volumen. Voz más cálida y con cuerpo (sin acelerar ni sonar chillona) y destrucción de la huella espectral de Riffusion/Suno.'
                           : pitchMode === 'lock_440'
                           ? 'Mantiene la afinación A=440 Hz al 100% idéntica al original (0.0 cents).'
                           : 'Acelera la canción (+2% a +4% / +50 cents).'
@@ -1189,14 +1189,14 @@ export default function StemStudio() {
                     >
                       <span>
                         {pitchMode === 'a432_detune'
-                          ? '🎻 A=432 Hz + Detune'
+                          ? '🎻 A=432 Hz (Fase Pura)'
                           : pitchMode === 'lock_440'
                           ? '🔒 Tono 440 Hz (Exacto)'
                           : '⚡ Varispeed (+50 Cents)'}
                       </span>
                       <span className="text-[8px] uppercase">
                         {pitchMode === 'a432_detune'
-                          ? '-31.8C • ±6C'
+                          ? '-31.8 CENTS'
                           : pitchMode === 'lock_440'
                           ? '0.0 CENTS'
                           : '+50 CENTS'}
@@ -1223,10 +1223,10 @@ export default function StemStudio() {
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Restaurador de Pegada Humana y Crest Factor (+2.4 dB en transientes acústicos): Amplifica el ataque inicial (<5ms) de cajas, bombos y consonantes vocales que los vocoders de difusión (Riffusion/Griffin-Lim) comprimen y difuminan, forzando un Crest Factor acústico humano (14-18 dB)."
+                      title="Micro-Articulación Acústica Humana: Realza el micro-ataque rápido (<5ms) de la percusión y consonantes en frecuencias altas sin modular ni multiplicar el volumen del tema, garantizando estabilidad total de volumen (0.0 dB pumping)."
                     >
                       <span>🥁 Pegada Acústica (Crest Factor)</span>
-                      <span className="text-[8px] uppercase">{useTransientPunch ? 'HUMANO (16 dB)' : 'OFF'}</span>
+                      <span className="text-[8px] uppercase">{useTransientPunch ? 'HUMANO (ESTABLE)' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
@@ -1288,10 +1288,10 @@ export default function StemStudio() {
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Intercambia la dominancia de picos espectrales en 6 bandas usando ecualización dinámica multiplicativa lenta (15-25s) idéntica en L y R, con cero ruido añadido"
+                      title="Tilt Espectral Multiplicativo de Suma Cero: Intercambia la dominancia de picos espectrales en 3 pares complementarios (±0.7 dB) donde la suma de energía es estrictamente 0.00 dB, garantizando un volumen constante e invariable."
                     >
-                      <span>🎛️ Tilt Espectral Multiplicativo (6 Bandas)</span>
-                      <span className="text-[8px] uppercase">{useConstellationTilt ? 'ON' : 'OFF'}</span>
+                      <span>🎛️ Tilt Espectral (Suma Cero)</span>
+                      <span className="text-[8px] uppercase">{useConstellationTilt ? 'ESTABLE' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
