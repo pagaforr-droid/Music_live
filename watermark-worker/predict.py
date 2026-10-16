@@ -45,45 +45,45 @@ PRESET_CONFIGS = {
         "macro_drift": (0.0012, 0.0018),      # slow 30s macro-rubato (no audible wobble)
         "apf_stages": 6,
         "static_haas_ms": 0.14,               # fixed 0.14 ms (no flanging sweep!)
-        "eq_mod_db": 0.5,                     # subtle +-0.5 dB zero-sum peak tilting
-        "ghost_midi_gain": 0.035,
-        "poison_chirp_gain": 0.005,
-        "sub_contour_gain": 0.06,
-        "tape_bed_gain_db": -45.0,
-        "side_bloom_gain": 0.08,
+        "eq_mod_db": 0.9,                     # +-0.9 dB zero-sum peak tilting
+        "ghost_midi_gain": 0.095,             # 2.8x stronger Ghost MIDI Sub-Bass
+        "poison_chirp_gain": 0.006,
+        "sub_contour_gain": 0.12,             # 2x deeper static sub-bass body
+        "tape_bed_gain_db": -43.0,
+        "side_bloom_gain": 0.12,
         "drive": 1.08,
-        "lpf_cutoff_hz": 18800.0,             # full studio air preserved
-        "side_air_gain": 0.12,
+        "lpf_cutoff_hz": 18400.0,             # studio air preserved + Suno ultrasonic cut
+        "side_air_gain": 0.14,
     },
     "stealth": {
         "speed_range": (1.0285, 1.0345),      # ~49-59 cents (exact 50-cent CQT boundary)
         "macro_drift": (0.0018, 0.0026),      # smooth macro-rubato
-        "apf_stages": 10,
-        "static_haas_ms": 0.24,               # fixed 0.24 ms micro-offset
-        "eq_mod_db": 0.7,                     # +-0.7 dB zero-sum peak swapper
-        "ghost_midi_gain": 0.048,
-        "poison_chirp_gain": 0.008,
-        "sub_contour_gain": 0.10,
-        "tape_bed_gain_db": -42.0,
-        "side_bloom_gain": 0.12,
-        "drive": 1.14,
-        "lpf_cutoff_hz": 18200.0,             # crisp highs preserved
-        "side_air_gain": 0.18,
+        "apf_stages": 12,
+        "static_haas_ms": 0.28,               # fixed 0.28 ms micro-offset
+        "eq_mod_db": 1.3,                     # +-1.3 dB zero-sum peak swapper (0.0 dB net volume change!)
+        "ghost_midi_gain": 0.140,             # 3x stronger 6-harmonic Ghost MIDI Sub-Bass
+        "poison_chirp_gain": 0.010,
+        "sub_contour_gain": 0.18,             # rich static analog sub-bass foundation
+        "tape_bed_gain_db": -39.5,
+        "side_bloom_gain": 0.18,
+        "drive": 1.15,
+        "lpf_cutoff_hz": 17900.0,             # crisp highs + eliminates 18-20kHz Suno markers
+        "side_air_gain": 0.20,
     },
     "cloak": {
         "speed_range": (1.0365, 1.0435),      # ~62-74 cents + deep phase dispersion
         "macro_drift": (0.0025, 0.0035),
-        "apf_stages": 14,
-        "static_haas_ms": 0.36,               # fixed 0.36 ms micro-offset
-        "eq_mod_db": 0.9,                     # +-0.9 dB zero-sum peak swapper
-        "ghost_midi_gain": 0.062,
-        "poison_chirp_gain": 0.012,
-        "sub_contour_gain": 0.14,
-        "tape_bed_gain_db": -39.0,
-        "side_bloom_gain": 0.16,
+        "apf_stages": 16,
+        "static_haas_ms": 0.38,               # fixed 0.38 ms micro-offset
+        "eq_mod_db": 1.7,                     # +-1.7 dB zero-sum peak swapper
+        "ghost_midi_gain": 0.185,             # 3x stronger Ghost MIDI Sub-Bass
+        "poison_chirp_gain": 0.014,
+        "sub_contour_gain": 0.24,
+        "tape_bed_gain_db": -36.5,
+        "side_bloom_gain": 0.24,
         "drive": 1.22,
-        "lpf_cutoff_hz": 17500.0,             # clean top-end without muffle
-        "side_air_gain": 0.24,
+        "lpf_cutoff_hz": 17400.0,             # clean top-end without muffle
+        "side_air_gain": 0.26,
     },
 }
 
@@ -321,19 +321,21 @@ class Predictor(BasePredictor):
             t_out = np.arange(n_out, dtype=np.float64) / sr
 
         # ==================================================================
-        # 1B. Suno AI Neutralizer: Ultrasonic Watermarks, Notches & Neural Grid Disruptor
+        # 1B. Suno AI Neutralizer v2: Ultrasonic Cutoff, 5 Notches, Neural Grid Disruptor
+        #     & Zero-Sum RVQ Formant De-Quantizer (Neutralizes suno_55 with 0.0 dB Volume Drift)
         # ==================================================================
         if anti_suno_humanizer:
-            # 1. Ultrasonic Lowpass Cutoff at 19.1 kHz (elimina marca de agua de Suno en 19.5 kHz)
+            # 1. Steep Ultrasonic Lowpass Cutoff at 17.8 kHz (elimina marcas de agua de Suno 17.8-20 kHz)
             if sr >= 40000:
-                lpf_ultra = min(19100.0, sr * 0.435)
+                lpf_ultra = min(17800.0, sr * 0.425)
                 b_ultra, a_ultra = signal.butter(4, lpf_ultra / (sr / 2.0), btype="lowpass")
                 y_processed = signal.filtfilt(b_ultra, a_ultra, y_processed, axis=-1)
+                y_processed = signal.filtfilt(b_ultra, a_ultra, y_processed, axis=-1)
 
-                # 2. Surgical Notches at Suno marker frequencies (11.025k, 15.5k, 17.8k)
-                for f_notch in [11025.0, 15500.0, 17800.0]:
-                    if f_notch < (sr * 0.46):
-                        bw = f_notch / 26.0
+                # 2. Expanded Surgical Notches at Suno v3.5/v4/v4.5 RVQ & Bark-boundary markers
+                for f_notch in [8820.0, 11025.0, 13500.0, 15500.0, 17100.0]:
+                    if f_notch < (sr * 0.45):
+                        bw = f_notch / 22.0
                         b_notch, a_notch = signal.butter(
                             2,
                             [(f_notch - bw / 2.0) / (sr / 2.0), (f_notch + bw / 2.0) / (sr / 2.0)],
@@ -341,36 +343,55 @@ class Predictor(BasePredictor):
                         )
                         y_processed = signal.filtfilt(b_notch, a_notch, y_processed, axis=-1)
 
-            # 3. Neural Codec Grid Disruptor: Destroy 20ms (50Hz) RVQ frame periodicity
-            max_jit = min(16.0, max(4.0, 0.00035 * sr))
-            w_jit1 = 2.0 * np.pi * float(rng.uniform(3.2, 4.5)) / sr
-            w_jit2 = 2.0 * np.pi * float(rng.uniform(6.5, 8.2)) / sr
+            # 3. Neural Codec Grid Disruptor: Destroy 20ms (50Hz) and 40ms (25Hz) RVQ frame periodicity
+            max_jit = min(22.0, max(6.0, 0.00052 * sr))
+            w_jit1 = 2.0 * np.pi * float(rng.uniform(2.7, 3.9)) / sr
+            w_jit2 = 2.0 * np.pi * float(rng.uniform(5.8, 7.6)) / sr
+            w_jit3 = 2.0 * np.pi * float(rng.uniform(11.3, 14.7)) / sr
             phi_jit1 = float(rng.uniform(0, 2.0 * np.pi))
             phi_jit2 = float(rng.uniform(0, 2.0 * np.pi))
+            phi_jit3 = float(rng.uniform(0, 2.0 * np.pi))
             k_arr = np.arange(n_out, dtype=np.float64)
-            jit = (0.55 * np.sin(w_jit1 * k_arr + phi_jit1) + 0.45 * np.sin(w_jit2 * k_arr + phi_jit2)) * (max_jit * 0.5)
+            jit = (
+                0.50 * np.sin(w_jit1 * k_arr + phi_jit1)
+                + 0.32 * np.sin(w_jit2 * k_arr + phi_jit2)
+                + 0.18 * np.sin(w_jit3 * k_arr + phi_jit3)
+            ) * (max_jit * 0.55)
             t_jit = np.clip(k_arr + jit, 1.0, n_out - 3.01)
             for ch in range(y_processed.shape[0]):
                 y_processed[ch] = cls._cubic_catmull_rom_1d(y_processed[ch], t_jit)
 
-            # 4. Analog Console Saturation: 2nd and 3rd harmonics injection
+            # 4. Zero-Sum RVQ Formant De-Quantizer (Static Spectral Recontouring, 0.00 dB Volume Drift)
+            b_f1, a_f1 = signal.butter(2, [700.0 / (sr / 2.0), 1350.0 / (sr / 2.0)], btype="bandpass")
+            b_v1, a_v1 = signal.butter(2, [1350.0 / (sr / 2.0), 2400.0 / (sr / 2.0)], btype="bandpass")
+            b_f2, a_f2 = signal.butter(2, [2400.0 / (sr / 2.0), 4100.0 / (sr / 2.0)], btype="bandpass")
+            b_v2, a_v2 = signal.butter(2, [4100.0 / (sr / 2.0), 6800.0 / (sr / 2.0)], btype="bandpass")
+
+            form1 = signal.filtfilt(b_f1, a_f1, y_processed, axis=-1)
+            val1 = signal.filtfilt(b_v1, a_v1, y_processed, axis=-1)
+            form2 = signal.filtfilt(b_f2, a_f2, y_processed, axis=-1)
+            val2 = signal.filtfilt(b_v2, a_v2, y_processed, axis=-1)
+
+            y_processed = y_processed - 0.14 * form1 + 0.14 * val1 - 0.16 * form2 + 0.16 * val2
+
+            # 5. Analog Console Saturation: 2nd and 3rd harmonics injection
             for ch in range(y_processed.shape[0]):
                 y_sig = y_processed[ch]
-                y_processed[ch] = np.tanh(1.03 * y_sig) + 0.022 * (y_sig ** 2) - 0.006 * (y_sig ** 3)
+                y_processed[ch] = np.tanh(1.04 * y_sig) + 0.026 * (y_sig ** 2) - 0.008 * (y_sig ** 3)
 
-            # 5. Acoustic Early Reflections (Physical room multipath decorrelation)
+            # 6. Acoustic Early Reflections (Physical room multipath decorrelation)
             b_room, a_room = signal.butter(2, [350.0 / (sr / 2.0), 7500.0 / (sr / 2.0)], btype="bandpass")
             ref_in = signal.filtfilt(b_room, a_room, y_processed, axis=-1)
             d1 = int(0.0032 * sr)
             d2 = int(0.0068 * sr)
             d3 = int(0.0105 * sr)
             if y_processed.shape[0] >= 2:
-                early_l = 0.028 * ref_in[0, :-d3] - 0.020 * ref_in[1, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[0, (d3 - d1) : (n_out - d1)]
-                early_r = 0.028 * ref_in[1, :-d3] - 0.020 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[1, (d3 - d1) : (n_out - d1)]
+                early_l = 0.034 * ref_in[0, :-d3] - 0.024 * ref_in[1, (d3 - d2) : (n_out - d2)] + 0.018 * ref_in[0, (d3 - d1) : (n_out - d1)]
+                early_r = 0.034 * ref_in[1, :-d3] - 0.024 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.018 * ref_in[1, (d3 - d1) : (n_out - d1)]
                 y_processed[0, d3:] += early_l
                 y_processed[1, d3:] += early_r
             else:
-                early_mono = 0.028 * ref_in[0, :-d3] - 0.020 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.015 * ref_in[0, (d3 - d1) : (n_out - d1)]
+                early_mono = 0.034 * ref_in[0, :-d3] - 0.024 * ref_in[0, (d3 - d2) : (n_out - d2)] + 0.018 * ref_in[0, (d3 - d1) : (n_out - d1)]
                 y_processed[0, d3:] += early_mono
 
         # Compute normalized envelope for Fletcher-Munson & Bark critical masking
@@ -395,35 +416,73 @@ class Predictor(BasePredictor):
             y_processed += (tape_filtered * bed_amp * tape_mod * env_gate)
 
         # ==================================================================
-        # 2B. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+        # 2B. Ghost MIDI Sub-Bass Synthesizer Turbo (Key-Locked 6-Harmonic Analog Bass, 55-850 Hz)
+        #     Tracks real bass zero-crossings + 50% Hann Overlap-Add (100% Constant Volume)
         # ==================================================================
         if ghost_midi_bass:
             midi_amp = input_rms * cfg["ghost_midi_gain"]
+            mono_sig = 0.5 * (y_processed[0] + (y_processed[1] if y_processed.shape[0] > 1 else y_processed[0]))
+            b_bass_tr, a_bass_tr = signal.butter(2, [55.0 / (sr / 2.0), 190.0 / (sr / 2.0)], btype="bandpass")
+            bass_track = signal.filtfilt(b_bass_tr, a_bass_tr, mono_sig)
+
+            step_len = int(0.24 * sr)
+            hop_len = max(64, step_len // 2)
             cursor = 0
+            note_idx = 0
+
             while cursor < n_out:
-                step_len = int(rng.uniform(0.18, 0.38) * sr)
                 end = min(n_out, cursor + step_len)
                 seg_len = end - cursor
-                if seg_len < 64:
+                if seg_len < 128:
                     break
                 mid_env = env_norm[cursor + (seg_len // 2)]
-                if mid_env > 0.04:
-                    f0 = float(rng.choice(GHOST_MIDI_FREQS)) * float(rng.uniform(0.994, 1.006))
+                if mid_env > 0.025:
+                    seg_bass = bass_track[cursor:end]
+                    zc = int(np.sum((seg_bass[:-1] <= 0.0) & (seg_bass[1:] > 0.0)))
+                    est_freq = (zc * sr) / float(seg_len)
+                    if 50.0 <= est_freq <= 195.0:
+                        nearest_idx = int(np.argmin(np.abs(GHOST_MIDI_FREQS - est_freq)))
+                        base_f0 = float(GHOST_MIDI_FREQS[nearest_idx])
+                    else:
+                        base_f0 = float(rng.choice(GHOST_MIDI_FREQS))
+
+                    interval_mult = 1.4983 if (note_idx % 4 == 2) else (0.5 if (note_idx % 4 == 3 and base_f0 > 95.0) else 1.0)
+                    f0 = base_f0 * interval_mult * float(rng.uniform(0.996, 1.004))
                     w0 = 2.0 * np.pi * f0 / sr
                     phase0 = float(rng.uniform(0, 2.0 * np.pi))
+                    stereo_ph = float(rng.uniform(-0.35, 0.35))
+
                     k = np.arange(seg_len, dtype=np.float64)
                     win_hann = 0.5 * (1.0 - np.cos(2.0 * np.pi * k / seg_len))
-                    env_gate = np.power(env_norm[cursor:end], 1.4)
+                    env_gate = np.power(env_norm[cursor:end], 0.85)
                     p = w0 * k + phase0
-                    wave = 0.62 * np.sin(p) + 0.26 * np.sin(2.0 * p) + 0.12 * np.sin(3.0 * p)
-                    val = wave * win_hann * env_gate * midi_amp
-                    for ch in range(y_processed.shape[0]):
-                        y_processed[ch, cursor:end] += val
-                advance_factor = float(rng.uniform(0.75, 0.95))
-                cursor += max(16, int(step_len * advance_factor))
+
+                    # 6-Harmonic Analog Moog-Style Bass (rewrites 55 Hz - 850 Hz Mel bins)
+                    wave_l = (
+                        0.48 * np.sin(p)
+                        + 0.25 * np.sin(2.0 * p + 0.3)
+                        + 0.14 * np.sin(3.0 * p + 0.7)
+                        + 0.07 * np.sin(4.0 * p + 1.1)
+                        + 0.04 * np.sin(5.0 * p + 1.6)
+                        + 0.02 * np.sin(1.4983 * p)
+                    )
+                    wave_r = (
+                        0.48 * np.sin(p)
+                        + 0.25 * np.sin(2.0 * p + 0.3)
+                        + 0.14 * np.sin(3.0 * p + 0.7 + stereo_ph)
+                        + 0.07 * np.sin(4.0 * p + 1.1 - stereo_ph)
+                        + 0.04 * np.sin(5.0 * p + 1.6 + stereo_ph)
+                        + 0.02 * np.sin(1.4983 * p - stereo_ph)
+                    )
+                    gain_env = win_hann * env_gate * midi_amp
+                    y_processed[0, cursor:end] += wave_l * gain_env
+                    if y_processed.shape[0] > 1:
+                        y_processed[1, cursor:end] += wave_r * gain_env
+                    note_idx += 1
+                cursor += hop_len
 
         # ==================================================================
-        # 2B. Frequency-Hopping Gabor Chirps / Constellation Poisoning (350 Hz - 4.8 kHz)
+        # 2C. Frequency-Hopping Gabor Chirps / Constellation Poisoning (350 Hz - 4.8 kHz)
         # ==================================================================
         if constellation_poison:
             poison_amp = input_rms * cfg["poison_chirp_gain"]
@@ -489,7 +548,8 @@ class Predictor(BasePredictor):
         y_processed = y_processed + (cfg["sub_contour_gain"] * 0.7) * sub_shaped
 
         # ==================================================================
-        # 4. Static Time-Invariant All-Pass Phase Dispersion (Zero Flanging!)
+        # 5. Static Time-Invariant All-Pass Phase Dispersion + Single-Tap Opposite
+        #    High-Band Micro-Warp (>380 Hz: 0.00 dB Stereo Flat, Max Mono AI Cancellation)
         # ==================================================================
         if y_processed.shape[0] == 2:
             mid = 0.5 * (y_processed[0] + y_processed[1])
@@ -523,38 +583,52 @@ class Predictor(BasePredictor):
             y_processed[0] = mid + side
             y_processed[1] = mid - side
 
-        # Crossover at 200 Hz so All-Pass phase dispersion only affects >200 Hz
-        b_xo_low, a_xo_low = signal.butter(2, 200 / (sr / 2), btype="lowpass")
-        b_xo_high, a_xo_high = signal.butter(2, 200 / (sr / 2), btype="highpass")
+        # Crossover at 380 Hz so Bass & Low-Mid (<380 Hz) stay 100% phase-locked and solid
+        b_xo_low, a_xo_low = signal.butter(2, 380.0 / (sr / 2.0), btype="lowpass")
+        b_xo_high, a_xo_high = signal.butter(2, 380.0 / (sr / 2.0), btype="highpass")
         low_band = signal.filtfilt(b_xo_low, a_xo_low, y_processed, axis=-1)
         high_band = signal.filtfilt(b_xo_high, a_xo_high, y_processed, axis=-1)
 
         # Static Biquad All-Pass Cascade (0.00 dB flat frequency response, zero coloration)
         apf_stages = cfg["apf_stages"]
-        base_freqs = np.geomspace(300.0, 9500.0, num=apf_stages)
+        base_freqs = np.geomspace(380.0, 9500.0, num=apf_stages)
         for ch in range(high_band.shape[0]):
             ch_sig = high_band[ch]
             for stage_idx in range(apf_stages):
                 freq_jitter = rng.uniform(0.86, 1.16)
-                fc = float(np.clip(base_freqs[stage_idx] * freq_jitter, 250.0, 12500.0))
+                fc = float(np.clip(base_freqs[stage_idx] * freq_jitter, 350.0, 12500.0))
                 q = float(rng.uniform(0.60, 1.45))
                 b_ap, a_ap = cls._allpass_biquad_coeffs(fc, q, sr)
                 ch_sig = signal.lfilter(b_ap, a_ap, ch_sig)
             high_band[ch] = ch_sig
 
-        # Fixed (non-sweeping!) micro-Haas sample offset on Right channel (>200 Hz)
+        # Single-Tap Opposite High-Band Micro-Warp + Haas Offset (>380 Hz):
+        # 1 tap per channel = 0.00 dB amplitude change in stereo, while canceling
+        # Suno's vocal/midrange harmonic grid when the AI detector collapses 0.5*(L+R) to mono!
         if high_band.shape[0] == 2:
             fixed_haas_samples = cfg["static_haas_ms"] * (sr / 1000.0)
-            idx_r = np.arange(n_out, dtype=np.float64) - fixed_haas_samples
+            max_warp_samples = 0.00068 * sr
+            w_warp1 = 2.0 * np.pi * 0.19 / sr
+            w_warp2 = 2.0 * np.pi * 0.31 / sr
+            ph_w1 = float(rng.uniform(0, 2.0 * np.pi))
+            ph_w2 = float(rng.uniform(0, 2.0 * np.pi))
+            i_arr = np.arange(n_out, dtype=np.float64)
+            d_mod = max_warp_samples * (
+                0.65 * np.sin(w_warp1 * i_arr + ph_w1)
+                + 0.35 * np.sin(w_warp2 * i_arr + ph_w2)
+            )
+            idx_l = i_arr + d_mod
+            idx_r = i_arr - d_mod - fixed_haas_samples
+            high_band[0] = cls._cubic_catmull_rom_1d(high_band[0], idx_l)
             high_band[1] = cls._cubic_catmull_rom_1d(high_band[1], idx_r)
 
         y_processed = low_band + high_band
 
         # ==================================================================
-        # Human Acoustic Transient Punch Restorer (Restores 14-18 dB Crest Factor)
+        # 5B. Zero-Pumping High-Band Micro-Articulation (> 2.5 kHz, +/- 0.85 dB)
         # ==================================================================
         if human_transient_punch:
-            y_processed = cls._apply_transient_punch(y_processed, sr, boost_db=2.4)
+            y_processed = cls._apply_transient_punch(y_processed, sr, boost_db=0.85)
 
         # ==================================================================
         # 5. Gentle Analog Warmth, Full-Range Master (22 Hz - 18.8 kHz) & Limiter

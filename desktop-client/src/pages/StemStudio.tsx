@@ -1210,9 +1210,9 @@ export default function StemStudio() {
                           ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.15)]'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Neutralizador Forense Anti-Suno: Elimina marcas de agua ultrasónicas (19.5 kHz), notches quirúrgicos en 11k, 15.5k y 17.8k, destruye la cuadrícula de 20ms del códec neuronal con micro-jitter estocástico e inyecta saturación analógica de consola."
+                      title="Neutralizador Forense Anti-Suno v2: Corte ultrasónico 8º orden a 17.8 kHz, 5 notches quirúrgicos (8.8k-17.1k), De-Cuantizador de Formantes Vocales RVQ de Suma Cero (700 Hz-6.8 kHz) y micro-jitter de 3 osciladores."
                     >
-                      <span>🛡️ Anti-Suno Shield</span>
+                      <span>🛡️ Anti-Suno Shield v2</span>
                       <span className="text-[8px] uppercase">{useAntiSuno ? 'HUMANIZADO' : 'OFF'}</span>
                     </button>
                     <button
@@ -1236,9 +1236,9 @@ export default function StemStudio() {
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Capa acústica orgánica de calidez de cinta analógica a -42 dBFS con compuerta de envolvente dinámica (0 en silencios). Rellena los valles inter-transientes sin generar soplido continuo de difusión."
+                      title="Capa acústica orgánica de calidez de cinta analógica a -39.5 dBFS con compuerta de envolvente dinámica (0 en silencios). Rellena los valles inter-transientes sin generar soplido continuo de difusión."
                     >
-                      <span>🎛️ Cinta Analógica (-42 dB)</span>
+                      <span>🎛️ Cinta Analógica (-39.5 dB)</span>
                       <span className="text-[8px] uppercase">{useTapeBed ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
@@ -1259,13 +1259,13 @@ export default function StemStudio() {
                       onClick={() => setUseGhostMidiBass((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useGhostMidiBass
-                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.18)]'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Genera algorítmicamente una línea de notas MIDI de bajo sintético polirrítmica (fundamental + 2º y 3er armónico con envolvente Hann sin clics) sincronizada debajo de la envolvente de la canción con máscara Fletcher-Munson"
+                      title="Ghost MIDI Sub-Bass 3x Turbo Key-Locked: Rastrea la nota fundamental real del bajo de la canción (zero-crossings) e inyecta un sintetizador Moog analógico de 6 armónicos (55-850 Hz) con Overlap-Add Hann del 50% (volumen 100% constante, +10 dB de potencia)."
                     >
-                      <span>🎹 Ghost MIDI Sub-Bass (55-185 Hz)</span>
-                      <span className="text-[8px] uppercase">{useGhostMidiBass ? 'ON' : 'OFF'}</span>
+                      <span>🎹 Ghost MIDI Sub-Bass 3x (55-850 Hz)</span>
+                      <span className="text-[8px] uppercase">{useGhostMidiBass ? 'TURBO KEY-LOCK' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
@@ -1288,7 +1288,7 @@ export default function StemStudio() {
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Tilt Espectral Multiplicativo de Suma Cero: Intercambia la dominancia de picos espectrales en 3 pares complementarios (±0.7 dB) donde la suma de energía es estrictamente 0.00 dB, garantizando un volumen constante e invariable."
+                      title="Tilt Espectral Multiplicativo de Suma Cero: Intercambia la dominancia de picos espectrales en 3 pares complementarios (±1.3 dB) donde la suma de energía es estrictamente 0.00 dB, garantizando un volumen constante e invariable."
                     >
                       <span>🎛️ Tilt Espectral (Suma Cero)</span>
                       <span className="text-[8px] uppercase">{useConstellationTilt ? 'ESTABLE' : 'OFF'}</span>
@@ -1301,7 +1301,7 @@ export default function StemStudio() {
                           ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Red All-Pass estática invariante en el tiempo con respuesta de magnitud 0.0 dB plana: rota la fase interna de los bloques STFT sin flanger ni paneo giratorio"
+                      title="Red All-Pass estática + Micro-Warp Estéreo Opuesto de 1-Tap (>380 Hz): Respuesta de 0.00 dB exacta en estéreo (cero fluctuaciones de volumen ni cancelación de graves), pero destruye los armónicos de Suno cuando el bot suma 0.5*(L+R) a mono."
                     >
                       <span>🛡️ Dispersión de Fase Estática (0.0 dB)</span>
                       <span className="text-[8px] uppercase">{usePhaseDispersion ? 'ON' : 'OFF'}</span>

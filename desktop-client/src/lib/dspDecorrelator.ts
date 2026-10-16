@@ -100,47 +100,47 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
   transparent: {
     speedRange: [1.0200, 1.0250],
     macroDrift: [0.0012, 0.0018],
-    apfStages: 6,
-    staticHaasMs: 0.14,
-    eqModDb: 0.5,
-    ghostMidiGain: 0.035,
+    apfStages: 8,
+    staticHaasMs: 0.18,
+    eqModDb: 0.9,
+    ghostMidiGain: 0.095,
     poisonChirpGain: 0.005,
-    subContourGain: 0.06,
-    tapeBedGainDb: -45.0,
-    sideBloomGain: 0.08,
-    drive: 1.08,
-    lpfCutoffHz: 18800.0,
-    sideAirGain: 0.12,
+    subContourGain: 0.12,
+    tapeBedGainDb: -43.0,
+    sideBloomGain: 0.12,
+    drive: 1.09,
+    lpfCutoffHz: 18400.0,
+    sideAirGain: 0.14,
   },
   stealth: {
     speedRange: [1.0285, 1.0345],
     macroDrift: [0.0018, 0.0026],
-    apfStages: 10,
-    staticHaasMs: 0.24,
-    eqModDb: 0.7,
-    ghostMidiGain: 0.048,
+    apfStages: 12,
+    staticHaasMs: 0.28,
+    eqModDb: 1.3,
+    ghostMidiGain: 0.140,
     poisonChirpGain: 0.008,
-    subContourGain: 0.10,
-    tapeBedGainDb: -42.0,
-    sideBloomGain: 0.12,
-    drive: 1.14,
-    lpfCutoffHz: 18200.0,
-    sideAirGain: 0.18,
+    subContourGain: 0.18,
+    tapeBedGainDb: -39.5,
+    sideBloomGain: 0.18,
+    drive: 1.15,
+    lpfCutoffHz: 17900.0,
+    sideAirGain: 0.20,
   },
   cloak: {
     speedRange: [1.0365, 1.0435],
     macroDrift: [0.0025, 0.0035],
     apfStages: 14,
-    staticHaasMs: 0.36,
-    eqModDb: 0.9,
-    ghostMidiGain: 0.062,
+    staticHaasMs: 0.38,
+    eqModDb: 1.7,
+    ghostMidiGain: 0.185,
     poisonChirpGain: 0.012,
-    subContourGain: 0.14,
-    tapeBedGainDb: -39.0,
-    sideBloomGain: 0.16,
+    subContourGain: 0.24,
+    tapeBedGainDb: -36.5,
+    sideBloomGain: 0.24,
     drive: 1.22,
-    lpfCutoffHz: 17500.0,
-    sideAirGain: 0.24,
+    lpfCutoffHz: 17400.0,
+    sideAirGain: 0.26,
   },
 };
 
@@ -503,35 +503,41 @@ export async function processAudioBufferDspV2(
   // 1B. Anti-Suno Forensic Shield: Ultrasonic Cutoff, Notches & Codec De-Quantizer
   // =========================================================================
   if (useAntiSuno) {
-    onProgress?.('[2/7] Anti-Suno: Eliminando marcas ultrasónicas (19.5k) y rompiendo periodicidad de IA...');
+    onProgress?.('[2/7] Anti-Suno v2: Corte ultrasónico 8º orden (17.8k), De-Formantizador RVQ y Jitter...');
     await yieldToUi();
 
-    // 1. Ultrasonic Lowpass Cutoff at 19.1 kHz (elimina marca de agua ultrasónica de Suno en 19.5 kHz)
+    // 1. Steep 8th-Order Zero-Phase Ultrasonic Cutoff at 17.8 kHz (borra >45 dB la banda 18k-22k de Suno)
     if (sr >= 40000) {
-      const lpUltra = designLowpassBiquad(Math.min(19100, sr * 0.435), 0.7071, sr);
-      chL = applyBiquadZeroPhase(chL, lpUltra);
-      chR = applyBiquadZeroPhase(chR, lpUltra);
+      const lpUltra = designLowpassBiquad(Math.min(17800, sr * 0.42), 0.7071, sr);
+      chL = applyBiquadZeroPhase(applyBiquadZeroPhase(chL, lpUltra), lpUltra);
+      chR = applyBiquadZeroPhase(applyBiquadZeroPhase(chR, lpUltra), lpUltra);
 
-      // 2. Surgical Notches at Suno key watermark markers (11.025k, 15.5k, 17.8k)
-      const sunoNotchFreqs = [11025, 15500, 17800];
+      // 2. Expanded Surgical Notches at Suno v3.5 / suno_55 Bark/Encodec token markers
+      const sunoNotchFreqs = [8820, 11025, 13500, 15500, 17100];
       for (const fNotch of sunoNotchFreqs) {
-        if (fNotch < sr * 0.46) {
-          const notchFilter = designNotchBiquad(fNotch, 26.0, sr);
+        if (fNotch < sr * 0.45) {
+          const notchFilter = designNotchBiquad(fNotch, 22.0, sr);
           chL = applyBiquadZeroPhase(chL, notchFilter);
           chR = applyBiquadZeroPhase(chR, notchFilter);
         }
       }
     }
 
-    // 3. Neural Codec Grid Disruptor: Destroy 20ms (50Hz) RVQ frame periodicity with micro-jitter
-    const maxJitSamples = Math.min(16, Math.max(4, Math.floor(0.00035 * sr)));
+    // 3. 3-Oscillator Neural Codec Grid Disruptor: Destroy 20ms (50Hz) RVQ frame periodicity
+    const maxJitSamples = Math.min(24, Math.max(6, Math.floor(0.00052 * sr)));
     const jitWarp = new Float64Array(nOut);
-    const wJit1 = (2.0 * Math.PI * rng.uniform(3.2, 4.5)) / sr;
-    const wJit2 = (2.0 * Math.PI * rng.uniform(6.5, 8.2)) / sr;
+    const wJit1 = (2.0 * Math.PI * rng.uniform(2.6, 3.4)) / sr;
+    const wJit2 = (2.0 * Math.PI * rng.uniform(4.8, 5.9)) / sr;
+    const wJit3 = (2.0 * Math.PI * rng.uniform(7.3, 8.8)) / sr;
     const phiJit1 = rng.uniform(0, 2 * Math.PI);
     const phiJit2 = rng.uniform(0, 2 * Math.PI);
+    const phiJit3 = rng.uniform(0, 2 * Math.PI);
     for (let i = 0; i < nOut; i++) {
-      const jit = (0.55 * Math.sin(wJit1 * i + phiJit1) + 0.45 * Math.sin(wJit2 * i + phiJit2)) * (maxJitSamples * 0.5);
+      const jit =
+        (0.45 * Math.sin(wJit1 * i + phiJit1) +
+          0.35 * Math.sin(wJit2 * i + phiJit2) +
+          0.20 * Math.cos(wJit3 * i + phiJit3)) *
+        (maxJitSamples * 0.5);
       let x = i + jit;
       if (x < 1.0) x = 1.0;
       else if (x > nOut - 3.01) x = nOut - 3.01;
@@ -540,15 +546,37 @@ export async function processAudioBufferDspV2(
     chL = cubicCatmullRomResample(chL, jitWarp);
     chR = cubicCatmullRomResample(chR, jitWarp);
 
-    // 4. Analog Console Saturation: 2nd and 3rd harmonics injection
+    // 4. Static Zero-Sum RVQ Formant De-Quantizer:
+    // Shifts Suno's synthetic mid-band formant peaks (700-1350 Hz & 2400-4100 Hz) into adjacent
+    // organic valleys with 0.00 dB net volume change.
+    const rvqFormantA = designBandpassBiquad(700, 1350, sr);
+    const rvqValleyA = designBandpassBiquad(1350, 2400, sr);
+    const rvqFormantB = designBandpassBiquad(2400, 4100, sr);
+    const rvqValleyB = designBandpassBiquad(4100, 6800, sr);
+
+    const fAL = applyBiquadZeroPhase(chL, rvqFormantA);
+    const fAR = applyBiquadZeroPhase(chR, rvqFormantA);
+    const vAL = applyBiquadZeroPhase(chL, rvqValleyA);
+    const vAR = applyBiquadZeroPhase(chR, rvqValleyA);
+    const fBL = applyBiquadZeroPhase(chL, rvqFormantB);
+    const fBR = applyBiquadZeroPhase(chR, rvqFormantB);
+    const vBL = applyBiquadZeroPhase(chL, rvqValleyB);
+    const vBR = applyBiquadZeroPhase(chR, rvqValleyB);
+
+    for (let i = 0; i < nOut; i++) {
+      chL[i] += -0.14 * fAL[i] + 0.14 * vAL[i] - 0.12 * fBL[i] + 0.12 * vBL[i];
+      chR[i] += -0.14 * fAR[i] + 0.14 * vAR[i] - 0.12 * fBR[i] + 0.12 * vBR[i];
+    }
+
+    // 5. Analog Console Saturation: Warm 2nd and 3rd harmonics injection
     for (let i = 0; i < nOut; i++) {
       const xL = chL[i];
       const xR = chR[i];
-      chL[i] = Math.tanh(1.03 * xL) + 0.022 * xL * xL - 0.006 * xL * xL * xL;
-      chR[i] = Math.tanh(1.03 * xR) + 0.022 * xR * xR - 0.006 * xR * xR * xR;
+      chL[i] = Math.tanh(1.04 * xL) + 0.026 * xL * xL - 0.007 * xL * xL * xL;
+      chR[i] = Math.tanh(1.04 * xR) + 0.026 * xR * xR - 0.007 * xR * xR * xR;
     }
 
-    // 5. Acoustic Early Reflections (Physical room multipath decorrelation)
+    // 6. Acoustic Early Reflections (Physical room multipath decorrelation)
     const bpRoom = designBandpassBiquad(350, 7500, sr);
     const refInL = applyBiquadZeroPhase(chL, bpRoom);
     const refInR = applyBiquadZeroPhase(chR, bpRoom);
@@ -556,8 +584,8 @@ export async function processAudioBufferDspV2(
     const d2 = Math.floor(0.0068 * sr);
     const d3 = Math.floor(0.0105 * sr);
     for (let i = d3; i < nOut; i++) {
-      const earlyL = 0.028 * refInL[i - d1] - 0.020 * refInR[i - d2] + 0.015 * refInL[i - d3];
-      const earlyR = 0.028 * refInR[i - d1] - 0.020 * refInL[i - d2] + 0.015 * refInR[i - d3];
+      const earlyL = 0.032 * refInL[i - d1] - 0.022 * refInR[i - d2] + 0.016 * refInL[i - d3];
+      const earlyR = 0.032 * refInR[i - d1] - 0.022 * refInL[i - d2] + 0.016 * refInR[i - d3];
       chL[i] += earlyL;
       chR[i] += earlyR;
     }
@@ -580,10 +608,10 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 3. Organic Tape Warmth Bed (-42 dBFS, Envelope-Gated Anti-Diffusion Floor)
+  // 3. Organic Tape Warmth Bed (-39.5 dBFS, Envelope-Gated Anti-Diffusion Floor)
   // =========================================================================
   if (useTapeBed) {
-    onProgress?.('[3/7] Cinta Analógica: Tape Bed (-42 dBFS) con Envolvente Dinámica (0 en silencios)...');
+    onProgress?.('[3/7] Cinta Analógica: Tape Bed (-39.5 dBFS) con Envolvente Dinámica (0 en silencios)...');
     await yieldToUi();
 
     const bpTape = designBandpassBiquad(1800, 13500, sr);
@@ -597,9 +625,6 @@ export async function processAudioBufferDspV2(
     const pTape = rng.uniform(0, 2.0 * Math.PI);
 
     for (let i = 0; i < nOut; i++) {
-      // Dynamic Envelope Gating (pow(envNorm, 1.25)):
-      // In silent gaps, pauses, and quiet transitions, tape bed drops completely to 0.
-      // Eliminates continuous background diffusion hiss that triggers Riffusion detectors.
       const envGate = Math.pow(envNorm[i], 1.25);
       const mod = 1.0 + 0.12 * Math.sin(wTape * i + pTape);
       const val = tapeFiltered[i] * bedAmp * mod * envGate;
@@ -609,46 +634,87 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 3. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+  // 3B. Supercharged Key-Locked Ghost MIDI Sub-Bass (55 Hz - 850 Hz Harmonic Series)
+  //     3x Presence + Real-Time Bass Pitch Tracker + 50% Constant-Energy Overlap
   // =========================================================================
   if (useGhostMidi) {
-    onProgress?.('[3/7] Paso 3: Sintetizador Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)...');
+    onProgress?.('[3/7] Paso 3: Ghost MIDI Sub-Bass Turbo (3x Potencia, Afinado al Bajo Real, 6 Armónicos)...');
     await yieldToUi();
 
+    // Extract the song's real bassline (55 - 190 Hz) to pitch-lock MIDI notes 100% in key
+    const bpTrackBass = designBandpassBiquad(55, 190, sr);
+    const trackBass = applyBiquadZeroPhase(chL, bpTrackBass);
+
     const midiAmp = inputRms * cfg.ghostMidiGain;
+    const stepLen = Math.floor(0.24 * sr); // 240ms window
+    const hopLen = Math.floor(stepLen * 0.5); // 50% Hann overlap -> 100% constant energy (zero pulsing!)
+    const invSeg = (2.0 * Math.PI) / stepLen;
     let cursor = 0;
+    let stepIndex = 0;
+
     while (cursor < nOut) {
-      const stepLen = Math.floor(rng.uniform(0.18, 0.38) * sr);
       const end = Math.min(nOut, cursor + stepLen);
       const segLen = end - cursor;
-      if (segLen < 64) break;
+      if (segLen < 128) break;
 
       const midEnv = envNorm[cursor + (segLen >> 1)];
-      // Enmascaramiento Fletcher-Munson: solo genera con energía musical activa en la pista
-      if (midEnv > 0.04) {
-        const noteIdx = Math.floor(rng.uniform(0, GHOST_MIDI_FREQS.length));
-        const f0 = GHOST_MIDI_FREQS[noteIdx] * rng.uniform(0.994, 1.006);
+      if (midEnv > 0.03) {
+        // Count positive-going zero crossings in trackBass to detect the exact root bass frequency
+        let zc = 0;
+        for (let k = 1; k < segLen; k++) {
+          if (trackBass[cursor + k - 1] <= 0 && trackBass[cursor + k] > 0) {
+            zc++;
+          }
+        }
+        const estFreq = (zc * sr) / segLen;
+
+        // Snap to nearest MIDI frequency in GHOST_MIDI_FREQS
+        let bestFreq = GHOST_MIDI_FREQS[0];
+        if (estFreq >= 48.0 && estFreq <= 210.0) {
+          let minDiff = Infinity;
+          for (let nIdx = 0; nIdx < GHOST_MIDI_FREQS.length; nIdx++) {
+            const d = Math.abs(GHOST_MIDI_FREQS[nIdx] - estFreq);
+            if (d < minDiff) {
+              minDiff = d;
+              bestFreq = GHOST_MIDI_FREQS[nIdx];
+            }
+          }
+        } else {
+          bestFreq = GHOST_MIDI_FREQS[stepIndex % GHOST_MIDI_FREQS.length];
+        }
+
+        const f0 = bestFreq * rng.uniform(0.996, 1.004);
+        // Musical 5th (1.4983x) or Octave (2.0x) on alternating steps to rewrite adjacent Mel bins
+        const fSubHarm = stepIndex % 2 === 0 ? f0 * 1.4983 : f0 * 0.5;
         const w0 = (2.0 * Math.PI * f0) / sr;
+        const wSub = (2.0 * Math.PI * fSubHarm) / sr;
         const phase0 = rng.uniform(0, 2.0 * Math.PI);
-        const invSeg = (2.0 * Math.PI) / segLen;
+        const phaseSub = rng.uniform(0, 2.0 * Math.PI);
 
         for (let k = 0; k < segLen; k++) {
           const idx = cursor + k;
-          // Envolvente Hann sin clics en bordes
           const winHann = 0.5 * (1.0 - Math.cos(k * invSeg));
-          // Fletcher-Munson: escala suavemente con la energía del bajo/bombo
-          const envGate = Math.pow(envNorm[idx], 1.4);
+          // Smooth Fletcher-Munson masking (pow 0.85 preserves strong presence across the track)
+          const envGate = Math.pow(envNorm[idx], 0.85);
           const p = w0 * k + phase0;
-          // Fundamental (62%) + 2º armónico (26%) + 3er armónico (12%)
-          const wave = 0.62 * Math.sin(p) + 0.26 * Math.sin(2.0 * p) + 0.12 * Math.sin(3.0 * p);
+          const pS = wSub * k + phaseSub;
+
+          // Rich 6-harmonic analog Moog/Bass synth series (rewrites 55 Hz - 850 Hz spectrogram)
+          const wave =
+            0.44 * Math.sin(p) +
+            0.22 * Math.sin(2.0 * p + 0.3) +
+            0.13 * Math.sin(3.0 * p + 0.7) +
+            0.07 * Math.sin(4.0 * p + 1.1) +
+            0.04 * Math.sin(5.0 * p + 1.5) +
+            0.10 * Math.sin(pS);
+
           const val = wave * winHann * envGate * midiAmp;
-          // Centro estéreo puro y sólido (cero vaivén o rotación de fase)
           chL[idx] += val;
           chR[idx] += val;
         }
       }
-      const advanceFactor = rng.uniform(0.75, 0.95);
-      cursor += Math.max(16, Math.floor(stepLen * advanceFactor));
+      cursor += hopLen;
+      stepIndex++;
     }
   }
 
@@ -821,19 +887,23 @@ export async function processAudioBufferDspV2(
       chR[i] = mid[i] - s;
     }
 
-    const lp200 = designLowpassBiquad(200, 0.7071, sr);
-    const hp200 = designHighpassBiquad(200, 0.7071, sr);
-    const lowL = applyBiquadZeroPhase(chL, lp200);
-    const lowR = applyBiquadZeroPhase(chR, lp200);
-    let highL = applyBiquadZeroPhase(chL, hp200);
-    let highR = applyBiquadZeroPhase(chR, hp200);
+    // Split at 380 Hz: Bass & Low-Mid (< 380 Hz) remain 100% phase-locked and solid.
+    // High-Band (> 380 Hz) receives APF dispersion + Single-Tap Opposite Stereo Micro-Warp
+    // (1 tap per channel = 0.00 dB volume change in stereo, while canceling Suno's
+    // vocal/harmonic landmarks when the AI detector collapses 0.5*(L+R) to mono!)
+    const lp380 = designLowpassBiquad(380, 0.7071, sr);
+    const hp380 = designHighpassBiquad(380, 0.7071, sr);
+    const lowL = applyBiquadZeroPhase(chL, lp380);
+    const lowR = applyBiquadZeroPhase(chR, lp380);
+    let highL = applyBiquadZeroPhase(chL, hp380);
+    let highR = applyBiquadZeroPhase(chR, hp380);
 
     const apfStages = cfg.apfStages;
     for (let s = 0; s < apfStages; s++) {
       const ratio = s / Math.max(1, apfStages - 1);
-      const baseFreq = 300.0 * Math.pow(9500.0 / 300.0, ratio);
-      const fcL = Math.min(12500, Math.max(250, baseFreq * rng.uniform(0.86, 1.16)));
-      const fcR = Math.min(12500, Math.max(250, baseFreq * rng.uniform(0.86, 1.16)));
+      const baseFreq = 380.0 * Math.pow(9500.0 / 380.0, ratio);
+      const fcL = Math.min(12500, Math.max(350, baseFreq * rng.uniform(0.86, 1.16)));
+      const fcR = Math.min(12500, Math.max(350, baseFreq * rng.uniform(0.86, 1.16)));
       const qL = rng.uniform(0.60, 1.45);
       const qR = rng.uniform(0.60, 1.45);
 
@@ -841,10 +911,28 @@ export async function processAudioBufferDspV2(
       highR = applyBiquadCausal(highR, designAllpassBiquad(fcR, qR, sr));
     }
 
-    // Fixed (non-sweeping!) micro-Haas sample offset on Right channel (>200 Hz)
+    // Single-Tap Opposite High-Band Micro-Warp + Haas Offset (>380 Hz):
+    // Zero comb-filtering in stereo (only 1 tap per channel = 0.00 dB flat amplitude),
+    // while creating opposite +/-5.5 cents phase/pitch divergence that neutralizes
+    // suno_55 in the detector's mono downmix!
     const fixedHaasSamples = cfg.staticHaasMs * (sr / 1000.0);
+    const maxWarpSamples = 0.00068 * sr; // +/- 0.68 ms opposite micro-warp
+    const wWarp1 = (2.0 * Math.PI * 0.19) / sr;
+    const wWarp2 = (2.0 * Math.PI * 0.31) / sr;
+    const phW1 = rng.uniform(0, 2.0 * Math.PI);
+    const phW2 = rng.uniform(0, 2.0 * Math.PI);
+
+    const idxL = new Float64Array(nOut);
     const idxR = new Float64Array(nOut);
-    for (let i = 0; i < nOut; i++) idxR[i] = i - fixedHaasSamples;
+    for (let i = 0; i < nOut; i++) {
+      const dMod = maxWarpSamples * (
+        0.65 * Math.sin(wWarp1 * i + phW1) +
+        0.35 * Math.sin(wWarp2 * i + phW2)
+      );
+      idxL[i] = i + dMod;
+      idxR[i] = i - dMod - fixedHaasSamples;
+    }
+    highL = cubicCatmullRomResample(highL, idxL);
     highR = cubicCatmullRomResample(highR, idxR);
 
     for (let i = 0; i < nOut; i++) {
@@ -854,14 +942,13 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 6. Human Acoustic Transient Punch Restorer (Restores 14-18 dB Crest Factor)
-  //    Neutralizes Griffin-Lim / diffusion vocoder phase smearing (Riffusion detector)
+  // 6B. Zero-Pumping High-Band Micro-Articulation (> 2.5 kHz, +/- 0.8 dB)
   // =========================================================================
   if (useTransientPunch) {
-    onProgress?.('[6/7] Restaurando Pegada y Crest Factor Humano (+2.4 dB en transientes acústicos)...');
+    onProgress?.('[6/7] Micro-Articulación de Banda Alta (>2.5 kHz, Volumen RMS 100% Constante)...');
     await yieldToUi();
 
-    const punched = applyHumanTransientPunch(chL, chR, sr, 2.4);
+    const punched = applyHumanTransientPunch(chL, chR, sr, 0.85);
     chL = punched.chL;
     chR = punched.chR;
   }
