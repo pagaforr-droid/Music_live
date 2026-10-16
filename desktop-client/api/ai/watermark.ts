@@ -33,7 +33,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!token) return res.status(500).json({ error: 'Falta REPLICATE_API_TOKEN en las variables de entorno' });
 
   try {
-    const { audioUrl, uploadUrl, jobId, outputFormat, preset } = req.body || {};
+    const {
+      audioUrl,
+      uploadUrl,
+      jobId,
+      outputFormat,
+      preset,
+      lockOriginalPitch,
+      tapeWarmthBed,
+      sideBloom,
+      ghostMidiBass,
+      constellationPoison,
+    } = req.body || {};
     if (!audioUrl || typeof audioUrl !== 'string') {
       return res.status(400).json({ error: 'Falta audioUrl' });
     }
@@ -48,6 +59,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       job_id: String(jobId || Date.now()),
       output_format: format,
       preset: selectedPreset,
+      lock_original_pitch: lockOriginalPitch !== false,
+      tape_warmth_bed: tapeWarmthBed !== false,
+      side_bloom: sideBloom !== false,
+      ghost_midi_bass: ghostMidiBass !== false,
+      constellation_poison: constellationPoison !== false,
     };
     if (uploadUrl) input.upload_url = uploadUrl;
 
@@ -55,9 +71,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       prediction = await replicate.predictions.create({ version, input });
     } catch (firstErr: any) {
-      // Fallback en caso de que la imagen en Replicate aún esté compilando el parámetro preset
-      const fallbackInput = { ...input };
-      delete fallbackInput.preset;
+      // Fallback en caso de que la versión en Replicate aún no acepte los nuevos campos
+      const fallbackInput: Record<string, unknown> = {
+        audio_file: audioUrl,
+        job_id: String(jobId || Date.now()),
+        output_format: format,
+      };
+      if (uploadUrl) fallbackInput.upload_url = uploadUrl;
       prediction = await replicate.predictions.create({ version, input: fallbackInput });
     }
 

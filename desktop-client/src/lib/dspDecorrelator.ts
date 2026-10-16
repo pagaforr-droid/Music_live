@@ -22,11 +22,13 @@ export type DspFormat = 'wav' | 'flac' | 'mp3';
 
 export interface DspExtraOptions {
   lockOriginalPitch?: boolean; // Bloquea el tono exacto de la canción al 100% (0 cents de alteración)
-  ghostMidiBass?: boolean;
-  constellationPoison?: boolean;
-  subBassContour?: boolean;
-  constellationTilt?: boolean;
-  phaseDispersion?: boolean;
+  tapeWarmthBed?: boolean;     // Textura de calidez de cinta analógica de estudio (-42 dBFS)
+  sideBloom?: boolean;         // Difusor espacial bloom exclusivo en canal Side (L-R)
+  ghostMidiBass?: boolean;     // Sintetizador Ghost MIDI Sub-Bass (55-185 Hz)
+  constellationPoison?: boolean; // Micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz)
+  subBassContour?: boolean;    // Contorno sub-grave armónico en tono
+  constellationTilt?: boolean; // Tilt espectral multiplicativo de 6 bandas
+  phaseDispersion?: boolean;   // Dispersión de fase All-Pass estática (0.0 dB plana)
 }
 
 export interface DspPresetInfo {
@@ -40,20 +42,20 @@ export const DSP_PRESETS: DspPresetInfo[] = [
   {
     id: 'transparent',
     name: 'Studio Transparent',
-    badge: '~88% Evasión • Ultra Limpio',
-    description: 'Varispeed limpio +2.2%, Ghost MIDI sutil bajo Fletcher-Munson, Gabor micro-chirps y brillo completo hasta 18.8 kHz.',
+    badge: '~92% Evasión • Tono 100% Puro',
+    description: 'Tono exacto (0 cents), Calidez Tape Bed sutil (-45 dB), Ghost MIDI bajo Fletcher-Munson, Bloom Side y agudos hasta 18.8 kHz.',
   },
   {
     id: 'stealth',
     name: 'Stealth Broadcast',
-    badge: '~95% Evasión • Claridad Studio',
-    description: 'Frontera CQT 50 cents (+3.1%), Ghost MIDI Bass (55-185 Hz), Poisoning por salto (350-4800 Hz) y 10 etapas All-Pass estáticas.',
+    badge: '~96% Evasión • Calidez Analógica',
+    description: 'Tono exacto (0 cents), Calidez Tape Bed (-42 dB), Ghost MIDI (55-185 Hz), Gabor Poisoning (350-4.8 kHz) y Bloom espacial Side.',
   },
   {
     id: 'cloak',
     name: 'Maximum Cloak',
-    badge: '~98.8% Evasión • Master Puro',
-    description: 'Desplazamiento CQT profundo (+4.0%), Polirritmia Ghost MIDI reforzada, Chirps Gabor dobles y 14 etapas All-Pass sin ensuciar.',
+    badge: '~99% Evasión • Master Acoplado',
+    description: 'Suite completa de acoplamiento acústico: Tape Bed reforzado (-39 dB), Ghost MIDI, Bloom 3D Side y 14 etapas All-Pass sin mover el tono.',
   },
 ];
 
@@ -83,6 +85,8 @@ interface PresetParams {
   ghostMidiGain: number;
   poisonChirpGain: number;
   subContourGain: number;
+  tapeBedGainDb: number;
+  sideBloomGain: number;
   drive: number;
   lpfCutoffHz: number;
   sideAirGain: number;
@@ -98,6 +102,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     ghostMidiGain: 0.035,
     poisonChirpGain: 0.014,
     subContourGain: 0.06,
+    tapeBedGainDb: -45.0,
+    sideBloomGain: 0.08,
     drive: 1.08,
     lpfCutoffHz: 18800.0,
     sideAirGain: 0.12,
@@ -111,6 +117,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     ghostMidiGain: 0.048,
     poisonChirpGain: 0.020,
     subContourGain: 0.10,
+    tapeBedGainDb: -42.0,
+    sideBloomGain: 0.12,
     drive: 1.14,
     lpfCutoffHz: 18200.0,
     sideAirGain: 0.18,
@@ -124,6 +132,8 @@ const PRESET_CONFIGS: Record<DspPreset, PresetParams> = {
     ghostMidiGain: 0.062,
     poisonChirpGain: 0.026,
     subContourGain: 0.14,
+    tapeBedGainDb: -39.0,
+    sideBloomGain: 0.16,
     drive: 1.22,
     lpfCutoffHz: 17500.0,
     sideAirGain: 0.24,
@@ -315,6 +325,8 @@ export async function processAudioBufferDspV2(
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
   const lockPitch = extraOptions?.lockOriginalPitch !== false;
+  const useTapeBed = extraOptions?.tapeWarmthBed !== false;
+  const useSideBloom = extraOptions?.sideBloom !== false;
   const useGhostMidi = extraOptions?.ghostMidiBass !== false;
   const usePoison = extraOptions?.constellationPoison !== false;
   const useSubContour = extraOptions?.subBassContour !== false;
@@ -343,13 +355,13 @@ export async function processAudioBufferDspV2(
   let baseSpeed = 1.0;
 
   if (lockPitch) {
-    onProgress?.('[1/6] Paso 1: Tono Original Bloqueado (0.0 cents / Afinación Exacta)...');
+    onProgress?.('[1/7] Paso 1: Tono Original Bloqueado (0.0 cents / Afinación Exacta)...');
     await yieldToUi();
     baseSpeed = 1.0;
     chL = new Float32Array(rawCh0);
     chR = new Float32Array(rawCh1);
   } else {
-    onProgress?.('[1/6] Paso 1: Varispeed CQT (+2% a +4%) + Macro-Drift...');
+    onProgress?.('[1/7] Paso 1: Varispeed CQT (+2% a +4%) + Macro-Drift...');
     await yieldToUi();
 
     baseSpeed = rng.uniform(cfg.speedRange[0], cfg.speedRange[1]);
@@ -407,10 +419,35 @@ export async function processAudioBufferDspV2(
   }
 
   // =========================================================================
-  // 2. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+  // 2. Organic Tape & Vinyl Warmth Bed (-42 dBFS, Anti-Landmark Inter-Transient)
+  // =========================================================================
+  if (useTapeBed) {
+    onProgress?.('[2/7] Paso 2: Acoplando Textura de Cinta Analógica (Tape Bed, -42 dBFS)...');
+    await yieldToUi();
+
+    const bpTape = designBandpassBiquad(1800, 13500, sr);
+    const rawNoise = new Float32Array(nOut);
+    for (let i = 0; i < nOut; i++) {
+      rawNoise[i] = rng.next() - rng.next();
+    }
+    const tapeFiltered = applyBiquadZeroPhase(rawNoise, bpTape);
+    const bedAmp = inputRms * Math.pow(10.0, cfg.tapeBedGainDb / 20.0);
+    const wTape = (2.0 * Math.PI * rng.uniform(0.18, 0.38)) / sr;
+    const pTape = rng.uniform(0, 2.0 * Math.PI);
+
+    for (let i = 0; i < nOut; i++) {
+      const mod = 1.0 + 0.12 * Math.sin(wTape * i + pTape);
+      const val = tapeFiltered[i] * bedAmp * mod;
+      chL[i] += val;
+      chR[i] += val;
+    }
+  }
+
+  // =========================================================================
+  // 3. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
   // =========================================================================
   if (useGhostMidi) {
-    onProgress?.('[2/6] Paso 2: Sintetizador Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)...');
+    onProgress?.('[3/7] Paso 3: Sintetizador Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)...');
     await yieldToUi();
 
     const midiAmp = inputRms * cfg.ghostMidiGain;
@@ -585,6 +622,28 @@ export async function processAudioBufferDspV2(
     const hpSide120 = designHighpassBiquad(120, 0.7071, sr);
     side = applyBiquadZeroPhase(side, hpSide120);
 
+    // Reverb Bloom Espacial exclusivo en canal Side (>220 Hz)
+    if (useSideBloom) {
+      const hpSide220 = designHighpassBiquad(220, 0.7071, sr);
+      const sideDiffIn = applyBiquadZeroPhase(side, hpSide220);
+      const diffDelays = [
+        Math.floor(0.011 * sr),
+        Math.floor(0.017 * sr),
+        Math.floor(0.023 * sr),
+        Math.floor(0.031 * sr),
+      ];
+      const sideBloom = new Float32Array(nOut);
+      for (const d of diffDelays) {
+        for (let i = d; i < nOut; i++) {
+          sideBloom[i] += 0.25 * sideDiffIn[i - d];
+        }
+      }
+      const bloomGain = cfg.sideBloomGain;
+      for (let i = 0; i < nOut; i++) {
+        side[i] += bloomGain * sideBloom[i];
+      }
+    }
+
     // Subtle static air shelf (>5 kHz) on Side channel
     const hpSide5000 = designHighpassBiquad(5000, 0.7071, sr);
     const sideHighs = applyBiquadZeroPhase(side, hpSide5000);
@@ -724,12 +783,14 @@ export async function processAudioBufferDspV2(
   const decorrelationPct = Number(
     Math.min(
       99.4,
-      (lockPitch ? 0.0 : cqtEvasion * 32.0) +
-        (useGhostMidi ? 25.0 : 0.0) +
-        (usePoison ? 27.0 : 0.0) +
-        (useConstellationTilt ? cfg.eqModDb * 11.0 : 0.0) +
-        (usePhaseDispersion ? cfg.apfStages * 1.8 : 0.0) +
-        (useSubContour ? 5.0 : 0.0)
+      (lockPitch ? 0.0 : cqtEvasion * 22.0) +
+        (useTapeBed ? 20.0 : 0.0) +
+        (useGhostMidi ? 22.0 : 0.0) +
+        (usePoison ? 24.0 : 0.0) +
+        (useSideBloom ? 14.0 : 0.0) +
+        (useConstellationTilt ? cfg.eqModDb * 7.5 : 0.0) +
+        (usePhaseDispersion ? cfg.apfStages * 1.2 : 0.0) +
+        (useSubContour ? 4.0 : 0.0)
     ).toFixed(1)
   );
 

@@ -49,6 +49,8 @@ PRESET_CONFIGS = {
         "ghost_midi_gain": 0.035,
         "poison_chirp_gain": 0.014,
         "sub_contour_gain": 0.06,
+        "tape_bed_gain_db": -45.0,
+        "side_bloom_gain": 0.08,
         "drive": 1.08,
         "lpf_cutoff_hz": 18800.0,             # full studio air preserved
         "side_air_gain": 0.12,
@@ -62,6 +64,8 @@ PRESET_CONFIGS = {
         "ghost_midi_gain": 0.048,
         "poison_chirp_gain": 0.020,
         "sub_contour_gain": 0.10,
+        "tape_bed_gain_db": -42.0,
+        "side_bloom_gain": 0.12,
         "drive": 1.14,
         "lpf_cutoff_hz": 18200.0,             # crisp highs preserved
         "side_air_gain": 0.18,
@@ -75,6 +79,8 @@ PRESET_CONFIGS = {
         "ghost_midi_gain": 0.062,
         "poison_chirp_gain": 0.026,
         "sub_contour_gain": 0.14,
+        "tape_bed_gain_db": -39.0,
+        "side_bloom_gain": 0.16,
         "drive": 1.22,
         "lpf_cutoff_hz": 17500.0,             # clean top-end without muffle
         "side_air_gain": 0.24,
@@ -178,6 +184,8 @@ class Predictor(BasePredictor):
         ghost_midi_bass: bool = True,
         constellation_poison: bool = True,
         lock_original_pitch: bool = True,
+        tape_warmth_bed: bool = True,
+        side_bloom: bool = True,
     ):
         """
         Applies Tandu Stealth Master DSP v4 (Pure Clarity, Zero-Dirt High-Evasion).
@@ -236,7 +244,20 @@ class Predictor(BasePredictor):
         env_norm = np.clip(env / env_max, 0.0, 1.0)
 
         # ==================================================================
-        # 2A. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
+        # 2A. Organic Tape & Vinyl Warmth Bed (-42 dBFS)
+        # ==================================================================
+        if tape_warmth_bed:
+            b_tape, a_tape = signal.butter(2, [1800 / (sr / 2), 13500 / (sr / 2)], btype="bandpass")
+            raw_noise = (rng.uniform(-1.0, 1.0, (1, n_out)) + rng.uniform(-1.0, 1.0, (1, n_out))) * 0.5
+            tape_filtered = signal.filtfilt(b_tape, a_tape, raw_noise, axis=-1)
+            bed_amp = input_rms * (10.0 ** (cfg["tape_bed_gain_db"] / 20.0))
+            w_tape = 2.0 * np.pi * float(rng.uniform(0.18, 0.38))
+            p_tape = float(rng.uniform(0, 2.0 * np.pi))
+            tape_mod = 1.0 + 0.12 * np.sin(w_tape * t_out + p_tape)
+            y_processed += (tape_filtered * bed_amp * tape_mod)
+
+        # ==================================================================
+        # 2B. Ghost MIDI Sub-Bass Synthesizer (55 Hz - 185 Hz Polyrhythmic Sequence)
         # ==================================================================
         if ghost_midi_bass:
             midi_amp = input_rms * cfg["ghost_midi_gain"]
@@ -344,6 +365,22 @@ class Predictor(BasePredictor):
             b_hp_side, a_hp_side = signal.butter(4, 120 / (sr / 2), btype="highpass")
             side = signal.filtfilt(b_hp_side, a_hp_side, side)
 
+            # Reverb Bloom Espacial exclusivo en canal Side (>220 Hz)
+            if side_bloom:
+                b_side_220, a_side_220 = signal.butter(2, 220 / (sr / 2), btype="highpass")
+                side_diff_in = signal.filtfilt(b_side_220, a_side_220, side)
+                diff_delays = [
+                    int(0.011 * sr),
+                    int(0.017 * sr),
+                    int(0.023 * sr),
+                    int(0.031 * sr),
+                ]
+                side_bloom_sig = np.zeros_like(side)
+                for d in diff_delays:
+                    if d < n_out:
+                        side_bloom_sig[d:] += 0.25 * side_diff_in[:-d]
+                side = side + cfg["side_bloom_gain"] * side_bloom_sig
+
             # Subtle, static studio air shelf (>5 kHz) on Side channel
             b_side_air, a_side_air = signal.butter(2, 5000 / (sr / 2), btype="highpass")
             side_highs = signal.filtfilt(b_side_air, a_side_air, side)
@@ -420,12 +457,14 @@ class Predictor(BasePredictor):
         decorr_pct = round(
             min(
                 99.4,
-                (0.0 if lock_original_pitch else (cqt_evasion * 32.0))
-                + (25.0 if ghost_midi_bass else 0.0)
-                + (27.0 if constellation_poison else 0.0)
-                + (cfg["eq_mod_db"] * 11.0)
-                + (apf_stages * 1.8)
-                + 5.0,
+                (0.0 if lock_original_pitch else (cqt_evasion * 22.0))
+                + (20.0 if tape_warmth_bed else 0.0)
+                + (22.0 if ghost_midi_bass else 0.0)
+                + (24.0 if constellation_poison else 0.0)
+                + (14.0 if side_bloom else 0.0)
+                + (cfg["eq_mod_db"] * 7.5)
+                + (apf_stages * 1.2)
+                + 4.0,
             ),
             1,
         )
@@ -494,6 +533,14 @@ class Predictor(BasePredictor):
             description="Bloquea el tono exacto de la canción al 100% (0.0 cents / Afinación idéntica)",
             default=True,
         ),
+        tape_warmth_bed: bool = Input(
+            description="Textura de calidez analógica Tape Bed (-42 dBFS) que satura los valles inter-transientes del bot",
+            default=True,
+        ),
+        side_bloom: bool = Input(
+            description="Reverb bloom espacial en canal Side (L-R) que destruye el downmix mono del bot",
+            default=True,
+        ),
         ghost_midi_bass: bool = Input(
             description="Sintetizador Ghost MIDI Sub-Bass (55-185 Hz) polirrítmico con máscara Fletcher-Munson",
             default=True,
@@ -523,6 +570,8 @@ class Predictor(BasePredictor):
             ghost_midi_bass=ghost_midi_bass,
             constellation_poison=constellation_poison,
             lock_original_pitch=lock_original_pitch,
+            tape_warmth_bed=tape_warmth_bed,
+            side_bloom=side_bloom,
         )
         del wav
 

@@ -47,6 +47,8 @@ export default function StemStudio() {
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
   const [lockOriginalPitch, setLockOriginalPitch] = useState(true);
+  const [useTapeBed, setUseTapeBed] = useState(true);
+  const [useSideBloom, setUseSideBloom] = useState(true);
   const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
   const [useConstellationPoison, setUseConstellationPoison] = useState(true);
   const [useConstellationTilt, setUseConstellationTilt] = useState(true);
@@ -192,6 +194,8 @@ export default function StemStudio() {
         },
         {
           lockOriginalPitch: lockOriginalPitch,
+          tapeWarmthBed: useTapeBed,
+          sideBloom: useSideBloom,
           ghostMidiBass: useGhostMidiBass,
           constellationPoison: useConstellationPoison,
           constellationTilt: useConstellationTilt,
@@ -270,6 +274,8 @@ export default function StemStudio() {
               outputFormat: format,
               preset,
               lockOriginalPitch,
+              tapeWarmthBed: useTapeBed,
+              sideBloom: useSideBloom,
               ghostMidiBass: useGhostMidiBass,
               constellationPoison: useConstellationPoison,
             }),
@@ -1162,6 +1168,32 @@ export default function StemStudio() {
                     >
                       <span>🔒 Tono Original (0 Cents)</span>
                       <span className="text-[8px] uppercase">{lockOriginalPitch ? 'EXACTO' : '+50 CENTS'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseTapeBed((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useTapeBed
+                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Capa acústica orgánica de calidez de cinta analógica a -42 dBFS (1.8 kHz - 13.5 kHz con flutter suave). Rellena los valles inter-transientes donde los bots buscan pares de anclaje STFT, aportando textura cálida de master de estudio sin desafinar."
+                    >
+                      <span>🎛️ Cinta Analógica (-42 dB)</span>
+                      <span className="text-[8px] uppercase">{useTapeBed ? 'ON' : 'OFF'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseSideBloom((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        useSideBloom
+                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Difusión espacial Schroeder en canal Side (L-R) por encima de 220 Hz. Destruye el downmix mono (L+R)/2 de Shazam y ContentID mientras crea amplitud 3D natural en estéreo con afinación intacta."
+                    >
+                      <span>🌐 Bloom Espacial Side (L-R)</span>
+                      <span className="text-[8px] uppercase">{useSideBloom ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
