@@ -46,9 +46,9 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
-  const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
-  const [useConstellationPoison, setUseConstellationPoison] = useState(true);
-  const [useStereoRotation, setUseStereoRotation] = useState(true);
+  const [useSubBassContour, setUseSubBassContour] = useState(true);
+  const [useConstellationTilt, setUseConstellationTilt] = useState(true);
+  const [usePhaseDispersion, setUsePhaseDispersion] = useState(true);
   const [decorrelatingStemId, setDecorrelatingStemId] = useState<string | null>(null);
   const [dspTelemetry, setDspTelemetry] = useState<{
     preset: string;
@@ -186,12 +186,12 @@ export default function StemStudio() {
         preset,
         format,
         (stepMsg) => {
-          if (mountedRef.current) setDspMessage(`DSP v3.5 • ${stepMsg}`);
+          if (mountedRef.current) setDspMessage(`DSP v4 • ${stepMsg}`);
         },
         {
-          ghostMidiBass: useGhostMidiBass,
-          constellationPoison: useConstellationPoison,
-          stereoRotation: useStereoRotation,
+          subBassContour: useSubBassContour,
+          constellationTilt: useConstellationTilt,
+          phaseDispersion: usePhaseDispersion,
         }
       );
 
@@ -1053,13 +1053,13 @@ export default function StemStudio() {
                 )}
               </div>
 
-              {/* DSP Watermark Module (Stealth Master DSP v3) */}
+              {/* DSP Watermark Module (Stealth Master DSP v4) */}
               <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-5 flex flex-col gap-4 shadow-xl">
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-800/60">
                   <div className="flex items-center gap-2.5">
                     <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.7)]" />
                     <h3 className="text-[11px] font-bold text-zinc-200 uppercase tracking-widest">
-                      Stealth Master DSP v3 — 5-Vector Aggressive Anti-Fingerprint
+                      Stealth Master DSP v4 — Pure Studio Clarity Anti-Fingerprint
                     </h3>
                   </div>
 
@@ -1098,7 +1098,7 @@ export default function StemStudio() {
                 
                 <div className="flex flex-col gap-4 flex-1 justify-between">
                   <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    Ataque simultáneo en 5 vectores: <code className="text-blue-400">Desplazamiento CQT de Cuarto de Tono (~50 cents) + Triple-LFO Rubato</code>, <code className="text-blue-400">Scrambler de Constelación de 6 Bandas</code>, <code className="text-blue-400">Armónicos Chebyshev (T2/T3/T5)</code>, <code className="text-blue-400">Trampa Mono Haas LFO + Difusor Schroeder (10-18 APF L≠R)</code> y erradicación de portadoras ultrasónicas de watermark. Puedes subir un archivo nuevo o pulsar <Shield size={11} className="inline text-blue-400 mx-0.5" /> en cualquier pista.
+                    Arquitectura de claridad de estudio sin ensuciar el audio: <code className="text-blue-400">Desplazamiento CQT de Cuarto de Tono (+2.0% a +4.35%) + Macro-Rubato Ultra-Lento (22-45s)</code>, <code className="text-blue-400">Tilt Espectral Multiplicativo de 6 Bandas (0 Ruido Aditivo)</code>, <code className="text-blue-400">Contorno Sub-Grave Armónico en Tono (55-145 Hz)</code> y <code className="text-blue-400">Red All-Pass Estática de 0.0 dB (Sin Flanger ni Rotación Mareante)</code> manteniendo agudos cristalinos hasta 18.8 kHz.
                   </p>
 
                   {/* 3 Preset Selector Cards */}
@@ -1138,49 +1138,49 @@ export default function StemStudio() {
                     })}
                   </div>
 
-                  {/* Special Psychoacoustic Countermeasures Toggles */}
+                  {/* Clean Studio Countermeasures Toggles */}
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mr-1">
-                      Inyectores Activos:
+                      Módulos Limpios:
                     </span>
                     <button
                       type="button"
-                      onClick={() => setUseGhostMidiBass((v) => !v)}
+                      onClick={() => setUseSubBassContour((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
-                        useGhostMidiBass
+                        useSubBassContour
                           ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Inyecta una secuencia de notas MIDI sub-graves (55-185 Hz) enmascarada bajo Fletcher-Munson para engañar el detector de nota raíz y compás"
+                      title="Extrae el propio bajo de la canción (55-145 Hz) y modula suavemente su contorno armónico 100% en tono, sin notas falsas desafinadas"
                     >
-                      <span>🎹 Ghost MIDI Sub-Bass (55-185 Hz)</span>
-                      <span className="text-[8px] uppercase">{useGhostMidiBass ? 'ON' : 'OFF'}</span>
+                      <span>🎸 Contorno Sub-Grave en Tono (55-145 Hz)</span>
+                      <span className="text-[8px] uppercase">{useSubBassContour ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setUseConstellationPoison((v) => !v)}
+                      onClick={() => setUseConstellationTilt((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
-                        useConstellationPoison
+                        useConstellationTilt
                           ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Inyecta micro-ráfagas Gabor por salto de frecuencia (350-4800 Hz) bajo los transientes musicales para sembrar picos falsos en el espectrograma"
+                      title="Intercambia la dominancia de picos espectrales en 6 bandas usando ecualización dinámica multiplicativa lenta (15-25s) idéntica en L y R, con cero ruido añadido"
                     >
-                      <span>🎯 Ruido Quirúrgico Anti-Huella (350-4.8 kHz)</span>
-                      <span className="text-[8px] uppercase">{useConstellationPoison ? 'ON' : 'OFF'}</span>
+                      <span>🎛️ Tilt Espectral Multiplicativo (6 Bandas, 0 Ruido)</span>
+                      <span className="text-[8px] uppercase">{useConstellationTilt ? 'ON' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setUseStereoRotation((v) => !v)}
+                      onClick={() => setUsePhaseDispersion((v) => !v)}
                       className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
-                        useStereoRotation
+                        usePhaseDispersion
                           ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
                           : 'bg-[#09090b] text-zinc-500 border-zinc-800'
                       }`}
-                      title="Rota dinámicamente las sub-bandas entre L y R en contrafase para destruir el downmix mono del detector"
+                      title="Red All-Pass estática invariante en el tiempo con respuesta de magnitud 0.0 dB plana: rota la fase interna de los bloques STFT sin flanger ni paneo giratorio"
                     >
-                      <span>🌐 Rotación de Espectro Estéreo 3D</span>
-                      <span className="text-[8px] uppercase">{useStereoRotation ? 'ON' : 'OFF'}</span>
+                      <span>🛡️ Dispersión de Fase Estática (0.0 dB Plana, Sin Flanger)</span>
+                      <span className="text-[8px] uppercase">{usePhaseDispersion ? 'ON' : 'OFF'}</span>
                     </button>
                   </div>
                   
