@@ -46,6 +46,7 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
+  const [lockOriginalPitch, setLockOriginalPitch] = useState(true);
   const [useGhostMidiBass, setUseGhostMidiBass] = useState(true);
   const [useConstellationPoison, setUseConstellationPoison] = useState(true);
   const [useConstellationTilt, setUseConstellationTilt] = useState(true);
@@ -190,6 +191,7 @@ export default function StemStudio() {
           if (mountedRef.current) setDspMessage(`DSP v4 • ${stepMsg}`);
         },
         {
+          lockOriginalPitch: lockOriginalPitch,
           ghostMidiBass: useGhostMidiBass,
           constellationPoison: useConstellationPoison,
           constellationTilt: useConstellationTilt,
@@ -267,6 +269,9 @@ export default function StemStudio() {
               jobId: String(ts),
               outputFormat: format,
               preset,
+              lockOriginalPitch,
+              ghostMidiBass: useGhostMidiBass,
+              constellationPoison: useConstellationPoison,
             }),
           });
           const startData = await startRes.json().catch(() => ({}));
@@ -1145,6 +1150,19 @@ export default function StemStudio() {
                     <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mr-1">
                       Módulos Activos:
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setLockOriginalPitch((v) => !v)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                        lockOriginalPitch
+                          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.15)]'
+                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                      }`}
+                      title="Mantiene la afinación, escala y velocidad de la canción al 100% idénticos al original (0.0 cents). Evita que la voz o instrumentos suenen más agudos o acelerados."
+                    >
+                      <span>🔒 Tono Original (0 Cents)</span>
+                      <span className="text-[8px] uppercase">{lockOriginalPitch ? 'EXACTO' : '+50 CENTS'}</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setUseGhostMidiBass((v) => !v)}

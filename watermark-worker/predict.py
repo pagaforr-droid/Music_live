@@ -177,6 +177,7 @@ class Predictor(BasePredictor):
         preset: str = "stealth",
         ghost_midi_bass: bool = True,
         constellation_poison: bool = True,
+        lock_original_pitch: bool = True,
     ):
         """
         Applies Tandu Stealth Master DSP v4 (Pure Clarity, Zero-Dirt High-Evasion).
@@ -190,37 +191,42 @@ class Predictor(BasePredictor):
         t = np.arange(length, dtype=np.float64)
 
         # ==================================================================
-        # 1. Clean Quarter-Tone CQT Shift + Ultra-Slow Macro-Drift (No Flutter!)
+        # 1. Pitch & Speed Control: Lock Original Pitch (0 cents) OR Clean CQT Shift
         # ==================================================================
-        base_speed = float(rng.uniform(*cfg["speed_range"]))
-        # Ultra-slow macro-rubato (22 to 45 second cycle) so pitch is 100% stable to the ear
-        drift1_freq = float(rng.uniform(0.022, 0.045))
-        drift2_freq = float(rng.uniform(0.055, 0.085))
-        drift1_depth = float(rng.uniform(*cfg["macro_drift"]))
-        drift2_depth = drift1_depth * 0.45
+        if lock_original_pitch:
+            base_speed = 1.0000
+            y_processed = wav_f64.copy()
+            n_out = y_processed.shape[-1]
+            t_out = np.arange(n_out, dtype=np.float64) / sr
+        else:
+            base_speed = float(rng.uniform(*cfg["speed_range"]))
+            drift1_freq = float(rng.uniform(0.022, 0.045))
+            drift2_freq = float(rng.uniform(0.055, 0.085))
+            drift1_depth = float(rng.uniform(*cfg["macro_drift"]))
+            drift2_depth = drift1_depth * 0.45
 
-        phi1 = float(rng.uniform(0, 2.0 * np.pi))
-        phi2 = float(rng.uniform(0, 2.0 * np.pi))
+            phi1 = float(rng.uniform(0, 2.0 * np.pi))
+            phi2 = float(rng.uniform(0, 2.0 * np.pi))
 
-        w1 = 2.0 * np.pi * drift1_freq / sr
-        w2 = 2.0 * np.pi * drift2_freq / sr
+            w1 = 2.0 * np.pi * drift1_freq / sr
+            w2 = 2.0 * np.pi * drift2_freq / sr
 
-        t_warp = (
-            base_speed * t
-            - (drift1_depth / w1) * np.cos(w1 * t + phi1)
-            - (drift2_depth / w2) * np.sin(w2 * t + phi2)
-        )
-        t_warp -= np.min(t_warp)
-        t_warp += 1.0
-        valid = t_warp < (length - 3)
-        t_warp = t_warp[valid]
+            t_warp = (
+                base_speed * t
+                - (drift1_depth / w1) * np.cos(w1 * t + phi1)
+                - (drift2_depth / w2) * np.sin(w2 * t + phi2)
+            )
+            t_warp -= np.min(t_warp)
+            t_warp += 1.0
+            valid = t_warp < (length - 3)
+            t_warp = t_warp[valid]
 
-        y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
-        for ch in range(wav_f64.shape[0]):
-            y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
+            y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
+            for ch in range(wav_f64.shape[0]):
+                y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
 
-        n_out = y_processed.shape[-1]
-        t_out = np.arange(n_out, dtype=np.float64) / sr
+            n_out = y_processed.shape[-1]
+            t_out = np.arange(n_out, dtype=np.float64) / sr
 
         # Compute normalized envelope for Fletcher-Munson & Bark critical masking
         mono_abs = 0.5 * (np.abs(y_processed[0]) + (np.abs(y_processed[1]) if y_processed.shape[0] > 1 else np.abs(y_processed[0])))
@@ -409,11 +415,18 @@ class Predictor(BasePredictor):
             y_processed *= ceiling / peak2
 
         speed_shift_pct = round((base_speed - 1.0) * 100.0, 2)
-        cents_shift = 1200.0 * np.log2(base_speed)
-        cqt_evasion = min(1.0, cents_shift / 48.0)
-        extra_bonus = (8.5 if ghost_midi_bass else 0.0) + (9.5 if constellation_poison else 0.0)
+        cents_shift = 0.0 if lock_original_pitch else (1200.0 * np.log2(base_speed))
+        cqt_evasion = 0.0 if lock_original_pitch else min(1.0, cents_shift / 48.0)
         decorr_pct = round(
-            min(99.4, (cqt_evasion * 48.0) + (cfg["eq_mod_db"] * 6.5) + (apf_stages * 1.1) + extra_bonus),
+            min(
+                99.4,
+                (0.0 if lock_original_pitch else (cqt_evasion * 32.0))
+                + (25.0 if ghost_midi_bass else 0.0)
+                + (27.0 if constellation_poison else 0.0)
+                + (cfg["eq_mod_db"] * 11.0)
+                + (apf_stages * 1.8)
+                + 5.0,
+            ),
             1,
         )
         return y_processed.astype(np.float32), speed_shift_pct, decorr_pct
@@ -477,6 +490,10 @@ class Predictor(BasePredictor):
             choices=["transparent", "stealth", "cloak"],
             default="stealth",
         ),
+        lock_original_pitch: bool = Input(
+            description="Bloquea el tono exacto de la canción al 100% (0.0 cents / Afinación idéntica)",
+            default=True,
+        ),
         ghost_midi_bass: bool = Input(
             description="Sintetizador Ghost MIDI Sub-Bass (55-185 Hz) polirrítmico con máscara Fletcher-Munson",
             default=True,
@@ -505,6 +522,7 @@ class Predictor(BasePredictor):
             preset=preset,
             ghost_midi_bass=ghost_midi_bass,
             constellation_poison=constellation_poison,
+            lock_original_pitch=lock_original_pitch,
         )
         del wav
 

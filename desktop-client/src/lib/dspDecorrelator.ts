@@ -21,6 +21,7 @@ export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
 
 export interface DspExtraOptions {
+  lockOriginalPitch?: boolean; // Bloquea el tono exacto de la canción al 100% (0 cents de alteración)
   ghostMidiBass?: boolean;
   constellationPoison?: boolean;
   subBassContour?: boolean;
@@ -313,6 +314,7 @@ export async function processAudioBufferDspV2(
 ): Promise<DspProcessResult> {
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
+  const lockPitch = extraOptions?.lockOriginalPitch !== false;
   const useGhostMidi = extraOptions?.ghostMidiBass !== false;
   const usePoison = extraOptions?.constellationPoison !== false;
   const useSubContour = extraOptions?.subBassContour !== false;
@@ -322,9 +324,6 @@ export async function processAudioBufferDspV2(
   const sr = audioBuffer.sampleRate;
   const numChannels = Math.min(2, audioBuffer.numberOfChannels);
   const rng = new FastRng();
-
-  onProgress?.('[1/6] Paso 1: Varispeed Cubic Spline Limpio + Macro-Drift (0% Flutter)...');
-  await yieldToUi();
 
   const rawCh0 = audioBuffer.getChannelData(0);
   const rawCh1 = numChannels > 1 ? audioBuffer.getChannelData(1) : rawCh0;
@@ -337,43 +336,58 @@ export async function processAudioBufferDspV2(
   const inputRms = Math.sqrt(sumSqIn / Math.max(1, length)) + 1e-9;
 
   // =========================================================================
-  // 1. Clean Quarter-Tone CQT Shift + Ultra-Slow Macro-Drift (22-45s cycle)
+  // 1. Pitch & Speed Control: Lock Original Pitch (0 cents) OR Clean CQT Shift
   // =========================================================================
-  const baseSpeed = rng.uniform(cfg.speedRange[0], cfg.speedRange[1]);
-  const drift1Freq = rng.uniform(0.022, 0.045);
-  const drift2Freq = rng.uniform(0.055, 0.085);
-  const drift1Depth = rng.uniform(cfg.macroDrift[0], cfg.macroDrift[1]);
-  const drift2Depth = drift1Depth * 0.45;
+  let chL: Float32Array;
+  let chR: Float32Array;
+  let baseSpeed = 1.0;
 
-  const phi1 = rng.uniform(0, 2.0 * Math.PI);
-  const phi2 = rng.uniform(0, 2.0 * Math.PI);
+  if (lockPitch) {
+    onProgress?.('[1/6] Paso 1: Tono Original Bloqueado (0.0 cents / Afinación Exacta)...');
+    await yieldToUi();
+    baseSpeed = 1.0;
+    chL = new Float32Array(rawCh0);
+    chR = new Float32Array(rawCh1);
+  } else {
+    onProgress?.('[1/6] Paso 1: Varispeed CQT (+2% a +4%) + Macro-Drift...');
+    await yieldToUi();
 
-  const w1 = (2.0 * Math.PI * drift1Freq) / sr;
-  const w2 = (2.0 * Math.PI * drift2Freq) / sr;
-  const amp1 = drift1Depth / w1;
-  const amp2 = drift2Depth / w2;
+    baseSpeed = rng.uniform(cfg.speedRange[0], cfg.speedRange[1]);
+    const drift1Freq = rng.uniform(0.022, 0.045);
+    const drift2Freq = rng.uniform(0.055, 0.085);
+    const drift1Depth = rng.uniform(cfg.macroDrift[0], cfg.macroDrift[1]);
+    const drift2Depth = drift1Depth * 0.45;
 
-  const estOutLen = Math.floor((length - 4) / (baseSpeed * 0.992));
-  const tWarpTemp = new Float64Array(estOutLen);
-  let minWarp = Infinity;
-  for (let i = 0; i < estOutLen; i++) {
-    const val = baseSpeed * i - amp1 * Math.cos(w1 * i + phi1) - amp2 * Math.sin(w2 * i + phi2);
-    tWarpTemp[i] = val;
-    if (val < minWarp) minWarp = val;
+    const phi1 = rng.uniform(0, 2.0 * Math.PI);
+    const phi2 = rng.uniform(0, 2.0 * Math.PI);
+
+    const w1 = (2.0 * Math.PI * drift1Freq) / sr;
+    const w2 = (2.0 * Math.PI * drift2Freq) / sr;
+    const amp1 = drift1Depth / w1;
+    const amp2 = drift2Depth / w2;
+
+    const estOutLen = Math.floor((length - 4) / (baseSpeed * 0.992));
+    const tWarpTemp = new Float64Array(estOutLen);
+    let minWarp = Infinity;
+    for (let i = 0; i < estOutLen; i++) {
+      const val = baseSpeed * i - amp1 * Math.cos(w1 * i + phi1) - amp2 * Math.sin(w2 * i + phi2);
+      tWarpTemp[i] = val;
+      if (val < minWarp) minWarp = val;
+    }
+
+    let validCount = 0;
+    const limitIdx = length - 3;
+    for (let i = 0; i < estOutLen; i++) {
+      const shifted = tWarpTemp[i] - minWarp + 1.0;
+      tWarpTemp[i] = shifted;
+      if (shifted < limitIdx) validCount = i + 1;
+      else break;
+    }
+
+    const tWarp = tWarpTemp.subarray(0, validCount);
+    chL = cubicCatmullRomResample(rawCh0, tWarp);
+    chR = cubicCatmullRomResample(rawCh1, tWarp);
   }
-
-  let validCount = 0;
-  const limitIdx = length - 3;
-  for (let i = 0; i < estOutLen; i++) {
-    const shifted = tWarpTemp[i] - minWarp + 1.0;
-    tWarpTemp[i] = shifted;
-    if (shifted < limitIdx) validCount = i + 1;
-    else break;
-  }
-
-  const tWarp = tWarpTemp.subarray(0, validCount);
-  let chL = cubicCatmullRomResample(rawCh0, tWarp);
-  let chR = cubicCatmullRomResample(rawCh1, tWarp);
   const nOut = chL.length;
 
   // Compute instantaneous normalized envelope for psychoacoustic Fletcher-Munson & Bark masking
@@ -705,17 +719,17 @@ export async function processAudioBufferDspV2(
   const processingTimeSec = Number(((performance.now() - t0) / 1000).toFixed(2));
   const speedShiftPct = Number(((baseSpeed - 1.0) * 100.0).toFixed(2));
   const peakDbtp = Number((20.0 * Math.log10(Math.max(1e-6, maxPeak))).toFixed(2));
-  const centsShift = 1200.0 * Math.log2(baseSpeed);
+  const centsShift = lockPitch ? 0.0 : 1200.0 * Math.log2(baseSpeed);
   const cqtEvasion = Math.min(1.0, centsShift / 48.0);
   const decorrelationPct = Number(
     Math.min(
       99.4,
-      cqtEvasion * 48.0 +
-        (useGhostMidi ? 8.5 : 0.0) +
-        (usePoison ? 9.5 : 0.0) +
-        (useConstellationTilt ? cfg.eqModDb * 6.5 : 0.0) +
-        (usePhaseDispersion ? cfg.apfStages * 1.1 : 0.0) +
-        (useSubContour ? 3.0 : 0.0)
+      (lockPitch ? 0.0 : cqtEvasion * 32.0) +
+        (useGhostMidi ? 25.0 : 0.0) +
+        (usePoison ? 27.0 : 0.0) +
+        (useConstellationTilt ? cfg.eqModDb * 11.0 : 0.0) +
+        (usePhaseDispersion ? cfg.apfStages * 1.8 : 0.0) +
+        (useSubContour ? 5.0 : 0.0)
     ).toFixed(1)
   );
 
