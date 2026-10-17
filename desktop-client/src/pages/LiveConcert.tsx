@@ -580,65 +580,84 @@ export default function LiveConcert() {
   const songSections = currentSong?.prompter_data?.sections || [];
 
   return (
-    <div className="h-screen bg-[#07090e] text-white flex flex-col font-sans overflow-hidden select-none">
-      
+    <div className="h-screen bg-[#08090c] text-white flex flex-col font-sans overflow-hidden select-none relative">
+      {/* Subtle Concentric Hero Stage Rings (Musiko.io Aesthetic) */}
+      <div className="pointer-events-none absolute -top-64 left-1/3 w-[700px] h-[700px] rounded-full border border-white/[0.03]" />
+      <div className="pointer-events-none absolute -top-48 left-1/3 w-[520px] h-[520px] rounded-full border border-white/[0.04]" />
+
       {/* HEADER / CONSOLA MAESTRA DE ESCENARIO */}
-      <header className="h-[84px] bg-[#0c0e14] border-b border-white/[0.08] flex items-center px-5 justify-between shrink-0 z-20 gap-4">
+      <header className="h-[88px] bg-[#0d0f14]/95 backdrop-blur-2xl border-b border-white/[0.06] shadow-[0_8px_32px_rgba(0,0,0,0.55)] flex items-center px-6 justify-between shrink-0 z-20 gap-4">
         <div className="flex items-center gap-3 shrink-0">
-          <div className="bg-red-600 text-white font-black px-3.5 py-2 rounded-xl uppercase tracking-[0.18em] text-[11px] shadow-[0_0_20px_rgba(239,68,68,0.3)] flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+          <div className="bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white font-black px-4 py-2 rounded-full uppercase tracking-[0.18em] text-[10px] shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-white/15 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-white animate-pulse shadow-[0_0_8px_#fff]" />
             LIVE STAGE
           </div>
-          <select 
-            className="bg-[#07090e] hover:bg-[#111520] border border-zinc-800 text-white px-3.5 py-2 rounded-xl outline-none font-bold text-xs transition-colors cursor-pointer max-w-[200px]"
-            value={selectedSetlistId || ''}
-            onChange={(e) => setSelectedSetlistId(e.target.value)}
-          >
-            <option value="" className="bg-[#0c0e14]">Cargar Setlist...</option>
-            {setlists.map(sl => (
-              <option key={sl.id} value={sl.id} className="bg-[#0c0e14]">{sl.title}</option>
-            ))}
-          </select>
-          
+
+          <div className="relative">
+            <select
+              className="stage-tactile-btn bg-[#13161f] hover:bg-[#191d29] border border-white/[0.08] focus:border-[#ef4444]/50 text-white px-4 py-2 rounded-full outline-none font-bold text-xs transition-all cursor-pointer max-w-[210px]"
+              value={selectedSetlistId || ''}
+              onChange={(e) => setSelectedSetlistId(e.target.value)}
+            >
+              <option value="" className="bg-[#0d0f14]">Cargar Setlist...</option>
+              {setlists.map(sl => (
+                <option key={sl.id} value={sl.id} className="bg-[#0d0f14]">{sl.title}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Selector de Modo: EN VIVO (Consola WAV) vs PRÁCTICA (Ligero MP3) */}
-          <div 
+          <div
             onClick={() => {
               if (isPlaying) return;
               setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
             }}
-            className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
-              playbackMode === 'LIVE' 
-                ? 'bg-red-500/15 border-red-500/40 text-red-300' 
-                : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+            className={`stage-tactile-btn flex items-center gap-2 px-3.5 py-2 rounded-full border transition-all cursor-pointer ${
+              playbackMode === 'LIVE'
+                ? 'bg-[#ef4444]/15 border-[#ef4444]/40 text-red-200 shadow-[0_0_16px_rgba(239,68,68,0.15)]'
+                : 'bg-amber-500/15 border-amber-500/40 text-amber-200'
             } ${isPlaying ? 'opacity-50 cursor-not-allowed' : ''}`}
             title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV de Consola)" : "Modo Práctica / Ensayo (Audio Ligero MP3)"}
           >
-            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-red-500' : 'bg-amber-400'}`}></div>
+            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-[#ef4444] shadow-[0_0_8px_#ef4444]' : 'bg-amber-400 shadow-[0_0_8px_#fbbf24]'}`} />
             <span className="text-[10px] font-black uppercase tracking-wider">
               {playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}
             </span>
           </div>
         </div>
 
-        {/* Center: Reloj de Compás/Tiempo y Barra de Progreso */}
-        <div className="flex flex-col items-center flex-1 max-w-[520px] px-2">
-          <div className="flex items-center gap-3 mb-1">
-            <span className="text-3xl leading-none font-mono font-black text-white tracking-wider">
-              {formatTime(currentTime)}
-            </span>
-            {currentSong?.prompter_data?.bpm && (
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-zinc-900 text-amber-400 border border-zinc-800">
-                {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
+        {/* Center: Reloj Digital de Escenario y Barra de Progreso (Musiko.io + QClay) */}
+        <div className="flex flex-col items-center flex-1 max-w-[540px] px-3">
+          <div className="w-full flex items-center justify-between mb-1.5 px-1">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs font-extrabold text-white truncate max-w-[180px]">
+                {currentSong ? currentSong.title : 'Sin canción activa'}
               </span>
-            )}
+              {currentSong?.prompter_data?.key && (
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-white/[0.06] text-gray-300 border border-white/10">
+                  {currentSong.prompter_data.key}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2.5 shrink-0">
+              <span className="text-2xl leading-none font-mono font-black text-white tracking-wider drop-shadow-[0_2px_10px_rgba(255,255,255,0.15)]">
+                {formatTime(currentTime)}
+              </span>
+              {currentSong?.prompter_data?.bpm && (
+                <span className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-[#151822] text-amber-400 border border-amber-500/25 shadow-inner">
+                  {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
+                </span>
+              )}
+            </div>
           </div>
-          
-          <div className="w-full flex items-center group">
-            <input 
-              type="range" 
-              min={-(getPreRoll(currentSong) || 0)} 
-              max={totalDuration - getPreRoll(currentSong) || 100} 
-              step="0.1" 
+
+          <div className="w-full flex items-center gap-2.5 group">
+            <input
+              type="range"
+              min={-(getPreRoll(currentSong) || 0)}
+              max={totalDuration - getPreRoll(currentSong) || 100}
+              step="0.1"
               value={isDraggingSlider ? localSliderTime : currentTime}
               onPointerDown={() => setIsDraggingSlider(true)}
               onPointerUp={(e) => {
@@ -652,102 +671,114 @@ export default function LiveConcert() {
                 }
               }}
               disabled={isLoading || !currentSong}
-              className="flex-1 h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2.5 transition-all"
+              className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2 transition-all"
               style={{
                 background: currentSong && totalDuration > 0
                   ? `linear-gradient(to right, #ef4444 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, rgba(255,255,255,0.08) ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
                   : 'rgba(255,255,255,0.08)'
               }}
             />
+            {totalDuration > 0 && (
+              <span className="text-[10px] font-mono text-[#8e96a4] shrink-0">
+                {formatTime(Math.max(0, totalDuration - (getPreRoll(currentSong) || 0))).slice(0, 5)}
+              </span>
+            )}
           </div>
         </div>
 
         {/* Right: Faders de Consola (Público R / Músicos L), Ruteo e In-Ears de Práctica */}
         <div className="flex items-center gap-2.5 shrink-0">
-          
           {/* Faders Duales Independientes: SALIDA PÚBLICO (R) y SALIDA MÚSICOS (L) */}
-          <div className="flex items-center gap-3 bg-[#07090e] px-3.5 py-2 rounded-xl border border-white/[0.08]">
+          <div className="stage-tactile-pressed flex items-center gap-3.5 bg-[#090b10] px-4 py-2 rounded-2xl border border-white/[0.07]">
             {/* Salida Público FOH (Canal R) */}
             <div className="flex flex-col w-28">
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[9px] text-red-400 font-black uppercase tracking-wider flex items-center gap-1">
-                  <Volume2 size={10} /> PÚBLICO (R)
+              <div className="flex justify-between items-center mb-1.5">
+                <span className="text-[9px] text-[#ef4444] font-black uppercase tracking-wider flex items-center gap-1">
+                  <Volume2 size={11} /> PÚBLICO (R)
                 </span>
-                <span className="text-[9px] font-mono font-bold text-zinc-300">{Math.round(fohVolume * 100)}%</span>
+                <span className="text-[10px] font-mono font-bold text-white">{Math.round(fohVolume * 100)}%</span>
               </div>
-              <input 
-                type="range" min="0" max="1.3" step="0.01" 
-                value={fohVolume} 
+              <input
+                type="range" min="0" max="1.3" step="0.01"
+                value={fohVolume}
                 onChange={(e) => setFohVolume(parseFloat(e.target.value))}
-                className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-red-500"
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #ef4444 ${(fohVolume / 1.3) * 100}%, rgba(255,255,255,0.08) ${(fohVolume / 1.3) * 100}%)`
+                }}
                 title="Volumen hacia Consola Principal / Público (Canal Derecho R)"
               />
             </div>
 
-            <div className="w-px h-7 bg-zinc-800" />
+            <div className="w-px h-8 bg-white/[0.07]" />
 
             {/* Salida Músicos CUE (Canal L) */}
             <div className="flex flex-col w-28">
-              <div className="flex justify-between items-center mb-1">
+              <div className="flex justify-between items-center mb-1.5">
                 <span className="text-[9px] text-amber-400 font-black uppercase tracking-wider flex items-center gap-1">
-                  <Headphones size={10} /> MÚSICOS (L)
+                  <Headphones size={11} /> MÚSICOS (L)
                 </span>
                 <button
                   type="button"
                   onClick={() => setMuteCueEmergency(v => !v)}
-                  className={`text-[8px] font-black px-1 rounded ${
-                    muteCueEmergency ? 'bg-red-600 text-white' : 'text-zinc-400 hover:text-white'
+                  className={`text-[9px] font-mono font-black px-1.5 py-0.5 rounded-md transition-all ${
+                    muteCueEmergency
+                      ? 'bg-[#ef4444] text-white shadow-[0_0_10px_rgba(239,68,68,0.6)]'
+                      : 'bg-white/[0.05] text-gray-300 hover:text-white'
                   }`}
                   title="Silenciar Click/Guía de emergencia"
                 >
                   {muteCueEmergency ? 'MUTE' : `${Math.round(cueVolume * 100)}%`}
                 </button>
               </div>
-              <input 
-                type="range" min="0" max="1.3" step="0.01" 
-                value={muteCueEmergency ? 0 : cueVolume} 
+              <input
+                type="range" min="0" max="1.3" step="0.01"
+                value={muteCueEmergency ? 0 : cueVolume}
                 onChange={(e) => {
                   setMuteCueEmergency(false);
                   setCueVolume(parseFloat(e.target.value));
                 }}
-                className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-400"
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #f59e0b ${((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100}%, rgba(255,255,255,0.08) ${((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100}%)`
+                }}
                 title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
               />
             </div>
           </div>
 
           {/* Modo de Ruteo Físico */}
-          <div className="flex items-center gap-2 bg-[#07090e] px-3 py-2 rounded-xl border border-white/[0.08]">
-            <MonitorSpeaker size={15} className="text-zinc-400 shrink-0" />
+          <div className="stage-tactile-btn flex items-center gap-2 bg-[#12151e] px-3.5 py-2 rounded-2xl border border-white/[0.07]">
+            <MonitorSpeaker size={15} className="text-[#8e96a4] shrink-0" />
             <div className="flex flex-col">
-              <span className="text-[8px] text-zinc-500 font-black uppercase tracking-widest">Salida Audio</span>
-              <select 
-                className="bg-transparent text-[11px] font-bold outline-none text-zinc-200 cursor-pointer"
+              <span className="text-[8px] text-[#64748b] font-black uppercase tracking-widest">Ruteo Físico</span>
+              <select
+                className="bg-transparent text-[11px] font-bold outline-none text-gray-200 cursor-pointer"
                 value={routingMode}
                 onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
               >
-                <option value="StereoSplit" className="bg-[#0c0e14]">Split (L:Músicos / R:Público)</option>
-                <option value="MultiChannel" className="bg-[#0c0e14]">USB Multicanal (1-2 / 3)</option>
+                <option value="StereoSplit" className="bg-[#0d0f14]">Split (L:Músicos / R:Público)</option>
+                <option value="MultiChannel" className="bg-[#0d0f14]">USB Multicanal (1-2 / 3)</option>
               </select>
             </div>
           </div>
 
           {/* In-Ears Móviles (Etiquetado claro: Solo Prácticas) */}
-          <div 
+          <div
             onClick={() => setBroadcastEnabled(!broadcastEnabled)}
-            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
-              broadcastEnabled 
-                ? 'bg-blue-600/15 border-blue-500/40' 
-                : 'bg-[#07090e] border-white/[0.08] hover:border-white/20'
+            className={`stage-tactile-btn flex items-center gap-2.5 px-3.5 py-2 rounded-2xl border transition-all cursor-pointer ${
+              broadcastEnabled
+                ? 'bg-blue-600/15 border-blue-500/40 shadow-[0_0_16px_rgba(59,130,246,0.2)]'
+                : 'bg-[#12151e] border-white/[0.07] hover:border-white/15'
             }`}
             title="Transmitir audio y prompter por Wi-Fi a celulares (Diseñado para prácticas y ensayos, no para show en vivo)"
           >
-            <Wifi size={15} className={broadcastEnabled ? 'text-blue-400' : 'text-zinc-500'} />
+            <Wifi size={15} className={broadcastEnabled ? 'text-blue-400' : 'text-[#64748b]'} />
             <div className="flex flex-col">
-              <span className={`text-[8px] font-black uppercase tracking-wider ${broadcastEnabled ? 'text-blue-300' : 'text-zinc-500'}`}>
+              <span className={`text-[8px] font-black uppercase tracking-wider ${broadcastEnabled ? 'text-blue-300' : 'text-[#64748b]'}`}>
                 In-Ear (Prácticas)
               </span>
-              <span className="text-[11px] font-bold text-zinc-200">
+              <span className="text-[11px] font-bold text-gray-200">
                 {broadcastEnabled ? `Activo (${connections})` : 'Off'}
               </span>
             </div>
@@ -758,108 +789,158 @@ export default function LiveConcert() {
 
       {/* MAIN LAYOUT */}
       <div className="flex-1 flex overflow-hidden relative">
-        
         {/* Loading Overlay */}
         {isLoading && (
-          <div className="absolute inset-0 bg-black/85 z-40 flex flex-col items-center justify-center backdrop-blur-xl">
-            <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <h2 className="text-xl font-black text-white mb-2 tracking-tight">{currentSong?.title}</h2>
-            <p className="text-zinc-400 font-mono text-xs uppercase tracking-widest">{loadStatus}</p>
+          <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-2xl">
+            <div className="relative w-16 h-16 flex items-center justify-center mb-5">
+              <div className="absolute inset-0 border-4 border-[#ef4444]/20 rounded-full" />
+              <div className="absolute inset-0 border-4 border-[#ef4444] border-t-transparent rounded-full animate-spin shadow-[0_0_20px_rgba(239,68,68,0.5)]" />
+              <Music size={22} className="text-[#ef4444]" />
+            </div>
+            <h2 className="text-xl font-black text-white mb-1.5 tracking-tight">{currentSong?.title}</h2>
+            <p className="text-[#8e96a4] font-mono text-xs uppercase tracking-[0.2em]">{loadStatus}</p>
           </div>
         )}
 
-        {/* SETLIST SIDEBAR */}
-        <div className="w-76 bg-[#090b10] border-r border-white/[0.07] flex flex-col z-10 shrink-0">
-          <div className="px-5 py-3.5 border-b border-white/[0.06] bg-[#0d1017] flex items-center justify-between">
-            <h2 className="font-black flex items-center text-zinc-200 text-xs uppercase tracking-widest">
-              <LayoutList size={14} className="mr-2.5 text-red-500" /> Setlist ({songs.length})
+        {/* SETLIST SIDEBAR (Musiko.io + Music-1 Track Queue) */}
+        <div className="w-80 bg-[#0b0d13]/95 border-r border-white/[0.06] flex flex-col z-10 shrink-0 shadow-[8px_0_30px_rgba(0,0,0,0.45)]">
+          <div className="px-5 py-4 border-b border-white/[0.06] bg-gradient-to-b from-white/[0.03] to-transparent flex items-center justify-between">
+            <h2 className="font-extrabold flex items-center text-white text-xs uppercase tracking-[0.16em]">
+              <LayoutList size={15} className="mr-2.5 text-[#ef4444]" /> Repertorio En Vivo
             </h2>
+            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-[10px] font-mono font-bold text-gray-300">
+              {songs.length} {songs.length === 1 ? 'TEMA' : 'TEMAS'}
+            </span>
           </div>
-          
-          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 custom-scrollbar">
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {songs.map((s, idx) => {
               const hasMix = Boolean(s.foh_mix_url && s.cue_mix_url);
               const hasLyrics = Boolean(s.prompter_data?.lyrics?.length > 0);
+              const isSelected = idx === currentSongIndex;
               return (
-                <div 
+                <div
                   key={idx}
                   onClick={() => setCurrentSongIndex(idx)}
-                  className={`p-3 rounded-xl flex items-center cursor-pointer transition-all ${
-                    idx === currentSongIndex 
-                      ? 'bg-red-600/20 border border-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.12)]' 
-                      : 'bg-[#10131c]/70 border border-white/[0.04] hover:bg-[#151926]'
+                  className={`group p-3 rounded-2xl flex items-center cursor-pointer transition-all duration-200 ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-[#ef4444]/25 via-[#ef4444]/10 to-[#141722] border border-[#ef4444]/45 shadow-[0_8px_24px_rgba(239,68,68,0.16)]'
+                      : 'bg-[#12151e]/70 border border-white/[0.05] hover:bg-[#171b26] hover:border-white/10'
                   }`}
                 >
-                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black mr-3 shrink-0 font-mono ${
-                    idx === currentSongIndex ? 'bg-red-600 text-white shadow-[0_0_10px_rgba(239,68,68,0.5)]' : 'bg-zinc-900 text-zinc-400'
-                  }`}>
-                    {idx + 1}
+                  {/* Index Badge or Animated Equalizer Bars (Musiko.io Style) */}
+                  <div
+                    className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black mr-3.5 shrink-0 font-mono transition-all ${
+                      isSelected
+                        ? 'bg-gradient-to-br from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.5)]'
+                        : 'bg-[#090b10] text-[#8e96a4] border border-white/[0.06] group-hover:text-white'
+                    }`}
+                  >
+                    {isSelected && isPlaying ? (
+                      <div className="flex items-end gap-[2px] h-3.5">
+                        <span className="w-[2.5px] bg-white rounded-full animate-eq-1" />
+                        <span className="w-[2.5px] bg-white rounded-full animate-eq-2" />
+                        <span className="w-[2.5px] bg-white rounded-full animate-eq-3" />
+                        <span className="w-[2.5px] bg-white rounded-full animate-eq-4" />
+                      </div>
+                    ) : (
+                      String(idx + 1).padStart(2, '0')
+                    )}
                   </div>
+
                   <div className="flex-1 min-w-0">
-                    <p className={`font-bold truncate text-xs ${idx === currentSongIndex ? 'text-white' : 'text-zinc-300'}`}>{s.title}</p>
-                    <div className="flex items-center gap-1.5 mt-1">
+                    <p className={`font-bold truncate text-[13px] tracking-tight ${isSelected ? 'text-white' : 'text-gray-200 group-hover:text-white'}`}>
+                      {s.title}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       {!hasMix ? (
-                        <span className="text-[8px] text-red-400 font-black uppercase tracking-wider">Falta Exportar Mix</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-bold uppercase tracking-wider">
+                          Sin Mix
+                        </span>
                       ) : (
-                        <span className="text-[8px] text-emerald-400 font-bold uppercase">● Audio OK</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 font-bold uppercase">
+                          ● Mix OK
+                        </span>
                       )}
                       {hasLyrics && (
-                        <span className="text-[8px] text-amber-400 font-bold uppercase">&bull; Lyrics</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/25 font-bold uppercase">
+                          Lyrics
+                        </span>
+                      )}
+                      {s.prompter_data?.bpm && (
+                        <span className="text-[9px] font-mono text-[#8e96a4]">
+                          {Math.round(s.prompter_data.bpm)} BPM
+                        </span>
                       )}
                     </div>
                   </div>
-                  {idx === currentSongIndex && isPlaying && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_red] animate-pulse ml-2 shrink-0"></div>
-                  )}
                 </div>
               );
             })}
             {songs.length === 0 && (
-              <div className="text-center text-zinc-600 py-12 px-6 text-xs font-medium">
-                Selecciona un Setlist arriba para cargar las canciones del show.
+              <div className="text-center text-[#64748b] py-14 px-6 text-xs font-medium bg-white/[0.01] rounded-2xl border border-dashed border-white/[0.06]">
+                Selecciona un Setlist en la barra superior para cargar las canciones del show.
               </div>
             )}
           </div>
 
-          {/* CONTROLES DE TRANSPORTE DE ESCENARIO */}
-          <div className="p-4 bg-[#0d1017] border-t border-white/[0.07] grid grid-cols-3 gap-2.5">
-            <button onClick={prevSong} disabled={currentSongIndex === 0} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Canción Anterior">
-              <SkipBack size={20} className="text-zinc-200" />
+          {/* CONTROLES DE TRANSPORTE DE ESCENARIO (QClay Tactile Pod) */}
+          <div className="p-4 bg-[#090b10] border-t border-white/[0.06] grid grid-cols-3 gap-2.5">
+            <button
+              onClick={prevSong}
+              disabled={currentSongIndex === 0}
+              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              title="Canción Anterior"
+            >
+              <SkipBack size={19} className="text-gray-200" />
             </button>
-            <button onClick={stop} disabled={!currentSong} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Detener y volver al Conteo Pre-Roll">
-              <Square size={18} fill="currentColor" className="text-zinc-300" />
+            <button
+              onClick={stop}
+              disabled={!currentSong}
+              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              title="Detener y volver al Conteo Pre-Roll"
+            >
+              <Square size={17} fill="currentColor" className="text-gray-200" />
             </button>
-            <button onClick={nextSong} disabled={currentSongIndex === songs.length - 1} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Siguiente Canción">
-              <SkipForward size={20} className="text-zinc-200" />
+            <button
+              onClick={nextSong}
+              disabled={currentSongIndex === songs.length - 1}
+              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              title="Siguiente Canción"
+            >
+              <SkipForward size={19} className="text-gray-200" />
             </button>
-            
-            <button 
-              onClick={isPlaying ? pause : play} 
+
+            <button
+              onClick={isPlaying ? pause : play}
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
-              className={`col-span-3 py-4 rounded-xl flex items-center justify-center text-lg font-black transition-all tracking-wider ${
-                isPlaying 
-                  ? 'bg-white text-black shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:bg-zinc-100' 
-                  : 'bg-red-600 text-white hover:bg-red-500 shadow-[0_0_25px_rgba(239,68,68,0.35)]'
+              className={`col-span-3 py-4 rounded-2xl flex items-center justify-center text-base font-black transition-all tracking-wider border ${
+                isPlaying
+                  ? 'bg-white text-[#08090c] border-white shadow-[0_0_28px_rgba(255,255,255,0.3)] hover:bg-gray-100'
+                  : 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white border-white/20 hover:brightness-110 shadow-[0_8px_28px_rgba(239,68,68,0.4)]'
               } disabled:opacity-30 disabled:shadow-none`}
             >
-              {isPlaying ? <Pause size={24} fill="currentColor" className="mr-2.5" /> : <Play size={24} fill="currentColor" className="mr-2.5 ml-1" />}
+              {isPlaying ? (
+                <Pause size={22} fill="currentColor" className="mr-2.5" />
+              ) : (
+                <Play size={22} fill="currentColor" className="mr-2.5 ml-0.5" />
+              )}
               {isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}
             </button>
           </div>
         </div>
 
         {/* ÁREA PRINCIPAL DE PROYECCIÓN Y MONITOREO EN VIVO */}
-        <div className="flex-1 bg-[#050609] flex flex-col relative overflow-hidden">
-          
-          {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista (Acordes / Lyrics / Stage Dual) + Proyector HDMI */}
-          <div className="h-12 bg-[#0a0c12] border-b border-white/[0.07] px-5 flex items-center justify-between gap-3 z-30 shrink-0">
+        <div className="flex-1 bg-[#06070a] flex flex-col relative overflow-hidden">
+          {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista + Proyector HDMI */}
+          <div className="h-13 bg-[#0c0e14]/90 backdrop-blur-xl border-b border-white/[0.06] px-5 flex items-center justify-between gap-3 z-30 shrink-0">
             {/* Botonera de Salto Rápido a Secciones */}
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
-              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mr-1 shrink-0">
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.16em] text-[#64748b] mr-1 shrink-0">
                 Secciones:
               </span>
               {songSections.length === 0 ? (
-                <span className="text-[10px] text-zinc-600 italic">Sin marcadores</span>
+                <span className="text-[11px] text-[#64748b] italic">Sin marcadores configurados</span>
               ) : (
                 songSections.map((sec: any, sIdx: number) => {
                   const nextSec = songSections[sIdx + 1];
@@ -869,10 +950,10 @@ export default function LiveConcert() {
                     <button
                       key={sIdx}
                       onClick={() => seekTo(sec.time)}
-                      className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider transition-all shrink-0 border ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all shrink-0 border ${
                         isSecActive
-                          ? 'bg-amber-400 text-black border-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.5)]'
-                          : 'bg-[#121621] text-zinc-300 border-white/[0.06] hover:bg-[#1a2030] hover:text-white'
+                          ? 'bg-amber-400 text-[#08090c] border-amber-300 shadow-[0_0_14px_rgba(251,191,36,0.55)]'
+                          : 'bg-[#141722] text-gray-300 border-white/[0.07] hover:bg-[#1c2030] hover:text-white'
                       }`}
                       title={`Saltar a ${sec.name || sec.section}`}
                     >
@@ -884,7 +965,7 @@ export default function LiveConcert() {
               {isVamping && (
                 <button
                   onClick={() => handleToggleVampSection(0, 0)}
-                  className="px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1 shrink-0 ml-1"
+                  className="px-3 py-1 rounded-full text-[10px] font-black uppercase bg-[#ef4444] text-white shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse flex items-center gap-1 shrink-0 ml-1"
                 >
                   <Repeat size={11} /> Salir Loop
                 </button>
@@ -892,37 +973,37 @@ export default function LiveConcert() {
             </div>
 
             {/* Selector de Modo Visual + Botón Proyector HDMI */}
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center bg-[#07090e] p-1 rounded-xl border border-white/[0.08]">
-                <button 
+            <div className="flex items-center gap-2.5 shrink-0">
+              <div className="stage-tactile-pressed flex items-center bg-[#08090c] p-1 rounded-full border border-white/[0.07]">
+                <button
                   onClick={() => setViewMode('dual')}
-                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-full font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
                     viewMode === 'dual'
-                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
+                      : 'text-[#8e96a4] hover:text-white'
                   }`}
                   title="Ver Acordes/Compás arriba y Proyección de Letras abajo simultáneamente"
                 >
                   <Columns size={12} />
                   <span>Stage Dual</span>
                 </button>
-                <button 
+                <button
                   onClick={() => setViewMode('prompter')}
-                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-full font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
                     viewMode === 'prompter'
-                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
+                      : 'text-[#8e96a4] hover:text-white'
                   }`}
                 >
                   <Music size={12} />
                   <span>Solo Acordes</span>
                 </button>
-                <button 
+                <button
                   onClick={() => setViewMode('lyrics')}
-                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-full font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
                     viewMode === 'lyrics'
-                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
+                      : 'text-[#8e96a4] hover:text-white'
                   }`}
                 >
                   <Type size={12} />
@@ -933,22 +1014,22 @@ export default function LiveConcert() {
               <button
                 type="button"
                 onClick={openExternalProjector}
-                className="px-3 py-1.5 rounded-xl bg-[#121622] hover:bg-[#191f30] border border-white/10 text-zinc-200 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all"
+                className="stage-tactile-btn px-3.5 py-1.5 rounded-full bg-[#141722] hover:bg-[#1c2030] border border-white/10 hover:border-[#ef4444]/40 text-gray-200 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all"
                 title="Abrir ventana limpia de Proyección de Letras para arrastrar a pantalla LED / HDMI externo"
               >
-                <ExternalLink size={12} className="text-red-400" />
+                <ExternalLink size={12} className="text-[#ef4444]" />
                 <span>Proyector HDMI</span>
               </button>
             </div>
           </div>
 
-          <div className="flex-1 p-5 overflow-hidden flex flex-col relative">
+          <div className="flex-1 p-4 overflow-hidden flex flex-col relative">
             {currentSong ? (
               viewMode === 'dual' ? (
-                <div className="h-full w-full flex flex-col gap-4 overflow-hidden">
+                <div className="h-full w-full flex flex-col gap-3.5 overflow-hidden">
                   {/* Mitad Superior: Grilla de Compases, Acordes y Voz Guía */}
-                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-[#090b10]">
-                    <Prompter 
+                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.65)] bg-[#090b10]">
+                    <Prompter
                       currentTime={currentTime}
                       bpm={currentSong.prompter_data?.bpm || 0}
                       timeSignature={currentSong.prompter_data?.timeSignature}
@@ -964,8 +1045,8 @@ export default function LiveConcert() {
                     />
                   </div>
                   {/* Mitad Inferior: Proyección de Letras al Compás y Tiempo Exacto */}
-                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-black relative">
-                    <LyricVisualizer 
+                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.75)] bg-black relative">
+                    <LyricVisualizer
                       currentTime={currentTime}
                       lyrics={currentSong.prompter_data?.lyrics || []}
                       isPlaying={isPlaying}
@@ -977,8 +1058,8 @@ export default function LiveConcert() {
                   </div>
                 </div>
               ) : viewMode === 'prompter' ? (
-                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-[#090b10]">
-                  <Prompter 
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.65)] bg-[#090b10]">
+                  <Prompter
                     currentTime={currentTime}
                     bpm={currentSong.prompter_data?.bpm || 0}
                     timeSignature={currentSong.prompter_data?.timeSignature}
@@ -994,8 +1075,8 @@ export default function LiveConcert() {
                   />
                 </div>
               ) : (
-                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-black">
-                  <LyricVisualizer 
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.75)] bg-black">
+                  <LyricVisualizer
                     currentTime={currentTime}
                     lyrics={currentSong.prompter_data?.lyrics || []}
                     isPlaying={isPlaying}
@@ -1007,13 +1088,22 @@ export default function LiveConcert() {
                 </div>
               )
             ) : (
-              <div className="h-full flex items-center justify-center text-zinc-600 text-2xl font-black tracking-[0.4em]">
-                EN ESPERA DE SETLIST
+              <div className="h-full flex flex-col items-center justify-center relative overflow-hidden rounded-3xl border border-white/[0.05] bg-gradient-to-b from-[#0b0d14] to-[#07080c]">
+                <div className="pointer-events-none absolute w-[420px] h-[420px] rounded-full border border-white/[0.03]" />
+                <div className="pointer-events-none absolute w-[280px] h-[280px] rounded-full border border-[#ef4444]/10" />
+                <div className="w-16 h-16 rounded-2xl bg-[#131620] border border-white/10 flex items-center justify-center mb-4 shadow-[0_8px_30px_rgba(0,0,0,0.6)]">
+                  <Music size={28} className="text-[#ef4444]" />
+                </div>
+                <span className="text-zinc-300 text-lg font-black tracking-[0.35em] uppercase">
+                  CONSOLA EN ESPERA DE SETLIST
+                </span>
+                <span className="text-[#64748b] text-xs mt-2 font-medium">
+                  Selecciona un repertorio en la parte superior para iniciar el show en vivo
+                </span>
               </div>
             )}
           </div>
         </div>
-
       </div>
     </div>
   );

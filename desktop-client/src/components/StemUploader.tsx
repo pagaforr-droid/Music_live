@@ -231,47 +231,49 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
   if (compact) {
     return (
       <div className="relative group w-full">
-        <input 
-          type="file" 
+        <input
+          type="file"
           multiple
-          accept="audio/*,.zip,application/zip" 
-          onChange={handleFileUpload} 
+          accept="audio/*,.zip,application/zip"
+          onChange={handleFileUpload}
           disabled={isUploading}
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
         />
-        <div className={`w-full px-4 py-3 rounded-lg border border-dashed transition-all flex items-center justify-between gap-3 ${
-          isUploading
-            ? 'border-red-500/60 bg-red-950/20'
-            : uploadStatus === 'success'
-            ? 'border-emerald-500/60 bg-emerald-950/20'
-            : 'border-red-500/40 group-hover:border-red-500 bg-red-950/10 group-hover:bg-red-950/20'
-        }`}>
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-md bg-red-600/20 border border-red-500/40 flex items-center justify-center shrink-0 text-red-400">
+        <div
+          className={`stage-tactile-btn w-full px-4 py-3 rounded-2xl border border-dashed transition-all flex items-center justify-between gap-3 ${
+            isUploading
+              ? 'border-[#ef4444]/60 bg-[#ef4444]/10'
+              : uploadStatus === 'success'
+              ? 'border-emerald-500/60 bg-emerald-950/20'
+              : 'border-white/15 group-hover:border-[#ef4444]/60 bg-[#12151f]/90 group-hover:bg-[#171b27]'
+          }`}
+        >
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#ef4444]/25 to-[#ef4444]/5 border border-[#ef4444]/35 flex items-center justify-center shrink-0 text-[#ef4444] shadow-[0_0_12px_rgba(239,68,68,0.2)]">
               {isUploading ? (
-                <UploadCloud size={16} className="animate-bounce" />
+                <UploadCloud size={17} className="animate-bounce" />
               ) : uploadStatus === 'success' ? (
-                <CheckCircle size={16} className="text-emerald-400" />
+                <CheckCircle size={17} className="text-emerald-400" />
               ) : (
-                <UploadCloud size={16} />
+                <UploadCloud size={17} />
               )}
             </div>
             <div className="flex flex-col min-w-0 text-left">
-              <span className="text-xs font-bold text-white truncate">
+              <span className="text-xs font-extrabold text-white truncate tracking-tight">
                 {isUploading
                   ? progressInfo || 'Subiendo Stems...'
                   : uploadStatus === 'success'
                   ? '¡Stems cargados correctamente!'
                   : 'Cargar Stems Separados (WAV / MP3 / .ZIP) + Pista Master'}
               </span>
-              <span className="text-[10px] text-zinc-400 truncate">
+              <span className="text-[10px] text-[#8e96a4] truncate">
                 {isUploading
                   ? `${progressPct}% completado`
                   : 'Selecciona múltiples pistas a la vez o arrastra un paquete .ZIP (Incluye tu pista "Master" para la IA)'}
               </span>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded bg-red-600 text-white text-[10px] font-black uppercase tracking-wider shrink-0">
+          <span className="px-3.5 py-1.5 rounded-full bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white text-[10px] font-black uppercase tracking-wider shrink-0 shadow-[0_0_14px_rgba(239,68,68,0.35)] border border-white/15">
             {isUploading ? `${progressPct}%` : '+ Subir Stems'}
           </span>
         </div>
@@ -283,67 +285,84 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
   }
 
   return (
-    <div className={`border-2 border-dashed ${!songId ? 'border-red-500/40 hover:border-red-500' : 'border-zinc-700 hover:border-red-500/60'} rounded-xl p-7 text-center bg-[#0d0f14]/90 hover:bg-[#13161f] transition-all relative group shadow-xl`}>
-      <input 
-        type="file" 
+    <div
+      className={`stage-glass-panel border-2 border-dashed ${
+        !songId ? 'border-[#ef4444]/40 hover:border-[#ef4444]' : 'border-white/10 hover:border-[#ef4444]/55'
+      } rounded-3xl p-8 text-center transition-all relative group overflow-hidden`}
+    >
+      {/* Subtle Concentric Rings */}
+      <div className="pointer-events-none absolute -right-20 -bottom-20 w-64 h-64 rounded-full border border-white/[0.03]" />
+      <div className="pointer-events-none absolute -right-10 -bottom-10 w-44 h-44 rounded-full border border-[#ef4444]/10" />
+
+      <input
+        type="file"
         multiple
-        accept="audio/*,.zip,application/zip" 
-        onChange={handleFileUpload} 
+        accept="audio/*,.zip,application/zip"
+        onChange={handleFileUpload}
         disabled={isUploading}
         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
       />
-      
-      <div className="flex flex-col items-center justify-center space-y-3 relative z-0">
+
+      <div className="flex flex-col items-center justify-center space-y-3.5 relative z-0">
         {isUploading ? (
-          <div className="animate-bounce text-red-500">
-            <UploadCloud size={44} />
+          <div className="animate-bounce text-[#ef4444] drop-shadow-[0_0_16px_rgba(239,68,68,0.6)]">
+            <UploadCloud size={46} />
           </div>
         ) : uploadStatus === 'success' ? (
-          <CheckCircle size={44} className="text-emerald-500" />
+          <CheckCircle size={46} className="text-emerald-400 drop-shadow-[0_0_16px_rgba(16,185,129,0.5)]" />
         ) : uploadStatus === 'error' ? (
-          <AlertTriangle size={44} className="text-red-500" />
+          <AlertTriangle size={46} className="text-red-500" />
         ) : (
           <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400">
+            <div className="w-13 h-13 rounded-2xl bg-gradient-to-br from-[#ef4444]/20 to-[#ef4444]/5 border border-[#ef4444]/35 flex items-center justify-center text-[#ef4444] shadow-[0_8px_20px_rgba(239,68,68,0.2)]">
               <FileAudio size={24} />
             </div>
-            <div className="w-12 h-12 rounded-xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center text-zinc-300">
+            <div className="w-13 h-13 rounded-2xl bg-[#151822] border border-white/10 flex items-center justify-center text-gray-300 shadow-inner">
               <Archive size={24} />
             </div>
           </div>
         )}
 
-        <div className="text-white font-bold text-sm">
-          {isUploading ? 'Cargando pistas al proyecto...' : 
-           !songId ? (
-             <span>Arrastra tus <span className="text-red-400">Stems Separados</span> o un <span className="text-red-400">.ZIP</span> para crear una Canción</span>
-           ) : (
-             'Arrastra múltiples Stems separados o un paquete .ZIP a esta canción'
-           )}
+        <div className="text-white font-extrabold text-sm tracking-tight">
+          {isUploading ? (
+            'Cargando pistas al proyecto...'
+          ) : !songId ? (
+            <span>
+              Arrastra tus <span className="text-[#ef4444]">Stems Separados</span> o un{' '}
+              <span className="text-[#ef4444]">.ZIP</span> para crear una Canción
+            </span>
+          ) : (
+            'Arrastra múltiples Stems separados o un paquete .ZIP a esta canción'
+          )}
         </div>
-        <p className="text-[11px] text-zinc-400 max-w-md">
-          Tip: Incluye un archivo terminado en <strong className="text-amber-400">Master</strong> (ej. <code>Cancion_Master.wav</code>) para que la IA detecte el Tempo, Compás y Acordes con precisión total.
+        <p className="text-[11px] text-[#8e96a4] max-w-md leading-relaxed">
+          Tip: Incluye un archivo terminado en{' '}
+          <strong className="text-amber-400 font-bold">Master</strong> (ej.{' '}
+          <code className="px-1.5 py-0.5 rounded bg-white/[0.06] text-gray-200">Cancion_Master.wav</code>) para que la IA detecte el Tempo, Compás y Acordes con precisión total.
         </p>
-        
+
         {progressInfo && (
-          <div className="w-full max-w-xs space-y-1.5 pt-1">
-            <div className="text-red-400 text-xs font-semibold animate-pulse truncate">
+          <div className="w-full max-w-xs space-y-2 pt-1">
+            <div className="text-[#ef4444] text-xs font-bold animate-pulse truncate">
               {progressInfo}
             </div>
-            <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-              <div className="h-full bg-red-500 transition-all duration-300" style={{ width: `${progressPct}%` }} />
+            <div className="w-full h-2 bg-[#090b10] rounded-full overflow-hidden border border-white/[0.06]">
+              <div
+                className="h-full bg-gradient-to-r from-[#ef4444] to-amber-500 transition-all duration-300 shadow-[0_0_12px_#ef4444]"
+                style={{ width: `${progressPct}%` }}
+              />
             </div>
           </div>
         )}
 
         {uploadStatus === 'error' && (
-          <div className="text-red-400 text-xs max-w-sm bg-red-950/30 border border-red-500/30 rounded px-3 py-2">
+          <div className="text-red-300 text-xs max-w-sm bg-red-950/40 border border-red-500/35 rounded-xl px-3.5 py-2">
             {errorMessage}
           </div>
         )}
-        
+
         {uploadStatus === 'success' && (
-          <div className="text-emerald-400 text-xs font-bold">
+          <div className="text-emerald-400 text-xs font-extrabold tracking-wide">
             ¡Stems cargados exitosamente!
           </div>
         )}

@@ -746,26 +746,26 @@ export default function LivePrompter() {
   };
 
   return (
-    <div className="h-screen bg-[#07090e] text-zinc-300 flex flex-col font-sans overflow-hidden select-none">
+    <div className="h-screen bg-[#08090c] text-zinc-300 flex flex-col font-sans overflow-hidden select-none relative">
       
       {/* Error Alert */}
       {loadError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-950 border border-red-900 text-red-200 px-4 py-2 rounded-md shadow-2xl flex items-center z-50 text-xs font-medium">
-          <AlertCircle size={14} className="mr-2 text-red-500" />
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-950/90 backdrop-blur-xl border border-red-500/40 text-red-200 px-5 py-2.5 rounded-full shadow-[0_12px_30px_rgba(0,0,0,0.6)] flex items-center z-50 text-xs font-bold">
+          <AlertCircle size={14} className="mr-2 text-red-400" />
           {loadError}
         </div>
       )}
 
-      {/* HEADER / TRANSPORT (Sleek TANDU /STAGE Toolbar) */}
-      <header className="h-14 bg-[#0c0e14] border-b border-white/[0.07] flex items-center px-4 justify-between shrink-0 z-20 gap-3">
+      {/* HEADER / TRANSPORT (QClay + Musiko.io Sleek Studio Toolbar) */}
+      <header className="h-16 bg-[#0d0f15]/95 backdrop-blur-xl border-b border-white/[0.06] flex items-center px-5 justify-between shrink-0 z-20 gap-3 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
         
         {/* Left: Branding & Song Loader */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="flex items-center justify-center w-7 h-7 bg-red-600/15 text-red-500 rounded-lg border border-red-500/30 shrink-0">
-             <Disc3 size={15} />
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center justify-center w-9 h-9 bg-gradient-to-br from-[#ef4444]/20 to-black text-[#ef4444] rounded-xl border border-[#ef4444]/30 shrink-0 shadow-[0_0_16px_rgba(239,68,68,0.18)]">
+             <Disc3 size={17} />
           </div>
           <select 
-            className="bg-[#07090e] border border-zinc-800 text-white font-bold px-2.5 py-1.5 rounded-lg text-xs outline-none focus:border-red-500/50 w-[210px]"
+            className="bg-[#08090c] border border-white/[0.08] text-white font-bold px-3.5 py-2 rounded-xl text-xs outline-none focus:border-[#ef4444]/50 w-[220px] shadow-[inset_0_2px_6px_rgba(0,0,0,0.65)] transition-colors"
             value={selectedSongId || ''}
             onChange={(e) => setSelectedSongId(e.target.value)}
           >
@@ -777,30 +777,30 @@ export default function LivePrompter() {
           {selectedSongId && !audioLoaded && (
             <button
               onClick={handleLoadAudio}
-              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3.5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap shadow-[0_0_20px_rgba(16,185,129,0.35)]"
             >
               ⚡ Cargar Stems a RAM
             </button>
           )}
         </div>
 
-        {/* Center: Transport & Time */}
+        {/* Center: Tactile Transport Pod & LED Time Readout */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 bg-[#07090e] p-1 rounded-lg border border-zinc-800/80">
+          <div className="flex items-center gap-1.5 bg-[#08090c] p-1.5 rounded-full border border-white/[0.07] shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
             <button 
               onClick={() => { pause(); seekTo(-(preRollDuration || 0)); }} 
-              className="bg-transparent hover:bg-zinc-800 w-8 h-7 flex items-center justify-center rounded transition-colors text-zinc-400 hover:text-white"
+              className="stage-tactile-btn w-8 h-8 flex items-center justify-center rounded-full text-zinc-400 hover:text-white"
               title="Reiniciar al Conteo Pre-Roll"
             >
-              <Square fill="currentColor" size={12} />
+              <Square fill="currentColor" size={11} />
             </button>
             <button 
               onClick={isPlaying ? pause : play} 
               disabled={!audioLoaded || loadError !== null}
-              className={`w-10 h-7 flex items-center justify-center rounded transition-colors disabled:opacity-40 ${
+              className={`w-11 h-8 flex items-center justify-center rounded-full transition-all disabled:opacity-40 ${
                 isPlaying
-                  ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.6)]'
-                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+                  ? 'bg-gradient-to-br from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_18px_rgba(239,68,68,0.6)] border border-red-400/40'
+                  : 'stage-tactile-btn text-zinc-200 hover:text-white'
               }`}
               title={isPlaying ? "Pausar" : "Reproducir"}
             >
@@ -808,8 +808,8 @@ export default function LivePrompter() {
             </button>
           </div>
 
-          <div className="bg-[#07090e] border border-zinc-800/80 px-3 py-1 rounded-lg flex items-center justify-center min-w-[105px]">
-            <span className="text-sm font-mono font-black text-white tracking-wider">
+          <div className="bg-[#08090c] border border-white/[0.08] px-4 py-1.5 rounded-full flex items-center justify-center min-w-[112px] shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
+            <span className="text-sm font-mono font-black text-white tracking-wider tabular-nums">
               {formatTime(currentTime)}
             </span>
           </div>
@@ -817,53 +817,53 @@ export default function LivePrompter() {
 
         {/* Right: AI Chords, Transposer, Tempo & Nudge */}
         <div className="flex items-center gap-2 justify-end">
-          <div className="flex items-center gap-1 bg-[#07090e] rounded-lg border border-zinc-800/80 p-1">
+          <div className="flex items-center gap-1 bg-[#08090c] rounded-full border border-white/[0.07] p-1 shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
             <button 
               onClick={handleDetectChordsAI}
               disabled={isDetectingChords || !selectedSongId}
-              className="hover:bg-purple-500/20 bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-50 flex items-center gap-1"
+              className="hover:bg-purple-500/25 bg-purple-500/15 text-purple-300 border border-purple-500/35 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.18)]"
               title="Detectar Acordes automáticamente desde la pista ★ Master"
             >
               <Activity size={11} className={isDetectingChords ? "animate-pulse" : ""} />
               {isDetectingChords ? 'Analizando...' : 'Acordes IA'}
             </button>
-            <div className="w-px h-3.5 bg-zinc-800 mx-0.5"></div>
+            <div className="w-px h-3.5 bg-white/[0.08] mx-0.5"></div>
             <span className="text-[9px] text-zinc-500 font-bold uppercase px-1">Tono:</span>
             <button
               onClick={() => handleTransposeAllChords(-1)}
-              className="px-1.5 py-0.5 text-[10px] bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded font-bold"
+              className="px-2 py-0.5 text-[10px] stage-tactile-btn text-zinc-300 hover:text-white rounded-full font-bold"
               title="Bajar todos los acordes 1 semitono"
             >
               -1
             </button>
             <button
               onClick={() => handleTransposeAllChords(1)}
-              className="px-1.5 py-0.5 text-[10px] bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded font-bold"
+              className="px-2 py-0.5 text-[10px] stage-tactile-btn text-zinc-300 hover:text-white rounded-full font-bold"
               title="Subir todos los acordes 1 semitono"
             >
               +1
             </button>
-            <div className="w-px h-3.5 bg-zinc-800 mx-0.5"></div>
+            <div className="w-px h-3.5 bg-white/[0.08] mx-0.5"></div>
             <button onClick={handleHalveTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Mitad de Tempo">÷2</button>
             <button onClick={handleDoubleTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Doble de Tempo">x2</button>
-            <button onClick={handleClearBeatGrid} className="hover:bg-red-500/10 text-red-400 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider transition-colors" title="Usar grilla matemática rígida">Fijar</button>
+            <button onClick={handleClearBeatGrid} className="hover:bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider transition-colors" title="Usar grilla matemática rígida">Fijar</button>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#07090e] rounded-lg border border-zinc-800/80 py-1 px-2">
+          <div className="flex items-center gap-1.5 bg-[#08090c] rounded-full border border-white/[0.07] py-1 px-2.5 shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
             <span className="text-[9px] text-zinc-500 font-bold uppercase">Nudge</span>
             <button onClick={() => handleNudge(-0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">-</button>
-            <span className="text-[10px] text-zinc-200 font-mono w-6 text-center">{(manualGridOffset * 1000).toFixed(0)}</span>
+            <span className="text-[10px] text-zinc-200 font-mono w-6 text-center tabular-nums">{(manualGridOffset * 1000).toFixed(0)}</span>
             <button onClick={() => handleNudge(0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">+</button>
           </div>
 
           {selectedSongId && (
             <button
               onClick={() => navigate('/lyrics')}
-              className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all"
+              className="px-3 py-1.5 rounded-full stage-tactile-btn text-zinc-200 hover:text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all"
               title="Ir a Lyric Studio para sincronizar la letra de esta canción"
             >
               <span>Lyrics</span>
-              <ArrowRight size={11} />
+              <ArrowRight size={11} className="text-[#ef4444]" />
             </button>
           )}
         </div>
@@ -874,35 +874,35 @@ export default function LivePrompter() {
         
         {/* Progress Overlays */}
         {isDownloading && (
-          <div className="absolute inset-0 bg-black/90 z-40 flex flex-col items-center justify-center backdrop-blur-sm">
-            <Loader2 size={32} className="animate-spin text-emerald-500 mb-4" />
-            <h2 className="text-sm font-bold text-zinc-200 tracking-widest uppercase mb-1">Cargando Stems en Memoria RAM</h2>
-            <p className="text-xs text-zinc-500 mb-6 font-mono">{loadProgress.currentFile}</p>
-            <div className="w-64 bg-zinc-900 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-emerald-500 h-full transition-all duration-300" style={{ width: `${(loadProgress.loaded / Math.max(1, loadProgress.total)) * 100}%` }}></div>
+          <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-md">
+            <Loader2 size={34} className="animate-spin text-emerald-500 mb-4" />
+            <h2 className="text-sm font-black text-white tracking-widest uppercase mb-1">Cargando Stems en Memoria RAM</h2>
+            <p className="text-xs text-zinc-400 mb-6 font-mono">{loadProgress.currentFile}</p>
+            <div className="w-64 bg-[#11131a] border border-white/[0.06] rounded-full h-2 overflow-hidden">
+              <div className="bg-emerald-500 h-full transition-all duration-300 shadow-[0_0_12px_rgba(16,185,129,0.6)]" style={{ width: `${(loadProgress.loaded / Math.max(1, loadProgress.total)) * 100}%` }}></div>
             </div>
           </div>
         )}
 
         {chordDetectionMsg && (
-          <div className="absolute inset-0 bg-black/90 z-40 flex flex-col items-center justify-center backdrop-blur-sm">
-            <Sparkles size={32} className="animate-pulse text-purple-500 mb-4" />
-            <h2 className="text-sm font-bold text-purple-400 tracking-widest uppercase mb-1">Análisis Armónico IA</h2>
+          <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-md">
+            <Sparkles size={34} className="animate-pulse text-purple-400 mb-4" />
+            <h2 className="text-sm font-black text-purple-300 tracking-widest uppercase mb-1">Análisis Armónico IA</h2>
             <p className="text-xs text-zinc-400 mb-6 font-mono">{chordDetectionMsg}</p>
-            <div className="w-64 bg-zinc-900 rounded-full h-1.5 overflow-hidden">
+            <div className="w-64 bg-[#11131a] border border-white/[0.06] rounded-full h-2 overflow-hidden">
               <div className="bg-purple-500 h-full w-full animate-pulse"></div>
             </div>
           </div>
         )}
 
-        {/* MIXER SIDEBAR (Consola de Configuración de Canales del Usuario) */}
-        <div className="w-[330px] shrink-0 flex flex-col bg-[#0b0d13] border-r border-white/[0.07] z-10 shadow-2xl">
-          <div className="h-9 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#10131c]">
-            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Consola de Canales</span>
-            <span className="text-[9px] text-zinc-500 font-mono">{stems.length} Canales</span>
+        {/* MIXER SIDEBAR (QClay Hardware Channel Rack) */}
+        <div className="w-[340px] shrink-0 flex flex-col bg-[#0b0d13] border-r border-white/[0.06] z-10 shadow-[10px_0_30px_rgba(0,0,0,0.45)]">
+          <div className="h-10 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#10131c]">
+            <span className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-300">Consola de Canales</span>
+            <span className="text-[9px] text-zinc-400 font-mono bg-[#08090c] border border-white/[0.06] px-2 py-0.5 rounded-full tabular-nums">{stems.length} Canales</span>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {stems.map((stem) => {
               const nameLower = stem.name.toLowerCase();
               const dbMatch = dbStems.find((d: any) => d.id === stem.id);
@@ -933,30 +933,32 @@ export default function LivePrompter() {
               return (
                 <div
                   key={stem.id}
-                  className={`flex flex-col border rounded-lg overflow-hidden transition-colors ${
+                  className={`flex flex-col border rounded-xl overflow-hidden transition-all ${
                     isMasterRef
-                      ? 'bg-amber-950/10 border-amber-500/30'
+                      ? 'bg-gradient-to-r from-amber-500/10 to-[#11131a] border-amber-500/35 shadow-[0_4px_14px_rgba(245,158,11,0.08)]'
                       : stem.muted
-                      ? 'bg-[#0d0f15]/60 border-zinc-800/40 opacity-65'
-                      : 'bg-[#12151f] border-white/[0.06]'
+                      ? 'bg-[#0a0c11]/70 border-white/[0.04] opacity-65'
+                      : 'bg-[#12151f] border-white/[0.07] shadow-[0_4px_12px_rgba(0,0,0,0.3)]'
                   }`}
                 >
-                  <div className="flex items-center p-2 border-b border-white/[0.04] gap-1.5">
-                    <Icon size={12} className={`${themeClass} shrink-0`} />
-                    <span className="text-[11px] font-bold text-zinc-200 truncate flex-1" title={stem.name}>
+                  <div className="flex items-center p-2.5 border-b border-white/[0.04] gap-2">
+                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center bg-[#08090c] border border-white/[0.06] shrink-0 ${themeClass}`}>
+                      <Icon size={12} />
+                    </div>
+                    <span className="text-[11px] font-bold text-zinc-100 truncate flex-1 tracking-tight" title={stem.name}>
                       {stem.name}
                     </span>
                     {isMasterRef ? (
                       <span
-                        className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
+                        className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
                         title="Pista Master de referencia para IA. Inicia silenciada (M) para no duplicar instrumentos al exportar tu mezcla."
                       >
                         ★ MASTER REF
                       </span>
                     ) : (
-                      <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                      <span className={`text-[8px] font-mono px-2 py-0.5 rounded-full shrink-0 ${
                         stem.type === 'Instrument'
-                          ? 'bg-zinc-900 text-zinc-400 border border-zinc-800'
+                          ? 'bg-[#08090c] text-zinc-400 border border-white/[0.06]'
                           : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
                       }`}>
                         {routeBadge}
@@ -965,10 +967,10 @@ export default function LivePrompter() {
                     <div className="flex gap-1 shrink-0">
                       <button
                         onClick={() => toggleMute(stem.id)}
-                        className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${
+                        className={`w-6 h-6 flex items-center justify-center rounded-lg text-[9px] font-black transition-all ${
                           stem.muted
-                            ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(239,68,68,0.5)]'
-                            : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                            ? 'bg-[#ef4444] text-white shadow-[0_0_10px_rgba(239,68,68,0.6)] border border-red-400/50'
+                            : 'stage-tactile-btn text-zinc-400 hover:text-white'
                         }`}
                         title={stem.muted ? "Canal Silenciado (No sonará en la exportación)" : "Silenciar Canal (Mute)"}
                       >
@@ -976,10 +978,10 @@ export default function LivePrompter() {
                       </button>
                       <button
                         onClick={() => toggleSolo(stem.id)}
-                        className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${
+                        className={`w-6 h-6 flex items-center justify-center rounded-lg text-[9px] font-black transition-all ${
                           stem.solo
-                            ? 'bg-amber-400 text-black shadow-[0_0_8px_rgba(251,191,36,0.6)]'
-                            : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                            ? 'bg-amber-400 text-black shadow-[0_0_10px_rgba(251,191,36,0.65)] border border-amber-300'
+                            : 'stage-tactile-btn text-zinc-400 hover:text-white'
                         }`}
                         title="Escuchar en Solo"
                       >
@@ -988,19 +990,19 @@ export default function LivePrompter() {
                     </div>
                   </div>
                   
-                  <div className="flex items-center px-2.5 py-2 gap-3 bg-[#0c0e15]">
+                  <div className="flex items-center px-3 py-2 gap-3 bg-[#090b10]">
                     <div className="flex items-center gap-2 flex-1">
-                      <span className="text-[8px] text-zinc-500 font-bold">VOL</span>
+                      <span className="text-[8px] text-zinc-500 font-black tracking-wider">VOL</span>
                       <input 
                         type="range" min="0" max="1" step="0.01" value={stem.volume} onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                        className="w-full h-1 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-red-500 hover:accent-red-400"
+                        className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-[#ef4444] hover:accent-red-400"
                       />
                     </div>
                     <div className="flex items-center gap-2 w-24">
-                      <span className="text-[8px] text-zinc-500 font-bold">PAN</span>
+                      <span className="text-[8px] text-zinc-500 font-black tracking-wider">PAN</span>
                       <input 
                         type="range" min="-1" max="1" step="0.01" value={stem.pan} onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                        className="w-full h-1 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-zinc-400 hover:accent-zinc-200"
+                        className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-zinc-400 hover:accent-zinc-200"
                       />
                     </div>
                   </div>
@@ -1011,44 +1013,44 @@ export default function LivePrompter() {
         </div>
 
         {/* PROMPTER VISUAL AREA */}
-        <div className="flex-1 bg-[#07090e] flex flex-col relative overflow-hidden">
+        <div className="flex-1 bg-[#08090c] flex flex-col relative overflow-hidden">
           {/* Prompter Header Toolbar */}
-          <div className="h-12 border-b border-white/[0.07] flex items-center justify-between px-4 bg-[#0e1118] shrink-0">
+          <div className="h-12 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#0d1017]/90 backdrop-blur-md shrink-0">
              <div className="flex items-center gap-3">
-               <div className="flex items-center gap-1.5">
-                 <Mic size={14} className="text-red-500" />
-                 <h2 className="text-[10px] font-black text-white uppercase tracking-widest">2. Studio Prompter &bull; Voz Guía y Exportación</h2>
+               <div className="flex items-center gap-2">
+                 <Mic size={14} className="text-[#ef4444]" />
+                 <h2 className="text-[10px] font-black text-white uppercase tracking-[0.16em]">2. Studio Prompter &bull; Voz Guía y Exportación</h2>
                </div>
                
-               <div className="w-px h-4 bg-zinc-800 mx-1"></div>
+               <div className="w-px h-4 bg-white/[0.08] mx-1"></div>
                
                <div className="flex items-center gap-2">
                   <button 
                     onClick={() => setIsEditingSections(!isEditingSections)}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
+                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 ${
                       isEditingSections
-                        ? 'bg-red-600/20 text-red-300 border border-red-500/40'
-                        : 'text-zinc-300 hover:text-white bg-[#07090e] border border-zinc-800'
+                        ? 'bg-[#ef4444]/20 text-red-300 border border-[#ef4444]/40 shadow-[0_0_12px_rgba(239,68,68,0.2)]'
+                        : 'stage-tactile-btn text-zinc-300 hover:text-white'
                     }`}
                     title="Marcar secciones (Intro, Verso, Coro, Puente) con el teclado para generar la Voz Guía"
                   >
                     {isEditingSections ? 'Salir de Grabación de Voz Guía' : '🎙️ Marcar Secciones (Voz Guía)'}
-                    {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse ml-1"></span>}
+                    {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] animate-pulse ml-1"></span>}
                   </button>
                   {isEditingSections && (
                     <>
                       <button onClick={() => { if (confirm('¿Borrar todas las secciones de Voz Guía?')) setPrompterData(prev => ({ ...prev, sections: [] })); }} className="px-2 py-1 text-[9px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold">Limpiar</button>
-                      <button onClick={savePrompterData} className="px-2.5 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-lg uppercase tracking-wider font-black hover:bg-emerald-500/25">Guardar Voz Guía</button>
+                      <button onClick={savePrompterData} className="px-3 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 rounded-full uppercase tracking-wider font-black hover:bg-emerald-500/25">Guardar Voz Guía</button>
                     </>
                   )}
                   
                   {!isEditingSections && (
                     isEditingPrompter ? (
-                      <button onClick={handleSavePrompter} className="px-2.5 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-lg uppercase tracking-wider font-black hover:bg-emerald-500/25 flex items-center gap-1">
+                      <button onClick={handleSavePrompter} className="px-3 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 rounded-full uppercase tracking-wider font-black hover:bg-emerald-500/25 flex items-center gap-1">
                         <Save size={11} /> Guardar Texto
                       </button>
                     ) : (
-                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-2.5 py-1 text-[10px] text-zinc-300 bg-[#07090e] border border-zinc-800 rounded-lg uppercase tracking-wider font-bold hover:text-white flex items-center gap-1">
+                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-3 py-1 text-[10px] stage-tactile-btn text-zinc-300 rounded-full uppercase tracking-wider font-bold hover:text-white flex items-center gap-1.5">
                         <Edit3 size={11} /> Editor Texto Acordes
                       </button>
                     )
@@ -1060,7 +1062,7 @@ export default function LivePrompter() {
                 <button
                   onClick={handleSaveMixConfig}
                   disabled={!selectedSongId}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors"
+                  className="px-3 py-1.5 stage-tactile-btn text-zinc-200 hover:text-white rounded-full text-[10px] font-bold uppercase tracking-wider transition-all"
                   title="Guardar volúmenes y mutes de los canales"
                 >
                   Guardar Faders
@@ -1070,19 +1072,19 @@ export default function LivePrompter() {
                 <button
                   onClick={handleExportLiveMix}
                   disabled={isExporting || !audioLoaded}
-                  className="px-3.5 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_20px_rgba(239,68,68,0.3)]"
+                  className="px-4 py-1.5 bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] text-white rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-red-400/30"
                   title="Renderizar y subir la mezcla configurada (Salida Público FOH + Salida Músicos CUE) lista para usar en el Setlist En Vivo"
                 >
                   {isExporting ? (exportProgress || 'Exportando...') : '🚀 Exportar Mix En Vivo (FOH / CUE)'}
                 </button>
 
                 {/* Opciones secundarias de descarga local */}
-                <div className="flex items-center gap-1 bg-[#07090e] p-1 rounded-lg border border-zinc-800/80">
-                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack || !audioLoaded} className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                <div className="flex items-center gap-1 bg-[#08090c] p-1 rounded-full border border-white/[0.07]">
+                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack || !audioLoaded} className="px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
                     {isExportingMultitrack ? (exportProgress || 'ZIP...') : 'ZIP'}
                   </button>
-                  <div className="w-px h-3 bg-zinc-800"></div>
-                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3 || !audioLoaded} className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                  <div className="w-px h-3 bg-white/[0.08]"></div>
+                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3 || !audioLoaded} className="px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
                     {isExportingMp3 ? (exportProgress || 'MP3...') : 'MP3'}
                   </button>
                 </div>
@@ -1090,7 +1092,7 @@ export default function LivePrompter() {
           </div>
           
           {/* Playhead Timeline Scrubber */}
-          <div className="h-6 bg-[#07090e] border-b border-white/[0.06] flex items-center px-4 relative group cursor-pointer z-20">
+          <div className="h-6 bg-[#08090c] border-b border-white/[0.06] flex items-center px-4 relative group cursor-pointer z-20">
             <input 
               type="range" min={-(preRollDuration || 0)} max={totalDuration || 100} step="0.1" 
               value={isDraggingSlider ? localSliderTime : currentTime}
@@ -1100,17 +1102,17 @@ export default function LivePrompter() {
               disabled={!audioLoaded}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             />
-            <div className="w-full h-1.5 bg-zinc-800/90 rounded-full relative pointer-events-none">
-              <div className="absolute top-0 bottom-0 left-0 bg-red-500 rounded-full" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
+            <div className="w-full h-1.5 bg-[#12151f] rounded-full relative pointer-events-none overflow-hidden">
+              <div className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-[#ef4444] to-amber-500 rounded-full shadow-[0_0_12px_rgba(239,68,68,0.8)]" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
             </div>
           </div>
 
           <div className="flex-1 overflow-hidden relative">
             {isEditingPrompter ? (
-              <div className="h-full flex flex-col p-4 bg-[#07090e]">
+              <div className="h-full flex flex-col p-5 bg-[#08090c]">
                 <p className="text-xs text-zinc-400 mb-2 font-mono uppercase tracking-widest">Formato: <span className="text-amber-400">MM:SS Acorde o Sección</span></p>
                 <textarea 
-                  className="flex-1 bg-[#0d1017] border border-zinc-800 rounded-xl p-4 text-xs font-mono text-zinc-200 outline-none focus:border-red-500/50 resize-none leading-relaxed custom-scrollbar"
+                  className="flex-1 bg-[#0d1017] border border-white/[0.08] rounded-2xl p-4 text-xs font-mono text-zinc-200 outline-none focus:border-[#ef4444]/50 resize-none leading-relaxed custom-scrollbar shadow-[inset_0_2px_10px_rgba(0,0,0,0.6)]"
                   value={prompterText}
                   onChange={(e) => setPrompterText(e.target.value)}
                   placeholder="# SECCIONES\n00:00 INTRO\n00:15 CORO\n\n# ACORDES\n00:05 Am\n00:10 C"
@@ -1119,7 +1121,7 @@ export default function LivePrompter() {
               </div>
             ) : (
               <div className="h-full relative flex flex-col justify-center">
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-900/30 via-[#07090e] to-[#07090e] pointer-events-none"></div>
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#ef4444]/[0.05] via-[#08090c] to-[#08090c] pointer-events-none"></div>
                 
                 <Prompter 
                   currentTime={currentTime}

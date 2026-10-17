@@ -962,10 +962,14 @@ export default function StemStudio() {
   const currentMasterStem = stems.find(s => s.metadata?.is_master === true);
 
   return (
-    <div className="h-full flex flex-col bg-[#07090e] overflow-hidden text-zinc-300 select-none">
+    <div className="h-full flex flex-col bg-[#08090c] overflow-hidden text-zinc-300 select-none relative">
+      {/* Subtle Concentric Hero Stage Rings */}
+      <div className="pointer-events-none absolute -top-60 right-1/4 w-[620px] h-[620px] rounded-full border border-white/[0.03]" />
+      <div className="pointer-events-none absolute -top-44 right-1/4 w-[440px] h-[440px] rounded-full border border-white/[0.04]" />
+
       {/* Hidden Audio Player for Previews */}
-      <audio 
-        ref={audioRef} 
+      <audio
+        ref={audioRef}
         onTimeUpdate={() => {
           if (audioRef.current) {
             setPlayProgress({
@@ -984,27 +988,32 @@ export default function StemStudio() {
         }}
         onEnded={() => setPlayingStemId(null)}
         onError={() => {
-           console.error("Audio playback error");
-           setPlayingStemId(null);
+          console.error("Audio playback error");
+          setPlayingStemId(null);
         }}
       />
 
       {/* Header - TANDU /STAGE Studio Header */}
-      <div className="flex items-center justify-between px-5 py-3 bg-[#0c0e14] border-b border-white/[0.07] shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-7 h-7 rounded-lg bg-red-600/15 border border-red-500/30 flex items-center justify-center">
-            <Disc3 className="text-red-500" size={16} strokeWidth={2.5} />
+      <div className="flex items-center justify-between px-6 py-3.5 bg-[#0d0f14]/95 backdrop-blur-2xl border-b border-white/[0.06] shadow-[0_8px_30px_rgba(0,0,0,0.45)] shrink-0 z-20">
+        <div className="flex items-center gap-3.5">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#ef4444]/25 to-[#ef4444]/5 border border-[#ef4444]/35 flex items-center justify-center shadow-[0_0_16px_rgba(239,68,68,0.25)]">
+            <Disc3 className="text-[#ef4444]" size={18} strokeWidth={2.5} />
           </div>
           <div>
-            <h1 className="text-xs font-black text-white tracking-widest uppercase">1. Stem Studio &bull; Master Grid</h1>
-            <p className="text-[10px] text-zinc-500">Carga de Stems Separados + Pista Master para Tempo y Compás IA</p>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xs font-black text-white tracking-[0.18em] uppercase">1. Stem Studio &bull; Master Grid</h1>
+              <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-white/[0.06] text-gray-300 border border-white/10">
+                STAGE RACK
+              </span>
+            </div>
+            <p className="text-[11px] text-[#8e96a4] mt-0.5">Carga de Stems Separados + Pista Master para Tempo y Compás IA</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
           {activeSongObj && (
             <button
-              onClick={() => navigate('/prompter')}
-              className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-2 shadow-[0_0_20px_rgba(239,68,68,0.25)] transition-all"
+              onClick={() => navigate('/editor')}
+              className="px-4 py-2 rounded-full bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:brightness-110 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-2 shadow-[0_4px_20px_rgba(239,68,68,0.35)] border border-white/15 transition-all"
               title="Continuar al Paso 2: Configurar Acordes, Voz Guía y Exportar Mezcla En Vivo"
             >
               <span>Paso 2: Abrir en Studio Prompter</span>
@@ -1015,35 +1024,36 @@ export default function StemStudio() {
       </div>
 
       {/* Main Workspace */}
-      <div className="flex flex-1 overflow-hidden">
-        
-        {/* Sidebar - Project/Song Browser */}
-        <div className="w-72 flex flex-col bg-[#090b10] border-r border-white/[0.06] shrink-0 z-10">
-          <div className="px-4 py-2.5 border-b border-white/[0.06] bg-[#0d1017] flex items-center justify-between shrink-0">
+      <div className="flex flex-1 overflow-hidden relative z-10">
+        {/* Sidebar - Project/Song Browser (Music-1 Dashboard + Musiko.io Style) */}
+        <div className="w-76 flex flex-col bg-[#0b0d13]/95 border-r border-white/[0.06] shrink-0 z-10 shadow-[8px_0_30px_rgba(0,0,0,0.4)]">
+          <div className="px-4 py-3.5 border-b border-white/[0.06] bg-gradient-to-b from-white/[0.03] to-transparent flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <Music size={12} className="text-red-500" />
-              <h2 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Proyectos ({songs.length})</h2>
+              <Music size={14} className="text-[#ef4444]" />
+              <h2 className="text-[11px] font-extrabold text-white uppercase tracking-[0.16em]">Proyectos ({songs.length})</h2>
             </div>
-            <button 
-              onClick={handleCreateNewProject} 
-              className="px-2 py-1 flex items-center gap-1 rounded bg-red-600/15 hover:bg-red-600/25 border border-red-500/30 text-red-400 text-[10px] font-bold transition-colors"
+            <button
+              onClick={handleCreateNewProject}
+              className="stage-tactile-btn px-3 py-1 flex items-center gap-1 rounded-full bg-gradient-to-r from-[#ef4444]/20 to-[#ef4444]/10 hover:from-[#ef4444]/30 hover:to-[#ef4444]/20 border border-[#ef4444]/35 text-red-300 text-[10px] font-black uppercase tracking-wider transition-all"
               title="Crear Nueva Canción"
             >
               <Plus size={11} />
               <span>Nuevo</span>
             </button>
           </div>
-          
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-2.5 space-y-1.5">
             {loadingSongs ? (
-              <div className="flex items-center gap-2 text-zinc-500 p-3">
-                <Loader2 size={12} className="animate-spin" />
-                <span className="text-xs">Cargando proyectos...</span>
+              <div className="flex items-center gap-2.5 text-[#8e96a4] p-4">
+                <Loader2 size={14} className="animate-spin text-[#ef4444]" />
+                <span className="text-xs font-medium">Cargando proyectos...</span>
               </div>
             ) : songs.length === 0 ? (
-              <p className="text-zinc-600 text-xs p-3">No hay proyectos aún.</p>
+              <div className="text-[#64748b] text-xs p-6 text-center rounded-2xl border border-dashed border-white/[0.06] bg-white/[0.01]">
+                No hay proyectos aún. Crea uno nuevo o sube tus stems.
+              </div>
             ) : (
-              songs.map((song) => {
+              songs.map((song, sIdx) => {
                 const pd = song.prompter_data || {};
                 const hasGrid = Boolean(pd.bpm || (pd.beatTimes && pd.beatTimes.length > 0));
                 const hasChords = Boolean(pd.chords && pd.chords.length > 0);
@@ -1055,19 +1065,30 @@ export default function StemStudio() {
                   <div
                     key={song.id}
                     onClick={() => setSelectedSongId(song.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs transition-all cursor-pointer group border ${
-                      isSelected 
-                        ? 'bg-[#151924] text-white font-semibold border-red-500/40 shadow-md' 
-                        : 'text-zinc-400 border-transparent hover:bg-white/[0.03] hover:text-zinc-200'
+                    className={`w-full text-left p-3 rounded-2xl text-xs transition-all duration-200 cursor-pointer group border relative ${
+                      isSelected
+                        ? 'bg-gradient-to-r from-[#ef4444]/20 via-[#ef4444]/8 to-[#141722] text-white font-semibold border-[#ef4444]/40 shadow-[0_8px_24px_rgba(239,68,68,0.14)]'
+                        : 'bg-[#12151e]/60 text-gray-300 border-white/[0.04] hover:bg-[#171b26] hover:border-white/10 hover:text-white'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-1">
-                      <div className="truncate pr-1 font-bold">{song.title}</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-mono font-black shrink-0 ${
+                            isSelected
+                              ? 'bg-[#ef4444] text-white shadow-[0_0_10px_rgba(239,68,68,0.5)]'
+                              : 'bg-[#090b10] text-[#8e96a4] border border-white/[0.06]'
+                          }`}
+                        >
+                          {String(sIdx + 1).padStart(2, '0')}
+                        </span>
+                        <div className="truncate font-bold text-[13px] tracking-tight">{song.title}</div>
+                      </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
                           onClick={(e) => handleRenameProject(song, e)}
-                          className="opacity-0 group-hover:opacity-100 p-1 hover:text-white text-zinc-500 transition-opacity"
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-white/10 hover:text-white text-[#8e96a4] transition-all"
                           title="Renombrar proyecto"
                         >
                           <Edit3 size={11} />
@@ -1075,33 +1096,48 @@ export default function StemStudio() {
                         <button
                           type="button"
                           onClick={(e) => handleDeleteProject(song, e)}
-                          className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-zinc-500 transition-opacity"
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-red-500/20 hover:text-red-400 text-[#8e96a4] transition-all"
                           title="Eliminar proyecto"
                         >
                           <Trash2 size={11} />
                         </button>
-                        {isSelected && (
-                          <div className="w-2 h-2 rounded-full bg-red-500 shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
-                        )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                    <div className="flex flex-wrap items-center gap-1 mt-2 pl-8">
                       {pd.bpm && (
-                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                        <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#090b10] text-gray-300 border border-white/[0.07]">
                           {Math.round(Number(pd.bpm))} BPM
                         </span>
                       )}
-                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasGrid ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                      <span
+                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                          hasGrid
+                            ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                            : 'bg-[#090b10]/60 text-[#64748b] border-white/[0.05]'
+                        }`}
+                      >
                         Grilla
                       </span>
-                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasChords ? 'bg-sky-500/15 text-sky-300 border-sky-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                      <span
+                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                          hasChords
+                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                            : 'bg-[#090b10]/60 text-[#64748b] border-white/[0.05]'
+                        }`}
+                      >
                         Acordes
                       </span>
-                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasLyrics ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                      <span
+                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                          hasLyrics
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            : 'bg-[#090b10]/60 text-[#64748b] border-white/[0.05]'
+                        }`}
+                      >
                         Lyrics
                       </span>
                       {hasLiveMix && (
-                        <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                           Mix Listo
                         </span>
                       )}
@@ -1114,11 +1150,11 @@ export default function StemStudio() {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-y-auto bg-[#0b0d13] custom-scrollbar relative">
+        <div className="flex-1 flex flex-col overflow-y-auto bg-[#08090c] custom-scrollbar relative">
           {!selectedSongId ? (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-6">
               <div className="max-w-lg w-full">
-                <StemUploader 
+                <StemUploader
                   songId={selectedSongId}
                   bandId={FAKE_BAND_ID}
                   onUploadComplete={handleUploadComplete}
@@ -1127,43 +1163,43 @@ export default function StemStudio() {
             </div>
           ) : (
             <div className="p-6 space-y-6 max-w-6xl mx-auto w-full">
-              
               {/* Top Controls Toolbar */}
-              <div className="flex flex-col xl:flex-row gap-4 shrink-0">
-                
+              <div className="flex flex-col xl:flex-row gap-5 shrink-0">
                 {/* 1. CARGA PRINCIPAL DE STEMS SEPARADOS + COMPLEMENTO IA SPLITTER */}
-                <div className="flex-1 bg-[#11141d] border border-white/[0.07] rounded-xl p-4 flex flex-col justify-between gap-3 shadow-xl">
-                  <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
-                    <div className="flex items-center gap-2">
-                      <FolderPlus size={14} className="text-red-500" />
-                      <h3 className="text-[10px] font-black text-white uppercase tracking-widest">
+                <div className="stage-glass-panel flex-1 rounded-2xl p-5 flex flex-col justify-between gap-3.5">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-white/[0.06]">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-6 h-6 rounded-lg bg-[#ef4444]/15 border border-[#ef4444]/30 flex items-center justify-center">
+                        <FolderPlus size={13} className="text-[#ef4444]" />
+                      </div>
+                      <h3 className="text-[11px] font-extrabold text-white uppercase tracking-[0.14em]">
                         Paso 1: Cargar Stems Separados + Pista Master
                       </h3>
                     </div>
-                    <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/30">
+                    <span className="text-[9px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-[#ef4444]/15 text-red-300 border border-[#ef4444]/30">
                       Flujo Principal
                     </span>
                   </div>
-                  
+
                   <div className="flex flex-col gap-3">
-                    <StemUploader 
+                    <StemUploader
                       songId={selectedSongId}
                       bandId={FAKE_BAND_ID}
                       onUploadComplete={handleUploadComplete}
                       compact={true}
                     />
-                    
+
                     {/* Complemento: Separador IA desde 1 archivo */}
                     <div className="border-t border-white/[0.06] pt-2.5 flex flex-col gap-2">
                       <div className="flex items-center justify-between">
                         <button
                           type="button"
                           onClick={() => setShowSplitterComplement(v => !v)}
-                          className="text-[10px] font-bold text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors"
+                          className="text-[10px] font-bold text-[#8e96a4] hover:text-white flex items-center gap-1.5 transition-colors"
                         >
                           <Sparkles size={12} className="text-amber-400" />
                           <span>Complemento: ¿No tienes los stems separados? Extraer desde 1 canción con IA</span>
-                          <span className="text-[9px] text-zinc-500 ml-1">{showSplitterComplement ? '▲' : '▼'}</span>
+                          <span className="text-[9px] text-[#64748b] ml-1">{showSplitterComplement ? '▲' : '▼'}</span>
                         </button>
                         {isSplitting && (
                           <span className="text-[10px] text-amber-400 font-semibold animate-pulse">{splitMessage}</span>
@@ -1171,20 +1207,20 @@ export default function StemStudio() {
                       </div>
 
                       {(showSplitterComplement || isSplitting) && (
-                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-[#090b10] p-2.5 rounded-lg border border-zinc-800/80">
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 bg-[#090b10] p-3 rounded-xl border border-white/[0.07]">
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Salida:</span>
-                            <select 
-                              value={splitFormat} 
+                            <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-wider">Salida:</span>
+                            <select
+                              value={splitFormat}
                               onChange={(e) => setSplitFormat(e.target.value as 'mp3' | 'wav')}
                               disabled={isSplitting}
-                              className="bg-[#12151e] text-xs text-zinc-200 border border-zinc-800 rounded px-2 py-1 outline-none cursor-pointer"
+                              className="bg-[#12151e] text-xs text-gray-200 border border-white/10 rounded-lg px-2.5 py-1 outline-none cursor-pointer"
                             >
                               <option value="mp3">MP3 320k (Ligero)</option>
                               <option value="wav">WAV (Sin pérdida)</option>
                             </select>
                           </div>
-                          <div className="relative flex-1 h-[34px] group bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded flex items-center justify-center px-3 cursor-pointer transition-colors overflow-hidden">
+                          <div className="relative flex-1 h-[34px] group bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/35 rounded-xl flex items-center justify-center px-3 cursor-pointer transition-all overflow-hidden">
                             <input type="file" accept="audio/mpeg, audio/wav, audio/mp3" onChange={handleSplitMP3} disabled={isSplitting} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" />
                             <div className="flex items-center gap-2 pointer-events-none z-0">
                               {isSplitting ? <RefreshCw size={13} className="animate-spin text-amber-400" /> : <Sparkles size={13} className="text-amber-400" />}
@@ -1200,115 +1236,114 @@ export default function StemStudio() {
                 </div>
 
                 {/* 2. GRILLA GLOBAL Y TEMPO (DESDE EL ARCHIVO MASTER) */}
-                <div className="flex-1 bg-[#11141d] border border-white/[0.07] rounded-xl p-4 flex flex-col justify-between gap-3 shadow-xl">
-                  <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                      <h3 className="text-[10px] font-black text-white uppercase tracking-widest">
+                <div className="stage-glass-panel flex-1 rounded-2xl p-5 flex flex-col justify-between gap-3.5">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-white/[0.06]">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse shadow-[0_0_8px_#a855f7]" />
+                      <h3 className="text-[11px] font-extrabold text-white uppercase tracking-[0.14em]">
                         Paso 2: Grilla Global, Compás y Tempo
                       </h3>
                     </div>
                     <div className="flex items-center gap-2">
                       {currentMasterStem ? (
-                        <span className="flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        <span className="flex items-center gap-1 text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/35 shadow-[0_0_12px_rgba(245,158,11,0.15)]">
                           <Star size={10} className="fill-amber-400 text-amber-400" />
                           Fuente IA: {currentMasterStem.name}
                         </span>
                       ) : stems.length > 0 ? (
-                        <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700" title="Haz clic en la estrella ★ de una pista abajo para designarla como Master">
+                        <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-[#151822] text-[#8e96a4] border border-white/10" title="Haz clic en la estrella ★ de una pista abajo para designarla como Master">
                           Sin ★ Master explícito (Usará {stems[0]?.name})
                         </span>
                       ) : null}
                     </div>
                   </div>
-                  
-                  <div className="grid grid-cols-3 gap-2.5">
+
+                  <div className="grid grid-cols-3 gap-3">
                     <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Compás</label>
-                      <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-bold px-2.5 focus:border-purple-500 focus:outline-none">
+                      <label className="text-[9px] font-bold text-[#8e96a4] uppercase tracking-wider">Compás</label>
+                      <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} className="h-[36px] bg-[#090b10] border border-white/[0.08] rounded-xl text-xs text-white font-bold px-3 focus:border-purple-500 focus:outline-none">
                         <option value="4/4">4/4</option>
                         <option value="3/4">3/4</option>
                         <option value="6/8">6/8</option>
                       </select>
                     </div>
                     <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Tempo (BPM)</label>
+                      <label className="text-[9px] font-bold text-[#8e96a4] uppercase tracking-wider">Tempo (BPM)</label>
                       <input
                         type="number"
                         value={manualBpm}
                         onChange={(e) => setManualBpm(e.target.value)}
                         placeholder="Auto IA"
-                        className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-mono font-bold px-2.5 focus:border-purple-500 focus:outline-none placeholder:text-zinc-600"
+                        className="h-[36px] bg-[#090b10] border border-white/[0.08] rounded-xl text-xs text-white font-mono font-bold px-3 focus:border-purple-500 focus:outline-none placeholder:text-[#64748b]"
                       />
                     </div>
                     <div className="flex flex-col gap-1">
-                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Tonalidad (Key)</label>
+                      <label className="text-[9px] font-bold text-[#8e96a4] uppercase tracking-wider">Tonalidad (Key)</label>
                       <input
                         type="text"
                         value={manualKey}
                         onChange={(e) => setManualKey(e.target.value)}
                         placeholder="Ej. Do Mayor / Am"
-                        className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-bold px-2.5 focus:border-purple-500 focus:outline-none placeholder:text-zinc-600"
+                        className="h-[36px] bg-[#090b10] border border-white/[0.08] rounded-xl text-xs text-white font-bold px-3 focus:border-purple-500 focus:outline-none placeholder:text-[#64748b]"
                       />
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-2">
+
+                  <div className="flex items-center gap-2.5">
                     <button
                       type="button"
                       onClick={handleSaveGridMeta}
                       disabled={isSavingMeta}
-                      className="h-[34px] px-3 bg-zinc-800/90 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors shrink-0"
+                      className="stage-tactile-btn h-[36px] px-4 bg-[#151822] hover:bg-[#1c202e] border border-white/10 text-gray-200 text-[11px] font-bold rounded-full flex items-center justify-center gap-1.5 transition-all shrink-0"
                       title="Guardar Compás, BPM manual y Tonalidad"
                     >
                       <Save size={13} />
                       <span>Guardar</span>
                     </button>
-                    <button 
+                    <button
                       onClick={handleGenerateChordsAI}
                       disabled={isGeneratingAI || stems.length === 0}
-                      className="flex-1 h-[34px] bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-300 text-xs font-black uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                      className="stage-tactile-btn flex-1 h-[36px] bg-gradient-to-r from-purple-600/25 to-[#ef4444]/20 hover:from-purple-600/35 hover:to-[#ef4444]/30 border border-purple-500/40 text-purple-200 text-xs font-black uppercase tracking-wider rounded-full flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
                     >
-                      {isGeneratingAI ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} />}
+                      {isGeneratingAI ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} className="text-amber-400" />}
                       {isGeneratingAI ? "Analizando Master..." : "Capturar Tempo y Crear Grilla (IA)"}
                     </button>
                   </div>
                   {aiSuccessMessage && (
-                    <div className="text-[10px] text-emerald-400 bg-emerald-950/30 px-2.5 py-1.5 rounded border border-emerald-500/30 font-semibold truncate">
+                    <div className="text-[10px] text-emerald-300 bg-emerald-950/40 px-3 py-1.5 rounded-xl border border-emerald-500/30 font-semibold truncate">
                       {aiSuccessMessage}
                     </div>
                   )}
                 </div>
-
               </div>
 
-              {/* Tracks / Stems Section (DAW Style) */}
-              <div className="flex flex-col bg-[#090b10] border border-white/[0.07] rounded-xl overflow-hidden shrink-0 shadow-2xl">
+              {/* Tracks / Stems Section (DAW Hardware Rack Style) */}
+              <div className="stage-glass-panel flex flex-col rounded-2xl overflow-hidden shrink-0">
                 {/* Tracks Header */}
-                <div className="flex items-center px-4 py-2.5 bg-[#10131c] border-b border-white/[0.06]">
-                   <div className="w-[330px] text-[10px] font-black text-zinc-400 uppercase tracking-widest shrink-0">
-                     Pista / Stem ({stems.length})
-                   </div>
-                   <div className="flex-1 text-[10px] font-black text-zinc-400 uppercase tracking-widest pl-4">
-                     Forma de Onda Real (Clic para adelantar/retroceder al reproducir)
-                   </div>
-                   <div className="w-[175px] text-[10px] font-black text-zinc-400 uppercase tracking-widest text-right pr-2 shrink-0">
-                     Master IA / Controles
-                   </div>
+                <div className="flex items-center px-5 py-3 bg-[#0d1017]/90 border-b border-white/[0.06]">
+                  <div className="w-[330px] text-[10px] font-extrabold text-[#8e96a4] uppercase tracking-[0.16em] shrink-0">
+                    Pista / Stem ({stems.length})
+                  </div>
+                  <div className="flex-1 text-[10px] font-extrabold text-[#8e96a4] uppercase tracking-[0.16em] pl-4">
+                    Forma de Onda Real (Clic para adelantar/retroceder al reproducir)
+                  </div>
+                  <div className="w-[185px] text-[10px] font-extrabold text-[#8e96a4] uppercase tracking-[0.16em] text-right pr-2 shrink-0">
+                    Master IA / Controles
+                  </div>
                 </div>
 
                 {loadingStems ? (
-                  <div className="flex items-center justify-center py-16 text-zinc-500">
-                    <Loader2 size={20} className="animate-spin mr-3 text-zinc-400" />
+                  <div className="flex items-center justify-center py-16 text-[#8e96a4]">
+                    <Loader2 size={20} className="animate-spin mr-3 text-[#ef4444]" />
                     <span className="text-sm font-medium">Cargando stems...</span>
                   </div>
                 ) : stems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-16 bg-[#090b10]">
-                    <div className="w-12 h-12 rounded-full bg-zinc-900 flex items-center justify-center mb-3">
-                      <FileAudio size={20} className="text-zinc-700" />
+                  <div className="flex flex-col items-center justify-center py-16 bg-[#090b10]/60">
+                    <div className="w-13 h-13 rounded-2xl bg-[#131620] border border-white/10 flex items-center justify-center mb-3 shadow-inner">
+                      <FileAudio size={22} className="text-[#64748b]" />
                     </div>
-                    <p className="text-sm text-zinc-400 font-bold">Esta canción aún no tiene Stems</p>
-                    <p className="text-xs text-zinc-600 mt-1">Sube tus stems separados arriba (incluyendo el archivo Master) para comenzar.</p>
+                    <p className="text-sm text-gray-300 font-bold">Esta canción aún no tiene Stems</p>
+                    <p className="text-xs text-[#64748b] mt-1">Sube tus stems separados arriba (incluyendo el archivo Master) para comenzar.</p>
                   </div>
                 ) : (
                   <div className="flex flex-col divide-y divide-white/[0.05]">
@@ -1324,48 +1359,73 @@ export default function StemStudio() {
                         : 0;
 
                       return (
-                        <div key={stem.id} className={`flex min-h-[66px] transition-colors group ${isMasterTrack ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'bg-[#090b10] hover:bg-[#111520]'}`}>
+                        <div
+                          key={stem.id}
+                          className={`flex min-h-[70px] transition-all duration-200 group ${
+                            isMasterTrack
+                              ? 'bg-gradient-to-r from-amber-500/[0.07] via-amber-500/[0.02] to-transparent hover:from-amber-500/[0.12]'
+                              : isPlayingThis
+                              ? 'bg-gradient-to-r from-emerald-500/[0.08] to-transparent'
+                              : 'bg-[#090b10]/70 hover:bg-[#121622]/90'
+                          }`}
+                        >
                           {/* Track Info */}
-                          <div className="w-[330px] px-4 py-3 flex flex-col justify-center border-r border-white/[0.05] bg-[#0d1017]/80 shrink-0">
-                             <div className="flex items-start gap-2.5">
-                               <div className={`w-5 h-5 shrink-0 rounded flex items-center justify-center mt-0.5 ${
-                                 isMasterTrack
-                                   ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                                   : isDspTrack
-                                   ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
-                                   : 'bg-zinc-800 text-zinc-400'
-                               }`}>
-                                 {isMasterTrack ? <Star size={11} className="fill-amber-400" /> : isDspTrack ? <Shield size={11} /> : <FileAudio size={11} />}
-                               </div>
-                               <span className="text-[13px] font-bold text-zinc-100 leading-snug whitespace-normal break-words">{stem.name}</span>
-                             </div>
-                             <div className="flex flex-wrap items-center gap-1.5 pl-7 mt-1.5">
-                               {isMasterTrack ? (
-                                 <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                                   ★ MASTER (Fuente Tempo / Acordes IA)
-                                 </span>
-                               ) : (
-                                 <span className="text-[9px] text-zinc-500 uppercase tracking-wider font-bold">{stem.type || 'Stem'}</span>
-                               )}
-                               {isDspTrack && (
-                                 <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                   DSP {stem.metadata?.dsp_preset ? String(stem.metadata.dsp_preset).toUpperCase() : 'CLEAN'}
-                                 </span>
-                               )}
-                               {isPlayingThis && (
-                                 <span className="text-[9px] font-mono text-emerald-400 font-bold ml-auto">
-                                   {formatMmSs(playProgress.current)} / {formatMmSs(playProgress.duration)}
-                                 </span>
-                               )}
-                             </div>
+                          <div className="w-[330px] px-5 py-3 flex flex-col justify-center border-r border-white/[0.05] bg-[#0c0e14]/60 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                              <div
+                                className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${
+                                  isMasterTrack
+                                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.25)]'
+                                    : isDspTrack
+                                    ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                                    : 'bg-[#151822] text-gray-400 border border-white/[0.06]'
+                                }`}
+                              >
+                                {isPlayingThis ? (
+                                  <div className="flex items-end gap-[1.5px] h-3">
+                                    <span className="w-[2px] bg-emerald-400 rounded-full animate-eq-1" />
+                                    <span className="w-[2px] bg-emerald-400 rounded-full animate-eq-2" />
+                                    <span className="w-[2px] bg-emerald-400 rounded-full animate-eq-3" />
+                                  </div>
+                                ) : isMasterTrack ? (
+                                  <Star size={12} className="fill-amber-400" />
+                                ) : isDspTrack ? (
+                                  <Shield size={12} />
+                                ) : (
+                                  <FileAudio size={12} />
+                                )}
+                              </div>
+                              <span className="text-[13px] font-bold text-white leading-snug whitespace-normal break-words tracking-tight">
+                                {stem.name}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 pl-8 mt-1.5">
+                              {isMasterTrack ? (
+                                <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                  ★ MASTER (Fuente Tempo / Acordes IA)
+                                </span>
+                              ) : (
+                                <span className="text-[9px] text-[#8e96a4] uppercase tracking-wider font-bold">{stem.type || 'Stem'}</span>
+                              )}
+                              {isDspTrack && (
+                                <span className="text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/25">
+                                  DSP {stem.metadata?.dsp_preset ? String(stem.metadata.dsp_preset).toUpperCase() : 'CLEAN'}
+                                </span>
+                              )}
+                              {isPlayingThis && (
+                                <span className="text-[9px] font-mono text-emerald-400 font-bold ml-auto">
+                                  {formatMmSs(playProgress.current)} / {formatMmSs(playProgress.duration)}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          
+
                           {/* Real / Interactive Waveform area */}
                           <div className="flex-1 flex items-center px-4 py-2 relative">
                             <div
                               onClick={(e) => handleSeekAudio(stem, e)}
-                              className={`absolute inset-y-2 left-4 right-4 bg-[#11141d] border rounded-lg flex items-center justify-center overflow-hidden ${
-                                isPlayingThis ? 'border-emerald-500/40 cursor-pointer' : 'border-white/[0.05]'
+                              className={`stage-tactile-pressed absolute inset-y-2 left-4 right-4 bg-[#08090c] border rounded-xl flex items-center justify-center overflow-hidden transition-all ${
+                                isPlayingThis ? 'border-emerald-500/45 cursor-pointer shadow-[0_0_16px_rgba(16,185,129,0.12)]' : 'border-white/[0.05]'
                               }`}
                             >
                               {isPlayingThis && (
@@ -1374,7 +1434,7 @@ export default function StemStudio() {
                                   style={{ width: `${progressRatio * 100}%` }}
                                 />
                               )}
-                              <div className={`w-full h-full flex items-center gap-[1.5px] px-1.5 transition-opacity duration-300 ${isPlayingThis ? 'opacity-95' : 'opacity-45 group-hover:opacity-70'}`}>
+                              <div className={`w-full h-full flex items-center gap-[1.5px] px-2 transition-opacity duration-300 ${isPlayingThis ? 'opacity-95' : 'opacity-50 group-hover:opacity-75'}`}>
                                 {Array.from({ length: 80 }).map((_, i) => {
                                   const barHeight = waveformBars
                                     ? waveformBars[i] || 15
@@ -1383,14 +1443,14 @@ export default function StemStudio() {
                                   return (
                                     <div
                                       key={i}
-                                      className={`flex-1 rounded-sm transition-all ${
+                                      className={`flex-1 rounded-full transition-all ${
                                         isPlayedBar
-                                          ? 'bg-emerald-400'
+                                          ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
                                           : isMasterTrack
                                           ? 'bg-amber-400/80'
                                           : isDspTrack
                                           ? 'bg-blue-400/80'
-                                          : 'bg-zinc-500'
+                                          : 'bg-[#64748b]'
                                       }`}
                                       style={{ height: `${barHeight}%` }}
                                     />
@@ -1401,49 +1461,49 @@ export default function StemStudio() {
                           </div>
 
                           {/* Controls (Right) */}
-                          <div className="w-[175px] flex items-center justify-end px-4 gap-1.5 shrink-0">
+                          <div className="w-[185px] flex items-center justify-end px-4 gap-1.5 shrink-0">
                             <button
                               type="button"
                               onClick={() => toggleMasterStem(stem)}
-                              className={`h-7 px-2 rounded flex items-center gap-1 text-[9px] font-black uppercase tracking-wider border transition-all ${
+                              className={`stage-tactile-btn h-7 px-2.5 rounded-full flex items-center gap-1 text-[9px] font-black uppercase tracking-wider border transition-all ${
                                 isMasterTrack
-                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
-                                  : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:text-amber-300 hover:border-amber-500/40'
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+                                  : 'bg-[#131620] text-[#8e96a4] border-white/[0.08] hover:text-amber-300 hover:border-amber-500/40'
                               }`}
                               title={isMasterTrack ? "Esta es la pista Master que lee la IA para el Tempo y Acordes" : "Marcar esta pista como el archivo Master para la IA"}
                             >
                               <Star size={11} className={isMasterTrack ? "fill-amber-400 text-amber-400" : ""} />
                               <span>Master</span>
                             </button>
-                            <button 
+                            <button
                               onClick={() => togglePlay(stem)}
-                              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                              className={`stage-tactile-btn w-8 h-8 flex items-center justify-center rounded-full border transition-all ${
                                 isPlayingThis
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                                  : 'text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10'
+                                  ? 'bg-emerald-500 text-[#08090c] border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.5)]'
+                                  : 'bg-[#131620] text-gray-300 border-white/[0.08] hover:text-emerald-400 hover:border-emerald-500/40'
                               }`}
                               title={isPlayingThis ? "Pausar" : "Escuchar pista"}
                             >
-                              {isPlayingThis ? <Pause size={15} /> : <Play size={15} />}
+                              {isPlayingThis ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
                             </button>
                             <button
                               onClick={() => handleDecorrelateExistingStem(stem)}
                               disabled={isDspBusy}
-                              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                              className={`stage-tactile-btn w-8 h-8 flex items-center justify-center rounded-full border transition-all ${
                                 isThisDecorrelating
-                                  ? 'text-blue-400 bg-blue-500/20'
-                                  : 'text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10 disabled:opacity-40 disabled:cursor-not-allowed'
+                                  ? 'text-blue-300 bg-blue-500/20 border-blue-500/40'
+                                  : 'bg-[#131620] text-gray-400 border-white/[0.08] hover:text-blue-400 hover:border-blue-500/40 disabled:opacity-40 disabled:cursor-not-allowed'
                               }`}
                               title={`Decorrelacionar "${stem.name}" con preset ${PRESET_SHORT_LABEL[dspPreset]}`}
                             >
-                              {isThisDecorrelating ? <Loader2 size={14} className="animate-spin" /> : <Shield size={14} />}
+                              {isThisDecorrelating ? <Loader2 size={13} className="animate-spin" /> : <Shield size={13} />}
                             </button>
-                            <button 
+                            <button
                               onClick={() => deleteStem(stem.id)}
-                              className="w-8 h-8 flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                              className="stage-tactile-btn w-8 h-8 flex items-center justify-center bg-[#131620] text-[#8e96a4] hover:text-red-400 hover:border-red-500/40 border border-white/[0.08] rounded-full transition-all"
                               title="Eliminar pista"
                             >
-                              <Trash2 size={15} />
+                              <Trash2 size={13} />
                             </button>
                           </div>
                         </div>
@@ -1454,25 +1514,25 @@ export default function StemStudio() {
               </div>
 
               {/* DSP Watermark Module (Stealth Master DSP v4) */}
-              <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-5 flex flex-col gap-4 shadow-xl">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-800/60">
+              <div className="stage-glass-panel flex-1 rounded-2xl p-5 flex flex-col gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.06]">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.7)]" />
-                    <h3 className="text-[11px] font-bold text-zinc-200 uppercase tracking-widest">
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.7)]" />
+                    <h3 className="text-[11px] font-extrabold text-white uppercase tracking-[0.14em]">
                       Stealth Master DSP v4 — Pure Studio Clarity Anti-Fingerprint
                     </h3>
                   </div>
 
                   {/* Dual-Engine Switcher */}
-                  <div className="flex items-center bg-[#09090b] p-0.5 rounded-md border border-zinc-800">
+                  <div className="stage-tactile-pressed flex items-center bg-[#08090c] p-1 rounded-full border border-white/[0.07]">
                     <button
                       type="button"
                       onClick={() => setDspEngine('local')}
                       disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all ${
                         dspEngine === 'local'
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/40 shadow-sm'
-                          : 'text-zinc-500 hover:text-zinc-300'
+                          ? 'bg-blue-600/25 text-blue-300 border border-blue-500/40 shadow-sm'
+                          : 'text-[#8e96a4] hover:text-white'
                       }`}
                       title="Procesa en el cliente en 2-4 segundos sin esperas de Cold Boot"
                     >
@@ -1483,10 +1543,10 @@ export default function StemStudio() {
                       type="button"
                       onClick={() => setDspEngine('cloud')}
                       disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all ${
                         dspEngine === 'cloud'
-                          ? 'bg-purple-600/20 text-purple-300 border border-purple-500/40 shadow-sm'
-                          : 'text-zinc-500 hover:text-zinc-300'
+                          ? 'bg-purple-600/25 text-purple-300 border border-purple-500/40 shadow-sm'
+                          : 'text-[#8e96a4] hover:text-white'
                       }`}
                       title="Ejecuta en el worker remoto de Replicate (con fallback local automático)"
                     >
@@ -1495,14 +1555,14 @@ export default function StemStudio() {
                     </button>
                   </div>
                 </div>
-                
+
                 <div className="flex flex-col gap-4 flex-1 justify-between">
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  <p className="text-[11px] text-[#8e96a4] leading-relaxed">
                     Ataque psicoacústico quirúrgico sin ensuciar el audio: <code className="text-blue-400">🎹 Ghost MIDI Sub-Bass (55-185 Hz, máscara Fletcher-Munson)</code>, <code className="text-blue-400">🎯 Constellation Poisoning (Gabor 350-4800 Hz con máscara Bark)</code>, <code className="text-blue-400">Desplazamiento CQT (+2.0% a +4.35%)</code> y <code className="text-blue-400">🛡️ Dispersión All-Pass Estática (0.0 dB plana, cero flanger)</code> manteniendo agudos cristalinos hasta 18.8 kHz.
                   </p>
 
                   {/* 3 Preset Selector Cards */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     {DSP_PRESETS.map((p) => {
                       const active = dspPreset === p.id;
                       const isBusy = watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark;
@@ -1512,27 +1572,27 @@ export default function StemStudio() {
                           type="button"
                           disabled={isBusy}
                           onClick={() => setDspPreset(p.id)}
-                          className={`text-left p-3 rounded-lg border transition-all flex flex-col justify-between gap-1.5 ${
+                          className={`text-left p-3.5 rounded-2xl border transition-all flex flex-col justify-between gap-1.5 ${
                             active
-                              ? 'bg-blue-950/25 border-blue-500/50 shadow-[0_0_15px_rgba(59,130,246,0.12)]'
-                              : 'bg-[#101013] border-zinc-800/80 hover:border-zinc-700 hover:bg-[#141418]'
+                              ? 'bg-gradient-to-br from-blue-950/35 to-[#121622] border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.15)]'
+                              : 'bg-[#0b0d13] border-white/[0.06] hover:border-white/15 hover:bg-[#121620]'
                           } disabled:opacity-50 disabled:cursor-not-allowed`}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className={`text-xs font-bold ${active ? 'text-blue-300' : 'text-zinc-300'}`}>
+                            <span className={`text-xs font-extrabold ${active ? 'text-blue-300' : 'text-gray-200'}`}>
                               {p.name}
                             </span>
                             <span
-                              className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                              className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
                                 active
                                   ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
-                                  : 'bg-zinc-900 text-zinc-500 border-zinc-800'
+                                  : 'bg-[#141720] text-[#8e96a4] border-white/[0.06]'
                               }`}
                             >
                               {p.badge}
                             </span>
                           </div>
-                          <p className="text-[10px] text-zinc-500 leading-snug">{p.description}</p>
+                          <p className="text-[10px] text-[#8e96a4] leading-snug">{p.description}</p>
                         </button>
                       );
                     })}
@@ -1540,7 +1600,7 @@ export default function StemStudio() {
 
                   {/* Psychoacoustic & Stealth Countermeasures Toggles */}
                   <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest mr-1">
+                    <span className="text-[9px] font-bold text-[#64748b] uppercase tracking-widest mr-1">
                       Módulos Activos:
                     </span>
                     <button
@@ -1550,7 +1610,7 @@ export default function StemStudio() {
                           m === 'a432_detune' ? 'lock_440' : m === 'lock_440' ? 'varispeed_up' : 'a432_detune'
                         )
                       }
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         pitchMode === 'a432_detune'
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.2)]'
                           : pitchMode === 'lock_440'
@@ -1583,10 +1643,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseAntiSuno((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useAntiSuno
                           ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.15)]'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Neutralizador Forense Anti-Suno v2: Corte ultrasónico 8º orden a 17.8 kHz, 5 notches quirúrgicos (8.8k-17.1k), De-Cuantizador de Formantes Vocales RVQ de Suma Cero (700 Hz-6.8 kHz) y micro-jitter de 3 osciladores."
                     >
@@ -1596,10 +1656,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseTransientPunch((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useTransientPunch
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Micro-Articulación Acústica Humana: Realza el micro-ataque rápido (<5ms) de la percusión y consonantes en frecuencias altas sin modular ni multiplicar el volumen del tema, garantizando estabilidad total de volumen (0.0 dB pumping)."
                     >
@@ -1609,10 +1669,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseTapeBed((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useTapeBed
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Capa acústica orgánica de calidez de cinta analógica a -39.5 dBFS con compuerta de envolvente dinámica (0 en silencios). Rellena los valles inter-transientes sin generar soplido continuo de difusión."
                     >
@@ -1622,10 +1682,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseSideBloom((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useSideBloom
                           ? 'bg-sky-500/15 text-sky-300 border-sky-500/40'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Difusión espacial Schroeder en canal Side (L-R) por encima de 220 Hz. Destruye el downmix mono (L+R)/2 de Shazam y ContentID mientras crea amplitud 3D natural en estéreo con afinación intacta."
                     >
@@ -1635,10 +1695,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseGhostMidiBass((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useGhostMidiBass
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.18)]'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Ghost MIDI Sub-Bass 3x Turbo Key-Locked: Rastrea la nota fundamental real del bajo de la canción (zero-crossings) e inyecta un sintetizador Moog analógico de 6 armónicos (55-850 Hz) con Overlap-Add Hann del 50% (volumen 100% constante, +10 dB de potencia)."
                     >
@@ -1648,10 +1708,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseConstellationPoison((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useConstellationPoison
                           ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Micro-ráfagas Gabor por salto de frecuencia (350-4.8 kHz). Desactivado por defecto para evitar que clasificadores confundan los chirps con ruido de difusión de Riffusion."
                     >
@@ -1661,10 +1721,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUseConstellationTilt((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         useConstellationTilt
                           ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Tilt Espectral Multiplicativo de Suma Cero: Intercambia la dominancia de picos espectrales en 3 pares complementarios (±1.3 dB) donde la suma de energía es estrictamente 0.00 dB, garantizando un volumen constante e invariable."
                     >
@@ -1674,10 +1734,10 @@ export default function StemStudio() {
                     <button
                       type="button"
                       onClick={() => setUsePhaseDispersion((v) => !v)}
-                      className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 ${
                         usePhaseDispersion
                           ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
-                          : 'bg-[#09090b] text-zinc-500 border-zinc-800'
+                          : 'bg-[#090b10] text-[#64748b] border-white/[0.07]'
                       }`}
                       title="Red All-Pass estática + Micro-Warp Estéreo Opuesto de 1-Tap (>380 Hz): Respuesta de 0.00 dB exacta en estéreo (cero fluctuaciones de volumen ni cancelación de graves), pero destruye los armónicos de Suno cuando el bot suma 0.5*(L+R) a mono."
                     >
@@ -1685,10 +1745,10 @@ export default function StemStudio() {
                       <span className="text-[8px] uppercase">{usePhaseDispersion ? 'ON' : 'OFF'}</span>
                     </button>
                   </div>
-                  
+
                   <div className="flex flex-col gap-3 pt-1">
                     {cleanAudioUrl && (
-                      <div className="flex flex-col gap-2 bg-[#09090b] border border-zinc-800/80 rounded-lg p-3">
+                      <div className="flex flex-col gap-2 bg-[#090b10] border border-white/[0.08] rounded-2xl p-3.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
                             <CheckCircle size={12} />
@@ -1696,19 +1756,19 @@ export default function StemStudio() {
                           </span>
                           {dspTelemetry && (
                             <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider">
-                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                                 {dspTelemetry.decorrelationPct}% Evasión
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                              <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
                                 {dspTelemetry.preset}
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                              <span className="px-2 py-0.5 rounded-full bg-[#131620] text-gray-300 border border-white/10">
                                 +{dspTelemetry.speedShiftPct}% Varispeed
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                              <span className="px-2 py-0.5 rounded-full bg-[#131620] text-gray-300 border border-white/10">
                                 {dspTelemetry.peakDbtp} dBTP
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800">
+                              <span className="px-2 py-0.5 rounded-full bg-[#131620] text-[#8e96a4] border border-white/10">
                                 {dspTelemetry.engine}{dspTelemetry.timeSec ? ` • ${dspTelemetry.timeSec}s` : ''}
                               </span>
                             </div>
@@ -1721,29 +1781,29 @@ export default function StemStudio() {
                     )}
 
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                      <div className="flex items-center justify-between sm:justify-start gap-2 bg-[#09090b] border border-zinc-800 rounded px-3 py-1.5 shrink-0">
-                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Formato Salida:</span>
+                      <div className="flex items-center justify-between sm:justify-start gap-2 bg-[#090b10] border border-white/[0.08] rounded-full px-4 py-1.5 shrink-0">
+                        <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-widest">Formato Salida:</span>
                         <select
                           value={dspFormat}
                           onChange={(e) => setDspFormat(e.target.value as DspFormat)}
                           disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
-                          className="bg-transparent text-xs text-zinc-200 font-medium outline-none cursor-pointer"
+                          className="bg-transparent text-xs text-gray-200 font-semibold outline-none cursor-pointer"
                         >
-                          <option value="wav" className="bg-[#09090b]">WAV 16-bit (Máxima compatibilidad)</option>
-                          <option value="flac" className="bg-[#09090b]">FLAC 24-bit (Sin pérdida Studio)</option>
-                          <option value="mp3" className="bg-[#09090b]">MP3 320k CBR (Ahorra espacio)</option>
+                          <option value="wav" className="bg-[#090b10]">WAV 16-bit (Máxima compatibilidad)</option>
+                          <option value="flac" className="bg-[#090b10]">FLAC 24-bit (Sin pérdida Studio)</option>
+                          <option value="mp3" className="bg-[#090b10]">MP3 320k CBR (Ahorra espacio)</option>
                         </select>
                       </div>
 
-                      <div className="relative flex-1 h-[36px] group bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/40 text-blue-300 rounded flex items-center justify-center transition-colors overflow-hidden">
-                        <input 
-                          type="file" 
-                          accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg" 
-                          onChange={handleUploadAndProcessWatermark} 
-                          disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark} 
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" 
+                      <div className="stage-tactile-btn relative flex-1 h-[38px] group bg-gradient-to-r from-blue-600/20 to-indigo-600/20 hover:from-blue-600/30 hover:to-indigo-600/30 border border-blue-500/40 text-blue-200 rounded-full flex items-center justify-center transition-all overflow-hidden">
+                        <input
+                          type="file"
+                          accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg"
+                          onChange={handleUploadAndProcessWatermark}
+                          disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
                         />
-                        <div className="flex items-center gap-2 pointer-events-none z-0 text-xs font-bold">
+                        <div className="flex items-center gap-2 pointer-events-none z-0 text-xs font-extrabold tracking-wide">
                           {(watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark) ? (
                             <RefreshCw className="animate-spin" size={14} />
                           ) : (
@@ -1759,16 +1819,15 @@ export default function StemStudio() {
                         </div>
                       </div>
                     </div>
-                    
+
                     {dspMessage && (
-                      <div className={`text-[10px] px-3 py-2 rounded border break-words font-medium ${watermarkJobStatus === 'failed' ? 'bg-red-900/10 text-red-400 border-red-900/30' : watermarkJobStatus === 'completed' ? 'bg-emerald-900/10 text-emerald-400 border-emerald-900/30' : 'bg-blue-900/10 text-blue-400 border-blue-900/30'}`}>
+                      <div className={`text-[10px] px-3.5 py-2 rounded-xl border break-words font-medium ${watermarkJobStatus === 'failed' ? 'bg-red-900/15 text-red-300 border-red-500/30' : watermarkJobStatus === 'completed' ? 'bg-emerald-900/15 text-emerald-300 border-emerald-500/30' : 'bg-blue-900/15 text-blue-300 border-blue-500/30'}`}>
                         {dspMessage}
                       </div>
                     )}
                   </div>
                 </div>
               </div>
-
             </div>
           )}
         </div>
