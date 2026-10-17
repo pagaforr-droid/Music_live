@@ -53,9 +53,9 @@ export const FlipText = ({
   );
 };
 
-// Bar loader style animation for /ONE
+// Bar loader style animation for /STAGE (White color per user specification)
 export const OneLoader = ({ skipAnimation = false }: { skipAnimation?: boolean }) => {
-  const text = '/ONE';
+  const text = '/STAGE';
   const variants: any = {
     initial: {
       scaleY: skipAnimation ? 1 : 0.4,
@@ -73,13 +73,13 @@ export const OneLoader = ({ skipAnimation = false }: { skipAnimation?: boolean }
 
   return (
     <motion.div
-      transition={{ staggerChildren: skipAnimation ? 0 : 0.14, delayChildren: skipAnimation ? 0 : 0.45 }}
+      transition={{ staggerChildren: skipAnimation ? 0 : 0.1, delayChildren: skipAnimation ? 0 : 0.45 }}
       initial="initial"
       animate="animate"
-      className="flex items-center text-slate-400 font-light text-3xl md:text-4xl tracking-tight ml-2.5"
+      className="flex items-center text-white font-light text-3xl md:text-4xl tracking-tight ml-2.5"
     >
       {text.split('').map((char, index) => (
-        <motion.span key={index} variants={variants} className="inline-block origin-bottom">
+        <motion.span key={index} variants={variants} className="inline-block origin-bottom text-white">
           {char}
         </motion.span>
       ))}
@@ -87,10 +87,13 @@ export const OneLoader = ({ skipAnimation = false }: { skipAnimation?: boolean }
   );
 };
 
+export const StageLoader = OneLoader;
+
 /**
  * TanduMusicosLogo — HyperFrames-choreographed SVG Logo
  * Recreates the iconic Guitar Silhouette + Brush Script Logo
  * replacing "Music" -> "Musicos" and "company" -> "Tandu"
+ * Color theme: White & Vibrant Stage Red (#ef4444)
  */
 export const TanduMusicosLogo: React.FC<{
   animateEntrance?: boolean;
@@ -142,11 +145,11 @@ export const TanduMusicosLogo: React.FC<{
           />
         </clipPath>
 
-        {/* Subtle warm orange gradient for Tandu script */}
-        <linearGradient id="tandu-orange-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#ff7a33" />
-          <stop offset="50%" stopColor="#f26722" />
-          <stop offset="100%" stopColor="#ff944d" />
+        {/* Dynamic Stage Red gradient for Tandu script */}
+        <linearGradient id="tandu-red-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#ff4d6d" />
+          <stop offset="50%" stopColor="#ef4444" />
+          <stop offset="100%" stopColor="#dc2626" />
         </linearGradient>
       </defs>
 
@@ -180,17 +183,17 @@ export const TanduMusicosLogo: React.FC<{
         />
       </g>
 
-      {/* 3. HORIZONTAL GUITAR NECK / ACOUSTIC NEEDLE (Rightward tapered spike) */}
+      {/* 3. HORIZONTAL GUITAR NECK / ACOUSTIC NEEDLE (Rightward tapered spike with Red accent) */}
       <g className={animateEntrance ? 'hf-whip-needle' : ''}>
         <path
           d="M 192 98 L 292 88 C 294 88, 294 90, 292 90.5 L 190 107 Z"
           fill="#ffffff"
         />
-        {/* Subtle Tandu Orange energy highlight along the needle edge */}
+        {/* Stage Red energy highlight along the needle edge */}
         <path
           d="M 196 101.5 L 286 89.5 L 195 104.5 Z"
-          fill="#f26722"
-          opacity="0.85"
+          fill="#ef4444"
+          opacity="0.9"
         />
       </g>
 
@@ -218,7 +221,7 @@ export const TanduMusicosLogo: React.FC<{
         </g>
       </g>
 
-      {/* 5. SUB-SCRIPT WORDMARK: "Tandu" (replaces "company") */}
+      {/* 5. SUB-SCRIPT WORDMARK: "Tandu" (replaces "company" in Stage Red) */}
       <g
         className={animateEntrance ? 'hf-pop-tandu' : ''}
         transform="translate(88, 158) rotate(-5)"
@@ -226,8 +229,8 @@ export const TanduMusicosLogo: React.FC<{
         <text
           x="0"
           y="0"
-          fill="url(#tandu-orange-grad)"
-          stroke="#f26722"
+          fill="url(#tandu-red-grad)"
+          stroke="#ef4444"
           strokeWidth="0.6"
           paintOrder="stroke fill"
           style={{
@@ -382,15 +385,15 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
 
       {/* Impeccable Design: Deep premium background matching Tandu Suite */}
       <div className="fixed inset-0 z-[9999] bg-[#1a202c] flex flex-col items-center justify-center overflow-hidden px-4 select-none">
-        {/* Glow de fondo para profundidad cinemática (HyperFrames ambient-glow-bloom) */}
+        {/* Glow de fondo rojo escénico para profundidad cinemática */}
         <motion.div
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 1.2, ease: HYPER_EASE }}
           className="absolute inset-0 flex items-center justify-center pointer-events-none"
         >
-          <div className="w-80 sm:w-96 h-80 sm:h-96 bg-[#f26722] rounded-full opacity-[0.06] blur-[85px]" />
-          <div className="w-64 h-64 bg-blue-500 rounded-full opacity-[0.04] blur-[70px] -translate-y-10" />
+          <div className="w-80 sm:w-96 h-80 sm:h-96 bg-[#ef4444] rounded-full opacity-[0.07] blur-[85px]" />
+          <div className="w-64 h-64 bg-red-700 rounded-full opacity-[0.04] blur-[70px] -translate-y-10" />
         </motion.div>
 
         <div className="relative z-10 flex flex-col items-center w-full max-w-lg">
@@ -398,8 +401,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
           <div className="relative w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 mb-6 sm:mb-8 mt-2 flex items-center justify-center">
             {/* Outer Subtle Ring */}
             <div className="absolute inset-2 rounded-full border border-gray-600/20" />
-            {/* Spinning Tandu Orange Ring */}
-            <div className="absolute inset-2 rounded-full border-2 border-transparent border-t-[#f26722] border-r-[#f26722] opacity-85 animate-spin-slow" />
+            {/* Spinning Tandu Stage Red Ring */}
+            <div className="absolute inset-2 rounded-full border-2 border-transparent border-t-[#ef4444] border-r-[#ef4444] opacity-85 animate-spin-slow" />
 
             {/* Glass Background */}
             <div className="absolute inset-4 sm:inset-6 rounded-full glass-ring" />
@@ -419,7 +422,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
               <FlipText skipAnimation={!isInitialLoad} baseDelay={0.15} className="text-white mr-3">
                 TANDU
               </FlipText>
-              <FlipText skipAnimation={!isInitialLoad} baseDelay={0.35} className="text-[#f26722]">
+              <FlipText skipAnimation={!isInitialLoad} baseDelay={0.35} className="text-[#ef4444]">
                 MUSICOS
               </FlipText>
             </h1>
@@ -438,15 +441,15 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
                 </FlipText>
               </div>
 
-              {/* Nivel 2: MUSICOS + /ONE */}
+              {/* Nivel 2: MUSICOS + /STAGE (BLANCO) */}
               <div className="flex items-center justify-center gap-2">
-                <div className="text-xl sm:text-2xl text-[#f26722] font-black tracking-wider uppercase">
-                  <FlipText skipAnimation={!isInitialLoad} baseDelay={0.35} className="text-[#f26722]">
+                <div className="text-xl sm:text-2xl text-[#ef4444] font-black tracking-wider uppercase">
+                  <FlipText skipAnimation={!isInitialLoad} baseDelay={0.35} className="text-[#ef4444]">
                     MUSICOS
                   </FlipText>
                 </div>
-                <span className="text-slate-400 text-xs font-light tracking-tight font-mono">
-                  /ONE
+                <span className="text-white text-xs font-semibold tracking-wider font-mono">
+                  /STAGE
                 </span>
               </div>
             </h1>
@@ -463,7 +466,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
               {displayMessage}
             </div>
 
-            {/* Barras de ecualizador / progreso animadas */}
+            {/* Barras de ecualizador / progreso animadas en Rojo Escénico */}
             <motion.div
               transition={{ staggerChildren: 0.14 }}
               initial="initial"
@@ -484,7 +487,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
                     },
                   },
                 } as any}
-                className="h-4 w-1 bg-[#f26722] rounded-full origin-bottom"
+                className="h-4 w-1 bg-[#ef4444] rounded-full origin-bottom"
               />
               <motion.div
                 variants={{
@@ -500,7 +503,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
                     },
                   },
                 } as any}
-                className="h-4 w-1 bg-[#f26722] rounded-full origin-bottom"
+                className="h-4 w-1 bg-[#ef4444] rounded-full origin-bottom"
               />
               <motion.div
                 variants={{
@@ -516,7 +519,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ loadingText, message
                     },
                   },
                 } as any}
-                className="h-4 w-1 bg-white/50 rounded-full origin-bottom"
+                className="h-4 w-1 bg-white rounded-full origin-bottom"
               />
             </motion.div>
           </motion.div>

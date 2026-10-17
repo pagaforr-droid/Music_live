@@ -4,7 +4,7 @@ import { LogIn, Loader2, Lock, Mail, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SplashScreen, FlipText, OneLoader, TanduMusicosLogo } from '../components/SplashScreen';
 
-// Shared Emil Kowalski spring physics config (matching Restaurant_climacorp_vercel-main)
+// Shared Emil Kowalski spring physics config
 const springTransition: any = { type: 'spring', stiffness: 300, damping: 25 };
 
 export default function Login() {
@@ -73,9 +73,9 @@ export default function Login() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_#1e293b_0%,_#0f172a_100%)] flex flex-col items-center justify-center p-4 sm:p-8 relative overflow-hidden select-none">
-      {/* Background ambient light (matching Restaurant_climacorp_vercel-main) */}
+      {/* Background ambient light */}
       <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-blue-500/10 blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-orange-500/10 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-red-500/10 blur-[120px] pointer-events-none" />
 
       <style>{`
         @keyframes spin-slow {
@@ -122,12 +122,12 @@ export default function Login() {
           >
             {/* Spinning Ring */}
             <div className="absolute inset-1 rounded-full border border-gray-600/20" />
-            <div className="absolute inset-1 rounded-full border-2 border-transparent border-t-[#f26722] border-r-[#f26722] opacity-80 animate-spin-slow group-hover:opacity-100 transition-opacity" />
+            <div className="absolute inset-1 rounded-full border-2 border-transparent border-t-[#ef4444] border-r-[#ef4444] opacity-85 animate-spin-slow group-hover:opacity-100 transition-opacity" />
 
             {/* Glass Background */}
             <div className="absolute inset-3 rounded-full glass-ring" />
 
-            {/* LOGO SVG ANIMADO (Guitarra + Musicos + Tandu) con Heartbeat */}
+            {/* LOGO SVG ANIMADO (Guitarra + Musicos + Tandu) */}
             <TanduMusicosLogo
               animateEntrance={false}
               className="w-24 h-24 sm:w-28 sm:h-28"
@@ -139,7 +139,7 @@ export default function Login() {
             <FlipText skipAnimation={true} className="font-black text-white">
               TANDU
             </FlipText>
-            <FlipText skipAnimation={true} className="font-medium text-[#f26722]">
+            <FlipText skipAnimation={true} className="font-medium text-[#ef4444]">
               MUSICOS
             </FlipText>
             <OneLoader skipAnimation={true} />
@@ -148,9 +148,9 @@ export default function Login() {
           {/* Mobile Brand Lockup */}
           <h1 className="flex sm:hidden flex-col items-center leading-tight">
             <span className="text-xl font-black text-white tracking-[0.2em]">TANDU</span>
-            <span className="flex items-center gap-1.5 text-lg font-black text-[#f26722] tracking-wider">
+            <span className="flex items-center gap-1.5 text-lg font-black text-[#ef4444] tracking-wider">
               MUSICOS
-              <span className="text-slate-400 text-xs font-light font-mono">/ONE</span>
+              <span className="text-white text-xs font-semibold font-mono">/STAGE</span>
             </span>
           </h1>
         </div>
@@ -174,7 +174,7 @@ export default function Login() {
           {/* Card Header Bar */}
           <div className="px-8 pt-6 pb-4 border-b border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-2 h-2 rounded-full bg-[#f26722] shadow-[0_0_8px_#f26722]" />
+              <div className="w-2 h-2 rounded-full bg-[#ef4444] shadow-[0_0_8px_#ef4444]" />
               <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
                 Acceso Seguro
               </span>
@@ -182,9 +182,9 @@ export default function Login() {
             <button
               type="button"
               onClick={triggerReplayIntro}
-              className="text-[11px] text-slate-400 hover:text-[#f26722] transition-colors flex items-center gap-1 font-medium cursor-pointer"
+              className="text-[11px] text-slate-400 hover:text-[#ef4444] transition-colors flex items-center gap-1 font-medium cursor-pointer"
             >
-              <Sparkles size={12} className="text-[#f26722]" />
+              <Sparkles size={12} className="text-[#ef4444]" />
               <span>Intro 3s</span>
             </button>
           </div>
@@ -203,7 +203,7 @@ export default function Login() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#f26722]/60 focus:bg-white/[0.06] transition-all duration-200"
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#ef4444]/60 focus:bg-white/[0.06] transition-all duration-200"
                   placeholder="admin@tandu.com"
                   required
                 />
@@ -223,7 +223,7 @@ export default function Login() {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#f26722]/60 focus:bg-white/[0.06] transition-all duration-200"
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#ef4444]/60 focus:bg-white/[0.06] transition-all duration-200"
                   placeholder="••••••"
                   required
                 />
@@ -249,7 +249,7 @@ export default function Login() {
               whileTap={{ scale: 0.98 }}
               type="submit"
               disabled={loading}
-              className="w-full bg-gradient-to-r from-[#f26722] to-[#ff7e3d] hover:from-[#ff7430] hover:to-[#ff8c52] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#f26722]/25 transition-all duration-200 flex items-center justify-center gap-2.5 disabled:opacity-50 disabled:cursor-not-allowed mt-2 cursor-pointer"
+              className="w-full bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#dc2626] hover:to-[#b91c1c] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#ef4444]/25 transition-all duration-200 flex items-center justify-center gap-2.5 disabled:opacity-50 disabled:cursor-not-allowed mt-2 cursor-pointer"
             >
               {loading ? (
                 <>

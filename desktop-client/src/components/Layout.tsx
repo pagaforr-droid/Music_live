@@ -23,16 +23,16 @@ export default function Layout() {
 
         <div className={`p-4 flex items-center ${isSidebarOpen ? 'space-x-3' : 'justify-center px-0'} border-b border-white/5 transition-all`}>
           <div className="relative w-12 h-12 rounded-full border border-white/10 bg-white/[0.03] flex items-center justify-center shrink-0 shadow-lg">
-            <div className="absolute inset-0.5 rounded-full border border-transparent border-t-[#f26722] border-r-[#f26722] opacity-80" />
+            <div className="absolute inset-0.5 rounded-full border border-transparent border-t-[#ef4444] border-r-[#ef4444] opacity-80" />
             <TanduMusicosLogo animateEntrance={false} className="w-10 h-10" />
           </div>
           {isSidebarOpen && (
             <div className="flex flex-col leading-tight overflow-hidden">
               <div className="flex items-baseline gap-1">
                 <span className="text-base font-black tracking-wider text-white">TANDU</span>
-                <span className="text-[10px] font-mono text-slate-400">/ONE</span>
+                <span className="text-[10px] font-mono text-white font-semibold">/STAGE</span>
               </div>
-              <span className="text-xs font-extrabold tracking-widest text-[#f26722] uppercase">
+              <span className="text-xs font-extrabold tracking-widest text-[#ef4444] uppercase">
                 MUSICOS
               </span>
             </div>

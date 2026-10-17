@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TANDU MUSICOS /ONE — HyperFrames 3.0s Intro Composition</title>
+  <title>TANDU MUSICOS /STAGE — HyperFrames 3.0s Intro Composition</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&family=JetBrains+Mono:wght@400;700&family=Kaushan+Script&family=Yellowtail&display=swap" rel="stylesheet" />
@@ -36,7 +36,7 @@
       width: 380px;
       height: 380px;
       border-radius: 50%;
-      background: #f26722;
+      background: #ef4444;
       filter: blur(85px);
       opacity: 0;
       pointer-events: none;
@@ -61,8 +61,8 @@
       inset: 8px;
       border-radius: 50%;
       border: 2px solid transparent;
-      border-top-color: #f26722;
-      border-right-color: #f26722;
+      border-top-color: #ef4444;
+      border-right-color: #ef4444;
       opacity: 0.85;
       will-change: transform;
     }
@@ -98,18 +98,19 @@
       will-change: transform;
     }
     .word-tandu { color: #ffffff; margin-right: 14px; display: flex; }
-    .word-musicos { color: #f26722; display: flex; }
-    .word-one {
-      color: #94a3b8;
+    .word-musicos { color: #ef4444; display: flex; }
+    .word-stage {
+      color: #ffffff;
       font-weight: 300;
       font-size: 36px;
       margin-left: 10px;
       display: flex;
     }
-    .one-char {
+    .stage-char {
       display: inline-block;
       transform-origin: bottom center;
       will-change: transform, opacity;
+      color: #ffffff;
     }
     .status-block {
       display: flex;
@@ -135,11 +136,11 @@
       width: 4px;
       height: 16px;
       border-radius: 999px;
-      background: #f26722;
+      background: #ef4444;
       transform-origin: bottom center;
     }
     .eq-bar.bar-3 {
-      background: rgba(255, 255, 255, 0.5);
+      background: #ffffff;
     }
   </style>
 </head>
@@ -193,9 +194,9 @@
             <rect id="musicos-clip-rect" x="0" y="45" width="0" height="95" />
           </clipPath>
           <linearGradient id="tandu-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="#ff7a33" />
-            <stop offset="50%" stop-color="#f26722" />
-            <stop offset="100%" stop-color="#ff944d" />
+            <stop offset="0%" stop-color="#ff4d6d" />
+            <stop offset="50%" stop-color="#ef4444" />
+            <stop offset="100%" stop-color="#dc2626" />
           </linearGradient>
         </defs>
 
@@ -215,10 +216,10 @@
           />
         </g>
 
-        <!-- Horizontal Needle -->
+        <!-- Horizontal Needle with Red Accent -->
         <g id="guitar-needle">
           <path d="M 192 98 L 292 88 C 294 88, 294 90, 292 90.5 L 190 107 Z" fill="#ffffff" />
-          <path d="M 196 101.5 L 286 89.5 L 195 104.5 Z" fill="#f26722" opacity="0.85" />
+          <path d="M 196 101.5 L 286 89.5 L 195 104.5 Z" fill="#ef4444" opacity="0.9" />
         </g>
 
         <!-- "Musicos" Script -->
@@ -238,13 +239,13 @@
           </g>
         </g>
 
-        <!-- "Tandu" Script -->
+        <!-- "Tandu" Script (Red) -->
         <g id="tandu-word" transform="translate(88, 158) rotate(-5)">
           <text
             x="0"
             y="0"
             fill="url(#tandu-grad)"
-            stroke="#f26722"
+            stroke="#ef4444"
             stroke-width="0.6"
             paint-order="stroke fill"
             style="font-family: 'Kaushan Script', 'Yellowtail', cursive; font-size: 33px;"
@@ -260,7 +261,7 @@
         <span class="word-tandu" id="word-tandu"></span>
         <span class="word-musicos" id="word-musicos"></span>
       </h1>
-      <div class="word-one" id="word-one"></div>
+      <div class="word-stage" id="word-stage"></div>
     </div>
 
     <div id="status-block" class="status-block">
@@ -289,7 +290,7 @@
     }
     buildChars('word-tandu', 'TANDU', 'char tandu-ch');
     buildChars('word-musicos', 'MUSICOS', 'char musicos-ch');
-    buildChars('word-one', '/ONE', 'one-char');
+    buildChars('word-stage', '/STAGE', 'stage-char');
 
     document.fonts.ready.then(() => {
       window.__timelines = window.__timelines || {};
@@ -306,7 +307,7 @@
       const tl = gsap.timeline({ paused: true });
 
       // 1. Ambient glow bloom (0.0s -> 1.2s)
-      tl.fromTo('#ambient-glow', { opacity: 0, scale: 0.75 }, { opacity: 0.06, scale: 1, duration: 1.2, ease: 'power2.out' }, 0);
+      tl.fromTo('#ambient-glow', { opacity: 0, scale: 0.75 }, { opacity: 0.07, scale: 1, duration: 1.2, ease: 'power2.out' }, 0);
 
       // 2. Continuous ring rotation across 3.0s
       tl.fromTo('#ring-spinner', { rotation: 0 }, { rotation: 360, duration: 3.0, ease: 'none' }, 0);
@@ -327,13 +328,13 @@
       tl.fromTo('#musicos-clip-rect', { attr: { width: 0 } }, { attr: { width: 235 }, duration: 0.65, ease: 'power2.out' }, 0.35);
       tl.fromTo('#musicos-word', { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.65, ease: 'back.out(1.7)' }, 0.35);
 
-      // 6. "Tandu" Script Spring Entrance
+      // 6. "Tandu" Script Spring Entrance (Red)
       tl.fromTo('#tandu-word', { opacity: 0, y: 16, scale: 0.8 }, { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: 'back.out(2)' }, 0.72);
 
-      // 7. TANDU MUSICOS /ONE FlipText Cascade
+      // 7. TANDU MUSICOS /STAGE FlipText Cascade (White /STAGE)
       tl.fromTo('.tandu-ch', { yPercent: 110 }, { yPercent: 0, duration: 0.5, stagger: 0.045, ease: 'circ.out' }, 0.15);
       tl.fromTo('.musicos-ch', { yPercent: 110 }, { yPercent: 0, duration: 0.5, stagger: 0.045, ease: 'circ.out' }, 0.38);
-      tl.fromTo('.one-char', { scaleY: 0.4, opacity: 0 }, { scaleY: 1, opacity: 1, duration: 0.6, stagger: 0.12, ease: 'circ.out' }, 0.65);
+      tl.fromTo('.stage-char', { scaleY: 0.4, opacity: 0 }, { scaleY: 1, opacity: 1, duration: 0.6, stagger: 0.1, ease: 'circ.out' }, 0.65);
 
       // 8. Status block & equalizer bars
       tl.fromTo('#status-block', { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }, 0.4);
