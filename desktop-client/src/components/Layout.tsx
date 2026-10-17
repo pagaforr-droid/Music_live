@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type } from 'lucide-react';
+import { TanduMusicosLogo } from './SplashScreen';
 
 export default function Layout() {
   const { user, signOut } = useAuth();
@@ -20,14 +21,21 @@ export default function Layout() {
           {isSidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
         </button>
 
-        <div className={`p-6 flex items-center ${isSidebarOpen ? 'space-x-3' : 'justify-center px-0'} border-b border-white/5 transition-all`}>
-          <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg shadow-blue-500/20 shrink-0">
-            <Music size={24} className="text-white" />
+        <div className={`p-4 flex items-center ${isSidebarOpen ? 'space-x-3' : 'justify-center px-0'} border-b border-white/5 transition-all`}>
+          <div className="relative w-12 h-12 rounded-full border border-white/10 bg-white/[0.03] flex items-center justify-center shrink-0 shadow-lg">
+            <div className="absolute inset-0.5 rounded-full border border-transparent border-t-[#f26722] border-r-[#f26722] opacity-80" />
+            <TanduMusicosLogo animateEntrance={false} className="w-10 h-10" />
           </div>
           {isSidebarOpen && (
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400 whitespace-nowrap">
-              Tandu Live
-            </h1>
+            <div className="flex flex-col leading-tight overflow-hidden">
+              <div className="flex items-baseline gap-1">
+                <span className="text-base font-black tracking-wider text-white">TANDU</span>
+                <span className="text-[10px] font-mono text-slate-400">/ONE</span>
+              </div>
+              <span className="text-xs font-extrabold tracking-widest text-[#f26722] uppercase">
+                MUSICOS
+              </span>
+            </div>
           )}
         </div>
 

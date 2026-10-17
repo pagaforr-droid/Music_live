@@ -1,13 +1,29 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { LogIn, Command, Loader2 } from 'lucide-react';
+import { LogIn, Loader2, Lock, Mail, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { SplashScreen, FlipText, OneLoader, TanduMusicosLogo } from '../components/SplashScreen';
+
+// Shared Emil Kowalski spring physics config (matching Restaurant_climacorp_vercel-main)
+const springTransition: any = { type: 'spring', stiffness: 300, damping: 25 };
 
 export default function Login() {
   const [email, setEmail] = useState('admin@tandu.com');
   const [password, setPassword] = useState('123456');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [shake, setShake] = useState(false);
+  const [replayingIntro, setReplayingIntro] = useState(false);
+
+  const triggerReplayIntro = () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('tandu_musicos_intro_played');
+    }
+    setReplayingIntro(true);
+    setTimeout(() => {
+      setReplayingIntro(false);
+    }, 3000);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,129 +41,239 @@ export default function Login() {
           email,
           password,
         });
-        
+
         if (signUpError) {
           setError('Error: ' + signUpError.message);
+          setShake(true);
+          setTimeout(() => setShake(false), 500);
         } else {
           const { error: retryError } = await supabase.auth.signInWithPassword({
             email,
             password,
           });
-          if (retryError) setError(retryError.message);
+          if (retryError) {
+            setError(retryError.message);
+            setShake(true);
+            setTimeout(() => setShake(false), 500);
+          }
         }
       } else {
         setError(signInError.message);
+        setShake(true);
+        setTimeout(() => setShake(false), 500);
       }
     }
-    
+
     setLoading(false);
   };
 
-  // Emil Kowalski inspired spring transitions
-  const springConfig = { type: "spring" as const, stiffness: 400, damping: 30 };
-  const staggerVariants = {
-    hidden: { opacity: 0, y: 10 },
-    visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.1, ...springConfig } }
-  };
-  const itemVariants = {
-    hidden: { opacity: 0, y: 10 },
-    visible: { opacity: 1, y: 0, transition: springConfig }
-  };
+  if (replayingIntro) {
+    return <SplashScreen message="Preparando el entorno de trabajo..." />;
+  }
 
   return (
-    <div className="min-h-screen w-full bg-black text-white flex items-center justify-center p-6 relative overflow-hidden font-sans selection:bg-white/30">
-      
-      {/* Impeccable Design: Subtle atmospheric lighting instead of generic blobs */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-white/[0.03] rounded-full blur-[120px] pointer-events-none" />
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_#1e293b_0%,_#0f172a_100%)] flex flex-col items-center justify-center p-4 sm:p-8 relative overflow-hidden select-none">
+      {/* Background ambient light (matching Restaurant_climacorp_vercel-main) */}
+      <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-blue-500/10 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-orange-500/10 blur-[120px] pointer-events-none" />
 
-      <motion.div 
-        initial="hidden"
-        animate="visible"
-        variants={staggerVariants}
-        className="w-full max-w-[400px] relative z-10"
+      <style>{`
+        @keyframes spin-slow {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .animate-spin-slow {
+          animation: spin-slow 3s cubic-bezier(0.5, 0.1, 0.5, 0.9) infinite;
+        }
+        @keyframes heartbeat {
+          0%, 100% { transform: scale(1); }
+          15% { transform: scale(1.055); }
+          30% { transform: scale(1); }
+          45% { transform: scale(1.055); }
+          60% { transform: scale(1); }
+        }
+        .animate-heartbeat {
+          animation: heartbeat 2s ease-in-out infinite;
+          animation-delay: 0s;
+        }
+        .glass-ring {
+          background: rgba(255, 255, 255, 0.025);
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: inset 0 0 24px rgba(255, 255, 255, 0.025);
+        }
+      `}</style>
+
+      {/* Header with Tandu Musicos Animated Emblem */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={springTransition}
+        className="mb-8 text-center z-10"
       >
-        <div className="flex flex-col items-center mb-12">
-          <motion.div 
-            variants={itemVariants}
-            className="w-14 h-14 bg-gradient-to-br from-white/10 to-white/5 border border-white/10 rounded-2xl flex items-center justify-center mb-6 shadow-2xl"
+        <div className="flex flex-col items-center gap-2 mb-2">
+          {/* Animated SVG Logo Ring */}
+          <motion.div
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={triggerReplayIntro}
+            title="Haz clic para reproducir la intro de 3 segundos"
+            className="relative w-32 h-32 sm:w-36 sm:h-36 mb-3 mt-1 flex items-center justify-center cursor-pointer group"
           >
-            <Command size={24} className="text-white" />
+            {/* Spinning Ring */}
+            <div className="absolute inset-1 rounded-full border border-gray-600/20" />
+            <div className="absolute inset-1 rounded-full border-2 border-transparent border-t-[#f26722] border-r-[#f26722] opacity-80 animate-spin-slow group-hover:opacity-100 transition-opacity" />
+
+            {/* Glass Background */}
+            <div className="absolute inset-3 rounded-full glass-ring" />
+
+            {/* LOGO SVG ANIMADO (Guitarra + Musicos + Tandu) con Heartbeat */}
+            <TanduMusicosLogo
+              animateEntrance={false}
+              className="w-24 h-24 sm:w-28 sm:h-28"
+            />
           </motion.div>
-          <motion.h1 variants={itemVariants} className="text-3xl font-medium tracking-tight mb-2">
-            Tandu Live Hub
-          </motion.h1>
-          <motion.p variants={itemVariants} className="text-sm text-[#888888]">
-            Plataforma de Autenticación
-          </motion.p>
+
+          {/* Desktop Brand Lockup */}
+          <h1 className="hidden sm:flex text-2xl md:text-3xl tracking-[0.1em] items-center justify-center gap-2">
+            <FlipText skipAnimation={true} className="font-black text-white">
+              TANDU
+            </FlipText>
+            <FlipText skipAnimation={true} className="font-medium text-[#f26722]">
+              MUSICOS
+            </FlipText>
+            <OneLoader skipAnimation={true} />
+          </h1>
+
+          {/* Mobile Brand Lockup */}
+          <h1 className="flex sm:hidden flex-col items-center leading-tight">
+            <span className="text-xl font-black text-white tracking-[0.2em]">TANDU</span>
+            <span className="flex items-center gap-1.5 text-lg font-black text-[#f26722] tracking-wider">
+              MUSICOS
+              <span className="text-slate-400 text-xs font-light font-mono">/ONE</span>
+            </span>
+          </h1>
         </div>
+        <p className="text-slate-400 text-sm md:text-base tracking-wide font-light">
+          Ingrese sus credenciales para acceder al estudio en vivo
+        </p>
+      </motion.div>
 
-        <motion.div 
-          variants={itemVariants}
-          className="bg-[#0A0A0A] border border-white/[0.08] p-8 rounded-[24px] shadow-2xl"
+      {/* Glassmorphic Login Card */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ ...springTransition, delay: 0.08 }}
+        className="w-full max-w-md z-10"
+      >
+        <motion.div
+          animate={shake ? { x: [-10, 10, -10, 10, 0] } : {}}
+          transition={{ duration: 0.4 }}
+          className="bg-white/[0.03] backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl overflow-hidden"
         >
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div className="space-y-1.5">
-              <label className="text-[13px] font-medium text-[#888888] ml-1">Email</label>
-              <input 
-                type="email" 
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-white/[0.03] border border-white/[0.08] rounded-2xl px-4 py-3.5 text-sm text-white placeholder-[#444444] focus:outline-none focus:border-white/20 focus:bg-white/[0.05] transition-colors duration-200"
-                placeholder="admin@tandu.com"
-                required
-              />
+          {/* Card Header Bar */}
+          <div className="px-8 pt-6 pb-4 border-b border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-2 h-2 rounded-full bg-[#f26722] shadow-[0_0_8px_#f26722]" />
+              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
+                Acceso Seguro
+              </span>
             </div>
-            
-            <div className="space-y-1.5">
-              <label className="text-[13px] font-medium text-[#888888] ml-1">Password</label>
-              <input 
-                type="password" 
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-white/[0.03] border border-white/[0.08] rounded-2xl px-4 py-3.5 text-sm text-white placeholder-[#444444] focus:outline-none focus:border-white/20 focus:bg-white/[0.05] transition-colors duration-200"
-                placeholder="••••••"
-                required
-              />
+            <button
+              type="button"
+              onClick={triggerReplayIntro}
+              className="text-[11px] text-slate-400 hover:text-[#f26722] transition-colors flex items-center gap-1 font-medium cursor-pointer"
+            >
+              <Sparkles size={12} className="text-[#f26722]" />
+              <span>Intro 3s</span>
+            </button>
+          </div>
+
+          <form onSubmit={handleLogin} className="p-8 space-y-5">
+            <div className="space-y-2">
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 ml-1 block">
+                Correo Electrónico
+              </label>
+              <div className="relative">
+                <Mail
+                  size={16}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"
+                />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#f26722]/60 focus:bg-white/[0.06] transition-all duration-200"
+                  placeholder="admin@tandu.com"
+                  required
+                />
+              </div>
             </div>
 
-            <AnimatePresence>
+            <div className="space-y-2">
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 ml-1 block">
+                Código / Contraseña
+              </label>
+              <div className="relative">
+                <Lock
+                  size={16}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"
+                />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#f26722]/60 focus:bg-white/[0.06] transition-all duration-200"
+                  placeholder="••••••"
+                  required
+                />
+              </div>
+            </div>
+
+            <AnimatePresence mode="wait">
               {error && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                  animate={{ opacity: 1, height: 'auto', marginTop: 16 }}
-                  exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                  className="overflow-hidden"
+                <motion.div
+                  key="error"
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="p-3.5 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs font-medium text-center"
                 >
-                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-[13px]">
-                    {error}
-                  </div>
+                  {error}
                 </motion.div>
               )}
             </AnimatePresence>
 
-            <motion.button 
+            <motion.button
+              whileHover={{ scale: 1.015 }}
               whileTap={{ scale: 0.98 }}
-              type="submit" 
+              type="submit"
               disabled={loading}
-              className="w-full bg-white hover:bg-[#EAEAEA] text-black font-medium py-3.5 rounded-2xl transition-colors duration-200 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+              className="w-full bg-gradient-to-r from-[#f26722] to-[#ff7e3d] hover:from-[#ff7430] hover:to-[#ff8c52] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#f26722]/25 transition-all duration-200 flex items-center justify-center gap-2.5 disabled:opacity-50 disabled:cursor-not-allowed mt-2 cursor-pointer"
             >
               {loading ? (
-                <Loader2 size={18} className="animate-spin text-black/50" />
+                <>
+                  <Loader2 size={18} className="animate-spin text-white" />
+                  <span className="tracking-wide text-sm">Autenticando...</span>
+                </>
               ) : (
-                <LogIn size={18} />
+                <>
+                  <LogIn size={18} />
+                  <span className="tracking-wide text-sm">Ingresar al Estudio</span>
+                </>
               )}
-              <span>{loading ? 'Autenticando...' : 'Iniciar Sesión'}</span>
             </motion.button>
           </form>
         </motion.div>
 
-        <motion.p 
-          variants={itemVariants}
-          className="text-center text-[#555555] text-xs mt-8 px-4"
-        >
+        <p className="text-center text-slate-500 text-xs mt-6 px-4 font-light">
           Cuenta de pruebas preconfigurada. Si no existe, se creará automáticamente.
-        </motion.p>
+        </p>
       </motion.div>
+
+      <div className="mt-10 sm:mt-0 sm:absolute sm:bottom-6 text-slate-500 text-[10px] uppercase tracking-widest font-bold">
+        TANDU Systems © {new Date().getFullYear()}
+      </div>
     </div>
   );
 }

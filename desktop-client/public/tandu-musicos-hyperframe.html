@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TANDU MUSICOS /ONE — HyperFrames 3.0s Intro Composition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&family=JetBrains+Mono:wght@400;700&family=Kaushan+Script&family=Yellowtail&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a202c;
+      color: #ffffff;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #1a202c;
+    }
+    .ambient-glow {
+      position: absolute;
+      width: 380px;
+      height: 380px;
+      border-radius: 50%;
+      background: #f26722;
+      filter: blur(85px);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .ring-container {
+      position: relative;
+      width: 208px;
+      height: 208px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 32px;
+    }
+    .ring-outer {
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      border: 1px solid rgba(75, 85, 99, 0.22);
+    }
+    .ring-spinner {
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      border-top-color: #f26722;
+      border-right-color: #f26722;
+      opacity: 0.85;
+      will-change: transform;
+    }
+    .ring-glass {
+      position: absolute;
+      inset: 22px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.025);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 0 24px rgba(255, 255, 255, 0.025);
+    }
+    .wordmark-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 38px;
+      overflow: hidden;
+      padding: 4px 16px;
+    }
+    .title-group {
+      font-size: 48px;
+      font-weight: 900;
+      letter-spacing: -0.025em;
+      display: flex;
+      align-items: center;
+    }
+    .char-wrap {
+      display: inline-block;
+      overflow: hidden;
+    }
+    .char {
+      display: inline-block;
+      will-change: transform;
+    }
+    .word-tandu { color: #ffffff; margin-right: 14px; display: flex; }
+    .word-musicos { color: #f26722; display: flex; }
+    .word-one {
+      color: #94a3b8;
+      font-weight: 300;
+      font-size: 36px;
+      margin-left: 10px;
+      display: flex;
+    }
+    .one-char {
+      display: inline-block;
+      transform-origin: bottom center;
+      will-change: transform, opacity;
+    }
+    .status-block {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      opacity: 0;
+    }
+    .status-text {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: #cbd5e1;
+    }
+    .eq-bars {
+      display: flex;
+      gap: 6px;
+      height: 16px;
+      align-items: flex-end;
+    }
+    .eq-bar {
+      width: 4px;
+      height: 16px;
+      border-radius: 999px;
+      background: #f26722;
+      transform-origin: bottom center;
+    }
+    .eq-bar.bar-3 {
+      background: rgba(255, 255, 255, 0.5);
+    }
+  </style>
+</head>
+<body>
+  <div
+    id="root-composition"
+    class="stage clip"
+    data-composition-id="tandu-musicos-intro"
+    data-start="0"
+    data-duration="3"
+    data-fps="60"
+  >
+    <div id="ambient-glow" class="ambient-glow"></div>
+
+    <div class="ring-container">
+      <div class="ring-outer"></div>
+      <div id="ring-spinner" class="ring-spinner"></div>
+      <div class="ring-glass"></div>
+
+      <svg
+        id="hero-logo"
+        width="160"
+        height="160"
+        viewBox="0 0 300 200"
+        xmlns="http://www.w3.org/2000/svg"
+        style="position: relative; z-index: 10; filter: drop-shadow(0px 10px 20px rgba(0,0,0,0.55));"
+      >
+        <defs>
+          <mask id="guitar-top-mask">
+            <path
+              id="guitar-top-stroke"
+              d="M 38 76 C 56 36, 96 22, 122 44 C 138 58, 152 64, 172 54 C 194 43, 216 44, 222 66 C 225 76, 223 86, 222 93"
+              fill="none"
+              stroke="#ffffff"
+              stroke-width="26"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </mask>
+          <mask id="guitar-bottom-mask">
+            <path
+              id="guitar-bottom-stroke"
+              d="M 218 110 C 213 132, 200 148, 182 158"
+              fill="none"
+              stroke="#ffffff"
+              stroke-width="18"
+              stroke-linecap="round"
+            />
+          </mask>
+          <clipPath id="musicos-wipe-clip">
+            <rect id="musicos-clip-rect" x="0" y="45" width="0" height="95" />
+          </clipPath>
+          <linearGradient id="tandu-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#ff7a33" />
+            <stop offset="50%" stop-color="#f26722" />
+            <stop offset="100%" stop-color="#ff944d" />
+          </linearGradient>
+        </defs>
+
+        <!-- Upper Guitar Contour -->
+        <g mask="url(#guitar-top-mask)">
+          <path
+            d="M 36 74 C 52 34, 92 18, 122 39 C 138 50, 150 56, 170 48 C 194 38, 218 40, 225 62 C 228 72, 227 83, 225 91 L 215 91 C 216 83, 216 73, 214 65 C 209 50, 192 50, 173 58 C 150 68, 134 62, 115 48 C 90 30, 60 44, 47 72 C 43 70, 39 71, 36 74 Z"
+            fill="#ffffff"
+          />
+        </g>
+
+        <!-- Lower-Right Guitar Curve -->
+        <g mask="url(#guitar-bottom-mask)">
+          <path
+            d="M 213 109 L 223 108 C 218 131, 205 149, 184 160 C 181 158, 181 155, 183 153 C 199 143, 209 128, 213 109 Z"
+            fill="#ffffff"
+          />
+        </g>
+
+        <!-- Horizontal Needle -->
+        <g id="guitar-needle">
+          <path d="M 192 98 L 292 88 C 294 88, 294 90, 292 90.5 L 190 107 Z" fill="#ffffff" />
+          <path d="M 196 101.5 L 286 89.5 L 195 104.5 Z" fill="#f26722" opacity="0.85" />
+        </g>
+
+        <!-- "Musicos" Script -->
+        <g clip-path="url(#musicos-wipe-clip)">
+          <g id="musicos-word" transform="translate(14, 122) rotate(-6)">
+            <text
+              x="8"
+              y="0"
+              fill="#ffffff"
+              stroke="#ffffff"
+              stroke-width="1.4"
+              paint-order="stroke fill"
+              style="font-family: 'Kaushan Script', 'Yellowtail', cursive; font-size: 51px;"
+            >
+              Musicos
+            </text>
+          </g>
+        </g>
+
+        <!-- "Tandu" Script -->
+        <g id="tandu-word" transform="translate(88, 158) rotate(-5)">
+          <text
+            x="0"
+            y="0"
+            fill="url(#tandu-grad)"
+            stroke="#f26722"
+            stroke-width="0.6"
+            paint-order="stroke fill"
+            style="font-family: 'Kaushan Script', 'Yellowtail', cursive; font-size: 33px;"
+          >
+            Tandu
+          </text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="wordmark-row">
+      <h1 class="title-group">
+        <span class="word-tandu" id="word-tandu"></span>
+        <span class="word-musicos" id="word-musicos"></span>
+      </h1>
+      <div class="word-one" id="word-one"></div>
+    </div>
+
+    <div id="status-block" class="status-block">
+      <div class="status-text">Preparando el entorno de trabajo...</div>
+      <div class="eq-bars">
+        <div class="eq-bar bar-1"></div>
+        <div class="eq-bar bar-2"></div>
+        <div class="eq-bar bar-3"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Populate split characters deterministically
+    function buildChars(containerId, text, cls) {
+      const el = document.getElementById(containerId);
+      text.split('').forEach((ch) => {
+        const wrap = document.createElement('span');
+        wrap.className = 'char-wrap';
+        const inner = document.createElement('span');
+        inner.className = cls;
+        inner.textContent = ch;
+        wrap.appendChild(inner);
+        el.appendChild(wrap);
+      });
+    }
+    buildChars('word-tandu', 'TANDU', 'char tandu-ch');
+    buildChars('word-musicos', 'MUSICOS', 'char musicos-ch');
+    buildChars('word-one', '/ONE', 'one-char');
+
+    document.fonts.ready.then(() => {
+      window.__timelines = window.__timelines || {};
+      const topStroke = document.getElementById('guitar-top-stroke');
+      const botStroke = document.getElementById('guitar-bottom-stroke');
+      const topLen = topStroke.getTotalLength() * 1.05;
+      const botLen = botStroke.getTotalLength() * 1.05;
+
+      topStroke.style.strokeDasharray = `${topLen}`;
+      topStroke.style.strokeDashoffset = `${topLen}`;
+      botStroke.style.strokeDasharray = `${botLen}`;
+      botStroke.style.strokeDashoffset = `${botLen}`;
+
+      const tl = gsap.timeline({ paused: true });
+
+      // 1. Ambient glow bloom (0.0s -> 1.2s)
+      tl.fromTo('#ambient-glow', { opacity: 0, scale: 0.75 }, { opacity: 0.06, scale: 1, duration: 1.2, ease: 'power2.out' }, 0);
+
+      // 2. Continuous ring rotation across 3.0s
+      tl.fromTo('#ring-spinner', { rotation: 0 }, { rotation: 360, duration: 3.0, ease: 'none' }, 0);
+
+      // 3. SVG Path Draw: Guitar Top & Bottom Silhouette
+      tl.fromTo(topStroke, { strokeDashoffset: topLen }, { strokeDashoffset: 0, duration: 0.75, ease: 'power2.out' }, 0.1);
+      tl.fromTo(botStroke, { strokeDashoffset: botLen }, { strokeDashoffset: 0, duration: 0.5, ease: 'power2.out' }, 0.7);
+
+      // 4. Horizontal Needle Whip
+      tl.fromTo(
+        '#guitar-needle',
+        { opacity: 0, x: -36, scaleX: 0.15, transformOrigin: '192px 102px' },
+        { opacity: 1, x: 0, scaleX: 1, duration: 0.55, ease: 'power3.out' },
+        0.45
+      );
+
+      // 5. "Musicos" Brush Wipe + Spring Overshoot
+      tl.fromTo('#musicos-clip-rect', { attr: { width: 0 } }, { attr: { width: 235 }, duration: 0.65, ease: 'power2.out' }, 0.35);
+      tl.fromTo('#musicos-word', { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.65, ease: 'back.out(1.7)' }, 0.35);
+
+      // 6. "Tandu" Script Spring Entrance
+      tl.fromTo('#tandu-word', { opacity: 0, y: 16, scale: 0.8 }, { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: 'back.out(2)' }, 0.72);
+
+      // 7. TANDU MUSICOS /ONE FlipText Cascade
+      tl.fromTo('.tandu-ch', { yPercent: 110 }, { yPercent: 0, duration: 0.5, stagger: 0.045, ease: 'circ.out' }, 0.15);
+      tl.fromTo('.musicos-ch', { yPercent: 110 }, { yPercent: 0, duration: 0.5, stagger: 0.045, ease: 'circ.out' }, 0.38);
+      tl.fromTo('.one-char', { scaleY: 0.4, opacity: 0 }, { scaleY: 1, opacity: 1, duration: 0.6, stagger: 0.12, ease: 'circ.out' }, 0.65);
+
+      // 8. Status block & equalizer bars
+      tl.fromTo('#status-block', { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }, 0.4);
+      tl.fromTo('.eq-bar', { scaleY: 0.45, opacity: 0.5 }, { scaleY: 1, opacity: 1, duration: 0.45, stagger: 0.12, repeat: 4, yoyo: true, ease: 'sine.inOut' }, 0.4);
+
+      // 9. Heartbeat pulse at 1.5s -> 2.7s
+      tl.to('#hero-logo', { scale: 1.06, duration: 0.22, ease: 'sine.inOut', yoyo: true, repeat: 3 }, 1.5);
+
+      window.__timelines['tandu-musicos-intro'] = tl;
+
+      // Auto-play in standalone browser view when not driven by headless renderer
+      if (!navigator.webdriver) {
+        tl.play(0);
+      }
+    });
+  </script>
+</body>
+</html>

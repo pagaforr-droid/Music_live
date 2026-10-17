@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { SplashScreen } from '../components/SplashScreen';
 
 interface AuthContextType {
   session: Session | null;
@@ -22,10 +23,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const startTime = Date.now();
+    const MIN_LOADING_TIME = 3000; // 3 segundos exactos de Splash Screen (HyperFrames Intro)
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
-      setLoading(false);
+
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime < MIN_LOADING_TIME) {
+        setTimeout(() => {
+          setLoading(false);
+        }, MIN_LOADING_TIME - elapsedTime);
+      } else {
+        setLoading(false);
+      }
+    }).catch(() => {
+      const elapsedTime = Date.now() - startTime;
+      setTimeout(() => {
+        setLoading(false);
+      }, Math.max(0, MIN_LOADING_TIME - elapsedTime));
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -41,7 +58,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   if (loading) {
-    return <div className="h-screen w-screen flex items-center justify-center bg-[#1a1a1a] text-white">Cargando...</div>;
+    return <SplashScreen message="Preparando el entorno de trabajo..." />;
   }
 
   return (
