@@ -2,15 +2,55 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Prompter } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, MonitorSpeaker, Music, LayoutList, Wifi, Users, Type } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, MonitorSpeaker, Music, LayoutList, Wifi, Users, Type, Columns, ExternalLink, Repeat, Volume2, Headphones } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
 export default function LiveConcert() {
+  // Detectar si esta ventana fue abierta como Proyector Externo HDMI (?projector=1)
+  const isProjectorWindow = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('projector') === '1';
+  const [projectorState, setProjectorState] = useState<{
+    currentTime: number;
+    isPlaying: boolean;
+    title: string;
+    lyrics: any[];
+    settings?: any;
+    bpm?: number;
+    firstBeatOffset?: number;
+    beatTimes?: number[];
+  }>({
+    currentTime: 0,
+    isPlaying: false,
+    title: 'TANDU STAGE',
+    lyrics: [],
+  });
+
+  const projectorChannelRef = useRef<BroadcastChannel | null>(null);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('tandu_stage_projector');
+    projectorChannelRef.current = ch;
+
+    if (isProjectorWindow) {
+      ch.onmessage = (ev) => {
+        if (ev.data && ev.data.type === 'PROJECTOR_SYNC') {
+          setProjectorState(ev.data.payload);
+        }
+      };
+    }
+
+    return () => {
+      ch.close();
+    };
+  }, [isProjectorWindow]);
+
   const [setlists, setSetlists] = useState<any[]>([]);
-  const [selectedSetlistId, setSelectedSetlistId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'prompter' | 'lyrics'>('prompter');
+  const [selectedSetlistId, setSelectedSetlistId] = useState<string | null>(() => {
+    return sessionStorage.getItem('tandu_active_setlist_id');
+  });
+  const [viewMode, setViewMode] = useState<'dual' | 'prompter' | 'lyrics'>('dual');
   
   const [songs, setSongs] = useState<any[]>([]);
   const [currentSongIndex, setCurrentSongIndex] = useState<number>(0);
@@ -20,15 +60,24 @@ export default function LiveConcert() {
   const [currentTime, setCurrentTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
   const [routingMode, setRoutingMode] = useState<'StereoSplit' | 'MultiChannel'>('StereoSplit');
-  const [masterVolume, setMasterVolume] = useState<number>(1.0);
+
+  // Faders Independientes: Salida Público (FOH - R), Salida Músicos (CUE - L) y Master
+  const [masterVolume] = useState<number>(1.0);
+  const [fohVolume, setFohVolume] = useState<number>(1.0);
+  const [cueVolume, setCueVolume] = useState<number>(1.0);
+  const [muteCueEmergency, setMuteCueEmergency] = useState<boolean>(false);
+
+  // Vamp Loop en Vivo
+  const [isVamping, setIsVamping] = useState<boolean>(false);
+  const vampRangeRef = useRef<{ active: boolean; start: number; end: number }>({ active: false, start: 0, end: 0 });
+
   const [playbackMode, setPlaybackMode] = useState<'LIVE' | 'REHEARSAL'>('LIVE');
   const playbackModeRef = useRef<'LIVE' | 'REHEARSAL'>('LIVE');
   useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
 
-  // Network Sync
+  // Network Sync (Para In-Ears de Práctica por Wi-Fi)
   const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID);
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
-
 
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [localSliderTime, setLocalSliderTime] = useState(0);
@@ -61,21 +110,18 @@ export default function LiveConcert() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadStatus, setLoadStatus] = useState('');
 
-  // 🎯 Pre-carga silenciosa de la SIGUIENTE canción
+  // Pre-carga silenciosa de la SIGUIENTE canción
   const nextFohBufferRef = useRef<AudioBuffer | null>(null);
   const nextCueBufferRef = useRef<AudioBuffer | null>(null);
   const isPrefetchingRef = useRef(false);
-  // Bandera para auto-play: cuando loadSongAudio termina y esta flag es true, arranca play automático
   const autoPlayOnLoadRef = useRef(false);
-  // Ref estable de songs para evitar stale closures en callbacks async
   const songsRef = useRef<any[]>([]);
   const currentSongIndexRef = useRef<number>(0);
 
-
   useEffect(() => {
+    if (isProjectorWindow) return;
     fetchSetlists();
     
-    // Initialize AudioContext on user interaction/mount
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     audioCtxRef.current = new AudioContextClass();
     
@@ -83,40 +129,90 @@ export default function LiveConcert() {
       pause();
       if (audioCtxRef.current) audioCtxRef.current.close();
     };
-  }, []);
+  }, [isProjectorWindow]);
 
   useEffect(() => {
+    if (isProjectorWindow) return;
     if (selectedSetlistId) {
+      sessionStorage.setItem('tandu_active_setlist_id', selectedSetlistId);
       fetchSetlistSongs(selectedSetlistId);
     } else {
       setSongs([]);
       setCurrentSongIndex(0);
     }
-  }, [selectedSetlistId]);
+  }, [selectedSetlistId, isProjectorWindow]);
 
-  // Mantener refs estables para evitar stale closures en callbacks async
   useEffect(() => { songsRef.current = songs; }, [songs]);
   useEffect(() => { currentSongIndexRef.current = currentSongIndex; }, [currentSongIndex]);
 
   // When song index changes, load the audio automatically
   useEffect(() => {
+    if (isProjectorWindow) return;
     if (currentSong) {
-      // Si venimos de un auto-avance, arrancar play automáticamente al terminar la carga
+      setIsVamping(false);
+      vampRangeRef.current = { active: false, start: 0, end: 0 };
       loadSongAudio(currentSong, autoPlayOnLoadRef.current);
-      autoPlayOnLoadRef.current = false; // resetear bandera
+      autoPlayOnLoadRef.current = false;
     }
-  }, [currentSongIndex, currentSong, broadcastEnabled]);
+  }, [currentSongIndex, currentSong, broadcastEnabled, isProjectorWindow]);
 
-
+  // Actualizar ganancias en tiempo real (Master, FOH Público y CUE Músicos)
   useEffect(() => {
     if (masterGainRef.current && audioCtxRef.current) {
-      masterGainRef.current.gain.setTargetAtTime(masterVolume, audioCtxRef.current.currentTime, 0.05);
+      masterGainRef.current.gain.setTargetAtTime(masterVolume, audioCtxRef.current.currentTime, 0.03);
     }
   }, [masterVolume]);
 
+  useEffect(() => {
+    if (fohGainRef.current && audioCtxRef.current) {
+      fohGainRef.current.gain.setTargetAtTime(fohVolume, audioCtxRef.current.currentTime, 0.03);
+    }
+  }, [fohVolume]);
+
+  useEffect(() => {
+    if (cueGainRef.current && audioCtxRef.current) {
+      const effectiveCue = muteCueEmergency ? 0 : cueVolume;
+      cueGainRef.current.gain.setTargetAtTime(effectiveCue, audioCtxRef.current.currentTime, 0.03);
+    }
+  }, [cueVolume, muteCueEmergency]);
+
+  // Sincronizar con ventana de Proyector Externo HDMI
+  useEffect(() => {
+    if (isProjectorWindow || !projectorChannelRef.current || !currentSong) return;
+    projectorChannelRef.current.postMessage({
+      type: 'PROJECTOR_SYNC',
+      payload: {
+        currentTime,
+        isPlaying,
+        title: currentSong.title,
+        lyrics: currentSong.prompter_data?.lyrics || [],
+        settings: currentSong.prompter_data?.lyric_settings,
+        bpm: currentSong.prompter_data?.bpm || 120,
+        firstBeatOffset: currentSong.prompter_data?.firstBeatOffset || 0,
+        beatTimes: currentSong.prompter_data?.beatTimes,
+      },
+    });
+  }, [currentTime, isPlaying, currentSong, isProjectorWindow]);
+
+  const openExternalProjector = () => {
+    window.open(
+      `${window.location.pathname}?projector=1`,
+      'TanduStageProjector',
+      'width=1280,height=720,menubar=no,toolbar=no,location=no,status=no'
+    );
+  };
+
   const fetchSetlists = async () => {
     const { data } = await supabase.from('setlists').select('*').eq('band_id', FAKE_BAND_ID).order('created_at', { ascending: false });
-    if (data) setSetlists(data);
+    if (data) {
+      setSetlists(data);
+      const savedId = sessionStorage.getItem('tandu_active_setlist_id');
+      if (savedId && data.some((s: any) => s.id === savedId)) {
+        setSelectedSetlistId(savedId);
+      } else if (!selectedSetlistId && data.length > 0) {
+        setSelectedSetlistId(data[0].id);
+      }
+    }
   };
 
   const fetchSetlistSongs = async (setId: string) => {
@@ -137,19 +233,17 @@ export default function LiveConcert() {
         ...(item.song as any)
       }));
       setSongs(mapped);
-      setCurrentSongIndex(0); // reset to first song
+      setCurrentSongIndex(0);
     }
   };
 
   const loadSongAudio = async (song: any, shouldAutoPlay = false) => {
     if (!audioCtxRef.current) return;
     
-    // Stop current playback
     pause();
-    setCurrentTime(-getPreRoll(song)); // Reset clock
+    setCurrentTime(-getPreRoll(song));
     pauseTimeRef.current = 0;
     
-    // ✅ Si la siguiente canción ya fue pre-cargada silenciosamente, usar esos buffers directamente
     if (nextFohBufferRef.current && nextCueBufferRef.current) {
       console.log('[LiveConcert] ✅ Usando buffers pre-cargados en silencio.');
       fohBufferRef.current = nextFohBufferRef.current;
@@ -175,26 +269,29 @@ export default function LiveConcert() {
     const targetCueUrl = mode === 'REHEARSAL' && song.cue_mobile_url ? song.cue_mobile_url : song.cue_mix_url;
 
     if (!targetFohUrl || !targetCueUrl) {
-       setLoadStatus('Error: Faltan archivos exportados para esta canción en este modo.');
+       setLoadStatus('Falta exportar el Mix En Vivo de esta canción en Studio Prompter.');
        return;
     }
 
     setIsLoading(true);
-    setLoadStatus(mode === 'REHEARSAL' ? 'Descargando FOH Ligero (MP3)...' : 'Descargando FOH Mix...');
+    setLoadStatus(mode === 'REHEARSAL' ? 'Cargando Audio Ligero de Práctica...' : 'Cargando Audio Master de Consola (FOH + Músicos)...');
     
     try {
-      // Load FOH
-      const fohRes = await fetch(targetFohUrl);
-      const fohArray = await fohRes.arrayBuffer();
-      setLoadStatus(mode === 'REHEARSAL' ? 'Decodificando FOH Ligero...' : 'Decodificando FOH Mix...');
-      fohBufferRef.current = await audioCtxRef.current.decodeAudioData(fohArray);
-      
-      // Load CUE
-      setLoadStatus(mode === 'REHEARSAL' ? 'Descargando CUE Ligero (MP3)...' : 'Descargando CUE Mix...');
-      const cueRes = await fetch(targetCueUrl);
-      const cueArray = await cueRes.arrayBuffer();
-      setLoadStatus(mode === 'REHEARSAL' ? 'Decodificando CUE Ligero...' : 'Decodificando CUE Mix...');
-      cueBufferRef.current = await audioCtxRef.current.decodeAudioData(cueArray);
+      const [fohRes, cueRes] = await Promise.all([
+        fetch(targetFohUrl),
+        fetch(targetCueUrl),
+      ]);
+      const [fohArray, cueArray] = await Promise.all([
+        fohRes.arrayBuffer(),
+        cueRes.arrayBuffer(),
+      ]);
+      setLoadStatus('Decodificando canales en RAM (Cero Latencia)...');
+      const [decodedFoh, decodedCue] = await Promise.all([
+        audioCtxRef.current.decodeAudioData(fohArray),
+        audioCtxRef.current.decodeAudioData(cueArray),
+      ]);
+      fohBufferRef.current = decodedFoh;
+      cueBufferRef.current = decodedCue;
       
       setTotalDuration(fohBufferRef.current.duration);
       setLoadStatus('');
@@ -203,7 +300,6 @@ export default function LiveConcert() {
         broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
       }
 
-      // Auto-play si es un avance automático tras fin de canción
       if (shouldAutoPlay) {
         setTimeout(() => play(), 100);
       }
@@ -216,7 +312,6 @@ export default function LiveConcert() {
     }
   };
 
-  /** Pre-carga silenciosa del siguiente track en RAM para transición instantánea */
   const prefetchNextSong = async (nextSong: any) => {
     if (!audioCtxRef.current || isPrefetchingRef.current) return;
     const mode = playbackModeRef.current;
@@ -226,8 +321,6 @@ export default function LiveConcert() {
     if (!targetFohUrl || !targetCueUrl) return;
 
     isPrefetchingRef.current = true;
-    console.log('[LiveConcert] 🔄 Pre-cargando silenciosamente:', nextSong.title);
-
     try {
       const [fohRes, cueRes] = await Promise.all([
         fetch(targetFohUrl),
@@ -237,7 +330,6 @@ export default function LiveConcert() {
         fohRes.arrayBuffer(),
         cueRes.arrayBuffer(),
       ]);
-      // Sólo guardar si el AudioContext sigue vivo
       if (!audioCtxRef.current) return;
       const [fohBuf, cueBuf] = await Promise.all([
         audioCtxRef.current.decodeAudioData(fohArray),
@@ -245,9 +337,7 @@ export default function LiveConcert() {
       ]);
       nextFohBufferRef.current = fohBuf;
       nextCueBufferRef.current = cueBuf;
-      console.log('[LiveConcert] ✅ Pre-carga silenciosa completada:', nextSong.title);
     } catch (e) {
-      console.warn('[LiveConcert] ⚠️ Error en pre-carga silenciosa:', e);
       nextFohBufferRef.current = null;
       nextCueBufferRef.current = null;
     } finally {
@@ -258,7 +348,6 @@ export default function LiveConcert() {
   const getPreRoll = (song: any) => {
     if (!song?.prompter_data?.bpm) return 0;
     const beatsPerMeasure = parseInt(song.prompter_data.timeSignature?.split('/')[0]) || 4;
-    // 🛡️ Tope máximo de 16 segundos para evitar pre-rolls gigantes por tempo dividido
     const raw = (60 / song.prompter_data.bpm) * beatsPerMeasure * 2;
     return Math.min(raw, 16);
   };
@@ -290,10 +379,13 @@ export default function LiveConcert() {
     }
 
     fohGainRef.current = ctx.createGain();
+    fohGainRef.current.gain.value = fohVolume;
+
     cueGainRef.current = ctx.createGain();
+    cueGainRef.current.gain.value = muteCueEmergency ? 0 : cueVolume;
 
     if (actualRoutingMode === 'StereoSplit') {
-      // Stereo Split: CUE to Left (-1), FOH to Right (1)
+      // Stereo Split: CUE (Músicos) -> Left (-1), FOH (Público) -> Right (+1)
       fohPannerRef.current = ctx.createStereoPanner();
       fohPannerRef.current.pan.value = 1; // FOH to Right
       fohGainRef.current.connect(fohPannerRef.current);
@@ -304,11 +396,8 @@ export default function LiveConcert() {
       cueGainRef.current.connect(cuePannerRef.current);
       cuePannerRef.current.connect(masterGainRef.current);
     } else if (actualRoutingMode === 'MultiChannel' && mergerRef.current) {
-      // FOH to Ch 0 & 1 (Stereo)
-      fohGainRef.current.connect(mergerRef.current, 0, 0); // L -> 0
-      fohGainRef.current.connect(mergerRef.current, 0, 1); // R -> 1
-      
-      // CUE to Ch 2
+      fohGainRef.current.connect(mergerRef.current, 0, 0);
+      fohGainRef.current.connect(mergerRef.current, 0, 1);
       cueGainRef.current.connect(mergerRef.current, 0, 2); 
     }
   };
@@ -332,7 +421,7 @@ export default function LiveConcert() {
 
     const offset = pauseTimeRef.current;
     
-    const delayMs = 300; // Network propagation buffer
+    const delayMs = 300;
     const T_start = Date.now() + delayMs;
     
     if (broadcastEnabled) {
@@ -378,7 +467,13 @@ export default function LiveConcert() {
     const visualTime = globalTime - preRoll;
     const remaining = totalDuration - globalTime;
 
-    // 🎯 Pre-carga silenciosa de la siguiente canción cuando quedan ~30 seg
+    // Verificar Vamp Loop activo en vivo
+    if (vampRangeRef.current.active && visualTime >= vampRangeRef.current.end) {
+      seekTo(vampRangeRef.current.start);
+      return;
+    }
+
+    // Pre-carga silenciosa de la siguiente canción cuando quedan ~30 seg
     if (remaining <= 30 && remaining > 0) {
       const idx = currentSongIndexRef.current;
       const allSongs = songsRef.current;
@@ -390,13 +485,12 @@ export default function LiveConcert() {
       }
     }
 
-    // 🏁 Fin de canción: auto-avance al siguiente track con reproducción automática
+    // Fin de canción: auto-avance al siguiente track
     if (totalDuration > 0 && globalTime >= totalDuration) {
       pause();
       const idx = currentSongIndexRef.current;
       const allSongs = songsRef.current;
       if (idx < allSongs.length - 1) {
-        // Marcar que al terminar la carga debe arrancar play
         autoPlayOnLoadRef.current = true;
         setCurrentSongIndex(idx + 1);
       }
@@ -424,7 +518,17 @@ export default function LiveConcert() {
     }
     
     if (wasPlaying) {
-      setTimeout(() => play(), 50);
+      setTimeout(() => play(), 40);
+    }
+  };
+
+  const handleToggleVampSection = (start: number, end: number) => {
+    if (isVamping) {
+      setIsVamping(false);
+      vampRangeRef.current = { active: false, start: 0, end: 0 };
+    } else {
+      setIsVamping(true);
+      vampRangeRef.current = { active: true, start, end };
     }
   };
 
@@ -456,61 +560,80 @@ export default function LiveConcert() {
     return `${isNeg ? '-' : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
 
+  // Si es la ventana externa del Proyector HDMI, renderizar únicamente el visualizador limpio a pantalla completa
+  if (isProjectorWindow) {
+    return (
+      <div className="w-screen h-screen bg-black overflow-hidden select-none relative">
+        <LyricVisualizer
+          currentTime={projectorState.currentTime}
+          lyrics={projectorState.lyrics}
+          isPlaying={projectorState.isPlaying}
+          settings={projectorState.settings}
+          bpm={projectorState.bpm}
+          firstBeatOffset={projectorState.firstBeatOffset}
+          beatTimes={projectorState.beatTimes}
+        />
+      </div>
+    );
+  }
+
+  const songSections = currentSong?.prompter_data?.sections || [];
+
   return (
-    <div className="h-screen bg-[#050505] text-white flex flex-col font-sans overflow-hidden select-none">
+    <div className="h-screen bg-[#07090e] text-white flex flex-col font-sans overflow-hidden select-none">
       
-      {/* HEADER / TRANSPORT */}
-      <header className="h-[90px] bg-[#09090b]/90 backdrop-blur-xl border-b border-white/5 flex items-center px-8 justify-between shrink-0 z-20">
-        <div className="flex items-center space-x-6">
-          <div className="bg-gradient-to-br from-red-600 to-red-800 text-white font-black px-4 py-2 rounded-xl uppercase tracking-[0.2em] text-xs shadow-[0_0_20px_rgba(220,38,38,0.2)] flex items-center gap-2 border border-red-500/20">
-            <span className="w-2 h-2 rounded-full bg-white animate-pulse shadow-[0_0_8px_white]"></span>
-            CONCERT LIVE
+      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO */}
+      <header className="h-[84px] bg-[#0c0e14] border-b border-white/[0.08] flex items-center px-5 justify-between shrink-0 z-20 gap-4">
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="bg-red-600 text-white font-black px-3.5 py-2 rounded-xl uppercase tracking-[0.18em] text-[11px] shadow-[0_0_20px_rgba(239,68,68,0.3)] flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+            LIVE STAGE
           </div>
-          <div className="relative">
-            <select 
-              className="appearance-none bg-white/[0.03] hover:bg-white/[0.06] border border-white/10 text-white px-5 py-2.5 pr-10 rounded-xl outline-none font-bold text-sm transition-colors cursor-pointer"
-              value={selectedSetlistId || ''}
-              onChange={(e) => setSelectedSetlistId(e.target.value)}
-            >
-              <option value="" className="bg-[#111]">Cargar Setlist...</option>
-              {setlists.map(sl => (
-                <option key={sl.id} value={sl.id} className="bg-[#111]">{sl.title}</option>
-              ))}
-            </select>
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-50">
-              ▼
-            </div>
-          </div>
+          <select 
+            className="bg-[#07090e] hover:bg-[#111520] border border-zinc-800 text-white px-3.5 py-2 rounded-xl outline-none font-bold text-xs transition-colors cursor-pointer max-w-[200px]"
+            value={selectedSetlistId || ''}
+            onChange={(e) => setSelectedSetlistId(e.target.value)}
+          >
+            <option value="" className="bg-[#0c0e14]">Cargar Setlist...</option>
+            {setlists.map(sl => (
+              <option key={sl.id} value={sl.id} className="bg-[#0c0e14]">{sl.title}</option>
+            ))}
+          </select>
           
-          {/* Selector de Modo */}
+          {/* Selector de Modo: EN VIVO (Consola WAV) vs PRÁCTICA (Ligero MP3) */}
           <div 
             onClick={() => {
-              if (isPlaying) return; // No permitir cambio en plena reproducción
+              if (isPlaying) return;
               setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
             }}
-            className={`flex items-center space-x-2 px-4 py-2.5 rounded-xl border transition-all cursor-pointer ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
               playbackMode === 'LIVE' 
-                ? 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20' 
-                : 'bg-yellow-500/10 border-yellow-500/30 hover:bg-yellow-500/20'
+                ? 'bg-red-500/15 border-red-500/40 text-red-300' 
+                : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
             } ${isPlaying ? 'opacity-50 cursor-not-allowed' : ''}`}
-            title={isPlaying ? "No se puede cambiar el modo mientras se reproduce" : "Cambiar entre alta calidad (WAV) y modo ligero (MP3)"}
+            title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV de Consola)" : "Modo Práctica / Ensayo (Audio Ligero MP3)"}
           >
-            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-red-500' : 'bg-yellow-500'}`}></div>
-            <span className={`text-xs font-bold uppercase tracking-wider ${playbackMode === 'LIVE' ? 'text-red-400' : 'text-yellow-400'}`}>
-              {playbackMode === 'LIVE' ? 'EN VIVO' : 'ENSAYO'}
+            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-red-500' : 'bg-amber-400'}`}></div>
+            <span className="text-[10px] font-black uppercase tracking-wider">
+              {playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}
             </span>
           </div>
         </div>
 
-        {/* Transport Controls */}
-        <div className="flex flex-col items-center flex-1 max-w-[800px] px-10">
-          <div className="flex items-baseline space-x-2 mb-1.5">
-            <span className="text-[40px] leading-none font-mono font-bold text-white tracking-widest drop-shadow-md">
+        {/* Center: Reloj de Compás/Tiempo y Barra de Progreso */}
+        <div className="flex flex-col items-center flex-1 max-w-[520px] px-2">
+          <div className="flex items-center gap-3 mb-1">
+            <span className="text-3xl leading-none font-mono font-black text-white tracking-wider">
               {formatTime(currentTime)}
             </span>
+            {currentSong?.prompter_data?.bpm && (
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-zinc-900 text-amber-400 border border-zinc-800">
+                {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
+              </span>
+            )}
           </div>
           
-          <div className="w-full flex items-center space-x-3 group">
+          <div className="w-full flex items-center group">
             <input 
               type="range" 
               min={-(getPreRoll(currentSong) || 0)} 
@@ -529,77 +652,106 @@ export default function LiveConcert() {
                 }
               }}
               disabled={isLoading || !currentSong}
-              className="flex-1 h-2 bg-[#222] rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-3 transition-all duration-200"
+              className="flex-1 h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2.5 transition-all"
               style={{
                 background: currentSong && totalDuration > 0
-                  ? `linear-gradient(to right, #ef4444 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, rgba(255,255,255,0.05) ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
-                  : 'rgba(255,255,255,0.05)'
+                  ? `linear-gradient(to right, #ef4444 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, rgba(255,255,255,0.08) ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
+                  : 'rgba(255,255,255,0.08)'
               }}
             />
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
-          {/* Network Broadcast Toggle */}
-          <div 
-            onClick={() => setBroadcastEnabled(!broadcastEnabled)}
-            className={`pressable flex items-center space-x-3 px-4 py-2.5 rounded-xl border transition-all duration-300 cursor-pointer ${
-              broadcastEnabled 
-                ? 'bg-blue-600/10 border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)]' 
-                : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'
-            }`}
-          >
-            <div className={`p-2 rounded-lg ${broadcastEnabled ? 'bg-blue-500/20' : 'bg-white/5'}`}>
-              <Wifi size={18} className={broadcastEnabled ? 'text-blue-400' : 'text-gray-400'} />
-            </div>
-            <div className="flex flex-col">
-              <span className={`text-[9px] font-bold uppercase tracking-widest ${broadcastEnabled ? 'text-blue-400' : 'text-gray-500'}`}>
-                In-Ears Móviles
-              </span>
-              <span className="text-sm font-semibold text-gray-200">
-                {broadcastEnabled ? 'Transmitiendo' : 'Desactivado'}
-              </span>
-            </div>
-            {broadcastEnabled && (
-              <div className="flex items-center ml-2 text-[10px] font-bold bg-blue-500/20 text-blue-300 px-2.5 py-1 rounded-full border border-blue-500/20">
-                <Users size={12} className="mr-1.5" /> {connections}
+        {/* Right: Faders de Consola (Público R / Músicos L), Ruteo e In-Ears de Práctica */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          
+          {/* Faders Duales Independientes: SALIDA PÚBLICO (R) y SALIDA MÚSICOS (L) */}
+          <div className="flex items-center gap-3 bg-[#07090e] px-3.5 py-2 rounded-xl border border-white/[0.08]">
+            {/* Salida Público FOH (Canal R) */}
+            <div className="flex flex-col w-28">
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] text-red-400 font-black uppercase tracking-wider flex items-center gap-1">
+                  <Volume2 size={10} /> PÚBLICO (R)
+                </span>
+                <span className="text-[9px] font-mono font-bold text-zinc-300">{Math.round(fohVolume * 100)}%</span>
               </div>
-            )}
+              <input 
+                type="range" min="0" max="1.3" step="0.01" 
+                value={fohVolume} 
+                onChange={(e) => setFohVolume(parseFloat(e.target.value))}
+                className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-red-500"
+                title="Volumen hacia Consola Principal / Público (Canal Derecho R)"
+              />
+            </div>
+
+            <div className="w-px h-7 bg-zinc-800" />
+
+            {/* Salida Músicos CUE (Canal L) */}
+            <div className="flex flex-col w-28">
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] text-amber-400 font-black uppercase tracking-wider flex items-center gap-1">
+                  <Headphones size={10} /> MÚSICOS (L)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMuteCueEmergency(v => !v)}
+                  className={`text-[8px] font-black px-1 rounded ${
+                    muteCueEmergency ? 'bg-red-600 text-white' : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="Silenciar Click/Guía de emergencia"
+                >
+                  {muteCueEmergency ? 'MUTE' : `${Math.round(cueVolume * 100)}%`}
+                </button>
+              </div>
+              <input 
+                type="range" min="0" max="1.3" step="0.01" 
+                value={muteCueEmergency ? 0 : cueVolume} 
+                onChange={(e) => {
+                  setMuteCueEmergency(false);
+                  setCueVolume(parseFloat(e.target.value));
+                }}
+                className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-400"
+                title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
+              />
+            </div>
           </div>
 
-           {/* Routing Mode */}
-          <div className="flex items-center space-x-3 bg-white/[0.02] hover:bg-white/[0.04] px-4 py-2.5 rounded-xl border border-white/10 transition-colors">
-            <div className="p-2 bg-white/5 rounded-lg">
-              <MonitorSpeaker size={18} className="text-gray-400" />
-            </div>
+          {/* Modo de Ruteo Físico */}
+          <div className="flex items-center gap-2 bg-[#07090e] px-3 py-2 rounded-xl border border-white/[0.08]">
+            <MonitorSpeaker size={15} className="text-zinc-400 shrink-0" />
             <div className="flex flex-col">
-              <span className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">Modo Salida</span>
+              <span className="text-[8px] text-zinc-500 font-black uppercase tracking-widest">Salida Audio</span>
               <select 
-                className="bg-transparent text-sm font-semibold outline-none text-gray-200 appearance-none cursor-pointer"
+                className="bg-transparent text-[11px] font-bold outline-none text-zinc-200 cursor-pointer"
                 value={routingMode}
                 onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
               >
-                <option value="StereoSplit" className="bg-[#111]">Stereo Split (L:Cues R:FOH)</option>
-                <option value="MultiChannel" className="bg-[#111]">Interfaz USB (Multi)</option>
+                <option value="StereoSplit" className="bg-[#0c0e14]">Split (L:Músicos / R:Público)</option>
+                <option value="MultiChannel" className="bg-[#0c0e14]">USB Multicanal (1-2 / 3)</option>
               </select>
             </div>
           </div>
-          
-          {/* Master Volume */}
-          <div className="flex items-center space-x-3 bg-white/[0.02] px-4 py-2.5 rounded-xl border border-white/10 w-44">
-            <div className="flex flex-col w-full">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">Master</span>
-                <span className="text-[10px] font-bold text-gray-300">{Math.round(masterVolume * 100)}%</span>
-              </div>
-              <input 
-                type="range" 
-                min="0" max="1.5" step="0.01" 
-                value={masterVolume} 
-                onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
-                className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer hover:h-2 transition-all"
-              />
+
+          {/* In-Ears Móviles (Etiquetado claro: Solo Prácticas) */}
+          <div 
+            onClick={() => setBroadcastEnabled(!broadcastEnabled)}
+            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border transition-all cursor-pointer ${
+              broadcastEnabled 
+                ? 'bg-blue-600/15 border-blue-500/40' 
+                : 'bg-[#07090e] border-white/[0.08] hover:border-white/20'
+            }`}
+            title="Transmitir audio y prompter por Wi-Fi a celulares (Diseñado para prácticas y ensayos, no para show en vivo)"
+          >
+            <Wifi size={15} className={broadcastEnabled ? 'text-blue-400' : 'text-zinc-500'} />
+            <div className="flex flex-col">
+              <span className={`text-[8px] font-black uppercase tracking-wider ${broadcastEnabled ? 'text-blue-300' : 'text-zinc-500'}`}>
+                In-Ear (Prácticas)
+              </span>
+              <span className="text-[11px] font-bold text-zinc-200">
+                {broadcastEnabled ? `Activo (${connections})` : 'Off'}
+              </span>
             </div>
+            {broadcastEnabled && <Users size={12} className="text-blue-400" />}
           </div>
         </div>
       </header>
@@ -609,113 +761,223 @@ export default function LiveConcert() {
         
         {/* Loading Overlay */}
         {isLoading && (
-          <div className="absolute inset-0 bg-black/80 z-40 flex flex-col items-center justify-center backdrop-blur-xl">
+          <div className="absolute inset-0 bg-black/85 z-40 flex flex-col items-center justify-center backdrop-blur-xl">
             <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <h2 className="text-xl font-bold text-white mb-2 tracking-tight">{currentSong?.title}</h2>
-            <p className="text-gray-400 font-mono text-sm uppercase tracking-widest">{loadStatus}</p>
+            <h2 className="text-xl font-black text-white mb-2 tracking-tight">{currentSong?.title}</h2>
+            <p className="text-zinc-400 font-mono text-xs uppercase tracking-widest">{loadStatus}</p>
           </div>
         )}
 
         {/* SETLIST SIDEBAR */}
-        <div className="w-80 bg-[#09090b]/80 backdrop-blur-md border-r border-white/5 flex flex-col z-10">
-          <div className="px-6 py-5 border-b border-white/5 bg-white/[0.02]">
-            <h2 className="font-bold flex items-center text-gray-200 text-sm uppercase tracking-widest">
-              <LayoutList size={16} className="mr-3 text-red-500" /> Setlist Oficial
+        <div className="w-76 bg-[#090b10] border-r border-white/[0.07] flex flex-col z-10 shrink-0">
+          <div className="px-5 py-3.5 border-b border-white/[0.06] bg-[#0d1017] flex items-center justify-between">
+            <h2 className="font-black flex items-center text-zinc-200 text-xs uppercase tracking-widest">
+              <LayoutList size={14} className="mr-2.5 text-red-500" /> Setlist ({songs.length})
             </h2>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scrollbar">
-            {songs.map((s, idx) => (
-              <div 
-                key={idx}
-                onClick={() => setCurrentSongIndex(idx)}
-                className={`pressable p-3 rounded-xl flex items-center cursor-pointer transition-all duration-300 ${
-                  idx === currentSongIndex 
-                    ? 'bg-gradient-to-r from-red-600/20 to-red-900/10 border border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.1)]' 
-                    : 'bg-white/[0.02] border border-transparent hover:bg-white/[0.04] hover:border-white/5'
-                }`}
-              >
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold mr-3 shrink-0 ${idx === currentSongIndex ? 'bg-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.5)]' : 'bg-white/5 text-gray-500'}`}>
-                  {idx + 1}
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 custom-scrollbar">
+            {songs.map((s, idx) => {
+              const hasMix = Boolean(s.foh_mix_url && s.cue_mix_url);
+              const hasLyrics = Boolean(s.prompter_data?.lyrics?.length > 0);
+              return (
+                <div 
+                  key={idx}
+                  onClick={() => setCurrentSongIndex(idx)}
+                  className={`p-3 rounded-xl flex items-center cursor-pointer transition-all ${
+                    idx === currentSongIndex 
+                      ? 'bg-red-600/20 border border-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.12)]' 
+                      : 'bg-[#10131c]/70 border border-white/[0.04] hover:bg-[#151926]'
+                  }`}
+                >
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black mr-3 shrink-0 font-mono ${
+                    idx === currentSongIndex ? 'bg-red-600 text-white shadow-[0_0_10px_rgba(239,68,68,0.5)]' : 'bg-zinc-900 text-zinc-400'
+                  }`}>
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`font-bold truncate text-xs ${idx === currentSongIndex ? 'text-white' : 'text-zinc-300'}`}>{s.title}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      {!hasMix ? (
+                        <span className="text-[8px] text-red-400 font-black uppercase tracking-wider">Falta Exportar Mix</span>
+                      ) : (
+                        <span className="text-[8px] text-emerald-400 font-bold uppercase">● Audio OK</span>
+                      )}
+                      {hasLyrics && (
+                        <span className="text-[8px] text-amber-400 font-bold uppercase">&bull; Lyrics</span>
+                      )}
+                    </div>
+                  </div>
+                  {idx === currentSongIndex && isPlaying && (
+                    <div className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_red] animate-pulse ml-2 shrink-0"></div>
+                  )}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className={`font-semibold truncate text-[14px] ${idx === currentSongIndex ? 'text-white' : 'text-gray-300'}`}>{s.title}</p>
-                  {(!s.foh_mix_url || !s.cue_mix_url) && <p className="text-[9px] text-red-400/80 font-bold uppercase mt-1 tracking-wider">Audio No Disponible</p>}
-                </div>
-                {idx === currentSongIndex && isPlaying && <div className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_red] animate-pulse ml-2 shrink-0"></div>}
-              </div>
-            ))}
+              );
+            })}
             {songs.length === 0 && (
-              <div className="text-center text-gray-500 py-12 px-6 text-sm font-medium blur-transition">
-                Selecciona un setlist arriba para comenzar.
+              <div className="text-center text-zinc-600 py-12 px-6 text-xs font-medium">
+                Selecciona un Setlist arriba para cargar las canciones del show.
               </div>
             )}
           </div>
 
-          {/* LARGE TRANSPORT BUTTONS */}
-          <div className="p-5 bg-white/[0.02] border-t border-white/5 grid grid-cols-3 gap-3">
-            <button onClick={prevSong} disabled={currentSongIndex === 0} className="pressable bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl flex items-center justify-center py-4 transition-colors">
-              <SkipBack size={22} className="text-gray-300" />
+          {/* CONTROLES DE TRANSPORTE DE ESCENARIO */}
+          <div className="p-4 bg-[#0d1017] border-t border-white/[0.07] grid grid-cols-3 gap-2.5">
+            <button onClick={prevSong} disabled={currentSongIndex === 0} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Canción Anterior">
+              <SkipBack size={20} className="text-zinc-200" />
             </button>
-            <button onClick={stop} disabled={!currentSong} className="pressable bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl flex items-center justify-center py-4 transition-colors">
-              <Square size={20} fill="currentColor" className="text-gray-400" />
+            <button onClick={stop} disabled={!currentSong} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Detener y volver al Conteo Pre-Roll">
+              <Square size={18} fill="currentColor" className="text-zinc-300" />
             </button>
-            <button onClick={nextSong} disabled={currentSongIndex === songs.length - 1} className="pressable bg-white/5 hover:bg-white/10 disabled:opacity-30 rounded-xl flex items-center justify-center py-4 transition-colors">
-              <SkipForward size={22} className="text-gray-300" />
+            <button onClick={nextSong} disabled={currentSongIndex === songs.length - 1} className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-30 rounded-xl flex items-center justify-center py-3.5 transition-colors" title="Siguiente Canción">
+              <SkipForward size={20} className="text-zinc-200" />
             </button>
             
             <button 
               onClick={isPlaying ? pause : play} 
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
-              className={`pressable col-span-3 py-5 rounded-xl flex items-center justify-center text-xl font-black transition-all duration-300 tracking-wider ${
+              className={`col-span-3 py-4 rounded-xl flex items-center justify-center text-lg font-black transition-all tracking-wider ${
                 isPlaying 
-                ? 'bg-white text-black shadow-[0_0_20px_rgba(255,255,255,0.2)] hover:bg-gray-100' 
-                : 'bg-red-600 text-white hover:bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]'
+                  ? 'bg-white text-black shadow-[0_0_25px_rgba(255,255,255,0.25)] hover:bg-zinc-100' 
+                  : 'bg-red-600 text-white hover:bg-red-500 shadow-[0_0_25px_rgba(239,68,68,0.35)]'
               } disabled:opacity-30 disabled:shadow-none`}
             >
-              {isPlaying ? <Pause size={28} fill="currentColor" className="mr-3" /> : <Play size={28} fill="currentColor" className="mr-3 ml-2" />}
-              {isPlaying ? 'PAUSA' : 'REPRODUCIR'}
+              {isPlaying ? <Pause size={24} fill="currentColor" className="mr-2.5" /> : <Play size={24} fill="currentColor" className="mr-2.5 ml-1" />}
+              {isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}
             </button>
           </div>
         </div>
 
-        {/* PROMPTER AREA */}
-        <div className="flex-1 bg-black flex flex-col relative overflow-hidden">
+        {/* ÁREA PRINCIPAL DE PROYECCIÓN Y MONITOREO EN VIVO */}
+        <div className="flex-1 bg-[#050609] flex flex-col relative overflow-hidden">
           
-          {/* View Mode Toggle */}
-          <div className="absolute top-6 right-8 z-30 flex space-x-2 bg-white/5 p-1 rounded-xl backdrop-blur-md border border-white/10">
-            <button 
-              onClick={() => setViewMode('prompter')}
-              className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition-all ${viewMode === 'prompter' ? 'bg-red-600 text-white shadow-[0_0_15px_rgba(239,68,68,0.4)]' : 'text-gray-400 hover:text-white'}`}
-            >
-              <div className="flex items-center space-x-2">
-                <Music size={14} />
-                <span>Acordes</span>
-              </div>
-            </button>
-            <button 
-              onClick={() => setViewMode('lyrics')}
-              className={`px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition-all ${viewMode === 'lyrics' ? 'bg-indigo-600 text-white shadow-[0_0_15px_rgba(79,70,229,0.4)]' : 'text-gray-400 hover:text-white'}`}
-            >
-              <div className="flex items-center space-x-2">
-                <Type size={14} />
-                <span>Visuals (Live)</span>
-              </div>
-            </button>
-          </div>
-
-          <div className="flex-1 p-8 overflow-hidden flex flex-col relative">
-            {/* Background Glow */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-red-900/10 rounded-full blur-[120px] pointer-events-none opacity-50"></div>
-            
-            {/* Background Logo */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.02]">
-              <Music size={400} />
+          {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista (Acordes / Lyrics / Stage Dual) + Proyector HDMI */}
+          <div className="h-12 bg-[#0a0c12] border-b border-white/[0.07] px-5 flex items-center justify-between gap-3 z-30 shrink-0">
+            {/* Botonera de Salto Rápido a Secciones */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
+              <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mr-1 shrink-0">
+                Secciones:
+              </span>
+              {songSections.length === 0 ? (
+                <span className="text-[10px] text-zinc-600 italic">Sin marcadores</span>
+              ) : (
+                songSections.map((sec: any, sIdx: number) => {
+                  const nextSec = songSections[sIdx + 1];
+                  const secEnd = nextSec ? nextSec.time : totalDuration;
+                  const isSecActive = currentTime >= sec.time && currentTime < secEnd;
+                  return (
+                    <button
+                      key={sIdx}
+                      onClick={() => seekTo(sec.time)}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider transition-all shrink-0 border ${
+                        isSecActive
+                          ? 'bg-amber-400 text-black border-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.5)]'
+                          : 'bg-[#121621] text-zinc-300 border-white/[0.06] hover:bg-[#1a2030] hover:text-white'
+                      }`}
+                      title={`Saltar a ${sec.name || sec.section}`}
+                    >
+                      {sec.name || sec.section}
+                    </button>
+                  );
+                })
+              )}
+              {isVamping && (
+                <button
+                  onClick={() => handleToggleVampSection(0, 0)}
+                  className="px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-red-600 text-white animate-pulse flex items-center gap-1 shrink-0 ml-1"
+                >
+                  <Repeat size={11} /> Salir Loop
+                </button>
+              )}
             </div>
 
+            {/* Selector de Modo Visual + Botón Proyector HDMI */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center bg-[#07090e] p-1 rounded-xl border border-white/[0.08]">
+                <button 
+                  onClick={() => setViewMode('dual')}
+                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                    viewMode === 'dual'
+                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                  title="Ver Acordes/Compás arriba y Proyección de Letras abajo simultáneamente"
+                >
+                  <Columns size={12} />
+                  <span>Stage Dual</span>
+                </button>
+                <button 
+                  onClick={() => setViewMode('prompter')}
+                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                    viewMode === 'prompter'
+                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Music size={12} />
+                  <span>Solo Acordes</span>
+                </button>
+                <button 
+                  onClick={() => setViewMode('lyrics')}
+                  className={`px-3 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                    viewMode === 'lyrics'
+                      ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Type size={12} />
+                  <span>Solo Letras</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={openExternalProjector}
+                className="px-3 py-1.5 rounded-xl bg-[#121622] hover:bg-[#191f30] border border-white/10 text-zinc-200 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all"
+                title="Abrir ventana limpia de Proyección de Letras para arrastrar a pantalla LED / HDMI externo"
+              >
+                <ExternalLink size={12} className="text-red-400" />
+                <span>Proyector HDMI</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 p-5 overflow-hidden flex flex-col relative">
             {currentSong ? (
-              <div className="h-full relative z-10 w-full max-w-7xl mx-auto rounded-3xl overflow-hidden border border-white/5 shadow-2xl bg-[#09090b]/80 backdrop-blur-sm">
-                {viewMode === 'prompter' ? (
+              viewMode === 'dual' ? (
+                <div className="h-full w-full flex flex-col gap-4 overflow-hidden">
+                  {/* Mitad Superior: Grilla de Compases, Acordes y Voz Guía */}
+                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-[#090b10]">
+                    <Prompter 
+                      currentTime={currentTime}
+                      bpm={currentSong.prompter_data?.bpm || 0}
+                      timeSignature={currentSong.prompter_data?.timeSignature}
+                      baseOffset={currentSong.prompter_data?.firstBeatOffset}
+                      beatTimes={currentSong.prompter_data?.beatTimes}
+                      chords={currentSong.prompter_data?.chords || []}
+                      sections={currentSong.prompter_data?.sections || []}
+                      lyrics={currentSong.prompter_data?.lyrics || []}
+                      isVamping={isVamping}
+                      onVampTrigger={handleToggleVampSection}
+                      onSeek={(t) => seekTo(t)}
+                      isEditing={false}
+                    />
+                  </div>
+                  {/* Mitad Inferior: Proyección de Letras al Compás y Tiempo Exacto */}
+                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-black relative">
+                    <LyricVisualizer 
+                      currentTime={currentTime}
+                      lyrics={currentSong.prompter_data?.lyrics || []}
+                      isPlaying={isPlaying}
+                      settings={currentSong.prompter_data?.lyric_settings}
+                      bpm={currentSong.prompter_data?.bpm || 120}
+                      firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
+                      beatTimes={currentSong.prompter_data?.beatTimes}
+                    />
+                  </div>
+                </div>
+              ) : viewMode === 'prompter' ? (
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-[#090b10]">
                   <Prompter 
                     currentTime={currentTime}
                     bpm={currentSong.prompter_data?.bpm || 0}
@@ -724,20 +986,29 @@ export default function LiveConcert() {
                     beatTimes={currentSong.prompter_data?.beatTimes}
                     chords={currentSong.prompter_data?.chords || []}
                     sections={currentSong.prompter_data?.sections || []}
-                    isVamping={false}
+                    lyrics={currentSong.prompter_data?.lyrics || []}
+                    isVamping={isVamping}
+                    onVampTrigger={handleToggleVampSection}
+                    onSeek={(t) => seekTo(t)}
                     isEditing={false}
                   />
-                ) : (
+                </div>
+              ) : (
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl bg-black">
                   <LyricVisualizer 
                     currentTime={currentTime}
                     lyrics={currentSong.prompter_data?.lyrics || []}
                     isPlaying={isPlaying}
+                    settings={currentSong.prompter_data?.lyric_settings}
+                    bpm={currentSong.prompter_data?.bpm || 120}
+                    firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
+                    beatTimes={currentSong.prompter_data?.beatTimes}
                   />
-                )}
-              </div>
+                </div>
+              )
             ) : (
-              <div className="h-full flex items-center justify-center text-gray-500/50 text-2xl font-bold tracking-[0.5em] blur-transition">
-                EN ESPERA
+              <div className="h-full flex items-center justify-center text-zinc-600 text-2xl font-black tracking-[0.4em]">
+                EN ESPERA DE SETLIST
               </div>
             )}
           </div>
@@ -747,5 +1018,3 @@ export default function LiveConcert() {
     </div>
   );
 }
-
-

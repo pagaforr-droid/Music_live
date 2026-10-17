@@ -1,5 +1,3 @@
-
-
 import React, { useState } from 'react';
 import { UploadCloud, CheckCircle, AlertTriangle, FileAudio, Archive } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -9,13 +7,15 @@ interface StemUploaderProps {
   songId?: string | null;
   bandId: string;
   onUploadComplete?: (newSongId?: string) => void;
+  compact?: boolean;
 }
 
-export default function StemUploader({ songId, bandId, onUploadComplete }: StemUploaderProps) {
+export default function StemUploader({ songId, bandId, onUploadComplete, compact = false }: StemUploaderProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error' | 'processing'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [progressInfo, setProgressInfo] = useState('');
+  const [progressPct, setProgressPct] = useState<number>(0);
 
   // Mejorado con Timeout Anti-Congelamiento
   const getAudioDuration = (file: File | Blob): Promise<number> => {
@@ -26,7 +26,10 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
         URL.revokeObjectURL(url);
         resolve(audio.duration);
       });
-      audio.addEventListener('error', (e) => reject(e));
+      audio.addEventListener('error', (e) => {
+        URL.revokeObjectURL(url);
+        reject(e);
+      });
     });
 
     // Timeout de 2 segundos. Si falla, asume duración 0 para no romper la subida.
@@ -48,40 +51,45 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
     return data && data.length > 0;
   };
 
+  const sanitizeStorageName = (name: string) =>
+    name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '_');
+
   const uploadSingleFile = async (file: File | Blob, fileName: string, fileType: string, targetSongId: string) => {
-    const baseName = fileName.split('.')[0] || 'Nuevo Stem';
+    const baseName = fileName.replace(/\.[^.]+$/, '') || 'Nuevo Stem';
     
     // Check duplicates
     const isDuplicate = await checkDuplicateName(targetSongId, baseName);
     if (isDuplicate) {
-      throw new Error(`Ya existe una pista llamada "${baseName}" en esta carpeta.`);
+      console.warn(`Se omitió pista duplicada "${baseName}" en esta carpeta.`);
+      return;
     }
 
     // 1. Obtener duración real para pasarle al backend (con protección timeout)
     const durationSeconds = await getAudioDuration(file);
     
     // 2. Subir al Storage
-    const storagePath = `${bandId}/${targetSongId}/${Date.now()}_${fileName}`;
+    const safeFileName = sanitizeStorageName(fileName);
+    const storagePath = `${bandId}/${targetSongId}/${Date.now()}_${safeFileName}`;
     const { error: uploadError } = await supabase.storage
       .from('audios')
-      .upload(storagePath, file, { contentType: fileType });
+      .upload(storagePath, file, { contentType: fileType || 'audio/wav' });
 
     if (uploadError) throw uploadError;
 
     // 3. Obtener URL pública
     const { data: publicUrlData } = supabase.storage.from('audios').getPublicUrl(storagePath);
 
-    // Identificar si es un Master Track
-    // Solo es master si el nombre termina con "master", "full" o "mezcla" SIN un instrumento entre paréntesis al final
-    // Ej: "Song Master.wav" → master=true
-    //     "Song Master (Drums).wav" → master=false (es un stem con nombre de canción que incluye "Master")
-    const nameWithoutExt = baseName.toLowerCase();
-    const hasInstrumentSuffix = /\(([^)]+)\)\s*$/.test(baseName); // termina en (algo)
+    // Identificar si es un Master Track (Fuente #1 para Tempo, Grilla y Acordes IA)
+    // Es master si el nombre termina o contiene claramente "master", "full", "mezcla" o "mix" SIN un instrumento entre paréntesis al final
+    const nameWithoutExt = baseName.toLowerCase().trim();
+    const hasInstrumentSuffix = /\(([^)]+)\)\s*$/.test(baseName);
     const isMaster = !hasInstrumentSuffix && (
       nameWithoutExt.endsWith('master') ||
       nameWithoutExt.endsWith('full') ||
       nameWithoutExt.endsWith('mezcla') ||
-      nameWithoutExt.endsWith('mix')
+      nameWithoutExt.endsWith('mix') ||
+      nameWithoutExt === 'master' ||
+      nameWithoutExt.includes('mezcla master')
     );
 
     // 4. Insertar en la tabla stems
@@ -92,7 +100,7 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
       type: 'Audio',
       metadata: {
         duration_seconds: Math.round(durationSeconds),
-        format: fileType,
+        format: fileType || 'audio/wav',
         original_name: fileName,
         is_master: isMaster
       }
@@ -101,9 +109,8 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
     if (dbError) throw dbError;
   };
 
-  const createNewSongFromZip = async (zipName: string) => {
-    const title = zipName.replace(/\.zip$/i, '').trim();
-    // Use the fake band id owner for now since we bypass auth
+  const createNewSong = async (rawTitle: string) => {
+    const title = rawTitle.replace(/\.(zip|wav|mp3|ogg|flac|m4a)$/i, '').trim() || 'Nuevo Proyecto';
     const { data, error } = await supabase.from('songs').insert({
       band_id: bandId,
       title: title
@@ -114,23 +121,41 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const fileList = event.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
 
     setIsUploading(true);
     setUploadStatus('processing');
     setErrorMessage('');
+    setProgressPct(0);
     
     let activeSongId = songId;
 
     try {
-      if (file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip') {
-        setProgressInfo('Creando nueva Carpeta/Canción...');
-        activeSongId = await createNewSongFromZip(file.name);
+      const firstFile = files[0];
+      const isZipUpload = files.length === 1 && (firstFile.name.toLowerCase().endsWith('.zip') || firstFile.type === 'application/zip');
 
-        setProgressInfo('Descomprimiendo archivo ZIP...');
+      if (isZipUpload) {
+        // Si no hay proyecto seleccionado, creamos uno con el nombre del ZIP.
+        // Si ya hay proyecto seleccionado pero tiene pistas, consultamos o creamos; si está vacío, depositamos directo ahí.
+        if (!activeSongId) {
+          setProgressInfo('Creando nuevo proyecto desde archivo .ZIP...');
+          activeSongId = await createNewSong(firstFile.name);
+        } else {
+          const { count } = await supabase
+            .from('stems')
+            .select('id', { count: 'exact', head: true })
+            .eq('song_id', activeSongId);
+          if ((count ?? 0) > 0) {
+            setProgressInfo('Creando nuevo proyecto desde archivo .ZIP...');
+            activeSongId = await createNewSong(firstFile.name);
+          }
+        }
+
+        setProgressInfo('Descomprimiendo paquete de Stems (.ZIP)...');
         const zip = new JSZip();
-        const loadedZip = await zip.loadAsync(file);
+        const loadedZip = await zip.loadAsync(firstFile);
         
         const validExtensions = ['.wav', '.mp3', '.ogg', '.flac', '.m4a'];
         const audioFiles = Object.keys(loadedZip.files).filter(filename => {
@@ -146,93 +171,180 @@ export default function StemUploader({ songId, bandId, onUploadComplete }: StemU
 
         let uploadedCount = 0;
         for (const filename of audioFiles) {
-          setProgressInfo(`Subiendo pista ${uploadedCount + 1} de ${audioFiles.length}: ${filename.split('/').pop()}`);
+          const shortName = filename.split('/').pop() || filename;
+          setProgressInfo(`Subiendo stem ${uploadedCount + 1}/${audioFiles.length}: ${shortName}`);
+          setProgressPct(Math.round(((uploadedCount) / audioFiles.length) * 100));
           
           const fileData = await loadedZip.files[filename].async('blob');
           const ext = filename.split('.').pop()?.toLowerCase();
-          const mimeType = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
+          const mimeType = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : ext === 'flac' ? 'audio/flac' : 'audio/ogg';
           
-          const actualFilename = filename.split('/').pop() || filename;
-          await uploadSingleFile(fileData, actualFilename, mimeType, activeSongId as string);
+          await uploadSingleFile(fileData, shortName, mimeType, activeSongId as string);
           uploadedCount++;
+          setProgressPct(Math.round((uploadedCount / audioFiles.length) * 100));
         }
       } else {
-        // Individual file upload
+        // Subida de 1 o múltiples archivos de Stems ya separados (.wav, .mp3, etc.)
         if (!activeSongId) {
-          throw new Error("Por favor selecciona una carpeta (Canción) primero para subir pistas sueltas, o sube un archivo ZIP para crear una nueva.");
+          const suggestedTitle = firstFile.name.replace(/\.(wav|mp3|ogg|flac|m4a)$/i, '').replace(/[-_ ]*(drums|bass|keys|piano|guitar|vocals|master|click|guia|pad|strings)$/i, '').trim() || 'Nuevo Proyecto';
+          const customTitle = prompt("Nombre del proyecto para estos Stems:", suggestedTitle);
+          if (!customTitle) {
+            setIsUploading(false);
+            setUploadStatus('idle');
+            return;
+          }
+          setProgressInfo(`Creando proyecto "${customTitle}"...`);
+          activeSongId = await createNewSong(customTitle);
         }
-        setProgressInfo('Subiendo pista individual...');
-        await uploadSingleFile(file, file.name, file.type, activeSongId);
+
+        if (!activeSongId) throw new Error('No se pudo determinar el ID de la canción.');
+        let uploadedCount = 0;
+        for (const f of files) {
+          if (f.name.toLowerCase().endsWith('.zip')) continue;
+          setProgressInfo(`Subiendo stem ${uploadedCount + 1}/${files.length}: ${f.name}`);
+          setProgressPct(Math.round((uploadedCount / files.length) * 100));
+          await uploadSingleFile(f, f.name, f.type || 'audio/wav', activeSongId);
+          uploadedCount++;
+          setProgressPct(Math.round((uploadedCount / files.length) * 100));
+        }
       }
 
       setUploadStatus('success');
       setProgressInfo('');
+      setProgressPct(100);
       if (onUploadComplete) onUploadComplete(activeSongId ?? undefined);
+      setTimeout(() => setUploadStatus('idle'), 3500);
     } catch (error: any) {
       console.error('Error uploading stem:', error);
-      alert('DETALLE DEL ERROR BRUTO: ' + JSON.stringify(error, Object.getOwnPropertyNames(error)));
       setUploadStatus('error');
       if (error.message?.includes('Tier Limit Reached') || error.error === 'Tenant quota exceeded' || error.statusCode === 413) {
-        setErrorMessage('Almacenamiento Lleno: Has superado el límite de 1GB de tu cuenta Supabase Free (o el archivo es muy pesado). Borra canciones antiguas en WAV para liberar espacio. ERROR BRUTO: ' + error.message);
+        setErrorMessage('Almacenamiento Lleno: Has superado el límite de almacenamiento o el archivo es demasiado pesado.');
       } else {
         setErrorMessage(error.message || 'Error desconocido al subir archivo');
       }
     } finally {
       setIsUploading(false);
-      if (event.target) event.target.value = ''; // Reset input
+      if (event.target) event.target.value = '';
     }
   };
 
+  if (compact) {
+    return (
+      <div className="relative group w-full">
+        <input 
+          type="file" 
+          multiple
+          accept="audio/*,.zip,application/zip" 
+          onChange={handleFileUpload} 
+          disabled={isUploading}
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
+        />
+        <div className={`w-full px-4 py-3 rounded-lg border border-dashed transition-all flex items-center justify-between gap-3 ${
+          isUploading
+            ? 'border-red-500/60 bg-red-950/20'
+            : uploadStatus === 'success'
+            ? 'border-emerald-500/60 bg-emerald-950/20'
+            : 'border-red-500/40 group-hover:border-red-500 bg-red-950/10 group-hover:bg-red-950/20'
+        }`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-8 h-8 rounded-md bg-red-600/20 border border-red-500/40 flex items-center justify-center shrink-0 text-red-400">
+              {isUploading ? (
+                <UploadCloud size={16} className="animate-bounce" />
+              ) : uploadStatus === 'success' ? (
+                <CheckCircle size={16} className="text-emerald-400" />
+              ) : (
+                <UploadCloud size={16} />
+              )}
+            </div>
+            <div className="flex flex-col min-w-0 text-left">
+              <span className="text-xs font-bold text-white truncate">
+                {isUploading
+                  ? progressInfo || 'Subiendo Stems...'
+                  : uploadStatus === 'success'
+                  ? '¡Stems cargados correctamente!'
+                  : 'Cargar Stems Separados (WAV / MP3 / .ZIP) + Pista Master'}
+              </span>
+              <span className="text-[10px] text-zinc-400 truncate">
+                {isUploading
+                  ? `${progressPct}% completado`
+                  : 'Selecciona múltiples pistas a la vez o arrastra un paquete .ZIP (Incluye tu pista "Master" para la IA)'}
+              </span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded bg-red-600 text-white text-[10px] font-black uppercase tracking-wider shrink-0">
+            {isUploading ? `${progressPct}%` : '+ Subir Stems'}
+          </span>
+        </div>
+        {uploadStatus === 'error' && (
+          <div className="mt-1.5 text-[10px] text-red-400 font-medium px-1">{errorMessage}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className={`border-2 border-dashed ${!songId ? 'border-yellow-600/50 hover:border-yellow-500' : 'border-gray-600 hover:border-gray-500'} rounded-lg p-8 text-center bg-gray-900/50 hover:bg-gray-800/50 transition relative group`}>
+    <div className={`border-2 border-dashed ${!songId ? 'border-red-500/40 hover:border-red-500' : 'border-zinc-700 hover:border-red-500/60'} rounded-xl p-7 text-center bg-[#0d0f14]/90 hover:bg-[#13161f] transition-all relative group shadow-xl`}>
       <input 
         type="file" 
+        multiple
         accept="audio/*,.zip,application/zip" 
         onChange={handleFileUpload} 
         disabled={isUploading}
         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
       />
       
-      <div className="flex flex-col items-center justify-center space-y-4 relative z-0">
+      <div className="flex flex-col items-center justify-center space-y-3 relative z-0">
         {isUploading ? (
-          <div className="animate-spin text-blue-500">
-            <UploadCloud size={48} />
+          <div className="animate-bounce text-red-500">
+            <UploadCloud size={44} />
           </div>
         ) : uploadStatus === 'success' ? (
-          <CheckCircle size={48} className="text-green-500" />
+          <CheckCircle size={44} className="text-emerald-500" />
         ) : uploadStatus === 'error' ? (
-          <AlertTriangle size={48} className="text-red-500" />
+          <AlertTriangle size={44} className="text-red-500" />
         ) : (
-          <div className="flex space-x-4">
-            <FileAudio size={48} className={!songId ? "text-gray-600" : "text-gray-400"} />
-            <Archive size={48} className="text-yellow-500/70" />
+          <div className="flex items-center space-x-3">
+            <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400">
+              <FileAudio size={24} />
+            </div>
+            <div className="w-12 h-12 rounded-xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center text-zinc-300">
+              <Archive size={24} />
+            </div>
           </div>
         )}
 
-        <div className="text-white font-medium">
-          {isUploading ? 'Procesando archivos...' : 
+        <div className="text-white font-bold text-sm">
+          {isUploading ? 'Cargando pistas al proyecto...' : 
            !songId ? (
-             <span className="text-yellow-500">Arrastra un .ZIP aquí para crear una Canción nueva</span>
+             <span>Arrastra tus <span className="text-red-400">Stems Separados</span> o un <span className="text-red-400">.ZIP</span> para crear una Canción</span>
            ) : (
-             'Arrastra un Stem a esta carpeta o sube un ZIP'
+             'Arrastra múltiples Stems separados o un paquete .ZIP a esta canción'
            )}
         </div>
+        <p className="text-[11px] text-zinc-400 max-w-md">
+          Tip: Incluye un archivo terminado en <strong className="text-amber-400">Master</strong> (ej. <code>Cancion_Master.wav</code>) para que la IA detecte el Tempo, Compás y Acordes con precisión total.
+        </p>
         
         {progressInfo && (
-          <div className="text-blue-400 text-sm animate-pulse">
-            {progressInfo}
+          <div className="w-full max-w-xs space-y-1.5 pt-1">
+            <div className="text-red-400 text-xs font-semibold animate-pulse truncate">
+              {progressInfo}
+            </div>
+            <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div className="h-full bg-red-500 transition-all duration-300" style={{ width: `${progressPct}%` }} />
+            </div>
           </div>
         )}
 
         {uploadStatus === 'error' && (
-          <div className="text-red-400 text-sm max-w-sm">
+          <div className="text-red-400 text-xs max-w-sm bg-red-950/30 border border-red-500/30 rounded px-3 py-2">
             {errorMessage}
           </div>
         )}
         
         {uploadStatus === 'success' && (
-          <div className="text-green-400 text-sm">
-            ¡Operación exitosa!
+          <div className="text-emerald-400 text-xs font-bold">
+            ¡Stems cargados exitosamente!
           </div>
         )}
       </div>

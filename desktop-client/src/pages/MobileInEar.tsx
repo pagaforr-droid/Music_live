@@ -74,7 +74,6 @@ export default function MobileInEar() {
   // Load new song when Master says LOAD_SONG
   useEffect(() => {
     if (songData && audioCtx) {
-      // Usar los MP3 ligeros (Modo Ensayo) si existen, si no caer al WAV original
       const cueTarget = songData.cue_mobile_url || songData.cue_mix_url;
       const fohTarget = songData.foh_mobile_url || songData.foh_mix_url;
       loadAudio(cueTarget, fohTarget);
@@ -83,9 +82,8 @@ export default function MobileInEar() {
 
   const loadAudio = async (cueUrl: string, fohUrl: string) => {
     if (!audioCtx) return;
-    setLoadStatus('Descargando multitrack...');
+    setLoadStatus('Descargando pistas de práctica...');
     try {
-      // Download both files in parallel for speed
       const [cueRes, fohRes] = await Promise.all([
         fetch(cueUrl),
         fetch(fohUrl)
@@ -106,7 +104,7 @@ export default function MobileInEar() {
       setCueBuffer(cBuffer);
       setFohBuffer(fBuffer);
       
-      setLoadStatus('Listo (Standby)');
+      setLoadStatus('Listo para Ensayo (Standby)');
       setCurrentTime(0);
     } catch (e: any) {
       setLoadStatus('Error: ' + e.message);
@@ -118,11 +116,9 @@ export default function MobileInEar() {
     if (!audioCtx || !cueBuffer || !fohBuffer || !hasInteracted) return;
 
     if (playTrigger) {
-      // Stop previous sources
       try { cueSourceRef.current?.stop(); } catch (e) {}
       try { fohSourceRef.current?.stop(); } catch (e) {}
 
-      // Create new sources
       const cSource = audioCtx.createBufferSource();
       cSource.buffer = cueBuffer;
       cSource.connect(cueGainRef.current!);
@@ -133,7 +129,7 @@ export default function MobileInEar() {
       fSource.connect(fohGainRef.current!);
       fohSourceRef.current = fSource;
 
-      // Calculate when to start with NTP clock offset correction!
+      // Calculate when to start with NTP clock offset correction
       const correctedClientTime = Date.now() + clockOffset;
       const timeUntilStartMs = Math.max(0, playTrigger.startAt - correctedClientTime);
       const exactContextTime = audioCtx.currentTime + (timeUntilStartMs / 1000);
@@ -145,7 +141,7 @@ export default function MobileInEar() {
       
       cancelAnimationFrame(animationFrameRef.current);
       updateTime();
-      setLoadStatus('EN VIVO');
+      setLoadStatus('REPRODUCIENDO ENSAYO');
     }
   }, [playTrigger]);
 
@@ -175,77 +171,85 @@ export default function MobileInEar() {
     animationFrameRef.current = requestAnimationFrame(updateTime);
   };
 
+  // Exact match with LiveConcert.tsx & useAudioEngine.ts 16s cap
   const getPreRoll = (song: any) => {
     if (!song?.prompter_data?.bpm) return 0;
     const beatsPerMeasure = parseInt(song.prompter_data.timeSignature?.split('/')[0]) || 4;
-    return (60 / song.prompter_data.bpm) * beatsPerMeasure * 2;
+    return Math.min((60 / song.prompter_data.bpm) * beatsPerMeasure * 2, 16);
   };
 
-  // VIEW RENDERS
   if (!hasInteracted) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-[#0a0a0a] text-white">
-        <div className="p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl mb-8 shadow-lg shadow-blue-500/20">
-          <Headphones size={48} className="text-white" />
+      <div className="flex flex-col items-center justify-center h-screen bg-[#07090e] text-white p-6">
+        <div className="p-4 bg-red-600/20 border border-red-500/40 rounded-2xl mb-6 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
+          <Headphones size={48} className="text-red-500" />
         </div>
+        <span className="text-[10px] font-black uppercase tracking-[0.25em] px-3 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 mb-3">
+          Exclusivo para Prácticas y Ensayos (Wi-Fi)
+        </span>
         <h1 className="text-3xl font-black tracking-wider mb-2 text-center">IN-EAR MÓVIL</h1>
-        <p className="text-gray-400 mb-12 text-center max-w-xs leading-relaxed">
-          Sistema personal de monitoreo sin latencia.
+        <p className="text-zinc-400 mb-10 text-center max-w-xs text-sm leading-relaxed">
+          Monitoreo personal inalámbrico de Click, Voz Guía, Acordes y Letras para sesiones de práctica.
         </p>
         <button 
           onClick={handleConnect}
-          className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-5 px-14 rounded-full text-xl flex items-center shadow-[0_0_40px_rgba(37,99,235,0.4)] transition-all"
+          className="bg-red-600 hover:bg-red-500 text-white font-black py-4 px-12 rounded-full text-lg flex items-center shadow-[0_0_40px_rgba(239,68,68,0.4)] transition-all uppercase tracking-wider"
         >
-          <Power className="mr-3" />
-          CONECTAR
+          <Power className="mr-3" size={20} />
+          CONECTAR AL ENSAYO
         </button>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-screen bg-black text-white relative">
+    <div className="flex flex-col h-screen bg-[#07090e] text-white relative">
       
       {/* Top Header */}
-      <div className="flex items-center justify-between p-3 bg-[#111] border-b border-[#222] z-20">
+      <div className="flex items-center justify-between p-3 bg-[#0c0e14] border-b border-white/[0.08] z-20">
         <div className="flex items-center space-x-3 w-1/3">
-          <div className="p-2 bg-blue-500/20 rounded-lg shrink-0">
-            <Activity size={18} className="text-blue-400" />
+          <div className="p-2 bg-red-500/15 border border-red-500/30 rounded-lg shrink-0">
+            <Activity size={18} className="text-red-400" />
           </div>
           <div className="overflow-hidden">
-            <h2 className="font-bold text-xs leading-tight truncate">
-              {songData ? songData.title : 'Esperando Master...'}
-            </h2>
-            <div className="text-[9px] uppercase font-bold tracking-widest text-gray-500 truncate">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                MODO PRÁCTICA
+              </span>
+              <h2 className="font-bold text-xs leading-tight truncate">
+                {songData ? songData.title : 'Esperando Master...'}
+              </h2>
+            </div>
+            <div className="text-[9px] uppercase font-bold tracking-widest text-zinc-500 truncate mt-0.5">
               {loadStatus}
             </div>
           </div>
         </div>
         
         {/* Personal Mixer */}
-        <div className="flex flex-col space-y-2 w-2/3 max-w-[200px] bg-black/40 p-2 rounded-lg border border-white/5">
+        <div className="flex flex-col space-y-2 w-2/3 max-w-[220px] bg-[#07090e] p-2.5 rounded-lg border border-white/[0.07]">
           {/* CUE Volume */}
           <div className="flex items-center space-x-2">
-            <Volume2 size={12} className="text-blue-400 shrink-0" />
-            <span className="text-[10px] font-bold text-gray-400 w-12 shrink-0">CUE</span>
+            <Volume2 size={12} className="text-amber-400 shrink-0" />
+            <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">CLIC/GUÍA</span>
             <input 
               type="range" 
               min="0" max="1" step="0.05"
               value={cueVolume}
               onChange={e => setCueVolume(parseFloat(e.target.value))}
-              className="w-full accent-blue-500 h-1"
+              className="w-full accent-amber-400 h-1"
             />
           </div>
           {/* FOH (Band) Volume */}
           <div className="flex items-center space-x-2">
-            <Music size={12} className="text-purple-400 shrink-0" />
-            <span className="text-[10px] font-bold text-gray-400 w-12 shrink-0">BANDA</span>
+            <Music size={12} className="text-red-400 shrink-0" />
+            <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">PISTAS</span>
             <input 
               type="range" 
               min="0" max="1" step="0.05"
               value={bandVolume}
               onChange={e => setBandVolume(parseFloat(e.target.value))}
-              className="w-full accent-purple-500 h-1"
+              className="w-full accent-red-500 h-1"
             />
           </div>
         </div>
@@ -262,6 +266,7 @@ export default function MobileInEar() {
             beatTimes={songData.prompter_data?.beatTimes}
             chords={songData.prompter_data?.chords || []}
             sections={songData.prompter_data?.sections || []}
+            lyrics={songData.prompter_data?.lyrics || []}
             isVamping={false}
             isEditing={false}
           />
@@ -274,8 +279,8 @@ export default function MobileInEar() {
         {!isPlaying && (
           <div className="absolute inset-0 bg-black/60 flex items-center justify-center backdrop-blur-[4px] z-30">
             <div className="flex flex-col items-center">
-              <Activity size={32} className="text-gray-600 mb-2 animate-pulse" />
-              <p className="text-xl font-black tracking-[0.3em] text-white/50">STANDBY</p>
+              <Activity size={32} className="text-zinc-500 mb-2 animate-pulse" />
+              <p className="text-xl font-black tracking-[0.3em] text-white/60">STANDBY ENSAYO</p>
             </div>
           </div>
         )}

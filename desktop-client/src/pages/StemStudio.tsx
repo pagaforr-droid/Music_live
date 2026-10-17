@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './StemStudio.css';
 import { supabase } from '../lib/supabase';
 import StemUploader from '../components/StemUploader';
@@ -9,7 +10,7 @@ import {
   type DspPreset,
   type PitchMode,
 } from '../lib/dspDecorrelator';
-import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud } from 'lucide-react';
+import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud, Star, ArrowRight, Edit3, Save } from 'lucide-react';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -28,17 +29,23 @@ const sanitizeFileName = (name: string) =>
   name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]+/g, '_');
 
 export default function StemStudio() {
+  const navigate = useNavigate();
   const [songs, setSongs] = useState<any[]>([]);
-  const [selectedSongId, setSelectedSongId] = useState<string | null>(null);
+  const [selectedSongId, setSelectedSongId] = useState<string | null>(() => {
+    return sessionStorage.getItem('tandu_active_song_id');
+  });
   const [stems, setStems] = useState<any[]>([]);
   const [loadingSongs, setLoadingSongs] = useState(true);
   const [loadingStems, setLoadingStems] = useState(false);
 
-  // AI Generator state
+  // AI Generator & Grid Metadata state
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [isSavingMeta, setIsSavingMeta] = useState(false);
   const [aiSuccessMessage, setAiSuccessMessage] = useState<string | null>(null);
   const [manualKey, setManualKey] = useState<string>('');
+  const [manualBpm, setManualBpm] = useState<string>('');
   const [timeSignature, setTimeSignature] = useState<string>('4/4');
+  const [showSplitterComplement, setShowSplitterComplement] = useState<boolean>(false);
 
   // Watermark DSP v2 state
   const [watermarkJobStatus, setWatermarkJobStatus] = useState<'idle' | 'pending' | 'processing' | 'completed' | 'failed'>('idle');
@@ -74,9 +81,51 @@ export default function StemStudio() {
   const [splitMessage, setSplitMessage] = useState<string | null>(null);
   const [splitFormat, setSplitFormat] = useState<'mp3' | 'wav'>('mp3');
   
-  // Audio Playback State
+  // Audio Playback & Real Waveform State
   const [playingStemId, setPlayingStemId] = useState<string | null>(null);
+  const [playProgress, setPlayProgress] = useState<{ current: number; duration: number }>({ current: 0, duration: 0 });
+  const [waveformsMap, setWaveformsMap] = useState<Record<string, number[]>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const decodeWaveformForStem = async (stem: any) => {
+    if (!stem?.id || !stem?.file_url || waveformsMap[stem.id]) return;
+    try {
+      const res = await fetch(stem.file_url);
+      if (!res.ok) return;
+      const buf = await res.arrayBuffer();
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioCtx();
+      try {
+        const audioBuf = await ctx.decodeAudioData(buf.slice(0));
+        const raw = audioBuf.getChannelData(0);
+        const bars = 80;
+        const blockSize = Math.max(1, Math.floor(raw.length / bars));
+        const peaks: number[] = [];
+        let maxPeak = 0.01;
+        for (let i = 0; i < bars; i++) {
+          let sum = 0;
+          const start = i * blockSize;
+          const step = Math.max(1, Math.floor(blockSize / 64));
+          let count = 0;
+          for (let j = 0; j < blockSize && start + j < raw.length; j += step) {
+            const v = Math.abs(raw[start + j]);
+            if (v > sum) sum = v;
+            count++;
+          }
+          peaks.push(sum);
+          if (sum > maxPeak) maxPeak = sum;
+        }
+        const normalized = peaks.map(p => Math.max(8, Math.min(96, Math.round((p / maxPeak) * 92))));
+        if (mountedRef.current) {
+          setWaveformsMap(prev => ({ ...prev, [stem.id]: normalized }));
+        }
+      } finally {
+        ctx.close().catch(() => {});
+      }
+    } catch {
+      // Fallback silencioso si CORS o red impide decodificar
+    }
+  };
 
   const togglePlay = (stem: any) => {
     if (playingStemId === stem.id) {
@@ -84,11 +133,21 @@ export default function StemStudio() {
       setPlayingStemId(null);
     } else {
       if (audioRef.current) {
-         audioRef.current.src = stem.file_url;
-         audioRef.current.play().catch(e => console.error("Playback failed", e));
-         setPlayingStemId(stem.id);
+        audioRef.current.src = stem.file_url;
+        audioRef.current.play().catch(e => console.error("Playback failed", e));
+        setPlayingStemId(stem.id);
+        setPlayProgress({ current: 0, duration: stem.metadata?.duration_seconds || 0 });
+        decodeWaveformForStem(stem);
       }
     }
+  };
+
+  const handleSeekAudio = (stem: any, e: React.MouseEvent<HTMLDivElement>) => {
+    if (playingStemId !== stem.id || !audioRef.current || !audioRef.current.duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audioRef.current.currentTime = pct * audioRef.current.duration;
+    setPlayProgress({ current: audioRef.current.currentTime, duration: audioRef.current.duration });
   };
 
   useEffect(() => {
@@ -98,14 +157,19 @@ export default function StemStudio() {
   useEffect(() => {
     selectedSongRef.current = selectedSongId;
     if (selectedSongId) {
+      sessionStorage.setItem('tandu_active_song_id', selectedSongId);
       fetchStems(selectedSongId);
-      // Stop playing if song changes
+      const activeSong = songs.find(s => s.id === selectedSongId);
+      if (activeSong) {
+        const pd = activeSong.prompter_data || {};
+        setTimeSignature(pd.timeSignature || '4/4');
+        setManualKey(pd.key || '');
+        setManualBpm(pd.bpm ? String(Math.round(Number(pd.bpm))) : '');
+      }
       if (audioRef.current) {
         audioRef.current.pause();
         setPlayingStemId(null);
       }
-      // Reset DSP state for new song (unless a job is still running; its result
-      // will be saved into the song where it was started)
       if (!dspBusyRef.current) {
         setWatermarkJobStatus('idle');
         setCleanAudioUrl(null);
@@ -115,7 +179,7 @@ export default function StemStudio() {
     } else {
       setStems([]);
     }
-  }, [selectedSongId]);
+  }, [selectedSongId, songs]);
 
   // Stop DSP polling when the page unmounts
   useEffect(() => {
@@ -447,13 +511,89 @@ export default function StemStudio() {
     }
   };
 
+  const handleRenameProject = async (song: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextTitle = prompt("Nuevo nombre del proyecto:", song.title);
+    if (!nextTitle || nextTitle.trim() === song.title) return;
+    const { error } = await supabase.from('songs').update({ title: nextTitle.trim() }).eq('id', song.id);
+    if (error) {
+      alert("Error al renombrar: " + error.message);
+      return;
+    }
+    fetchSongs();
+  };
+
+  const handleDeleteProject = async (song: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar el proyecto "${song.title}" y todas sus pistas asociadas?`)) return;
+    await supabase.from('stems').delete().eq('song_id', song.id);
+    const { error } = await supabase.from('songs').delete().eq('id', song.id);
+    if (error) {
+      alert("Error al eliminar proyecto: " + error.message);
+      return;
+    }
+    if (selectedSongId === song.id) {
+      setSelectedSongId(null);
+      sessionStorage.removeItem('tandu_active_song_id');
+    }
+    fetchSongs();
+  };
+
+  const toggleMasterStem = async (targetStem: any) => {
+    if (!selectedSongId) return;
+    const willBeMaster = !(targetStem.metadata?.is_master === true);
+    try {
+      for (const s of stems) {
+        const nextIsMaster = s.id === targetStem.id ? willBeMaster : false;
+        if (Boolean(s.metadata?.is_master) !== nextIsMaster) {
+          const nextMeta = { ...(s.metadata || {}), is_master: nextIsMaster };
+          await supabase.from('stems').update({ metadata: nextMeta }).eq('id', s.id);
+        }
+      }
+      await fetchStems(selectedSongId);
+    } catch (err: any) {
+      alert("Error al actualizar pista Master: " + err.message);
+    }
+  };
+
+  const handleSaveGridMeta = async () => {
+    if (!selectedSongId) return;
+    setIsSavingMeta(true);
+    try {
+      const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
+      const currentPrompterData = songData?.prompter_data || {};
+      const parsedBpm = Number(manualBpm);
+      const nextPrompterData = {
+        ...currentPrompterData,
+        timeSignature: timeSignature || '4/4',
+        key: manualKey.trim(),
+        ...(parsedBpm > 20 && parsedBpm < 300 ? { bpm: parsedBpm } : {}),
+      };
+      const { error } = await supabase.from('songs').update({ prompter_data: nextPrompterData }).eq('id', selectedSongId);
+      if (error) throw error;
+      setAiSuccessMessage("Parámetros de Compás, Tonalidad y Tempo guardados.");
+      fetchSongs();
+      setTimeout(() => setAiSuccessMessage(null), 3500);
+    } catch (err: any) {
+      alert("Error guardando parámetros: " + err.message);
+    } finally {
+      setIsSavingMeta(false);
+    }
+  };
+
   const fetchSongs = async () => {
     setLoadingSongs(true);
     const { data } = await supabase
       .from('songs')
       .select('*')
       .order('title');
-    if (data) setSongs(data);
+    if (data) {
+      setSongs(data);
+      const savedId = sessionStorage.getItem('tandu_active_song_id');
+      if (savedId && data.some((s: any) => s.id === savedId)) {
+        setSelectedSongId(savedId);
+      }
+    }
     setLoadingSongs(false);
   };
 
@@ -464,7 +604,11 @@ export default function StemStudio() {
       .select('*')
       .eq('song_id', songId)
       .order('name');
-    if (data) setStems(data);
+    if (data) {
+      setStems(data);
+      // Pre-decodificar ondas en segundo plano para las primeras pistas
+      data.slice(0, 6).forEach((s: any) => decodeWaveformForStem(s));
+    }
     setLoadingStems(false);
   };
 
@@ -484,7 +628,9 @@ export default function StemStudio() {
     setAiSuccessMessage(null);
     
     try {
-      setAiSuccessMessage(`Paso 1/2: Iniciando análisis de Tempo...`);
+      const masterStem = stems.find(s => s.metadata?.is_master === true);
+      const refName = masterStem ? `★ ${masterStem.name} (Master)` : (stems[0]?.name || 'Stems');
+      setAiSuccessMessage(`Paso 1/2: Analizando Tempo y Compás desde ${refName}...`);
 
       const beatsRes = await fetch('/api/ai/beats', {
         method: 'POST',
@@ -564,7 +710,7 @@ export default function StemStudio() {
          throw new Error('Timeout esperando el análisis de Tempo');
       }
 
-      setAiSuccessMessage(`Tempo detectado. Guardando en la base de datos...`);
+      setAiSuccessMessage(`Tempo (${Math.round(beatsPrompterData.bpm)} BPM) detectado. Guardando grilla...`);
       
       const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
       const currentPrompterData = songData?.prompter_data || {};
@@ -572,6 +718,8 @@ export default function StemStudio() {
       const finalPrompterData = {
         ...currentPrompterData,
         bpm: beatsPrompterData.bpm,
+        timeSignature: timeSignature || currentPrompterData.timeSignature || '4/4',
+        key: manualKey.trim() || currentPrompterData.key || '',
         beatTimes: beatsPrompterData.beatTimes,
         firstBeatOffset: beatsPrompterData.firstBeatOffset,
         sections: beatsPrompterData.sections.length > 0 ? beatsPrompterData.sections : currentPrompterData.sections,
@@ -581,7 +729,8 @@ export default function StemStudio() {
       const { error: updateError } = await supabase.from('songs').update({ prompter_data: finalPrompterData }).eq('id', selectedSongId);
       if (updateError) throw new Error(updateError.message);
 
-      setAiSuccessMessage("¡Tempo y Grilla generados y guardados exitosamente!");
+      setManualBpm(String(Math.round(Number(beatsPrompterData.bpm))));
+      setAiSuccessMessage(`¡Tempo (${Math.round(beatsPrompterData.bpm)} BPM), Compás (${finalPrompterData.timeSignature}) y Grilla guardados!`);
       fetchSongs();
       setTimeout(() => setAiSuccessMessage(null), 5000);
 
@@ -610,7 +759,7 @@ export default function StemStudio() {
     }
   };
 
-    const convertToMp3 = async (blob: Blob, onProgress: (msg: string) => void): Promise<Blob> => {
+  const convertToMp3 = async (blob: Blob, onProgress: (msg: string) => void): Promise<Blob> => {
     onProgress('Preparando conversor MP3...');
     if (!(window as any).lamejs) {
         const lamejsSrc = await import('lamejs/lame.all.js?raw');
@@ -667,27 +816,28 @@ export default function StemStudio() {
     if (!file) return;
 
     setIsSplitting(true);
-    setSplitMessage("Creando carpeta para la canción...");
+    setSplitMessage("Preparando destino para los Stems...");
     
     try {
-      // 1. Crear una nueva canción (carpeta) automáticamente con el nombre del archivo
-      const newSongName = file.name.split('.').slice(0, -1).join('.') || file.name;
-      const { data: newSongData, error: songError } = await supabase
-        .from('songs')
-        .insert({ band_id: FAKE_BAND_ID, title: newSongName })
-        .select('id')
-        .single();
-        
-      if (songError) throw new Error("No se pudo crear la canción: " + songError.message);
-      const targetSongId = newSongData.id;
-
-      // Seleccionar automáticamente la nueva canción en la UI
-      setSelectedSongId(targetSongId);
-      await fetchSongs();
+      // Si ya hay un proyecto abierto, depositar dentro del proyecto actual; si no, crear uno nuevo
+      let targetSongId = selectedSongId;
+      if (!targetSongId) {
+        const newSongName = file.name.split('.').slice(0, -1).join('.') || file.name;
+        const { data: newSongData, error: songError } = await supabase
+          .from('songs')
+          .insert({ band_id: FAKE_BAND_ID, title: newSongName })
+          .select('id')
+          .single();
+          
+        if (songError) throw new Error("No se pudo crear la canción: " + songError.message);
+        targetSongId = newSongData.id;
+        setSelectedSongId(targetSongId);
+        await fetchSongs();
+      }
 
       setSplitMessage("Subiendo archivo original...");
       
-      const storagePath = `${FAKE_BAND_ID}/temp/${Date.now()}_${file.name}`;
+      const storagePath = `${FAKE_BAND_ID}/temp/${Date.now()}_${sanitizeFileName(file.name)}`;
       const { error: uploadError } = await supabase.storage.from('audios').upload(storagePath, file);
       if (uploadError) throw new Error("Error subiendo audio: " + uploadError.message);
 
@@ -738,9 +888,8 @@ export default function StemStudio() {
                  stemName = 'Mezcla Master';
                  isMasterFlag = true;
               }
-              else continue; // Ignorar instrum2.wav o json
+              else continue;
               
-              // Evitar error de CORS o fallos silenciosos
               const fetchRes = await fetch(url);
               if (!fetchRes.ok) throw new Error(`Replicate devolvió error ${fetchRes.status} para ${stemName}`);
               let blob = await fetchRes.blob();
@@ -758,7 +907,6 @@ export default function StemStudio() {
               const finalPath = `${FAKE_BAND_ID}/${targetSongId}/${Date.now()}_${stemName}.${fileExt}`;
               const { error: stemUploadError } = await supabase.storage.from('audios').upload(finalPath, blob, { contentType: mimeType });
               
-              // Si el storage falla (ej. límite de 1GB de Supabase), abortamos para no crear stems fantasmas
               if (stemUploadError) throw new Error(`Error guardando ${stemName} en Storage: ` + stemUploadError.message);
               
               const { data: finalUrl } = supabase.storage.from('audios').getPublicUrl(finalPath);
@@ -774,9 +922,9 @@ export default function StemStudio() {
 
             setSplitMessage("¡Todo listo!");
             setTimeout(() => setSplitMessage(null), 5000);
-            fetchStems(targetSongId); // Cargar los nuevos stems
+            if (targetSongId) fetchStems(targetSongId);
 
-            await supabase.storage.from('audios').remove([storagePath]); // Limpiar temporal
+            await supabase.storage.from('audios').remove([storagePath]);
             setIsSplitting(false);
           } else {
             setSplitMessage(`Procesando... intento ${pollCount}`);
@@ -786,7 +934,7 @@ export default function StemStudio() {
         } catch (error: any) {
           console.error("Error en poll:", error);
           alert("Error: " + error.message);
-          setSplitMessage("Error al procesar las plicas.");
+          setSplitMessage("Error al procesar las pistas.");
           setIsSplitting(false);
         }
       };
@@ -799,15 +947,41 @@ export default function StemStudio() {
       setIsSplitting(false);
       setSplitMessage(null);
     } finally {
-      if (e.target) e.target.value = ''; // Limpiar el input para permitir subir el mismo archivo de nuevo
+      if (e.target) e.target.value = '';
     }
-  };;
+  };
+
+  const formatMmSs = (sec: number) => {
+    if (!sec || !Number.isFinite(sec)) return '00:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const activeSongObj = songs.find(s => s.id === selectedSongId);
+  const currentMasterStem = stems.find(s => s.metadata?.is_master === true);
 
   return (
-    <div className="h-full flex flex-col bg-[#111113] overflow-hidden text-zinc-300 select-none">
+    <div className="h-full flex flex-col bg-[#07090e] overflow-hidden text-zinc-300 select-none">
       {/* Hidden Audio Player for Previews */}
       <audio 
         ref={audioRef} 
+        onTimeUpdate={() => {
+          if (audioRef.current) {
+            setPlayProgress({
+              current: audioRef.current.currentTime,
+              duration: audioRef.current.duration || playProgress.duration || 0,
+            });
+          }
+        }}
+        onLoadedMetadata={() => {
+          if (audioRef.current) {
+            setPlayProgress({
+              current: audioRef.current.currentTime,
+              duration: audioRef.current.duration || 0,
+            });
+          }
+        }}
         onEnded={() => setPlayingStemId(null)}
         onError={() => {
            console.error("Audio playback error");
@@ -815,14 +989,28 @@ export default function StemStudio() {
         }}
       />
 
-      {/* Header - DAW Style */}
-      <div className="flex items-center justify-between px-4 py-3 bg-[#18181b] border-b border-zinc-800 shrink-0">
+      {/* Header - TANDU /STAGE Studio Header */}
+      <div className="flex items-center justify-between px-5 py-3 bg-[#0c0e14] border-b border-white/[0.07] shrink-0">
         <div className="flex items-center gap-3">
-          <Disc3 className="text-emerald-500" size={18} strokeWidth={2.5} />
-          <h1 className="text-xs font-bold text-zinc-200 tracking-widest uppercase">Stem Studio</h1>
+          <div className="w-7 h-7 rounded-lg bg-red-600/15 border border-red-500/30 flex items-center justify-center">
+            <Disc3 className="text-red-500" size={16} strokeWidth={2.5} />
+          </div>
+          <div>
+            <h1 className="text-xs font-black text-white tracking-widest uppercase">1. Stem Studio &bull; Master Grid</h1>
+            <p className="text-[10px] text-zinc-500">Carga de Stems Separados + Pista Master para Tempo y Compás IA</p>
+          </div>
         </div>
-        <div className="text-[10px] font-bold tracking-widest uppercase text-zinc-500">
-          Master Library
+        <div className="flex items-center gap-3">
+          {activeSongObj && (
+            <button
+              onClick={() => navigate('/prompter')}
+              className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-2 shadow-[0_0_20px_rgba(239,68,68,0.25)] transition-all"
+              title="Continuar al Paso 2: Configurar Acordes, Voz Guía y Exportar Mezcla En Vivo"
+            >
+              <span>Paso 2: Abrir en Studio Prompter</span>
+              <ArrowRight size={13} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -830,58 +1018,106 @@ export default function StemStudio() {
       <div className="flex flex-1 overflow-hidden">
         
         {/* Sidebar - Project/Song Browser */}
-        <div className="w-72 flex flex-col bg-[#09090b] border-r border-zinc-800 shrink-0 z-10">
-          <div className="px-4 py-2 border-b border-zinc-800 bg-[#121214] flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <Music size={12} className="text-zinc-500" />
-                <h2 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Projects</h2>
-              </div>
-              <button 
-                onClick={handleCreateNewProject} 
-                className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
-                title="Nueva Carpeta (Proyecto)"
-              >
-                <Plus size={12} />
-              </button>
+        <div className="w-72 flex flex-col bg-[#090b10] border-r border-white/[0.06] shrink-0 z-10">
+          <div className="px-4 py-2.5 border-b border-white/[0.06] bg-[#0d1017] flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <Music size={12} className="text-red-500" />
+              <h2 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Proyectos ({songs.length})</h2>
             </div>
+            <button 
+              onClick={handleCreateNewProject} 
+              className="px-2 py-1 flex items-center gap-1 rounded bg-red-600/15 hover:bg-red-600/25 border border-red-500/30 text-red-400 text-[10px] font-bold transition-colors"
+              title="Crear Nueva Canción"
+            >
+              <Plus size={11} />
+              <span>Nuevo</span>
+            </button>
+          </div>
           
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-0.5">
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
             {loadingSongs ? (
               <div className="flex items-center gap-2 text-zinc-500 p-3">
                 <Loader2 size={12} className="animate-spin" />
-                <span className="text-xs">Loading...</span>
+                <span className="text-xs">Cargando proyectos...</span>
               </div>
             ) : songs.length === 0 ? (
-              <p className="text-zinc-600 text-xs p-3">No projects found.</p>
+              <p className="text-zinc-600 text-xs p-3">No hay proyectos aún.</p>
             ) : (
-              songs.map((song) => (
-                <button
-                  key={song.id}
-                  onClick={() => setSelectedSongId(song.id)}
-                  className={`w-full text-left px-3 py-2 flex items-center justify-between rounded text-xs transition-colors ${
-                    selectedSongId === song.id 
-                      ? 'bg-zinc-800 text-zinc-100 font-medium' 
-                      : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
-                  }`}
-                >
-                  <div className="truncate pr-2">{song.title}</div>
-                  {selectedSongId === song.id && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                  )}
-                </button>
-              ))
+              songs.map((song) => {
+                const pd = song.prompter_data || {};
+                const hasGrid = Boolean(pd.bpm || (pd.beatTimes && pd.beatTimes.length > 0));
+                const hasChords = Boolean(pd.chords && pd.chords.length > 0);
+                const hasLyrics = Boolean(pd.lyrics && pd.lyrics.length > 0);
+                const hasLiveMix = Boolean((song.foh_mix_url && song.cue_mix_url) || pd.live_mix_url);
+                const isSelected = selectedSongId === song.id;
+
+                return (
+                  <div
+                    key={song.id}
+                    onClick={() => setSelectedSongId(song.id)}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs transition-all cursor-pointer group border ${
+                      isSelected 
+                        ? 'bg-[#151924] text-white font-semibold border-red-500/40 shadow-md' 
+                        : 'text-zinc-400 border-transparent hover:bg-white/[0.03] hover:text-zinc-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="truncate pr-1 font-bold">{song.title}</div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => handleRenameProject(song, e)}
+                          className="opacity-0 group-hover:opacity-100 p-1 hover:text-white text-zinc-500 transition-opacity"
+                          title="Renombrar proyecto"
+                        >
+                          <Edit3 size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteProject(song, e)}
+                          className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-zinc-500 transition-opacity"
+                          title="Eliminar proyecto"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                        {isSelected && (
+                          <div className="w-2 h-2 rounded-full bg-red-500 shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                      {pd.bpm && (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800">
+                          {Math.round(Number(pd.bpm))} BPM
+                        </span>
+                      )}
+                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasGrid ? 'bg-purple-500/15 text-purple-300 border-purple-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                        Grilla
+                      </span>
+                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasChords ? 'bg-sky-500/15 text-sky-300 border-sky-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                        Acordes
+                      </span>
+                      <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border ${hasLyrics ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-zinc-900/50 text-zinc-600 border-zinc-800/60'}`}>
+                        Lyrics
+                      </span>
+                      {hasLiveMix && (
+                        <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          Mix Listo
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-y-auto bg-[#141417] custom-scrollbar relative">
+        <div className="flex-1 flex flex-col overflow-y-auto bg-[#0b0d13] custom-scrollbar relative">
           {!selectedSongId ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-zinc-600">
-              <FolderPlus size={48} className="mb-4 opacity-20" strokeWidth={1} />
-              <p className="text-sm font-medium text-zinc-400">Select a project to view stems</p>
-              <p className="text-xs mt-1 opacity-70">or upload a .ZIP to create a new one.</p>
-              <div className="mt-8 w-80">
+            <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-6">
+              <div className="max-w-lg w-full">
                 <StemUploader 
                   songId={selectedSongId}
                   bandId={FAKE_BAND_ID}
@@ -895,158 +1131,300 @@ export default function StemStudio() {
               {/* Top Controls Toolbar */}
               <div className="flex flex-col xl:flex-row gap-4 shrink-0">
                 
-                {/* Uploader / Adder (Red/Orange Theme) */}
-                <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-4 flex flex-col gap-4">
-                  <div className="flex items-center gap-2 pb-2 border-b border-zinc-800/50">
-                    <FolderPlus size={14} className="text-orange-500" />
-                    <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Add Audio Files</h3>
+                {/* 1. CARGA PRINCIPAL DE STEMS SEPARADOS + COMPLEMENTO IA SPLITTER */}
+                <div className="flex-1 bg-[#11141d] border border-white/[0.07] rounded-xl p-4 flex flex-col justify-between gap-3 shadow-xl">
+                  <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+                    <div className="flex items-center gap-2">
+                      <FolderPlus size={14} className="text-red-500" />
+                      <h3 className="text-[10px] font-black text-white uppercase tracking-widest">
+                        Paso 1: Cargar Stems Separados + Pista Master
+                      </h3>
+                    </div>
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/30">
+                      Flujo Principal
+                    </span>
                   </div>
                   
-                  <div className="flex-1 flex flex-col gap-4">
-                    <div className="text-xs w-full flex items-center justify-center border border-orange-500/20 hover:border-orange-500/50 bg-orange-950/10 rounded transition-colors overflow-hidden py-1">
-                       <StemUploader 
-                          songId={selectedSongId}
-                          bandId={FAKE_BAND_ID}
-                          onUploadComplete={handleUploadComplete}
-                        />
-                    </div>
+                  <div className="flex flex-col gap-3">
+                    <StemUploader 
+                      songId={selectedSongId}
+                      bandId={FAKE_BAND_ID}
+                      onUploadComplete={handleUploadComplete}
+                      compact={true}
+                    />
                     
-                    <div className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between px-1">
-                          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Formato Salida:</span>
-                          <select 
-                            value={splitFormat} 
-                            onChange={(e) => setSplitFormat(e.target.value as 'mp3' | 'wav')}
-                            disabled={isSplitting}
-                            className="bg-[#09090b] text-xs text-zinc-300 border border-zinc-800 rounded px-2 py-1 outline-none cursor-pointer"
-                          >
-                            <option value="mp3">MP3 320k (Ahorra espacio)</option>
-                            <option value="wav">WAV (Máxima calidad)</option>
-                          </select>
+                    {/* Complemento: Separador IA desde 1 archivo */}
+                    <div className="border-t border-white/[0.06] pt-2.5 flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setShowSplitterComplement(v => !v)}
+                          className="text-[10px] font-bold text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors"
+                        >
+                          <Sparkles size={12} className="text-amber-400" />
+                          <span>Complemento: ¿No tienes los stems separados? Extraer desde 1 canción con IA</span>
+                          <span className="text-[9px] text-zinc-500 ml-1">{showSplitterComplement ? '▲' : '▼'}</span>
+                        </button>
+                        {isSplitting && (
+                          <span className="text-[10px] text-amber-400 font-semibold animate-pulse">{splitMessage}</span>
+                        )}
+                      </div>
+
+                      {(showSplitterComplement || isSplitting) && (
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-[#090b10] p-2.5 rounded-lg border border-zinc-800/80">
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Salida:</span>
+                            <select 
+                              value={splitFormat} 
+                              onChange={(e) => setSplitFormat(e.target.value as 'mp3' | 'wav')}
+                              disabled={isSplitting}
+                              className="bg-[#12151e] text-xs text-zinc-200 border border-zinc-800 rounded px-2 py-1 outline-none cursor-pointer"
+                            >
+                              <option value="mp3">MP3 320k (Ligero)</option>
+                              <option value="wav">WAV (Sin pérdida)</option>
+                            </select>
+                          </div>
+                          <div className="relative flex-1 h-[34px] group bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded flex items-center justify-center px-3 cursor-pointer transition-colors overflow-hidden">
+                            <input type="file" accept="audio/mpeg, audio/wav, audio/mp3" onChange={handleSplitMP3} disabled={isSplitting} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" />
+                            <div className="flex items-center gap-2 pointer-events-none z-0">
+                              {isSplitting ? <RefreshCw size={13} className="animate-spin text-amber-400" /> : <Sparkles size={13} className="text-amber-400" />}
+                              <span className="text-xs font-bold text-amber-200 truncate">
+                                {isSplitting ? splitMessage : "Subir 1 Archivo Completo para Separar en Stems"}
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="relative h-[40px] group bg-red-950/20 border border-red-500/30 hover:border-red-500/60 rounded flex items-center justify-between px-3 cursor-pointer transition-colors overflow-hidden">
-                      <input type="file" accept="audio/mpeg, audio/wav, audio/mp3" onChange={handleSplitMP3} disabled={isSplitting} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" />
-                      <div className="flex items-center gap-2 pointer-events-none z-0">
-                        {isSplitting ? <RefreshCw size={14} className="animate-spin text-red-400" /> : <Sparkles size={14} className="text-red-400" />}
-                        <span className="text-xs font-semibold text-zinc-300">
-                          {isSplitting ? splitMessage : "AI Studio Splitter (WAV / 320k)"}
-                        </span>
-                      </div>
+                      )}
                     </div>
-                      </div>
                   </div>
                 </div>
 
-                {/* AI Tempo & Grid Module */}
-                <div className="flex-1 bg-[#1a1a1e] border border-zinc-800/80 rounded-lg p-4 flex flex-col gap-4">
-                  <div className="flex items-center justify-between pb-2 border-b border-zinc-800/50">
+                {/* 2. GRILLA GLOBAL Y TEMPO (DESDE EL ARCHIVO MASTER) */}
+                <div className="flex-1 bg-[#11141d] border border-white/[0.07] rounded-xl p-4 flex flex-col justify-between gap-3 shadow-xl">
+                  <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-                      <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Global Grid & Tempo</h3>
+                      <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                      <h3 className="text-[10px] font-black text-white uppercase tracking-widest">
+                        Paso 2: Grilla Global, Compás y Tempo
+                      </h3>
                     </div>
-                    {songs.find(s => s.id === selectedSongId)?.prompter_data?.lastAiDetection && (
-                       <div className="flex items-center gap-1 text-[9px] text-zinc-500 uppercase tracking-wider">
-                         <CheckCircle size={10} className="text-zinc-600" /> Synced
-                       </div>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {currentMasterStem ? (
+                        <span className="flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          <Star size={10} className="fill-amber-400 text-amber-400" />
+                          Fuente IA: {currentMasterStem.name}
+                        </span>
+                      ) : stems.length > 0 ? (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700" title="Haz clic en la estrella ★ de una pista abajo para designarla como Master">
+                          Sin ★ Master explícito (Usará {stems[0]?.name})
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                   
-                  <div className="flex gap-3">
-                    <div className="flex-1 flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">Signature</label>
-                      <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} className="h-[32px] bg-[#09090b] border border-zinc-800 rounded text-xs text-zinc-300 px-2 focus:border-purple-500 focus:outline-none">
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Compás</label>
+                      <select value={timeSignature} onChange={(e) => setTimeSignature(e.target.value)} className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-bold px-2.5 focus:border-purple-500 focus:outline-none">
                         <option value="4/4">4/4</option>
                         <option value="3/4">3/4</option>
                         <option value="6/8">6/8</option>
                       </select>
                     </div>
-                    <div className="flex-1 flex flex-col gap-1.5">
-                      <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">Key (Optional)</label>
-                      <input type="text" value={manualKey} onChange={(e) => setManualKey(e.target.value)} placeholder="e.g. Bb Maj" className="h-[32px] bg-[#09090b] border border-zinc-800 rounded text-xs text-zinc-300 px-2 focus:border-purple-500 focus:outline-none placeholder:text-zinc-700" />
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Tempo (BPM)</label>
+                      <input
+                        type="number"
+                        value={manualBpm}
+                        onChange={(e) => setManualBpm(e.target.value)}
+                        placeholder="Auto IA"
+                        className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-mono font-bold px-2.5 focus:border-purple-500 focus:outline-none placeholder:text-zinc-600"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Tonalidad (Key)</label>
+                      <input
+                        type="text"
+                        value={manualKey}
+                        onChange={(e) => setManualKey(e.target.value)}
+                        placeholder="Ej. Do Mayor / Am"
+                        className="h-[34px] bg-[#090b10] border border-zinc-800 rounded-lg text-xs text-white font-bold px-2.5 focus:border-purple-500 focus:outline-none placeholder:text-zinc-600"
+                      />
                     </div>
                   </div>
                   
-                  <button 
-                    onClick={handleGenerateChordsAI}
-                    disabled={isGeneratingAI || stems.length === 0}
-                    className="w-full h-[32px] bg-purple-600/10 hover:bg-purple-600/20 border border-purple-500/30 text-purple-400 text-xs font-bold rounded flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
-                  >
-                    {isGeneratingAI ? <RefreshCw className="animate-spin" size={14} /> : null}
-                    {isGeneratingAI ? "Analyzing..." : "Auto-Detect Tempo"}
-                  </button>
-                  {aiSuccessMessage && <div className="text-[10px] text-green-400 bg-green-900/10 px-2 py-1.5 rounded border border-green-900/30 truncate">{aiSuccessMessage}</div>}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveGridMeta}
+                      disabled={isSavingMeta}
+                      className="h-[34px] px-3 bg-zinc-800/90 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors shrink-0"
+                      title="Guardar Compás, BPM manual y Tonalidad"
+                    >
+                      <Save size={13} />
+                      <span>Guardar</span>
+                    </button>
+                    <button 
+                      onClick={handleGenerateChordsAI}
+                      disabled={isGeneratingAI || stems.length === 0}
+                      className="flex-1 h-[34px] bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-300 text-xs font-black uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                    >
+                      {isGeneratingAI ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} />}
+                      {isGeneratingAI ? "Analizando Master..." : "Capturar Tempo y Crear Grilla (IA)"}
+                    </button>
+                  </div>
+                  {aiSuccessMessage && (
+                    <div className="text-[10px] text-emerald-400 bg-emerald-950/30 px-2.5 py-1.5 rounded border border-emerald-500/30 font-semibold truncate">
+                      {aiSuccessMessage}
+                    </div>
+                  )}
                 </div>
 
               </div>
 
               {/* Tracks / Stems Section (DAW Style) */}
-              <div className="flex flex-col bg-[#09090b] border border-zinc-800/80 rounded-lg overflow-hidden shrink-0 shadow-2xl">
+              <div className="flex flex-col bg-[#090b10] border border-white/[0.07] rounded-xl overflow-hidden shrink-0 shadow-2xl">
                 {/* Tracks Header */}
-                <div className="flex items-center px-4 py-2 bg-[#121214] border-b border-zinc-800">
-                   <div className="w-[320px] text-[10px] font-bold text-zinc-500 uppercase tracking-widest shrink-0">Track Name</div>
-                   <div className="flex-1 text-[10px] font-bold text-zinc-500 uppercase tracking-widest pl-4">Waveform</div>
-                   <div className="w-[136px] text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right pr-2 shrink-0">Controls</div>
+                <div className="flex items-center px-4 py-2.5 bg-[#10131c] border-b border-white/[0.06]">
+                   <div className="w-[330px] text-[10px] font-black text-zinc-400 uppercase tracking-widest shrink-0">
+                     Pista / Stem ({stems.length})
+                   </div>
+                   <div className="flex-1 text-[10px] font-black text-zinc-400 uppercase tracking-widest pl-4">
+                     Forma de Onda Real (Clic para adelantar/retroceder al reproducir)
+                   </div>
+                   <div className="w-[175px] text-[10px] font-black text-zinc-400 uppercase tracking-widest text-right pr-2 shrink-0">
+                     Master IA / Controles
+                   </div>
                 </div>
 
                 {loadingStems ? (
                   <div className="flex items-center justify-center py-16 text-zinc-500">
                     <Loader2 size={20} className="animate-spin mr-3 text-zinc-400" />
-                    <span className="text-sm font-medium">Loading tracks...</span>
+                    <span className="text-sm font-medium">Cargando stems...</span>
                   </div>
                 ) : stems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-16 bg-[#09090b]">
+                  <div className="flex flex-col items-center justify-center py-16 bg-[#090b10]">
                     <div className="w-12 h-12 rounded-full bg-zinc-900 flex items-center justify-center mb-3">
                       <FileAudio size={20} className="text-zinc-700" />
                     </div>
-                    <p className="text-sm text-zinc-500 font-medium">No audio tracks</p>
-                    <p className="text-xs text-zinc-600 mt-1">Upload files or extract stems to begin.</p>
+                    <p className="text-sm text-zinc-400 font-bold">Esta canción aún no tiene Stems</p>
+                    <p className="text-xs text-zinc-600 mt-1">Sube tus stems separados arriba (incluyendo el archivo Master) para comenzar.</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col divide-y divide-zinc-800/50">
-                    {stems.map((stem) => {
+                  <div className="flex flex-col divide-y divide-white/[0.05]">
+                    {stems.map((stem, stemIdx) => {
                       const isThisDecorrelating = decorrelatingStemId === stem.id;
                       const isDspBusy = watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark;
                       const isDspTrack = Boolean(stem.metadata?.dsp_watermark);
+                      const isMasterTrack = Boolean(stem.metadata?.is_master);
+                      const isPlayingThis = playingStemId === stem.id;
+                      const waveformBars = waveformsMap[stem.id];
+                      const progressRatio = isPlayingThis && playProgress.duration > 0
+                        ? Math.min(1, Math.max(0, playProgress.current / playProgress.duration))
+                        : 0;
+
                       return (
-                        <div key={stem.id} className="flex min-h-[64px] bg-[#09090b] hover:bg-[#121214] transition-colors group">
-                          {/* Track Info (Left panel of DAW track) */}
-                          <div className="w-[320px] px-4 py-3 flex flex-col justify-center border-r border-zinc-800/50 bg-[#101012] group-hover:bg-[#141417] shrink-0">
+                        <div key={stem.id} className={`flex min-h-[66px] transition-colors group ${isMasterTrack ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'bg-[#090b10] hover:bg-[#111520]'}`}>
+                          {/* Track Info */}
+                          <div className="w-[330px] px-4 py-3 flex flex-col justify-center border-r border-white/[0.05] bg-[#0d1017]/80 shrink-0">
                              <div className="flex items-start gap-2.5">
-                               <div className={`w-5 h-5 shrink-0 rounded flex items-center justify-center mt-0.5 ${isDspTrack ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30' : 'bg-zinc-800 text-zinc-400'}`}>
-                                 {isDspTrack ? <Shield size={11} /> : <FileAudio size={11} />}
+                               <div className={`w-5 h-5 shrink-0 rounded flex items-center justify-center mt-0.5 ${
+                                 isMasterTrack
+                                   ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                   : isDspTrack
+                                   ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                                   : 'bg-zinc-800 text-zinc-400'
+                               }`}>
+                                 {isMasterTrack ? <Star size={11} className="fill-amber-400" /> : isDspTrack ? <Shield size={11} /> : <FileAudio size={11} />}
                                </div>
-                               <span className="text-[13px] font-semibold text-zinc-200 leading-snug whitespace-normal break-words">{stem.name}</span>
+                               <span className="text-[13px] font-bold text-zinc-100 leading-snug whitespace-normal break-words">{stem.name}</span>
                              </div>
-                             <div className="flex items-center gap-2 pl-7 mt-1.5">
-                               <span className="text-[9px] text-zinc-600 uppercase tracking-wider font-bold">{stem.type || 'Audio'}</span>
+                             <div className="flex flex-wrap items-center gap-1.5 pl-7 mt-1.5">
+                               {isMasterTrack ? (
+                                 <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                   ★ MASTER (Fuente Tempo / Acordes IA)
+                                 </span>
+                               ) : (
+                                 <span className="text-[9px] text-zinc-500 uppercase tracking-wider font-bold">{stem.type || 'Stem'}</span>
+                               )}
                                {isDspTrack && (
                                  <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
                                    DSP {stem.metadata?.dsp_preset ? String(stem.metadata.dsp_preset).toUpperCase() : 'CLEAN'}
                                  </span>
                                )}
+                               {isPlayingThis && (
+                                 <span className="text-[9px] font-mono text-emerald-400 font-bold ml-auto">
+                                   {formatMmSs(playProgress.current)} / {formatMmSs(playProgress.duration)}
+                                 </span>
+                               )}
                              </div>
                           </div>
                           
-                          {/* Fake Waveform area (Center) */}
+                          {/* Real / Interactive Waveform area */}
                           <div className="flex-1 flex items-center px-4 py-2 relative">
-                            <div className="absolute inset-y-2 left-4 right-4 bg-[#141417] border border-zinc-800/50 rounded flex items-center justify-center overflow-hidden">
-                               {/* A purely visual fake waveform representation for DAW feel */}
-                               <div className={`w-full h-full flex items-center gap-[1px] opacity-[0.15] px-1 transition-opacity duration-300 ${playingStemId === stem.id ? 'opacity-[0.8] animate-pulse' : ''}`}>
-                                  {Array.from({length: 80}).map((_, i) => (
-                                    <div key={i} className={`flex-1 ${playingStemId === stem.id ? 'bg-emerald-400' : isDspTrack ? 'bg-blue-400' : 'bg-emerald-500'} rounded-sm`} style={{ height: `${10 + ((i * 37) % 80)}%` }}></div>
-                                  ))}
-                               </div>
+                            <div
+                              onClick={(e) => handleSeekAudio(stem, e)}
+                              className={`absolute inset-y-2 left-4 right-4 bg-[#11141d] border rounded-lg flex items-center justify-center overflow-hidden ${
+                                isPlayingThis ? 'border-emerald-500/40 cursor-pointer' : 'border-white/[0.05]'
+                              }`}
+                            >
+                              {isPlayingThis && (
+                                <div
+                                  className="absolute inset-y-0 left-0 bg-emerald-500/10 border-r-2 border-emerald-400 pointer-events-none z-10 transition-all duration-100"
+                                  style={{ width: `${progressRatio * 100}%` }}
+                                />
+                              )}
+                              <div className={`w-full h-full flex items-center gap-[1.5px] px-1.5 transition-opacity duration-300 ${isPlayingThis ? 'opacity-95' : 'opacity-45 group-hover:opacity-70'}`}>
+                                {Array.from({ length: 80 }).map((_, i) => {
+                                  const barHeight = waveformBars
+                                    ? waveformBars[i] || 15
+                                    : 12 + ((i * (29 + stemIdx * 7) + stemIdx * 19) % 76);
+                                  const isPlayedBar = isPlayingThis && (i / 80) <= progressRatio;
+                                  return (
+                                    <div
+                                      key={i}
+                                      className={`flex-1 rounded-sm transition-all ${
+                                        isPlayedBar
+                                          ? 'bg-emerald-400'
+                                          : isMasterTrack
+                                          ? 'bg-amber-400/80'
+                                          : isDspTrack
+                                          ? 'bg-blue-400/80'
+                                          : 'bg-zinc-500'
+                                      }`}
+                                      style={{ height: `${barHeight}%` }}
+                                    />
+                                  );
+                                })}
+                              </div>
                             </div>
                           </div>
 
                           {/* Controls (Right) */}
-                          <div className="w-[136px] flex items-center justify-end px-4 gap-1 shrink-0">
+                          <div className="w-[175px] flex items-center justify-end px-4 gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleMasterStem(stem)}
+                              className={`h-7 px-2 rounded flex items-center gap-1 text-[9px] font-black uppercase tracking-wider border transition-all ${
+                                isMasterTrack
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                                  : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:text-amber-300 hover:border-amber-500/40'
+                              }`}
+                              title={isMasterTrack ? "Esta es la pista Master que lee la IA para el Tempo y Acordes" : "Marcar esta pista como el archivo Master para la IA"}
+                            >
+                              <Star size={11} className={isMasterTrack ? "fill-amber-400 text-amber-400" : ""} />
+                              <span>Master</span>
+                            </button>
                             <button 
                               onClick={() => togglePlay(stem)}
-                              className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                              title={playingStemId === stem.id ? "Pause" : "Play"}
+                              className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
+                                isPlayingThis
+                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                  : 'text-zinc-400 hover:text-emerald-400 hover:bg-emerald-500/10'
+                              }`}
+                              title={isPlayingThis ? "Pausar" : "Escuchar pista"}
                             >
-                              {playingStemId === stem.id ? <Pause size={15} /> : <Play size={15} />}
+                              {isPlayingThis ? <Pause size={15} /> : <Play size={15} />}
                             </button>
                             <button
                               onClick={() => handleDecorrelateExistingStem(stem)}
@@ -1063,7 +1441,7 @@ export default function StemStudio() {
                             <button 
                               onClick={() => deleteStem(stem.id)}
                               className="w-8 h-8 flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                              title="Delete Track"
+                              title="Eliminar pista"
                             >
                               <Trash2 size={15} />
                             </button>

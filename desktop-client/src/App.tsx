@@ -47,6 +47,7 @@ function AppRoutes() {
         </ProtectedRoute>
       }>
         <Route path="/" element={<LiveConcert />} />
+        <Route path="/concert" element={<LiveConcert />} />
         <Route path="/editor" element={<LivePrompter />} />
         <Route path="/studio" element={<StemStudio />} />
         <Route path="/setlists" element={<SetlistBuilder />} />

@@ -7,6 +7,10 @@ interface LyricVisualizerProps {
   currentTime: number; // In seconds (from LiveConcert audio engine)
   lyrics: LyricLine[];
   isPlaying: boolean;
+  settings?: any;
+  bpm?: number;
+  firstBeatOffset?: number;
+  beatTimes?: number[];
 }
 
 export interface RenderLyricFrameOptions {
@@ -526,6 +530,7 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
   currentTime,
   lyrics,
   isPlaying,
+  bpm,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -539,7 +544,7 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
 
     const render = () => {
       const timeMs = currentTime * 1000;
-      renderLyricCanvasFrame(ctx, canvas.width, canvas.height, timeMs, lyrics);
+      renderLyricCanvasFrame(ctx, canvas.width, canvas.height, timeMs, lyrics, { bpm });
 
       if (isPlaying) {
         animationFrameId = requestAnimationFrame(render);
@@ -551,7 +556,7 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
     };
-  }, [currentTime, lyrics, isPlaying]);
+  }, [currentTime, lyrics, isPlaying, bpm]);
 
   return (
     <div className="w-full h-full flex items-center justify-center bg-[#050608] relative overflow-hidden">

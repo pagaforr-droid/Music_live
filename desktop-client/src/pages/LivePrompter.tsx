@@ -1,21 +1,70 @@
 import { useEffect, useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAudioEngine, StemTrack } from '../hooks/useAudioEngine';
 import { Prompter } from '../components/Prompter';
-import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Music, Headphones, Activity, Sparkles, Loader2, Disc3 } from 'lucide-react';
+import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Music, Headphones, Activity, Sparkles, Loader2, Disc3, Star, ArrowRight } from 'lucide-react';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
+const CHROMATIC_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const CHROMATIC_FLAT  = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+function transposeSingleNote(note: string, semitones: number): string {
+  let idx = CHROMATIC_SHARP.indexOf(note);
+  const preferFlats = note.includes('b');
+  if (idx === -1) idx = CHROMATIC_FLAT.indexOf(note);
+  if (idx === -1) return note;
+  const nextIdx = (((idx + semitones) % 12) + 12) % 12;
+  return preferFlats ? CHROMATIC_FLAT[nextIdx] : CHROMATIC_SHARP[nextIdx];
+}
+
+function transposeChordSymbol(chord: string, semitones: number): string {
+  if (!chord || chord === 'N' || chord === 'NC') return chord;
+  return chord.replace(/([A-G][#b]?)/g, (match) => transposeSingleNote(match, semitones));
+}
+
 export default function LivePrompter() {
+  const navigate = useNavigate();
   const [songs, setSongs] = useState<any[]>([]);
-  const [selectedSongId, setSelectedSongId] = useState<string | null>(null);
-  const { loadStems, play, pause, seekTo, isPlaying, currentTime, stems, setStems, loadProgress, totalDuration, preRollDuration, exportLiveMix, exportMultitrackToZip, exportFullMixToMp3 } = useAudioEngine([]);
+  const [selectedSongId, setSelectedSongId] = useState<string | null>(() => {
+    return sessionStorage.getItem('tandu_active_song_id');
+  });
+  const {
+    loadStems,
+    play,
+    pause,
+    seekTo,
+    isPlaying,
+    currentTime,
+    stems,
+    setStems,
+    setLoop,
+    loadProgress,
+    totalDuration,
+    preRollDuration,
+    exportLiveMix,
+    exportMultitrackToZip,
+    exportFullMixToMp3,
+  } = useAudioEngine([]);
   
-  const [prompterData, setPrompterData] = useState<{bpm?: number, timeSignature?: string, firstBeatOffset?: number, beatTimes?: number[], chords: any[], sections: any[], lastAiDetection?: string}>({ chords: [], sections: [] });
+  const [prompterData, setPrompterData] = useState<{
+    bpm?: number;
+    timeSignature?: string;
+    key?: string;
+    firstBeatOffset?: number;
+    beatTimes?: number[];
+    chords: any[];
+    sections: any[];
+    lyrics?: any[];
+    lyric_settings?: any;
+    lastAiDetection?: string;
+  }>({ chords: [], sections: [], lyrics: [] });
   
   const [isDetectingChords, setIsDetectingChords] = useState(false);
   const [chordDetectionMsg, setChordDetectionMsg] = useState<string | null>(null);
+  const [isVamping, setIsVamping] = useState(false);
   
   // Ref del tiempo para el editor en vivo (evitar stale closures y re-binds)
   const currentTimeRef = useRef(0);
@@ -44,11 +93,44 @@ export default function LivePrompter() {
   const [manualGridOffset, setManualGridOffset] = useState<number>(0);
   const [audioLoaded, setAudioLoaded] = useState(false);
 
+  /**
+   * Deep-Merge seguro para guardar en songs.prompter_data sin sobrescribir jamás
+   * las letras sincronizadas (lyrics / lyric_settings) creadas en Lyric Studio.
+   */
+  const persistPrompterDataSafe = async (songId: string, nextLocalData: any) => {
+    const { data: currentSongRow } = await supabase
+      .from('songs')
+      .select('prompter_data')
+      .eq('id', songId)
+      .single();
+    const latestRemote = currentSongRow?.prompter_data || {};
+    const merged = {
+      ...latestRemote,
+      ...nextLocalData,
+      // Preservar siempre las letras de Lyric Studio si existen en remoto
+      lyrics: latestRemote.lyrics ?? nextLocalData.lyrics ?? [],
+      lyric_settings: latestRemote.lyric_settings ?? nextLocalData.lyric_settings,
+    };
+    const { error } = await supabase
+      .from('songs')
+      .update({ prompter_data: merged })
+      .eq('id', songId);
+    if (error) throw error;
+    setPrompterData(merged);
+    return merged;
+  };
+
   // Fetch songs
   useEffect(() => {
     const fetchSongs = async () => {
-      const { data } = await supabase.from('songs').select('*').eq('band_id', FAKE_BAND_ID);
-      if (data) setSongs(data);
+      const { data } = await supabase.from('songs').select('*').eq('band_id', FAKE_BAND_ID).order('title');
+      if (data) {
+        setSongs(data);
+        const savedId = sessionStorage.getItem('tandu_active_song_id');
+        if (savedId && data.some((s: any) => s.id === savedId)) {
+          setSelectedSongId(savedId);
+        }
+      }
     };
     fetchSongs();
   }, []);
@@ -56,35 +138,52 @@ export default function LivePrompter() {
   // Fetch stems and prompter data when a song is selected
   useEffect(() => {
     if (!selectedSongId) return;
+    sessionStorage.setItem('tandu_active_song_id', selectedSongId);
     const fetchSongData = async () => {
       setAudioLoaded(false);
       setLoadError(null);
+      setIsVamping(false);
+      setLoop(0, 0, false);
       pause(); // Stop any current playback
       
       // 1. Fetch Prompter Data
       const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
       if (songData && songData.prompter_data) {
-        setPrompterData(songData.prompter_data);
+        setPrompterData({
+          chords: [],
+          sections: [],
+          lyrics: [],
+          ...songData.prompter_data,
+        });
         setPrompterText(stringifyPrompterData(songData.prompter_data));
       } else {
-        setPrompterData({ chords: [], sections: [] });
+        setPrompterData({ chords: [], sections: [], lyrics: [] });
         setPrompterText(stringifyPrompterData({ chords: [], sections: [] }));
       }
 
       // 2. Fetch Stems
-      const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId);
+      const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId).order('name');
       if (data && data.length > 0) {
-        // NUEVO: Ahora sí cargamos el master a RAM. Es requerido para la IA de Acordes y útil si es la única pista.
         const playableStems = data;
         setDbStems(playableStems);
+
+        // Detectar si existen stems separados además de la pista Master
+        const hasSeparatedStems = playableStems.length > 1 && playableStems.some((s: any) => !s.metadata?.is_master);
         
         // Map database stems to Audio Engine format
         const engineStems: StemTrack[] = playableStems.map(stem => {
           const lowerName = stem.name.toLowerCase();
+          const isMasterTrack = Boolean(stem.metadata?.is_master);
           let type: 'Click' | 'Cues' | 'Instrument' = 'Instrument';
           if (lowerName.includes('click') || lowerName.includes('metronomo')) type = 'Click';
           if (lowerName.includes('cue') || lowerName.includes('guia') || lowerName.includes('cues')) type = 'Cues';
           
+          // Si hay stems separados y esta pista es el Master (Guía IA), entra en MUTE por defecto
+          // para no duplicar instrumentos en la consola ni en la exportación FOH.
+          const defaultMuted = isMasterTrack && hasSeparatedStems
+            ? true
+            : (stem.metadata?.muted !== undefined ? Boolean(stem.metadata.muted) : false);
+
           return {
             id: stem.id,
             name: stem.name,
@@ -92,7 +191,7 @@ export default function LivePrompter() {
             url: stem.file_url,
             volume: stem.metadata?.volume !== undefined ? Number(stem.metadata.volume) : 0.8,
             pan: stem.metadata?.pan !== undefined ? Number(stem.metadata.pan) : 0,
-            muted: stem.metadata?.muted !== undefined ? Boolean(stem.metadata.muted) : false,
+            muted: defaultMuted,
             solo: stem.metadata?.solo !== undefined ? Boolean(stem.metadata.solo) : false,
             targetOutputChannel: 0
           };
@@ -111,10 +210,10 @@ export default function LivePrompter() {
           targetOutputChannel: 0
         });
 
-        // Insertar las Guías IA Sintéticas
+        // Insertar las Guías IA Sintéticas (Voz Guía)
         engineStems.push({
           id: 'synthetic-cues',
-          name: 'Guías IA',
+          name: 'Voz Guía IA',
           type: 'Cues',
           url: '', // Se genera matemáticamente en RAM
           volume: 0.8,
@@ -125,6 +224,9 @@ export default function LivePrompter() {
         });
 
         setStems(engineStems);
+      } else {
+        setDbStems([]);
+        setStems([]);
       }
     };
     fetchSongData();
@@ -152,7 +254,6 @@ export default function LivePrompter() {
     if (!selectedSongId) return;
     try {
       const updates = stems.filter(s => s.id !== 'synthetic-click' && s.id !== 'synthetic-cues').map(async (s) => {
-        // Encontrar el stem original en dbStems para no sobreescribir metadata importante
         const originalStem = dbStems.find((dbS: any) => dbS.id === s.id);
         const newMetadata = {
           ...(originalStem?.metadata || {}),
@@ -167,11 +268,10 @@ export default function LivePrompter() {
 
       await Promise.all(updates);
       
-      // Recargar stems de la base de datos para asegurar sincronización en memoria
-      const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId);
+      const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId).order('name');
       if (data) setDbStems(data);
 
-      alert('¡Configuración de mezcla guardada exitosamente!');
+      alert('¡Configuración de canales guardada exitosamente!');
     } catch (err: any) {
       alert(`Error al guardar configuración: ${err.message}`);
     }
@@ -197,8 +297,6 @@ export default function LivePrompter() {
     }
   };
 
-
-
   const handleHalveTempo = async () => {
     if (!prompterData.bpm) return;
     const newBpm = prompterData.bpm / 2;
@@ -210,9 +308,8 @@ export default function LivePrompter() {
     setPrompterData(newData);
     await loadStems(newBpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, newBeatTimes, newData);
     
-    // Save to DB
     if (selectedSongId) {
-      await supabase.from('songs').update({ prompter_data: newData }).eq('id', selectedSongId);
+      await persistPrompterDataSafe(selectedSongId, newData);
     }
   };
 
@@ -233,22 +330,62 @@ export default function LivePrompter() {
     setPrompterData(newData);
     await loadStems(newBpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, newBeatTimes, newData);
     
-    // Save to DB
     if (selectedSongId) {
-      await supabase.from('songs').update({ prompter_data: newData }).eq('id', selectedSongId);
+      await persistPrompterDataSafe(selectedSongId, newData);
+    }
+  };
+
+  const handleTransposeAllChords = async (semitones: number) => {
+    if (!selectedSongId || !prompterData.chords || prompterData.chords.length === 0) return;
+    const transposed = prompterData.chords.map((c: any) => ({
+      ...c,
+      chord: transposeChordSymbol(c.chord, semitones),
+    }));
+    const nextData = { ...prompterData, chords: transposed };
+    setPrompterData(nextData);
+    setPrompterText(stringifyPrompterData(nextData));
+    await persistPrompterDataSafe(selectedSongId, nextData);
+  };
+
+  const handleEditSingleChord = async (index: number, newChord: string) => {
+    if (!selectedSongId) return;
+    const nextChords = [...(prompterData.chords || [])];
+    if (!nextChords[index]) return;
+    nextChords[index] = { ...nextChords[index], chord: newChord };
+    const nextData = { ...prompterData, chords: nextChords };
+    setPrompterData(nextData);
+    setPrompterText(stringifyPrompterData(nextData));
+    await persistPrompterDataSafe(selectedSongId, nextData);
+  };
+
+  const handleRemoveSingleChord = async (index: number) => {
+    if (!selectedSongId) return;
+    const nextChords = [...(prompterData.chords || [])];
+    nextChords.splice(index, 1);
+    const nextData = { ...prompterData, chords: nextChords };
+    setPrompterData(nextData);
+    setPrompterText(stringifyPrompterData(nextData));
+    await persistPrompterDataSafe(selectedSongId, nextData);
+  };
+
+  const handleVampTrigger = (start: number, end: number) => {
+    if (isVamping) {
+      setIsVamping(false);
+      setLoop(0, 0, false);
+    } else {
+      setIsVamping(true);
+      setLoop(start, end, true);
     }
   };
 
   const handleClearBeatGrid = async () => {
-    // Esto borra el "Warped Grid" de la IA y fuerza al sistema a usar la grilla matemática pura
     if (!prompterData.bpm) return;
     const newData = { ...prompterData, beatTimes: [] };
     setPrompterData(newData);
     await loadStems(prompterData.bpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, [], newData);
     
-    // Save to DB
     if (selectedSongId) {
-      await supabase.from('songs').update({ prompter_data: newData }).eq('id', selectedSongId);
+      await persistPrompterDataSafe(selectedSongId, newData);
     }
     alert("Grilla IA descartada. El metrónomo ahora es 100% matemático y rígido.");
   };
@@ -264,16 +401,16 @@ export default function LivePrompter() {
     }
 
     setIsDetectingChords(true);
-    setChordDetectionMsg("Buscando el mejor stem para análisis armónico...");
+    setChordDetectionMsg("Buscando la pista ★ Master o mejor stem armónico...");
 
     try {
-      // ✅ NUEVO ENFOQUE: Prioridad ABSOLUTA al track MASTER para mayor solidez en los acordes
+      // ✅ Prioridad ABSOLUTA al track MASTER para mayor solidez en los acordes
       let bestStem = dbStems.find((s: any) => s.metadata && s.metadata.is_master === true);
 
       if (!bestStem) {
         // Fallback si no hay master: Piano > Guitarra > etc.
         const EXCLUDED_KEYWORDS = ['drum', 'kick', 'snare', 'click', 'clave', 'bass', 'bajo', 'perc', 'hihat', 'cymbal'];
-        const PREFERRED_KEYWORDS = ['rhythm guitar', 'electric guitar', 'guitar', 'guitarra', 'piano', 'keys', 'teclado', 'strings', 'pad', 'synth', 'organ'];
+        const PREFERRED_KEYWORDS = ['master', 'mezcla', 'full', 'rhythm guitar', 'electric guitar', 'guitar', 'guitarra', 'piano', 'keys', 'teclado', 'strings', 'pad', 'synth', 'organ'];
 
         const instrumentStems = dbStems.filter((s: any) => {
           const name = (s.name || s.file_name || '').toLowerCase();
@@ -293,14 +430,13 @@ export default function LivePrompter() {
         if (!bestStem) bestStem = instrumentStems[0];
       }
 
-      // Último recurso
       if (!bestStem) bestStem = dbStems[0];
 
       const stemName = bestStem.name || bestStem.file_name || 'Stem';
       const stemUrl = bestStem.file_url;
 
       console.log(`[IA PRO] Stem seleccionado para análisis: ${stemName}`);
-      setChordDetectionMsg(`Analizando acordes en: ${stemName}...`);
+      setChordDetectionMsg(`Analizando acordes desde: ${stemName}...`);
 
       const res = await fetch('/api/ai/chords', {
         method: 'POST',
@@ -326,7 +462,7 @@ export default function LivePrompter() {
       if (!res.ok) throw new Error(data.error || 'Error desconocido del servidor IA');
 
       const { predictionId, prompterData: pdFromApi } = data;
-      setChordDetectionMsg(`IA procesando acordes... (esto toma 2-5 minutos)`);
+      setChordDetectionMsg(`IA procesando acordes desde ${stemName}... (toma 2-5 min)`);
 
       let chordsPollCount = 1;
       let isChordsDone = false;
@@ -338,7 +474,11 @@ export default function LivePrompter() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             predictionId,
-            prompterData: pdFromApi,
+            prompterData: {
+              ...pdFromApi,
+              lyrics: prompterData.lyrics || [],
+              lyric_settings: prompterData.lyric_settings,
+            },
             songId: selectedSongId
           })
         });
@@ -360,7 +500,11 @@ export default function LivePrompter() {
 
           const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
           if (songData?.prompter_data) {
-            setPrompterData(songData.prompter_data);
+            setPrompterData(prev => ({
+              ...songData.prompter_data,
+              lyrics: songData.prompter_data.lyrics || prev.lyrics || [],
+              lyric_settings: songData.prompter_data.lyric_settings || prev.lyric_settings,
+            }));
           }
           setTimeout(() => setChordDetectionMsg(null), 5000);
         } else {
@@ -443,7 +587,6 @@ export default function LivePrompter() {
         continue;
       }
       
-      // Machea MM:SS o MM:SS.ss
       const match = t.match(/^(\d{2}):(\d{2}(?:\.\d+)?)\s+(.+)$/);
       if (match) {
         const minutes = parseInt(match[1], 10);
@@ -468,10 +611,8 @@ export default function LivePrompter() {
     setPrompterData(newData);
     setIsEditingPrompter(false);
     
-    // Save to Supabase
-    await supabase.from('songs').update({ prompter_data: newData }).eq('id', selectedSongId);
+    await persistPrompterDataSafe(selectedSongId, newData);
   };
-  // ------------------------------
 
   // ==========================================
   // LÓGICA DE EDITOR DE SECCIONES (LIVE TAPPING)
@@ -480,7 +621,6 @@ export default function LivePrompter() {
     if (!isEditingSections) return;
     
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignorar si el usuario está escribiendo en un input
       if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
         e.preventDefault();
         isPlaying ? pause() : play();
@@ -500,11 +640,8 @@ export default function LivePrompter() {
       
       const sectionName = keyMap[e.key.toLowerCase()];
       if (sectionName) {
-        // Clampear a 0 para que si el usuario presiona durante el pre-roll (tiempo negativo), 
-        // se marque exactamente en el inicio de la música (0.0)
         let exactTime = Math.max(0, currentTimeRef.current);
         
-        // Snapping Magnético a la Grilla de Compases (Beatmap)
         if (prompterData.beatTimes && prompterData.beatTimes.length > 0) {
           let closest = prompterData.beatTimes[0];
           let minDiff = Math.abs(closest - exactTime);
@@ -515,16 +652,13 @@ export default function LivePrompter() {
               closest = prompterData.beatTimes[i];
             }
           }
-          // Si el golpe está a menos de medio segundo, encajar.
           if (minDiff < 0.5) {
             exactTime = closest;
           }
         }
         
-        // Inyectar en la base local (estado)
         setPrompterData(prev => {
           const newSections = [...(prev.sections || [])];
-          // Evitar dobles clicks accidentales (filtramos si hay una muy cerca)
           const filtered = newSections.filter(s => Math.abs(s.time - exactTime) > 0.3);
           filtered.push({ name: sectionName, time: exactTime });
           filtered.sort((a, b) => a.time - b.time);
@@ -538,18 +672,17 @@ export default function LivePrompter() {
   }, [isEditingSections, prompterData.beatTimes]);
 
   const savePrompterData = async () => {
+    if (!selectedSongId) return;
     try {
-      const { error } = await supabase.from('songs').update({ prompter_data: prompterData }).eq('id', selectedSongId);
-      if (error) throw error;
-      alert('¡Estructura guardada exitosamente en Supabase!');
+      const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+      alert('¡Estructura y Voz Guía guardadas exitosamente!');
       setIsEditingSections(false);
       
-      // Recargar el motor para reconstruir las Guías Vocales con las nuevas posiciones
       if (selectedSongId && dbStems.length > 0) {
-         const baseOffset = prompterData.firstBeatOffset !== undefined 
-            ? prompterData.firstBeatOffset 
-            : (prompterData.chords && prompterData.chords.length > 0 ? prompterData.chords[0].time : 0);
-         loadStems(prompterData.bpm || 120, baseOffset + manualGridOffset, prompterData.timeSignature, prompterData.beatTimes, prompterData);
+         const baseOffset = merged.firstBeatOffset !== undefined 
+            ? merged.firstBeatOffset 
+            : (merged.chords && merged.chords.length > 0 ? merged.chords[0].time : 0);
+         loadStems(merged.bpm || 120, baseOffset + manualGridOffset, merged.timeSignature, merged.beatTimes, merged);
       }
     } catch (e: any) {
       console.error(e);
@@ -559,12 +692,12 @@ export default function LivePrompter() {
 
   const handleExportLiveMix = async () => {
     if (!selectedSongId) return;
-    if (confirm('¿Estás seguro de que deseas exportar la mezcla con la configuración de volumen y paneo actual? (Esto tomará unos segundos)')) {
+    if (confirm('¿Exportar el Mix En Vivo con los canales activos actuales?\n\n• Salida Público (FOH): Stems activos configurados\n• Salida Músicos (CUE): Metrónomo + Voz Guía\n• Versión Ligera MP3 para In-Ears de Práctica')) {
       setIsExporting(true);
       try {
-        await supabase.from('songs').update({ prompter_data: prompterData }).eq('id', selectedSongId);
-        await exportLiveMix(selectedSongId, FAKE_BAND_ID, prompterData, setExportProgress);
-        alert('¡Exportación dual completada exitosamente!');
+        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        await exportLiveMix(selectedSongId, FAKE_BAND_ID, merged, setExportProgress);
+        alert('¡Mix En Vivo (Público FOH + Músicos CUE) exportado y listo para el Setlist!');
       } catch (err: any) {
         alert(err.message);
       } finally {
@@ -581,8 +714,8 @@ export default function LivePrompter() {
     if (confirm('¿Estás seguro de que deseas exportar cada pista (stems, click, cues) en WAV separados dentro de un archivo ZIP? (Esto tomará unos minutos)')) {
       setIsExportingMultitrack(true);
       try {
-        await supabase.from('songs').update({ prompter_data: prompterData }).eq('id', selectedSongId);
-        await exportMultitrackToZip(songName, prompterData, setExportProgress);
+        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        await exportMultitrackToZip(songName, merged, setExportProgress);
         alert('¡Exportación Multitrack completada exitosamente!');
       } catch (err: any) {
         alert(err.message);
@@ -600,8 +733,8 @@ export default function LivePrompter() {
     if (confirm('¿Deseas exportar la mezcla completa (todos los stems, click y cues) en formato MP3 (Alta Calidad 320kbps)?')) {
       setIsExportingMp3(true);
       try {
-        await supabase.from('songs').update({ prompter_data: prompterData }).eq('id', selectedSongId);
-        await exportFullMixToMp3(songName, prompterData, setExportProgress);
+        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        await exportFullMixToMp3(songName, merged, setExportProgress);
         alert('¡Exportación a MP3 completada exitosamente!');
       } catch (err: any) {
         alert(err.message);
@@ -612,10 +745,8 @@ export default function LivePrompter() {
     }
   };
 
-  // ==========================================
-
   return (
-    <div className="h-screen bg-[#09090b] text-zinc-300 flex flex-col font-sans overflow-hidden select-none">
+    <div className="h-screen bg-[#07090e] text-zinc-300 flex flex-col font-sans overflow-hidden select-none">
       
       {/* Error Alert */}
       {loadError && (
@@ -625,96 +756,129 @@ export default function LivePrompter() {
         </div>
       )}
 
-      {/* HEADER / TRANSPORT (Sleek DAW Toolbar) */}
-      <header className="h-14 bg-[#121214] border-b border-zinc-800/80 flex items-center px-4 justify-between shrink-0 z-20">
+      {/* HEADER / TRANSPORT (Sleek TANDU /STAGE Toolbar) */}
+      <header className="h-14 bg-[#0c0e14] border-b border-white/[0.07] flex items-center px-4 justify-between shrink-0 z-20 gap-3">
         
         {/* Left: Branding & Song Loader */}
-        <div className="flex items-center gap-3 w-1/4">
-          <div className="flex items-center justify-center w-6 h-6 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20">
-             <Disc3 size={14} />
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center justify-center w-7 h-7 bg-red-600/15 text-red-500 rounded-lg border border-red-500/30 shrink-0">
+             <Disc3 size={15} />
           </div>
-          <div className="flex items-center gap-2 flex-1">
-            <select 
-              className="bg-[#09090b] border border-zinc-800 text-zinc-300 px-2 py-1 rounded text-xs outline-none focus:border-emerald-500/50 w-full max-w-[220px]"
-              value={selectedSongId || ''}
-              onChange={(e) => setSelectedSongId(e.target.value)}
-            >
-              <option value="">Load Project...</option>
-              {songs.map(song => (
-                <option key={song.id} value={song.id}>{song.title}</option>
-              ))}
-            </select>
-          </div>
+          <select 
+            className="bg-[#07090e] border border-zinc-800 text-white font-bold px-2.5 py-1.5 rounded-lg text-xs outline-none focus:border-red-500/50 w-[210px]"
+            value={selectedSongId || ''}
+            onChange={(e) => setSelectedSongId(e.target.value)}
+          >
+            <option value="">Seleccionar Canción...</option>
+            {songs.map(song => (
+              <option key={song.id} value={song.id}>{song.title}</option>
+            ))}
+          </select>
           {selectedSongId && !audioLoaded && (
-            <button onClick={handleLoadAudio} className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20 px-3 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-colors whitespace-nowrap">
-              Load RAM
+            <button
+              onClick={handleLoadAudio}
+              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+            >
+              ⚡ Cargar Stems a RAM
             </button>
           )}
         </div>
 
-        {/* Center: Transport & Time (Minimalist) */}
-        <div className="flex flex-col items-center flex-1">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1 bg-[#09090b] p-0.5 rounded border border-zinc-800/80">
-              <button 
-                onClick={() => { pause(); seekTo(-(preRollDuration || 0)); }} 
-                className="bg-transparent hover:bg-zinc-800 w-8 h-7 flex items-center justify-center rounded transition-colors text-zinc-500 hover:text-zinc-300"
-              >
-                <Square fill="currentColor" size={12} />
-              </button>
-              <button 
-                onClick={isPlaying ? pause : play} 
-                disabled={!audioLoaded || loadError !== null}
-                className={`w-10 h-7 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${isPlaying ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'}`}
-              >
-                {isPlaying ? <Pause fill="currentColor" size={14} /> : <Play fill="currentColor" size={14} className="ml-0.5" />}
-              </button>
-            </div>
+        {/* Center: Transport & Time */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 bg-[#07090e] p-1 rounded-lg border border-zinc-800/80">
+            <button 
+              onClick={() => { pause(); seekTo(-(preRollDuration || 0)); }} 
+              className="bg-transparent hover:bg-zinc-800 w-8 h-7 flex items-center justify-center rounded transition-colors text-zinc-400 hover:text-white"
+              title="Reiniciar al Conteo Pre-Roll"
+            >
+              <Square fill="currentColor" size={12} />
+            </button>
+            <button 
+              onClick={isPlaying ? pause : play} 
+              disabled={!audioLoaded || loadError !== null}
+              className={`w-10 h-7 flex items-center justify-center rounded transition-colors disabled:opacity-40 ${
+                isPlaying
+                  ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.6)]'
+                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+              }`}
+              title={isPlaying ? "Pausar" : "Reproducir"}
+            >
+              {isPlaying ? <Pause fill="currentColor" size={14} /> : <Play fill="currentColor" size={14} className="ml-0.5" />}
+            </button>
+          </div>
 
-            <div className="bg-[#09090b] border border-zinc-800/80 px-3 py-1 rounded flex items-center justify-center min-w-[100px]">
-              <span className="text-sm font-mono font-bold text-zinc-200 tracking-wider">
-                {formatTime(currentTime)}
-              </span>
-            </div>
+          <div className="bg-[#07090e] border border-zinc-800/80 px-3 py-1 rounded-lg flex items-center justify-center min-w-[105px]">
+            <span className="text-sm font-mono font-black text-white tracking-wider">
+              {formatTime(currentTime)}
+            </span>
           </div>
         </div>
 
-        {/* Right: Tools & Nudge */}
-        <div className="flex items-center gap-3 w-1/4 justify-end">
-          <div className="flex items-center gap-1 bg-[#09090b] rounded border border-zinc-800/80 p-0.5">
+        {/* Right: AI Chords, Transposer, Tempo & Nudge */}
+        <div className="flex items-center gap-2 justify-end">
+          <div className="flex items-center gap-1 bg-[#07090e] rounded-lg border border-zinc-800/80 p-1">
             <button 
               onClick={handleDetectChordsAI}
-              disabled={isDetectingChords}
-              className="hover:bg-purple-500/10 text-purple-400 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest transition-colors disabled:opacity-50 flex items-center gap-1"
+              disabled={isDetectingChords || !selectedSongId}
+              className="hover:bg-purple-500/20 bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-50 flex items-center gap-1"
+              title="Detectar Acordes automáticamente desde la pista ★ Master"
             >
-              <Activity size={10} className={isDetectingChords ? "animate-pulse" : ""} />
-              {isDetectingChords ? 'Analyzing...' : 'AI Pro'}
+              <Activity size={11} className={isDetectingChords ? "animate-pulse" : ""} />
+              {isDetectingChords ? 'Analizando...' : 'Acordes IA'}
             </button>
-            <div className="w-px h-3 bg-zinc-800 mx-1"></div>
-            <button onClick={handleHalveTempo} className="px-1.5 py-1 text-[10px] text-zinc-500 hover:text-zinc-300 font-bold transition-colors">÷2</button>
-            <button onClick={handleDoubleTempo} className="px-1.5 py-1 text-[10px] text-zinc-500 hover:text-zinc-300 font-bold transition-colors">x2</button>
-            <button onClick={handleClearBeatGrid} className="hover:bg-red-500/10 text-red-500 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest transition-colors ml-1">Clear Grid</button>
+            <div className="w-px h-3.5 bg-zinc-800 mx-0.5"></div>
+            <span className="text-[9px] text-zinc-500 font-bold uppercase px-1">Tono:</span>
+            <button
+              onClick={() => handleTransposeAllChords(-1)}
+              className="px-1.5 py-0.5 text-[10px] bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded font-bold"
+              title="Bajar todos los acordes 1 semitono"
+            >
+              -1
+            </button>
+            <button
+              onClick={() => handleTransposeAllChords(1)}
+              className="px-1.5 py-0.5 text-[10px] bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded font-bold"
+              title="Subir todos los acordes 1 semitono"
+            >
+              +1
+            </button>
+            <div className="w-px h-3.5 bg-zinc-800 mx-0.5"></div>
+            <button onClick={handleHalveTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Mitad de Tempo">÷2</button>
+            <button onClick={handleDoubleTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Doble de Tempo">x2</button>
+            <button onClick={handleClearBeatGrid} className="hover:bg-red-500/10 text-red-400 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider transition-colors" title="Usar grilla matemática rígida">Fijar</button>
           </div>
 
-          <div className="flex items-center gap-2 bg-[#09090b] rounded border border-zinc-800/80 p-0.5 px-2">
+          <div className="flex items-center gap-1.5 bg-[#07090e] rounded-lg border border-zinc-800/80 py-1 px-2">
             <span className="text-[9px] text-zinc-500 font-bold uppercase">Nudge</span>
-            <button onClick={() => handleNudge(-0.01)} className="text-zinc-500 hover:text-zinc-300 text-xs px-1">-</button>
-            <span className="text-[10px] text-zinc-300 font-mono w-4 text-center">{(manualGridOffset * 1000).toFixed(0)}</span>
-            <button onClick={() => handleNudge(0.01)} className="text-zinc-500 hover:text-zinc-300 text-xs px-1">+</button>
+            <button onClick={() => handleNudge(-0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">-</button>
+            <span className="text-[10px] text-zinc-200 font-mono w-6 text-center">{(manualGridOffset * 1000).toFixed(0)}</span>
+            <button onClick={() => handleNudge(0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">+</button>
           </div>
+
+          {selectedSongId && (
+            <button
+              onClick={() => navigate('/lyrics')}
+              className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all"
+              title="Ir a Lyric Studio para sincronizar la letra de esta canción"
+            >
+              <span>Lyrics</span>
+              <ArrowRight size={11} />
+            </button>
+          )}
         </div>
       </header>
 
       {/* MAIN LAYOUT */}
       <div className="flex-1 flex overflow-hidden relative">
         
-        {/* Progress Overlays (Cleaned up) */}
+        {/* Progress Overlays */}
         {isDownloading && (
           <div className="absolute inset-0 bg-black/90 z-40 flex flex-col items-center justify-center backdrop-blur-sm">
             <Loader2 size={32} className="animate-spin text-emerald-500 mb-4" />
-            <h2 className="text-sm font-bold text-zinc-200 tracking-widest uppercase mb-1">Loading Audio to RAM</h2>
+            <h2 className="text-sm font-bold text-zinc-200 tracking-widest uppercase mb-1">Cargando Stems en Memoria RAM</h2>
             <p className="text-xs text-zinc-500 mb-6 font-mono">{loadProgress.currentFile}</p>
-            <div className="w-64 bg-zinc-900 rounded-full h-1 overflow-hidden">
+            <div className="w-64 bg-zinc-900 rounded-full h-1.5 overflow-hidden">
               <div className="bg-emerald-500 h-full transition-all duration-300" style={{ width: `${(loadProgress.loaded / Math.max(1, loadProgress.total)) * 100}%` }}></div>
             </div>
           </div>
@@ -723,63 +887,117 @@ export default function LivePrompter() {
         {chordDetectionMsg && (
           <div className="absolute inset-0 bg-black/90 z-40 flex flex-col items-center justify-center backdrop-blur-sm">
             <Sparkles size={32} className="animate-pulse text-purple-500 mb-4" />
-            <h2 className="text-sm font-bold text-purple-400 tracking-widest uppercase mb-1">AI Chord Analysis</h2>
+            <h2 className="text-sm font-bold text-purple-400 tracking-widest uppercase mb-1">Análisis Armónico IA</h2>
             <p className="text-xs text-zinc-400 mb-6 font-mono">{chordDetectionMsg}</p>
-            <div className="w-64 bg-zinc-900 rounded-full h-1 overflow-hidden">
+            <div className="w-64 bg-zinc-900 rounded-full h-1.5 overflow-hidden">
               <div className="bg-purple-500 h-full w-full animate-pulse"></div>
             </div>
           </div>
         )}
 
-        {/* MIXER SIDEBAR (Industrial DAW Style) */}
-        <div className="w-[320px] shrink-0 flex flex-col bg-[#121214] border-r border-zinc-800/80 z-10 shadow-2xl">
-          <div className="h-8 border-b border-zinc-800/80 flex items-center px-4 bg-[#161619]">
-            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Track Mixer</span>
+        {/* MIXER SIDEBAR (Consola de Configuración de Canales del Usuario) */}
+        <div className="w-[330px] shrink-0 flex flex-col bg-[#0b0d13] border-r border-white/[0.07] z-10 shadow-2xl">
+          <div className="h-9 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#10131c]">
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Consola de Canales</span>
+            <span className="text-[9px] text-zinc-500 font-mono">{stems.length} Canales</span>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 custom-scrollbar">
             {stems.map((stem) => {
               const nameLower = stem.name.toLowerCase();
+              const dbMatch = dbStems.find((d: any) => d.id === stem.id);
+              const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
               let Icon = Music;
               let themeClass = 'text-zinc-400';
               
-              if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
-                 Icon = Activity; themeClass = 'text-orange-400';
+              if (isMasterRef) {
+                Icon = Star; themeClass = 'text-amber-400';
+              } else if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
+                Icon = Activity; themeClass = 'text-orange-400';
               } else if (nameLower.includes('vocal') || nameLower.includes('voz') || nameLower.includes('mic')) {
-                 Icon = Mic; themeClass = 'text-cyan-400';
+                Icon = Mic; themeClass = 'text-cyan-400';
               } else if (nameLower.includes('bass') || nameLower.includes('bajo')) {
-                 Icon = Music; themeClass = 'text-purple-400';
+                Icon = Music; themeClass = 'text-purple-400';
               } else if (nameLower.includes('guit')) {
-                 Icon = Music; themeClass = 'text-amber-400';
+                Icon = Music; themeClass = 'text-amber-400';
               } else if (nameLower.includes('key') || nameLower.includes('piano') || nameLower.includes('synth')) {
-                 Icon = Music; themeClass = 'text-pink-400';
+                Icon = Music; themeClass = 'text-pink-400';
               } else if (stem.type === 'Click') {
-                 Icon = Headphones; themeClass = 'text-emerald-500';
+                Icon = Headphones; themeClass = 'text-emerald-500';
               } else if (stem.type === 'Cues') {
-                 Icon = Mic; themeClass = 'text-blue-400';
+                Icon = Mic; themeClass = 'text-blue-400';
               }
 
+              const routeBadge = stem.type === 'Instrument' ? 'FOH (R)' : 'MÚSICOS (L)';
+
               return (
-                <div key={stem.id} className="flex flex-col bg-[#18181b] border border-zinc-800/50 rounded overflow-hidden">
-                  <div className="flex items-center p-2 border-b border-zinc-800/30">
-                    <Icon size={12} className={`${themeClass} shrink-0 mr-2`} />
-                    <span className="text-[11px] font-semibold text-zinc-300 truncate flex-1">{stem.name}</span>
+                <div
+                  key={stem.id}
+                  className={`flex flex-col border rounded-lg overflow-hidden transition-colors ${
+                    isMasterRef
+                      ? 'bg-amber-950/10 border-amber-500/30'
+                      : stem.muted
+                      ? 'bg-[#0d0f15]/60 border-zinc-800/40 opacity-65'
+                      : 'bg-[#12151f] border-white/[0.06]'
+                  }`}
+                >
+                  <div className="flex items-center p-2 border-b border-white/[0.04] gap-1.5">
+                    <Icon size={12} className={`${themeClass} shrink-0`} />
+                    <span className="text-[11px] font-bold text-zinc-200 truncate flex-1" title={stem.name}>
+                      {stem.name}
+                    </span>
+                    {isMasterRef ? (
+                      <span
+                        className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
+                        title="Pista Master de referencia para IA. Inicia silenciada (M) para no duplicar instrumentos al exportar tu mezcla."
+                      >
+                        ★ MASTER REF
+                      </span>
+                    ) : (
+                      <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                        stem.type === 'Instrument'
+                          ? 'bg-zinc-900 text-zinc-400 border border-zinc-800'
+                          : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                      }`}>
+                        {routeBadge}
+                      </span>
+                    )}
                     <div className="flex gap-1 shrink-0">
-                      <button onClick={() => toggleMute(stem.id)} className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${stem.muted ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'}`}>M</button>
-                      <button onClick={() => toggleSolo(stem.id)} className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${stem.solo ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'}`}>S</button>
+                      <button
+                        onClick={() => toggleMute(stem.id)}
+                        className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${
+                          stem.muted
+                            ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(239,68,68,0.5)]'
+                            : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                        }`}
+                        title={stem.muted ? "Canal Silenciado (No sonará en la exportación)" : "Silenciar Canal (Mute)"}
+                      >
+                        M
+                      </button>
+                      <button
+                        onClick={() => toggleSolo(stem.id)}
+                        className={`w-6 h-5 flex items-center justify-center rounded text-[9px] font-black transition-colors ${
+                          stem.solo
+                            ? 'bg-amber-400 text-black shadow-[0_0_8px_rgba(251,191,36,0.6)]'
+                            : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                        }`}
+                        title="Escuchar en Solo"
+                      >
+                        S
+                      </button>
                     </div>
                   </div>
                   
-                  <div className="flex items-center p-2 gap-3 bg-[#131316]">
+                  <div className="flex items-center px-2.5 py-2 gap-3 bg-[#0c0e15]">
                     <div className="flex items-center gap-2 flex-1">
-                      <span className="text-[8px] text-zinc-600 font-bold">VOL</span>
+                      <span className="text-[8px] text-zinc-500 font-bold">VOL</span>
                       <input 
                         type="range" min="0" max="1" step="0.01" value={stem.volume} onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                        className="w-full h-1 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-zinc-400 hover:accent-zinc-200"
+                        className="w-full h-1 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-red-500 hover:accent-red-400"
                       />
                     </div>
-                    <div className="flex items-center gap-2 flex-1">
-                      <span className="text-[8px] text-zinc-600 font-bold">PAN</span>
+                    <div className="flex items-center gap-2 w-24">
+                      <span className="text-[8px] text-zinc-500 font-bold">PAN</span>
                       <input 
                         type="range" min="-1" max="1" step="0.01" value={stem.pan} onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
                         className="w-full h-1 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-zinc-400 hover:accent-zinc-200"
@@ -793,13 +1011,13 @@ export default function LivePrompter() {
         </div>
 
         {/* PROMPTER VISUAL AREA */}
-        <div className="flex-1 bg-[#09090b] flex flex-col relative overflow-hidden">
+        <div className="flex-1 bg-[#07090e] flex flex-col relative overflow-hidden">
           {/* Prompter Header Toolbar */}
-          <div className="h-12 border-b border-zinc-800/80 flex items-center justify-between px-4 bg-[#121214] shrink-0">
+          <div className="h-12 border-b border-white/[0.07] flex items-center justify-between px-4 bg-[#0e1118] shrink-0">
              <div className="flex items-center gap-3">
                <div className="flex items-center gap-1.5">
-                 <Mic size={14} className="text-zinc-400" />
-                 <h2 className="text-[10px] font-bold text-zinc-300 uppercase tracking-widest">Visual Prompter</h2>
+                 <Mic size={14} className="text-red-500" />
+                 <h2 className="text-[10px] font-black text-white uppercase tracking-widest">2. Studio Prompter &bull; Voz Guía y Exportación</h2>
                </div>
                
                <div className="w-px h-4 bg-zinc-800 mx-1"></div>
@@ -807,26 +1025,31 @@ export default function LivePrompter() {
                <div className="flex items-center gap-2">
                   <button 
                     onClick={() => setIsEditingSections(!isEditingSections)}
-                    className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest transition-colors flex items-center gap-1 ${isEditingSections ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'text-zinc-500 hover:text-zinc-300 bg-[#09090b] border border-zinc-800'}`}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
+                      isEditingSections
+                        ? 'bg-red-600/20 text-red-300 border border-red-500/40'
+                        : 'text-zinc-300 hover:text-white bg-[#07090e] border border-zinc-800'
+                    }`}
+                    title="Marcar secciones (Intro, Verso, Coro, Puente) con el teclado para generar la Voz Guía"
                   >
-                    {isEditingSections ? 'Exit Live Edit' : 'Live Edit'}
+                    {isEditingSections ? 'Salir de Grabación de Voz Guía' : '🎙️ Marcar Secciones (Voz Guía)'}
                     {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse ml-1"></span>}
                   </button>
                   {isEditingSections && (
                     <>
-                      <button onClick={() => { if (confirm('¿Borrar todas las secciones?')) setPrompterData(prev => ({ ...prev, sections: [] })); }} className="px-2 py-1 text-[9px] text-red-400/70 hover:text-red-400 uppercase tracking-widest font-bold">Clear All</button>
-                      <button onClick={savePrompterData} className="px-2 py-1 text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded uppercase tracking-widest font-bold hover:bg-emerald-500/20">Save</button>
+                      <button onClick={() => { if (confirm('¿Borrar todas las secciones de Voz Guía?')) setPrompterData(prev => ({ ...prev, sections: [] })); }} className="px-2 py-1 text-[9px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold">Limpiar</button>
+                      <button onClick={savePrompterData} className="px-2.5 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-lg uppercase tracking-wider font-black hover:bg-emerald-500/25">Guardar Voz Guía</button>
                     </>
                   )}
                   
                   {!isEditingSections && (
                     isEditingPrompter ? (
-                      <button onClick={handleSavePrompter} className="px-2 py-1 text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded uppercase tracking-widest font-bold hover:bg-emerald-500/20 flex items-center gap-1">
-                        <Save size={10} /> Save Chords
+                      <button onClick={handleSavePrompter} className="px-2.5 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-lg uppercase tracking-wider font-black hover:bg-emerald-500/25 flex items-center gap-1">
+                        <Save size={11} /> Guardar Texto
                       </button>
                     ) : (
-                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-2 py-1 text-[9px] text-zinc-500 bg-[#09090b] border border-zinc-800 rounded uppercase tracking-widest font-bold hover:text-zinc-300 flex items-center gap-1">
-                        <Edit3 size={10} /> Edit Chords
+                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-2.5 py-1 text-[10px] text-zinc-300 bg-[#07090e] border border-zinc-800 rounded-lg uppercase tracking-wider font-bold hover:text-white flex items-center gap-1">
+                        <Edit3 size={11} /> Editor Texto Acordes
                       </button>
                     )
                   )}
@@ -834,28 +1057,40 @@ export default function LivePrompter() {
              </div>
              
              <div className="flex items-center gap-2">
-                {/* Minimal Export Menu Group */}
-                <div className="flex items-center gap-1 bg-[#09090b] p-0.5 rounded border border-zinc-800/80">
-                  <button onClick={handleExportLiveMix} disabled={isExporting} className="px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50">
-                    {isExporting ? (exportProgress || 'Exp...') : 'FOH/CUE'}
+                <button
+                  onClick={handleSaveMixConfig}
+                  disabled={!selectedSongId}
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors"
+                  title="Guardar volúmenes y mutes de los canales"
+                >
+                  Guardar Faders
+                </button>
+
+                {/* Botón Principal de Exportación para Show En Vivo */}
+                <button
+                  onClick={handleExportLiveMix}
+                  disabled={isExporting || !audioLoaded}
+                  className="px-3.5 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_20px_rgba(239,68,68,0.3)]"
+                  title="Renderizar y subir la mezcla configurada (Salida Público FOH + Salida Músicos CUE) lista para usar en el Setlist En Vivo"
+                >
+                  {isExporting ? (exportProgress || 'Exportando...') : '🚀 Exportar Mix En Vivo (FOH / CUE)'}
+                </button>
+
+                {/* Opciones secundarias de descarga local */}
+                <div className="flex items-center gap-1 bg-[#07090e] p-1 rounded-lg border border-zinc-800/80">
+                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack || !audioLoaded} className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                    {isExportingMultitrack ? (exportProgress || 'ZIP...') : 'ZIP'}
                   </button>
                   <div className="w-px h-3 bg-zinc-800"></div>
-                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack} className="px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50">
-                    {isExportingMultitrack ? (exportProgress || 'Exp...') : 'Stems ZIP'}
-                  </button>
-                  <div className="w-px h-3 bg-zinc-800"></div>
-                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3} className="px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50">
-                    {isExportingMp3 ? (exportProgress || 'Exp...') : 'Mix MP3'}
+                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3 || !audioLoaded} className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                    {isExportingMp3 ? (exportProgress || 'MP3...') : 'MP3'}
                   </button>
                 </div>
-                <button onClick={handleSaveMixConfig} className="px-3 py-1 bg-emerald-500 text-[#09090b] rounded text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-400 transition-colors ml-1">
-                  Save Config
-                </button>
              </div>
           </div>
           
           {/* Playhead Timeline Scrubber */}
-          <div className="h-6 bg-[#09090b] border-b border-zinc-800/50 flex items-center px-4 relative group cursor-pointer z-20">
+          <div className="h-6 bg-[#07090e] border-b border-white/[0.06] flex items-center px-4 relative group cursor-pointer z-20">
             <input 
               type="range" min={-(preRollDuration || 0)} max={totalDuration || 100} step="0.1" 
               value={isDraggingSlider ? localSliderTime : currentTime}
@@ -865,27 +1100,26 @@ export default function LivePrompter() {
               disabled={!audioLoaded}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             />
-            <div className="w-full h-1 bg-zinc-800/80 rounded-full relative pointer-events-none">
-              <div className="absolute top-0 bottom-0 left-0 bg-emerald-500/80 rounded-full" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / (totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
+            <div className="w-full h-1.5 bg-zinc-800/90 rounded-full relative pointer-events-none">
+              <div className="absolute top-0 bottom-0 left-0 bg-red-500 rounded-full" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
             </div>
           </div>
 
           <div className="flex-1 overflow-hidden relative">
             {isEditingPrompter ? (
-              <div className="h-full flex flex-col p-4 bg-[#09090b]">
-                <p className="text-xs text-zinc-500 mb-2 font-mono uppercase tracking-widest">Format: <span className="text-emerald-400">MM:SS Text</span></p>
+              <div className="h-full flex flex-col p-4 bg-[#07090e]">
+                <p className="text-xs text-zinc-400 mb-2 font-mono uppercase tracking-widest">Formato: <span className="text-amber-400">MM:SS Acorde o Sección</span></p>
                 <textarea 
-                  className="flex-1 bg-[#121214] border border-zinc-800/80 rounded p-4 text-xs font-mono text-zinc-300 outline-none focus:border-emerald-500/50 resize-none leading-relaxed custom-scrollbar"
+                  className="flex-1 bg-[#0d1017] border border-zinc-800 rounded-xl p-4 text-xs font-mono text-zinc-200 outline-none focus:border-red-500/50 resize-none leading-relaxed custom-scrollbar"
                   value={prompterText}
                   onChange={(e) => setPrompterText(e.target.value)}
-                  placeholder="# SECTIONS\n00:00 INTRO\n00:15 CHORUS\n\n# CHORDS\n00:05 Am\n00:10 C"
+                  placeholder="# SECCIONES\n00:00 INTRO\n00:15 CORO\n\n# ACORDES\n00:05 Am\n00:10 C"
                   spellCheck={false}
                 />
               </div>
             ) : (
               <div className="h-full relative flex flex-col justify-center">
-                {/* Optional: Add a very subtle radial gradient behind the prompter text */}
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-900/30 via-[#09090b] to-[#09090b] pointer-events-none"></div>
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-900/30 via-[#07090e] to-[#07090e] pointer-events-none"></div>
                 
                 <Prompter 
                   currentTime={currentTime}
@@ -895,7 +1129,9 @@ export default function LivePrompter() {
                   beatTimes={prompterData.beatTimes}
                   chords={prompterData.chords || []}
                   sections={prompterData.sections || []}
-                  isVamping={false}
+                  lyrics={prompterData.lyrics || []}
+                  isVamping={isVamping}
+                  onVampTrigger={handleVampTrigger}
                   isEditing={isEditingSections}
                   onRemoveSection={(index) => {
                      setPrompterData(prev => {
@@ -904,6 +1140,9 @@ export default function LivePrompter() {
                         return { ...prev, sections: s };
                      });
                   }}
+                  onEditChord={handleEditSingleChord}
+                  onRemoveChord={handleRemoveSingleChord}
+                  onSeek={(t) => audioLoaded && seekTo(t)}
                   gridOffset={manualGridOffset}
                 />
               </div>

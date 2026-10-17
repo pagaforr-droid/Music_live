@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type } from 'lucide-react';
 import { TanduMusicosLogo } from './SplashScreen';
@@ -7,6 +7,16 @@ import { TanduMusicosLogo } from './SplashScreen';
 export default function Layout() {
   const { user, signOut } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Retracted by default for more space
+  const location = useLocation();
+  const isProjectorWindow = new URLSearchParams(location.search).get('projector') === '1';
+
+  if (isProjectorWindow) {
+    return (
+      <div className="h-screen w-screen bg-black text-white overflow-hidden">
+        <Outlet />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-white overflow-hidden">

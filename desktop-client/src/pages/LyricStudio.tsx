@@ -240,7 +240,9 @@ export default function LyricStudio() {
       .order('title', { ascending: true });
     if (data && data.length > 0) {
       setSongs(data);
-      loadSong(data[0].id, data);
+      const savedId = sessionStorage.getItem('tandu_active_song_id');
+      const target = savedId && data.some((s: any) => s.id === savedId) ? savedId : data[0].id;
+      loadSong(target, data);
     }
   };
 
@@ -301,6 +303,7 @@ export default function LyricStudio() {
   const loadSong = async (songId: string, songListInput?: any[]) => {
     const list = songListInput || songs;
     setSelectedSongId(songId);
+    if (songId) sessionStorage.setItem('tandu_active_song_id', songId);
     stopAudio();
     pauseTimeSecRef.current = 0;
     setCurrentTimeMs(0);
