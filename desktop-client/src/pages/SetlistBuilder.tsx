@@ -199,23 +199,19 @@ export default function SetlistBuilder() {
   };
 
   return (
-    <div className="h-full flex bg-[#08090c] text-white overflow-hidden p-6 gap-6 font-sans select-none relative">
-      {/* Subtle Concentric Stage Rings */}
-      <div className="pointer-events-none absolute -top-24 -right-24 w-[480px] h-[480px] rounded-full border border-white/[0.025]" />
-      <div className="pointer-events-none absolute -top-12 -right-12 w-[340px] h-[340px] rounded-full border border-[#ef4444]/[0.04]" />
-
+    <div className="h-full flex bg-[#f8f9fa] text-zinc-900 overflow-hidden p-6 gap-6 font-sans select-none relative">
       {/* LEFT COLUMN: Setlist Management */}
       <div className="w-80 shrink-0 flex flex-col gap-4 z-10">
-        <div className="stage-glass-panel rounded-2xl p-5 flex flex-col h-full">
+        <div className="bg-white border border-zinc-200 rounded-2xl p-5 flex flex-col h-full shadow-xs">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xs font-black uppercase tracking-[0.18em] flex items-center gap-2 text-white">
-              <div className="w-7 h-7 rounded-lg bg-[#ef4444]/15 border border-[#ef4444]/30 flex items-center justify-center text-[#ef4444]">
+            <h2 className="text-xs font-black uppercase tracking-[0.18em] flex items-center gap-2 text-zinc-950">
+              <div className="w-7 h-7 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-[#e11d48]">
                 <ListMusic size={14} />
               </div>
               <span>Mis Setlists</span>
             </h2>
-            <span className="text-[10px] font-mono text-zinc-400 bg-[#08090c] border border-white/[0.06] px-2.5 py-0.5 rounded-full tabular-nums">
-              {setlists.length} shows
+            <span className="text-[10px] font-mono text-zinc-800 bg-zinc-100 border border-zinc-200 px-2.5 py-0.5 rounded-full tabular-nums font-bold">
+              {setlists.length} {setlists.length === 1 ? 'show' : 'shows'}
             </span>
           </div>
           
@@ -225,13 +221,13 @@ export default function SetlistBuilder() {
               placeholder="Nombre del Setlist / Show..."
               value={newSetlistName}
               onChange={e => setNewSetlistName(e.target.value)}
-              className="flex-1 bg-[#08090c] border border-white/[0.08] rounded-xl px-3.5 py-2.5 outline-none focus:border-[#ef4444]/50 transition text-xs font-medium shadow-[inset_0_2px_6px_rgba(0,0,0,0.65)]"
+              className="flex-1 bg-white border border-zinc-300 rounded-xl px-3.5 py-2.5 outline-none focus:border-black transition text-xs font-medium text-zinc-900 placeholder:text-zinc-400 shadow-xs"
               onKeyDown={e => e.key === 'Enter' && createSetlist()}
             />
             <button 
               onClick={createSetlist}
               disabled={!newSetlistName.trim() || isSaving}
-              className="bg-gradient-to-br from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] disabled:opacity-50 text-white px-3.5 py-2.5 rounded-xl transition font-black flex items-center justify-center shadow-[0_0_18px_rgba(239,68,68,0.35)] border border-red-400/30"
+              className="ruby-pill-accent hover:brightness-105 disabled:opacity-40 text-white px-3.5 py-2.5 rounded-xl transition font-black flex items-center justify-center shadow-xs cursor-pointer active:scale-95"
               title="Crear nuevo Setlist"
             >
               <Plus size={16} />
@@ -247,17 +243,17 @@ export default function SetlistBuilder() {
                   onClick={() => setSelectedSetlistId(setlist.id)}
                   className={`relative flex items-center justify-between p-3.5 rounded-xl cursor-pointer transition-all border ${
                     isSelected 
-                    ? 'bg-gradient-to-r from-[#ef4444]/15 via-[#ef4444]/[0.05] to-transparent border-[#ef4444]/40 text-white shadow-[0_6px_20px_rgba(239,68,68,0.12)]' 
-                    : 'bg-[#0b0d13]/80 border-white/[0.05] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200'
+                    ? 'bg-rose-50/70 border-2 border-[#e11d48] text-zinc-950 font-bold shadow-xs' 
+                    : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100 hover:text-black font-semibold'
                   }`}
                 >
                   {isSelected && (
-                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[#ef4444] rounded-r-full shadow-[0_0_10px_#ef4444]" />
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-6 bg-[#e11d48] rounded-r-full" />
                   )}
                   <span className="font-bold text-xs truncate pl-1">{setlist.title}</span>
                   <button 
                     onClick={(e) => { e.stopPropagation(); deleteSetlist(setlist.id); }}
-                    className="text-zinc-600 hover:text-red-400 p-1 rounded-lg transition"
+                    className="text-zinc-400 hover:text-rose-600 p-1 rounded-lg transition-colors cursor-pointer"
                     title="Eliminar Setlist"
                   >
                     <Trash2 size={14} />
@@ -266,7 +262,7 @@ export default function SetlistBuilder() {
               );
             })}
             {setlists.length === 0 && (
-              <p className="text-zinc-600 text-xs text-center py-8">No hay setlists creados aún.</p>
+              <p className="text-zinc-400 text-xs text-center py-8">No hay setlists creados aún.</p>
             )}
           </div>
         </div>
@@ -276,17 +272,17 @@ export default function SetlistBuilder() {
       <div className="flex-1 flex flex-col gap-5 overflow-hidden z-10">
         {selectedSetlistId ? (
           <>
-            <div className="flex-1 stage-glass-panel rounded-2xl p-5 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between mb-4 pb-3.5 border-b border-white/[0.06]">
+            <div className="flex-1 bg-white border border-zinc-200 rounded-2xl p-5 flex flex-col overflow-hidden shadow-xs">
+              <div className="flex items-center justify-between mb-4 pb-3.5 border-b border-zinc-200">
                 <div className="flex items-center gap-3">
-                  <h2 className="text-base font-black uppercase tracking-wider text-white">Repertorio del Show</h2>
-                  <span className="text-[10px] bg-[#08090c] border border-white/[0.07] px-3 py-1 rounded-full font-mono text-zinc-300 font-bold tabular-nums">
-                    {setlistSongs.length} CANCIONES
+                  <h2 className="text-sm font-black uppercase tracking-wider text-zinc-950">Repertorio del Show</h2>
+                  <span className="text-[10px] bg-zinc-100 border border-zinc-200 px-3 py-1 rounded-full font-mono text-zinc-800 font-bold tabular-nums">
+                    {setlistSongs.length} {setlistSongs.length === 1 ? 'CANCIÓN' : 'CANCIONES'}
                   </span>
                 </div>
                 <button
                   onClick={() => navigate('/concert')}
-                  className="px-4 py-2 rounded-full bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] text-white text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-red-400/30 transition-all"
+                  className="px-4 py-2 rounded-xl ruby-pill-accent text-white text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-xs hover:brightness-105 active:scale-98 transition-all cursor-pointer"
                 >
                   <Radio size={14} />
                   <span>Lanzar en Live Concert</span>
@@ -296,37 +292,37 @@ export default function SetlistBuilder() {
               
               <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
                 {setlistSongs.map((ss, index) => (
-                  <div key={ss.id} className="flex items-center bg-[#090b10]/90 border border-white/[0.06] rounded-xl p-3 group hover:border-white/[0.14] transition-all shadow-[0_4px_14px_rgba(0,0,0,0.3)]">
-                    <div className="flex flex-col mr-3 opacity-40 group-hover:opacity-100 transition">
-                      <button onClick={() => moveSong(index, 'up')} disabled={index === 0} className="hover:text-[#ef4444] disabled:opacity-30">
+                  <div key={ss.id} className="flex items-center bg-zinc-50 hover:bg-zinc-100/80 border border-zinc-200 rounded-xl p-3 group hover:border-zinc-300 transition-all shadow-xs">
+                    <div className="flex flex-col mr-3 opacity-50 group-hover:opacity-100 transition">
+                      <button onClick={() => moveSong(index, 'up')} disabled={index === 0} className="hover:text-black text-zinc-600 disabled:opacity-20 cursor-pointer">
                         <ArrowUp size={13} />
                       </button>
-                      <button onClick={() => moveSong(index, 'down')} disabled={index === setlistSongs.length - 1} className="hover:text-[#ef4444] disabled:opacity-30">
+                      <button onClick={() => moveSong(index, 'down')} disabled={index === setlistSongs.length - 1} className="hover:text-black text-zinc-600 disabled:opacity-20 cursor-pointer">
                         <ArrowDown size={13} />
                       </button>
                     </div>
                     
-                    <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-gradient-to-br from-[#ef4444]/20 to-black border border-[#ef4444]/35 text-xs font-black text-red-400 mr-3.5 shrink-0 font-mono tabular-nums shadow-[0_0_12px_rgba(239,68,68,0.15)]">
+                    <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-white border border-zinc-300 text-xs font-black text-zinc-900 mr-3.5 shrink-0 font-mono tabular-nums shadow-xs">
                       {String(index + 1).padStart(2, '0')}
                     </div>
                     
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="font-bold truncate text-sm text-white tracking-tight">{ss.title}</p>
+                        <p className="font-bold truncate text-sm text-zinc-950 tracking-tight">{ss.title}</p>
                         {ss.bpm && (
-                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#08090c] text-zinc-300 border border-white/[0.07] tabular-nums">
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-white text-zinc-800 border border-zinc-200 tabular-nums shadow-xs">
                             {ss.bpm} BPM
                           </span>
                         )}
                         {ss.key && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-800 border border-purple-200 shadow-xs">
                             {ss.key}
                           </span>
                         )}
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                         {ss.hasAudio ? (
-                          <span className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                          <span className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-xs">
                             <Save size={9} /> MIX EXPORTADO (FOH + MÚSICOS)
                           </span>
                         ) : (
@@ -335,23 +331,23 @@ export default function SetlistBuilder() {
                               sessionStorage.setItem('tandu_active_song_id', ss.songId);
                               navigate('/prompter');
                             }}
-                            className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-[#ef4444]/20 hover:bg-[#ef4444]/30 text-red-300 border border-[#ef4444]/40 flex items-center gap-1 transition-colors"
+                            className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
                             title="Haz clic para abrir en Studio Prompter y exportar la mezcla"
                           >
                             <Music size={9} /> FALTA EXPORTAR MIX EN STUDIO PROMPTER →
                           </button>
                         )}
-                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border shadow-xs ${
                           ss.hasChords
-                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
-                            : 'bg-[#08090c] text-zinc-600 border-white/[0.05]'
+                            ? 'bg-sky-50 text-sky-800 border-sky-300'
+                            : 'bg-white text-zinc-400 border-zinc-200'
                         }`}>
                           {ss.hasChords ? '✓ Acordes' : 'Sin Acordes'}
                         </span>
-                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border shadow-xs ${
                           ss.hasLyrics
-                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                            : 'bg-[#08090c] text-zinc-600 border-white/[0.05]'
+                            ? 'bg-amber-50 text-amber-800 border-amber-300'
+                            : 'bg-white text-zinc-400 border-zinc-200'
                         }`}>
                           {ss.hasLyrics ? '✓ Letras Sincronizadas' : 'Sin Letras'}
                         </span>
@@ -360,7 +356,7 @@ export default function SetlistBuilder() {
                     
                     <button 
                       onClick={() => removeSongFromSetlist(ss.id)}
-                      className="ml-3 text-zinc-600 hover:text-red-400 p-2 rounded-lg transition"
+                      className="ml-3 text-zinc-400 hover:text-rose-600 p-2 rounded-lg transition-colors cursor-pointer"
                       title="Quitar del Setlist"
                     >
                       <Trash2 size={16} />
@@ -369,19 +365,19 @@ export default function SetlistBuilder() {
                 ))}
                 
                 {setlistSongs.length === 0 && (
-                  <div className="h-full flex items-center justify-center flex-col text-zinc-600">
-                    <ListMusic size={42} className="mb-3 opacity-40" />
-                    <p className="text-sm font-bold text-zinc-400">Repertorio vacío</p>
-                    <p className="text-xs mt-1">Agrega canciones desde el catálogo inferior.</p>
+                  <div className="h-full flex items-center justify-center flex-col text-zinc-400 py-16">
+                    <ListMusic size={42} className="mb-3 opacity-40 text-zinc-400" />
+                    <p className="text-sm font-bold text-zinc-700">Repertorio vacío</p>
+                    <p className="text-xs mt-1 text-zinc-400">Agrega canciones desde el catálogo inferior.</p>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="h-56 stage-glass-panel rounded-2xl p-4 flex flex-col shrink-0">
+            <div className="h-56 bg-white border border-zinc-200 rounded-2xl p-4 flex flex-col shrink-0 shadow-xs">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-black uppercase tracking-[0.16em] text-zinc-200">Catálogo de Canciones Disponibles ({allSongs.length})</h2>
-                <span className="text-[10px] text-zinc-500">Las canciones con borde esmeralda ya tienen su Mix En Vivo exportado</span>
+                <h2 className="text-xs font-black uppercase tracking-[0.16em] text-zinc-950">Catálogo de Canciones Disponibles ({allSongs.length})</h2>
+                <span className="text-[10px] text-zinc-500 font-medium">Las canciones con borde esmeralda ya tienen su Mix En Vivo exportado</span>
               </div>
               <div className="flex-1 overflow-y-auto grid grid-cols-2 lg:grid-cols-3 gap-2.5 pr-1 custom-scrollbar">
                 {allSongs.map(song => {
@@ -391,26 +387,26 @@ export default function SetlistBuilder() {
                   return (
                     <div 
                       key={song.id} 
-                      className={`flex items-center justify-between p-3 rounded-xl border transition-all group ${
+                      className={`flex items-center justify-between p-3 rounded-xl border transition-all group shadow-xs ${
                         hasAudio
-                          ? 'bg-[#090b10]/90 border-emerald-500/30 hover:border-emerald-400/60 shadow-[0_4px_12px_rgba(0,0,0,0.25)]'
-                          : 'bg-red-950/10 border-red-900/30 opacity-75 hover:opacity-100'
+                          ? 'bg-white border-emerald-300 hover:border-emerald-500'
+                          : 'bg-zinc-50/60 border-zinc-200 hover:border-zinc-300'
                       }`}
                     >
                       <div className="min-w-0 flex-1 mr-2">
-                        <div className="text-xs font-bold text-white truncate tracking-tight" title={song.title}>{song.title}</div>
+                        <div className="text-xs font-bold text-zinc-950 truncate tracking-tight" title={song.title}>{song.title}</div>
                         <div className="flex items-center gap-1.5 mt-1">
-                          <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full ${hasAudio ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/15 text-red-400 border border-red-500/30'}`}>
+                          <span className={`text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full border shadow-xs ${hasAudio ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-200'}`}>
                             {hasAudio ? '● Mix Listo' : '○ Sin Mix'}
                           </span>
                           {hasLyrics && (
-                            <span className="text-[8px] font-bold text-amber-300 bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 rounded-full uppercase">Lyrics</span>
+                            <span className="text-[8.5px] font-bold text-amber-800 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded-full uppercase shadow-xs">Lyrics</span>
                           )}
                         </div>
                       </div>
                       <button 
                         onClick={() => addSongToSetlist(song.id)}
-                        className="stage-tactile-btn hover:bg-[#ef4444] text-red-300 hover:text-white w-8 h-8 flex items-center justify-center rounded-xl transition-all shrink-0"
+                        className="w-8 h-8 flex items-center justify-center rounded-xl bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white border border-zinc-200 hover:border-black transition-all shrink-0 cursor-pointer shadow-xs active:scale-95"
                         title="Añadir al Setlist"
                       >
                         <Plus size={14} />
@@ -422,10 +418,10 @@ export default function SetlistBuilder() {
             </div>
           </>
         ) : (
-          <div className="h-full flex items-center justify-center text-zinc-500 stage-glass-panel rounded-2xl">
+          <div className="h-full flex items-center justify-center text-zinc-400 bg-white border border-zinc-200 rounded-2xl shadow-xs">
             <div className="text-center">
-              <ListMusic size={48} className="mx-auto mb-4 opacity-40 text-[#ef4444]" />
-              <p className="text-base font-bold text-zinc-300">Selecciona o crea un Setlist a la izquierda</p>
+              <ListMusic size={48} className="mx-auto mb-4 opacity-40 text-[#e11d48]" />
+              <p className="text-base font-bold text-zinc-800">Selecciona o crea un Setlist a la izquierda</p>
             </div>
           </div>
         )}
