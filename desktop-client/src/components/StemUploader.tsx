@@ -240,7 +240,7 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
         />
         <div
-          className={`w-full px-4 py-3 rounded-2xl border border-dashed transition-all flex items-center justify-between gap-3 shadow-xs ${
+          className={`w-full px-4.5 py-3.5 rounded-2xl border border-dashed transition-all flex items-center justify-between gap-4 shadow-xs ${
             isUploading
               ? 'border-[#ef4444]/60 bg-red-50/60'
               : uploadStatus === 'success'
@@ -248,32 +248,32 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
               : 'border-zinc-300 group-hover:border-[#ef4444]/60 bg-zinc-50/80 group-hover:bg-zinc-100/80'
           }`}
         >
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-red-100 border border-red-200 flex items-center justify-center shrink-0 text-[#ef4444] shadow-xs">
+          <div className="flex items-center gap-3.5 min-w-0 flex-1">
+            <div className="w-10 h-10 rounded-xl bg-red-100 border border-red-200 flex items-center justify-center shrink-0 text-[#ef4444] shadow-xs">
               {isUploading ? (
-                <UploadCloud size={17} className="animate-bounce" />
+                <UploadCloud size={18} className="animate-bounce" />
               ) : uploadStatus === 'success' ? (
-                <CheckCircle size={17} className="text-emerald-600" />
+                <CheckCircle size={18} className="text-emerald-600" />
               ) : (
-                <UploadCloud size={17} />
+                <UploadCloud size={18} />
               )}
             </div>
-            <div className="flex flex-col min-w-0 text-left">
-              <span className="text-xs font-extrabold text-zinc-950 truncate tracking-tight">
+            <div className="flex flex-col min-w-0 text-left flex-1">
+              <span className="text-xs font-black text-zinc-950 truncate tracking-tight">
                 {isUploading
                   ? progressInfo || 'Subiendo Stems...'
                   : uploadStatus === 'success'
                   ? '¡Stems cargados correctamente!'
                   : 'Cargar Stems Separados (WAV / MP3 / .ZIP) + Pista Master'}
               </span>
-              <span className="text-[10px] text-zinc-500 font-medium truncate">
+              <span className="text-[10.5px] text-zinc-600 font-medium truncate">
                 {isUploading
                   ? `${progressPct}% completado`
                   : 'Selecciona múltiples pistas a la vez o arrastra un paquete .ZIP (Incluye tu pista "Master" para la IA)'}
               </span>
             </div>
           </div>
-          <span className="px-3.5 py-1.5 rounded-full ruby-pill-accent text-white text-[10px] font-black uppercase tracking-wider shrink-0 shadow-xs border border-white/20">
+          <span className="px-4 py-2 rounded-full ruby-pill-accent text-white text-[10.5px] font-black uppercase tracking-wider shrink-0 shadow-xs border border-white/20 whitespace-nowrap">
             {isUploading ? `${progressPct}%` : '+ Subir Stems'}
           </span>
         </div>
