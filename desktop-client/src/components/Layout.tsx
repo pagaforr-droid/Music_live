@@ -21,35 +21,35 @@ export default function Layout() {
   const navLinkClass = (isActive: boolean) =>
     `group relative flex items-center ${
       isSidebarOpen ? 'space-x-3.5 px-3.5' : 'justify-center px-0'
-    } py-2.5 rounded-xl transition-all duration-200 ${
+    } py-2.5 rounded-xl transition-colors duration-150 ${
       isActive
-        ? 'bg-gradient-to-r from-rose-500/20 via-rose-500/10 to-transparent text-white font-medium shadow-[inset_0_1px_1px_rgba(255,255,255,0.12),0_4px_16px_rgba(244,63,94,0.16)] border border-rose-500/30'
-        : 'text-[#8e96a4] hover:bg-white/[0.04] hover:text-white border border-transparent font-normal'
+        ? 'bg-[#1e1318] text-white font-semibold border border-[#e11d48]'
+        : 'text-[#8e96a4] hover:bg-[#151924] hover:text-white border border-transparent font-normal'
     }`;
 
   return (
-    <div className="flex h-screen bg-[#030407] stage-aurora-bg text-white overflow-hidden selection:bg-rose-500/30 selection:text-white">
-      {/* Sidebar Musiko.io + Apple Liquid Glass */}
+    <div className="flex h-screen bg-[#0b0d13] text-white overflow-hidden selection:bg-[#e11d48]/30 selection:text-white">
+      {/* Sidebar Musiko.io - Colores Enteros Sólidos */}
       <nav
         className={`${
           isSidebarOpen ? 'w-64' : 'w-20'
-        } flex flex-col h-full bg-[#06080e]/95 border-r border-white/10 backdrop-blur-3xl relative z-20 shadow-[8px_0_32px_rgba(0,0,0,0.75)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+        } flex flex-col h-full bg-[#0d0f16] border-r border-[#1a1e28] relative z-20 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
       >
-        {/* Top Window Bar Accents (Musiko.io Style) + Collapse Button */}
+        {/* Top Window Bar Accents (Colores Enteros, Cero Glow) + Collapse Button */}
         <div
           className={`pt-3.5 pb-2 px-4 flex items-center ${
             isSidebarOpen ? 'justify-between' : 'justify-center'
           }`}
         >
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80 shadow-[0_0_6px_rgba(244,63,94,0.5)]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400/80 shadow-[0_0_6px_rgba(251,191,36,0.3)]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/80 shadow-[0_0_6px_rgba(52,211,153,0.3)]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
           </div>
           {isSidebarOpen && (
             <button
               onClick={() => setIsSidebarOpen(false)}
-              className="w-7 h-7 rounded-full bg-white/[0.04] hover:bg-white/[0.1] border border-white/[0.08] flex items-center justify-center text-gray-400 hover:text-white transition-all"
+              className="w-7 h-7 rounded-full bg-[#151924] hover:bg-[#1e2330] border border-[#232938] flex items-center justify-center text-gray-400 hover:text-white transition-all"
               title="Contraer menú"
             >
               <ChevronLeft size={14} />
@@ -108,12 +108,12 @@ export default function Layout() {
                   <MonitorPlay
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Live Concert</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -125,12 +125,12 @@ export default function Layout() {
                   <ListMusic
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Setlists & Show</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -150,12 +150,12 @@ export default function Layout() {
                   <CloudUpload
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Stem Studio</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -167,12 +167,12 @@ export default function Layout() {
                   <Music
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Studio Prompter</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -184,12 +184,12 @@ export default function Layout() {
                   <Type
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Lyric Studio</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -201,12 +201,12 @@ export default function Layout() {
                   <Wand2
                     size={19}
                     className={`shrink-0 transition-colors ${
-                      isActive ? 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]' : 'text-[#8e96a4] group-hover:text-white'
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Diseño & Stage</span>}
                   {isActive && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 ruby-pill-accent rounded-l-full shadow-[0_0_12px_#f43f5e]" />
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}
                 </>
               )}
@@ -221,14 +221,14 @@ export default function Layout() {
               rel="noopener noreferrer"
               className={`group flex items-center ${
                 isSidebarOpen ? 'space-x-3 px-3.5' : 'justify-center px-0'
-              } py-2.5 rounded-xl transition-all duration-200 text-[#8e96a4] hover:bg-white/[0.04] hover:text-white border border-dashed border-white/10 hover:border-rose-500/40`}
+              } py-2.5 rounded-xl transition-all duration-200 text-[#8e96a4] hover:bg-[#151924] hover:text-white border border-dashed border-[#232938] hover:border-[#e11d48]/50`}
               title="Abrir In-Ear (Modo Práctica Wi-Fi)"
             >
-              <Headphones size={18} className="text-gray-400 group-hover:text-rose-400 shrink-0 transition-colors" />
+              <Headphones size={18} className="text-gray-400 group-hover:text-[#e11d48] shrink-0 transition-colors" />
               {isSidebarOpen && (
                 <div className="flex flex-col leading-tight overflow-hidden">
                   <span className="font-medium text-xs text-zinc-200 whitespace-nowrap">In-Ear Monitor</span>
-                  <span className="text-[9px] font-mono text-amber-400/90 uppercase tracking-wider">Práctica Wi-Fi</span>
+                  <span className="text-[9px] font-mono text-[#f59e0b] uppercase tracking-wider">Práctica Wi-Fi</span>
                 </div>
               )}
             </a>
@@ -237,15 +237,15 @@ export default function Layout() {
 
         {/* Footer User Profile Capsule */}
         <div
-          className={`p-3.5 border-t border-white/[0.06] bg-[#090b0f]/90 ${
+          className={`p-3.5 border-t border-[#1a1e28] bg-[#0d0f16] ${
             !isSidebarOpen && 'flex flex-col items-center justify-center'
           }`}
         >
           {isSidebarOpen ? (
-            <div className="flex items-center space-x-3 mb-3 px-3 py-2 rounded-2xl apple-glass-card border border-white/[0.06]">
-              <div className="relative w-8 h-8 rounded-full bg-gradient-to-tr from-[#1e2330] to-[#2d3548] border border-white/15 flex items-center justify-center shrink-0 shadow-inner">
+            <div className="flex items-center space-x-3 mb-3 px-3 py-2 rounded-xl bg-[#12151f] border border-[#1f2533]">
+              <div className="relative w-8 h-8 rounded-full bg-[#1e2330] border border-[#2b3345] flex items-center justify-center shrink-0">
                 <User size={15} className="text-white/90" />
-                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#0d0f14] shadow-[0_0_6px_#10b981]" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400" />
               </div>
               <div className="flex flex-col overflow-hidden">
                 <span className="text-xs font-normal text-zinc-200 truncate">{user?.email}</span>
@@ -254,19 +254,19 @@ export default function Layout() {
             </div>
           ) : (
             <div
-              className="relative w-9 h-9 rounded-full bg-gradient-to-tr from-[#1e2330] to-[#2d3548] border border-white/15 flex items-center justify-center shrink-0 mb-3 shadow-inner"
+              className="relative w-9 h-9 rounded-full bg-[#1e2330] border border-[#2b3345] flex items-center justify-center shrink-0 mb-3"
               title={user?.email}
             >
               <User size={15} className="text-white/90" />
-              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#0d0f14]" />
+              <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400" />
             </div>
           )}
 
           <button
             onClick={signOut}
-            className={`stage-tactile-btn flex items-center justify-center ${
+            className={`flex items-center justify-center ${
               isSidebarOpen ? 'w-full space-x-2 py-2 px-4' : 'p-2.5'
-            } bg-gradient-to-b from-rose-500/15 to-rose-500/5 hover:from-rose-500/25 hover:to-rose-500/15 text-rose-300 hover:text-white rounded-xl transition-all border border-rose-500/25`}
+            } bg-[#1a1115] hover:bg-[#25141c] text-[#f43f5e] hover:text-white rounded-xl transition-colors border border-[#e11d48]/30`}
             title="Cerrar Sesión"
           >
             <LogOut size={15} className="shrink-0" />
@@ -275,14 +275,8 @@ export default function Layout() {
         </div>
       </nav>
 
-      {/* Main Content Area with Kapuha Tri-Tone Atmosphere (Blanco + Negro Intenso + Colores Rojo) */}
-      <main className="flex-1 h-full relative overflow-hidden bg-transparent">
-        {/* Luminous White Zenith Light Beam */}
-        <div className="pointer-events-none absolute -top-36 left-1/3 w-[680px] h-[340px] rounded-full bg-white/[0.08] blur-[125px]" />
-        {/* Kapuha Ruby Upper Atmospheric Flare */}
-        <div className="pointer-events-none absolute -top-24 right-1/12 w-[550px] h-[550px] rounded-full bg-rose-600/[0.22] blur-[150px]" />
-        {/* Kapuha Coral Scarlet Lower Stage Bloom */}
-        <div className="pointer-events-none absolute -bottom-40 left-1/5 w-[650px] h-[550px] rounded-full bg-rose-500/[0.18] blur-[160px]" />
+      {/* Main Content Area - Fondo Entero Sólido (Cero Efectos, Cero Manchas Difusas) */}
+      <main className="flex-1 h-full relative overflow-hidden bg-[#0b0d13]">
         <Outlet />
       </main>
     </div>
