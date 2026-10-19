@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Prompter } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, MonitorSpeaker, Music, LayoutList, Wifi, Users, Type, Columns, ExternalLink, Repeat, Volume2, Headphones } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -580,22 +580,25 @@ export default function LiveConcert() {
   const songSections = currentSong?.prompter_data?.sections || [];
 
   return (
-    <div className="h-screen bg-[#08090c] text-white flex flex-col font-sans overflow-hidden select-none relative">
-      {/* Subtle Concentric Hero Stage Rings (Musiko.io Aesthetic) */}
-      <div className="pointer-events-none absolute -top-64 left-1/3 w-[700px] h-[700px] rounded-full border border-white/[0.03]" />
-      <div className="pointer-events-none absolute -top-48 left-1/3 w-[520px] h-[520px] rounded-full border border-white/[0.04]" />
+    <div className="h-screen stage-aurora-bg text-white flex flex-col font-sans overflow-hidden select-none relative">
+      {/* Atmospheric Stage Aurora Glow (Kapuha / Apple Vision ambient bloom) */}
+      <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[920px] h-[360px] rounded-full bg-gradient-to-b from-[#f43f5e]/12 via-[#8b5cf6]/6 to-transparent blur-[130px] -z-0" />
+      <div className="pointer-events-none absolute -top-64 left-1/4 w-[600px] h-[600px] rounded-full border border-white/[0.02]" />
 
-      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO */}
-      <header className="h-[88px] bg-[#0d0f14]/95 backdrop-blur-2xl border-b border-white/[0.06] shadow-[0_8px_32px_rgba(0,0,0,0.55)] flex items-center px-6 justify-between shrink-0 z-20 gap-4">
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white font-semibold px-3.5 py-1.5 rounded-full uppercase tracking-[0.14em] text-[10.5px] shadow-[0_0_20px_rgba(239,68,68,0.35)] border border-white/15 flex items-center gap-2">
+      {/* HEADER / CONSOLA MAESTRA FLOTANTE DE ESCENARIO (Apple Liquid Glass) */}
+      <header className="h-[90px] px-6 py-2.5 flex items-center justify-between shrink-0 z-20 gap-4 bg-[#0a0c12]/75 backdrop-blur-3xl border-b border-white/[0.05] shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+        {/* ISLA 1: Identidad del Show, Setlist & Modo */}
+        <div className="apple-glass-island p-1.5 rounded-full flex items-center gap-2 shadow-[0_8px_24px_rgba(0,0,0,0.5)] shrink-0">
+          {/* Live Stage Badge with soft breathing glow */}
+          <div className="ruby-pill-accent text-white font-semibold px-3.5 py-1.5 rounded-full uppercase tracking-[0.14em] text-[10.5px] flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-white animate-pulse shadow-[0_0_8px_#fff]" />
             LIVE STAGE
           </div>
 
+          {/* Setlist Selector */}
           <div className="relative">
             <select
-              className="stage-tactile-btn bg-[#13161f] hover:bg-[#191d29] border border-white/[0.08] focus:border-[#ef4444]/50 text-zinc-200 px-4 py-2 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[210px]"
+              className="bg-transparent hover:bg-white/[0.05] focus:bg-[#12151e] text-zinc-200 px-3 py-1.5 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[190px] border border-transparent focus:border-white/15"
               value={selectedSetlistId || ''}
               onChange={(e) => setSelectedSetlistId(e.target.value)}
             >
@@ -606,31 +609,29 @@ export default function LiveConcert() {
             </select>
           </div>
 
-          {/* Selector de Modo: EN VIVO (Consola WAV) vs PRÁCTICA (Ligero MP3) */}
+          {/* Mode Toggle Pill */}
           <div
             onClick={() => {
               if (isPlaying) return;
               setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
             }}
-            className={`stage-tactile-btn flex items-center gap-2 px-3.5 py-2 rounded-full border transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all cursor-pointer text-[10px] font-medium uppercase tracking-wider ${
               playbackMode === 'LIVE'
-                ? 'bg-[#ef4444]/15 border-[#ef4444]/40 text-red-200 shadow-[0_0_16px_rgba(239,68,68,0.15)]'
-                : 'bg-amber-500/15 border-amber-500/40 text-amber-200'
-            } ${isPlaying ? 'opacity-50 cursor-not-allowed' : ''}`}
+                ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30 shadow-[0_0_12px_rgba(244,63,94,0.2)]'
+                : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+            } ${isPlaying ? 'opacity-40 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
             title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV de Consola)" : "Modo Práctica / Ensayo (Audio Ligero MP3)"}
           >
-            <div className={`w-2 h-2 rounded-full ${playbackMode === 'LIVE' ? 'bg-[#ef4444] shadow-[0_0_8px_#ef4444]' : 'bg-amber-400 shadow-[0_0_8px_#fbbf24]'}`} />
-            <span className="text-[10px] font-medium uppercase tracking-wider">
-              {playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}
-            </span>
+            <span className={`w-1.5 h-1.5 rounded-full ${playbackMode === 'LIVE' ? 'bg-rose-400 shadow-[0_0_6px_#f43f5e]' : 'bg-amber-400'}`} />
+            <span>{playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}</span>
           </div>
         </div>
 
-        {/* Center: Reloj Digital de Escenario y Barra de Progreso (Musiko.io + QClay) */}
-        <div className="flex flex-col items-center flex-1 max-w-[540px] px-3">
-          <div className="w-full flex items-center justify-between mb-1.5 px-1">
+        {/* ISLA 2: Reloj Digital de Titanio, Título & Scrubber de Escenario */}
+        <div className="apple-glass-island px-5 py-2 rounded-2xl flex flex-col items-center flex-1 max-w-[560px] shadow-[0_8px_32px_rgba(0,0,0,0.55)]">
+          <div className="w-full flex items-center justify-between mb-1.5 px-0.5">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-xs font-medium text-zinc-100 truncate max-w-[190px]">
+              <span className="text-[13px] font-medium text-zinc-100 truncate max-w-[210px] tracking-tight">
                 {currentSong ? currentSong.title : 'Sin canción activa'}
               </span>
               {currentSong?.prompter_data?.key && (
@@ -641,11 +642,11 @@ export default function LiveConcert() {
             </div>
 
             <div className="flex items-center gap-2.5 shrink-0">
-              <span className="text-2xl leading-none font-mono font-light text-white tracking-tight tabular-nums drop-shadow-[0_2px_8px_rgba(255,255,255,0.15)]">
+              <span className="text-2xl leading-none font-mono font-light text-white tracking-tight tabular-nums drop-shadow-[0_2px_12px_rgba(255,255,255,0.2)]">
                 {formatTime(currentTime)}
               </span>
               {currentSong?.prompter_data?.bpm && (
-                <span className="text-[10.5px] font-mono font-normal px-2.5 py-0.5 rounded-full bg-[#151822] text-amber-400 border border-amber-500/25 shadow-inner tabular-nums">
+                <span className="text-[10.5px] font-mono font-normal px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/25 shadow-inner tabular-nums">
                   {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
                 </span>
               )}
@@ -674,7 +675,7 @@ export default function LiveConcert() {
               className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2 transition-all"
               style={{
                 background: currentSong && totalDuration > 0
-                  ? `linear-gradient(to right, #ef4444 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, rgba(255,255,255,0.08) ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
+                  ? `linear-gradient(to right, #f43f5e ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, rgba(255,255,255,0.08) ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
                   : 'rgba(255,255,255,0.08)'
               }}
             />
@@ -686,104 +687,95 @@ export default function LiveConcert() {
           </div>
         </div>
 
-        {/* Right: Faders de Consola (Público R / Músicos L), Ruteo e In-Ears de Práctica */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          {/* Faders Duales Independientes: SALIDA PÚBLICO (R) y SALIDA MÚSICOS (L) */}
-          <div className="stage-tactile-pressed flex items-center gap-3.5 bg-[#090b10] px-4 py-2 rounded-2xl border border-white/[0.07]">
-            {/* Salida Público FOH (Canal R) */}
-            <div className="flex flex-col w-28">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[9.5px] text-[#ef4444] font-medium uppercase tracking-wider flex items-center gap-1">
-                  <Volume2 size={11} /> PÚBLICO (R)
-                </span>
-                <span className="text-[11px] font-mono font-normal text-white tabular-nums">{Math.round(fohVolume * 100)}%</span>
-              </div>
-              <input
-                type="range" min="0" max="1.3" step="0.01"
-                value={fohVolume}
-                onChange={(e) => setFohVolume(parseFloat(e.target.value))}
-                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #ef4444 ${(fohVolume / 1.3) * 100}%, rgba(255,255,255,0.08) ${(fohVolume / 1.3) * 100}%)`
-                }}
-                title="Volumen hacia Consola Principal / Público (Canal Derecho R)"
-              />
+        {/* ISLA 3: Rack de Audio, Faders Táctiles Duales e In-Ear */}
+        <div className="apple-glass-island px-4 py-2 rounded-2xl flex items-center gap-3.5 shadow-[0_8px_24px_rgba(0,0,0,0.5)] shrink-0">
+          {/* Fader Público FOH (R) */}
+          <div className="flex flex-col w-26">
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-[9px] text-rose-400 font-medium uppercase tracking-wider flex items-center gap-1">
+                <Volume2 size={11} /> PÚBLICO (R)
+              </span>
+              <span className="text-[10.5px] font-mono font-normal text-zinc-200 tabular-nums">{Math.round(fohVolume * 100)}%</span>
             </div>
-
-            <div className="w-px h-8 bg-white/[0.07]" />
-
-            {/* Salida Músicos CUE (Canal L) */}
-            <div className="flex flex-col w-28">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[9.5px] text-amber-400 font-medium uppercase tracking-wider flex items-center gap-1">
-                  <Headphones size={11} /> MÚSICOS (L)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setMuteCueEmergency(v => !v)}
-                  className={`text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-all tabular-nums ${
-                    muteCueEmergency
-                      ? 'bg-[#ef4444] text-white shadow-[0_0_10px_rgba(239,68,68,0.6)]'
-                      : 'bg-white/[0.05] text-zinc-300 hover:text-white'
-                  }`}
-                  title="Silenciar Click/Guía de emergencia"
-                >
-                  {muteCueEmergency ? 'MUTE' : `${Math.round(cueVolume * 100)}%`}
-                </button>
-              </div>
-              <input
-                type="range" min="0" max="1.3" step="0.01"
-                value={muteCueEmergency ? 0 : cueVolume}
-                onChange={(e) => {
-                  setMuteCueEmergency(false);
-                  setCueVolume(parseFloat(e.target.value));
-                }}
-                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-                style={{
-                  background: `linear-gradient(to right, #f59e0b ${((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100}%, rgba(255,255,255,0.08) ${((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100}%)`
-                }}
-                title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
-              />
-            </div>
+            <input
+              type="range" min="0" max="1.3" step="0.01"
+              value={fohVolume}
+              onChange={(e) => setFohVolume(parseFloat(e.target.value))}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, #f43f5e ${(fohVolume / 1.3) * 100}%, rgba(255,255,255,0.08) ${(fohVolume / 1.3) * 100}%)`
+              }}
+              title="Volumen hacia Consola Principal / Público (Canal Derecho R)"
+            />
           </div>
 
-          {/* Modo de Ruteo Físico */}
-          <div className="stage-tactile-btn flex items-center gap-2 bg-[#12151e] px-3.5 py-2 rounded-2xl border border-white/[0.07]">
-            <MonitorSpeaker size={15} className="text-[#8e96a4] shrink-0" />
-            <div className="flex flex-col">
-              <span className="text-[8.5px] text-zinc-400 font-medium uppercase tracking-wider">Ruteo Físico</span>
-              <select
-                className="bg-transparent text-xs font-medium outline-none text-zinc-200 cursor-pointer"
-                value={routingMode}
-                onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
+          <div className="w-px h-7 bg-white/[0.08]" />
+
+          {/* Fader Músicos CUE (L) */}
+          <div className="flex flex-col w-26">
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-[9px] text-amber-400 font-medium uppercase tracking-wider flex items-center gap-1">
+                <Headphones size={11} /> MÚSICOS (L)
+              </span>
+              <button
+                type="button"
+                onClick={() => setMuteCueEmergency(v => !v)}
+                className={`text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-all tabular-nums ${
+                  muteCueEmergency
+                    ? 'bg-rose-500 text-white shadow-[0_0_10px_rgba(244,63,94,0.6)]'
+                    : 'bg-white/[0.06] text-zinc-300 hover:text-white'
+                }`}
+                title="Silenciar Click/Guía de emergencia"
               >
-                <option value="StereoSplit" className="bg-[#0d0f14]">Split (L:Músicos / R:Público)</option>
-                <option value="MultiChannel" className="bg-[#0d0f14]">USB Multicanal (1-2 / 3)</option>
-              </select>
+                {muteCueEmergency ? 'MUTE' : `${Math.round(cueVolume * 100)}%`}
+              </button>
             </div>
+            <input
+              type="range" min="0" max="1.3" step="0.01"
+              value={muteCueEmergency ? 0 : cueVolume}
+              onChange={(e) => {
+                setMuteCueEmergency(false);
+                setCueVolume(parseFloat(e.target.value));
+              }}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, #fbbf24 ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%, rgba(255,255,255,0.08) ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%)`
+              }}
+              title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
+            />
           </div>
 
-          {/* In-Ears Móviles (Etiquetado claro: Solo Prácticas) */}
-          <div
-            onClick={() => setBroadcastEnabled(!broadcastEnabled)}
-            className={`stage-tactile-btn flex items-center gap-2.5 px-3.5 py-2 rounded-2xl border transition-all cursor-pointer ${
-              broadcastEnabled
-                ? 'bg-blue-600/15 border-blue-500/40 shadow-[0_0_16px_rgba(59,130,246,0.2)]'
-                : 'bg-[#12151e] border-white/[0.07] hover:border-white/15'
-            }`}
-            title="Transmitir audio y prompter por Wi-Fi a celulares (Diseñado para prácticas y ensayos, no para show en vivo)"
-          >
-            <Wifi size={15} className={broadcastEnabled ? 'text-blue-400' : 'text-[#64748b]'} />
-            <div className="flex flex-col">
-              <span className={`text-[8.5px] font-medium uppercase tracking-wider ${broadcastEnabled ? 'text-blue-300' : 'text-[#64748b]'}`}>
-                In-Ear (Prácticas)
-              </span>
-              <span className="text-xs font-medium text-zinc-200">
-                {broadcastEnabled ? `Activo (${connections})` : 'Off'}
-              </span>
-            </div>
-            {broadcastEnabled && <Users size={12} className="text-blue-400" />}
+          <div className="w-px h-7 bg-white/[0.08]" />
+
+          {/* Selector de Ruteo Físico */}
+          <div className="flex flex-col">
+            <span className="text-[8px] text-zinc-500 font-medium uppercase tracking-wider">Ruteo</span>
+            <select
+              className="bg-transparent text-[11px] font-medium outline-none text-zinc-300 cursor-pointer hover:text-white"
+              value={routingMode}
+              onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
+            >
+              <option value="StereoSplit" className="bg-[#0d0f14]">Stereo Split</option>
+              <option value="MultiChannel" className="bg-[#0d0f14]">USB Multi</option>
+            </select>
           </div>
+
+          {/* In-Ear Sync Beacon */}
+          <button
+            type="button"
+            onClick={() => setBroadcastEnabled(!broadcastEnabled)}
+            className={`p-2 rounded-xl transition-all flex items-center gap-1.5 ${
+              broadcastEnabled
+                ? 'bg-blue-500/20 text-blue-300 border border-blue-500/35 shadow-[0_0_12px_rgba(59,130,246,0.3)]'
+                : 'bg-white/[0.04] text-zinc-400 hover:text-white hover:bg-white/[0.08]'
+            }`}
+            title={`Transmitir In-Ear WiFi a celulares para ensayos (${connections} conectados)`}
+          >
+            <Wifi size={14} />
+            {broadcastEnabled && connections > 0 && (
+              <span className="text-[10px] font-mono font-medium tabular-nums">{connections}</span>
+            )}
+          </button>
         </div>
       </header>
 
@@ -793,22 +785,22 @@ export default function LiveConcert() {
         {isLoading && (
           <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-2xl">
             <div className="relative w-16 h-16 flex items-center justify-center mb-5">
-              <div className="absolute inset-0 border-4 border-[#ef4444]/20 rounded-full" />
-              <div className="absolute inset-0 border-4 border-[#ef4444] border-t-transparent rounded-full animate-spin shadow-[0_0_20px_rgba(239,68,68,0.5)]" />
-              <Music size={22} className="text-[#ef4444]" />
+              <div className="absolute inset-0 border-4 border-rose-500/20 rounded-full" />
+              <div className="absolute inset-0 border-4 border-rose-500 border-t-transparent rounded-full animate-spin shadow-[0_0_20px_rgba(244,63,94,0.5)]" />
+              <Music size={22} className="text-rose-400" />
             </div>
             <h2 className="text-xl font-semibold text-white mb-1.5 tracking-tight">{currentSong?.title}</h2>
             <p className="text-zinc-400 font-mono text-xs uppercase tracking-widest">{loadStatus}</p>
           </div>
         )}
 
-        {/* SETLIST SIDEBAR (Musiko.io + Music-1 Track Queue) */}
-        <div className="w-80 bg-[#0b0d13]/95 border-r border-white/[0.06] flex flex-col z-10 shrink-0 shadow-[8px_0_30px_rgba(0,0,0,0.45)]">
-          <div className="px-5 py-4 border-b border-white/[0.06] bg-gradient-to-b from-white/[0.03] to-transparent flex items-center justify-between">
-            <h2 className="font-medium flex items-center text-zinc-200 text-xs uppercase tracking-wider">
-              <LayoutList size={15} className="mr-2.5 text-[#ef4444]" /> Repertorio En Vivo
+        {/* SETLIST SIDEBAR (Kapuha Media Cards + Floating Glass) */}
+        <div className="w-84 bg-[#0a0c12]/80 backdrop-blur-3xl border-r border-white/[0.05] flex flex-col z-10 shrink-0 shadow-[12px_0_40px_rgba(0,0,0,0.5)]">
+          <div className="px-5 py-4 border-b border-white/[0.05] bg-gradient-to-b from-white/[0.03] to-transparent flex items-center justify-between">
+            <h2 className="font-medium flex items-center text-zinc-100 text-xs uppercase tracking-wider">
+              <LayoutList size={15} className="mr-2 text-rose-500" /> Repertorio En Vivo
             </h2>
-            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-[10px] font-mono font-medium text-zinc-400 tabular-nums">
+            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/10 text-[10px] font-mono font-medium text-zinc-400 tabular-nums">
               {songs.length} {songs.length === 1 ? 'TEMA' : 'TEMAS'}
             </span>
           </div>
@@ -824,16 +816,16 @@ export default function LiveConcert() {
                   onClick={() => setCurrentSongIndex(idx)}
                   className={`group p-3 rounded-2xl flex items-center cursor-pointer transition-all duration-200 ${
                     isSelected
-                      ? 'bg-gradient-to-r from-[#ef4444]/25 via-[#ef4444]/10 to-[#141722] border border-[#ef4444]/45 shadow-[0_8px_24px_rgba(239,68,68,0.16)]'
-                      : 'bg-[#12151e]/70 border border-white/[0.05] hover:bg-[#171b26] hover:border-white/10'
+                      ? 'hero-card-active'
+                      : 'apple-glass-card hover:bg-white/[0.04]'
                   }`}
                 >
-                  {/* Index Badge or Animated Equalizer Bars (Musiko.io Style) */}
+                  {/* Index Badge or Animated Equalizer Bars (Kapuha Music Style) */}
                   <div
                     className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-mono tabular-nums mr-3.5 shrink-0 transition-all ${
                       isSelected
-                        ? 'bg-gradient-to-br from-[#ef4444] to-[#dc2626] text-white font-semibold shadow-[0_0_14px_rgba(239,68,68,0.5)]'
-                        : 'bg-[#090b10] text-[#8e96a4] font-medium border border-white/[0.06] group-hover:text-white'
+                        ? 'ruby-pill-accent text-white font-semibold'
+                        : 'bg-white/[0.04] text-zinc-400 font-medium group-hover:text-white'
                     }`}
                   >
                     {isSelected && isPlaying ? (
@@ -854,16 +846,16 @@ export default function LiveConcert() {
                     </p>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       {!hasMix ? (
-                        <span className="text-[9.5px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-medium uppercase tracking-wide">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/25 font-medium uppercase tracking-wider">
                           Sin Mix
                         </span>
                       ) : (
-                        <span className="text-[9.5px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 font-medium uppercase tracking-wide">
-                          ● Mix OK
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 font-medium uppercase tracking-wide flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#10b981]" /> Mix OK
                         </span>
                       )}
                       {hasLyrics && (
-                        <span className="text-[9.5px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/25 font-medium uppercase tracking-wide">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/25 font-medium uppercase tracking-wide">
                           Lyrics
                         </span>
                       )}
@@ -884,46 +876,46 @@ export default function LiveConcert() {
             )}
           </div>
 
-          {/* CONTROLES DE TRANSPORTE DE ESCENARIO (QClay Tactile Pod) */}
-          <div className="p-4 bg-[#090b10] border-t border-white/[0.06] grid grid-cols-3 gap-2.5">
+          {/* CONTROLES DE TRANSPORTE DE ESCENARIO (Apple Tactile Pod) */}
+          <div className="p-4 bg-[#0a0c12]/90 border-t border-white/[0.05] grid grid-cols-3 gap-2.5">
             <button
               onClick={prevSong}
               disabled={currentSongIndex === 0}
-              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
               title="Canción Anterior"
             >
-              <SkipBack size={19} className="text-gray-200" />
+              <SkipBack size={18} />
             </button>
             <button
               onClick={stop}
               disabled={!currentSong}
-              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
               title="Detener y volver al Conteo Pre-Roll"
             >
-              <Square size={17} fill="currentColor" className="text-gray-200" />
+              <Square size={16} fill="currentColor" />
             </button>
             <button
               onClick={nextSong}
               disabled={currentSongIndex === songs.length - 1}
-              className="stage-tactile-btn bg-[#141822] hover:bg-[#1b202e] border border-white/[0.08] disabled:opacity-30 rounded-xl flex items-center justify-center py-3 transition-all"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
               title="Siguiente Canción"
             >
-              <SkipForward size={19} className="text-gray-200" />
+              <SkipForward size={18} />
             </button>
 
             <button
               onClick={isPlaying ? pause : play}
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
-              className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-sm font-semibold transition-all tracking-widest uppercase border ${
+              className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-xs font-semibold transition-all tracking-widest uppercase border ${
                 isPlaying
-                  ? 'bg-white text-[#08090c] border-white shadow-[0_0_28px_rgba(255,255,255,0.3)] hover:bg-gray-100'
-                  : 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white border-white/20 hover:brightness-110 shadow-[0_8px_28px_rgba(239,68,68,0.4)]'
+                  ? 'bg-white text-zinc-950 border-white shadow-[0_0_32px_rgba(255,255,255,0.45)] hover:bg-zinc-100'
+                  : 'ruby-pill-accent text-white border-white/20 hover:brightness-110 active:scale-[0.98]'
               } disabled:opacity-30 disabled:shadow-none`}
             >
               {isPlaying ? (
-                <Pause size={20} fill="currentColor" className="mr-2.5" />
+                <Pause size={19} fill="currentColor" className="mr-2" />
               ) : (
-                <Play size={20} fill="currentColor" className="mr-2.5 ml-0.5" />
+                <Play size={19} fill="currentColor" className="mr-2 ml-0.5" />
               )}
               {isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}
             </button>
@@ -931,16 +923,16 @@ export default function LiveConcert() {
         </div>
 
         {/* ÁREA PRINCIPAL DE PROYECCIÓN Y MONITOREO EN VIVO */}
-        <div className="flex-1 bg-[#06070a] flex flex-col relative overflow-hidden">
+        <div className="flex-1 bg-[#06070a]/60 flex flex-col relative overflow-hidden backdrop-blur-md">
           {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista + Proyector HDMI */}
-          <div className="h-13 bg-[#0c0e14]/90 backdrop-blur-xl border-b border-white/[0.06] px-5 flex items-center justify-between gap-3 z-30 shrink-0">
+          <div className="h-14 bg-[#0a0c12]/75 backdrop-blur-2xl border-b border-white/[0.05] px-6 flex items-center justify-between gap-4 z-30 shrink-0">
             {/* Botonera de Salto Rápido a Secciones */}
             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mr-1 shrink-0">
                 Secciones:
               </span>
               {songSections.length === 0 ? (
-                <span className="text-[11px] text-[#64748b] italic">Sin marcadores configurados</span>
+                <span className="text-[11px] text-zinc-500 italic">Sin marcadores configurados</span>
               ) : (
                 songSections.map((sec: any, sIdx: number) => {
                   const nextSec = songSections[sIdx + 1];
@@ -950,10 +942,10 @@ export default function LiveConcert() {
                     <button
                       key={sIdx}
                       onClick={() => seekTo(sec.time)}
-                      className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 border ${
+                      className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 ${
                         isSecActive
-                          ? 'bg-amber-400 text-[#08090c] border-amber-300 font-semibold shadow-[0_0_14px_rgba(251,191,36,0.55)]'
-                          : 'bg-[#141722] text-zinc-300 font-medium border-white/[0.07] hover:bg-[#1c2030] hover:text-white'
+                          ? 'amber-pill-accent text-zinc-950 font-semibold'
+                          : 'apple-glass-card text-zinc-300 font-medium hover:text-white'
                       }`}
                       title={`Saltar a ${sec.name || sec.section}`}
                     >
@@ -965,46 +957,34 @@ export default function LiveConcert() {
               {isVamping && (
                 <button
                   onClick={() => handleToggleVampSection(0, 0)}
-                  className="px-3 py-1 rounded-full text-[10px] font-semibold uppercase bg-[#ef4444] text-white shadow-[0_0_14px_rgba(239,68,68,0.6)] animate-pulse flex items-center gap-1 shrink-0 ml-1"
+                  className="px-3 py-1 rounded-full text-[10px] font-semibold uppercase ruby-pill-accent text-white animate-pulse flex items-center gap-1 shrink-0 ml-1"
                 >
                   <Repeat size={11} /> Salir Loop
                 </button>
               )}
             </div>
 
-            {/* Selector de Modo Visual + Botón Proyector HDMI */}
-            <div className="flex items-center gap-2.5 shrink-0">
-              <div className="stage-tactile-pressed flex items-center bg-[#08090c] p-1 rounded-full border border-white/[0.07]">
+            {/* Apple Segmented View Mode Control + External Projector */}
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="apple-segmented-control flex items-center">
                 <button
                   onClick={() => setViewMode('dual')}
-                  className={`px-3.5 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all flex items-center gap-1.5 ${
-                    viewMode === 'dual'
-                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
-                      : 'text-[#8e96a4] hover:text-white'
-                  }`}
-                  title="Ver Acordes/Compás arriba y Proyección de Letras abajo simultáneamente"
+                  className={`apple-segment-item ${viewMode === 'dual' ? 'active' : ''}`}
+                  title="Ver Acordes y Proyección simultáneamente"
                 >
                   <Columns size={12} />
                   <span>Stage Dual</span>
                 </button>
                 <button
                   onClick={() => setViewMode('prompter')}
-                  className={`px-3.5 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all flex items-center gap-1.5 ${
-                    viewMode === 'prompter'
-                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
-                      : 'text-[#8e96a4] hover:text-white'
-                  }`}
+                  className={`apple-segment-item ${viewMode === 'prompter' ? 'active' : ''}`}
                 >
                   <Music size={12} />
                   <span>Solo Acordes</span>
                 </button>
                 <button
                   onClick={() => setViewMode('lyrics')}
-                  className={`px-3.5 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all flex items-center gap-1.5 ${
-                    viewMode === 'lyrics'
-                      ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_14px_rgba(239,68,68,0.45)]'
-                      : 'text-[#8e96a4] hover:text-white'
-                  }`}
+                  className={`apple-segment-item ${viewMode === 'lyrics' ? 'active' : ''}`}
                 >
                   <Type size={12} />
                   <span>Solo Letras</span>
@@ -1014,10 +994,10 @@ export default function LiveConcert() {
               <button
                 type="button"
                 onClick={openExternalProjector}
-                className="stage-tactile-btn px-3.5 py-1.5 rounded-full bg-[#141722] hover:bg-[#1c2030] border border-white/10 hover:border-[#ef4444]/40 text-zinc-200 text-[11px] font-medium uppercase tracking-wide flex items-center gap-1.5 transition-all"
+                className="apple-glass-card px-3.5 py-1.5 rounded-full text-zinc-200 hover:text-white text-[11px] font-medium uppercase tracking-wide flex items-center gap-1.5 transition-all hover:border-rose-500/40"
                 title="Abrir ventana limpia de Proyección de Letras para arrastrar a pantalla LED / HDMI externo"
               >
-                <ExternalLink size={12} className="text-[#ef4444]" />
+                <ExternalLink size={12} className="text-rose-400" />
                 <span>Proyector HDMI</span>
               </button>
             </div>
@@ -1028,7 +1008,7 @@ export default function LiveConcert() {
               viewMode === 'dual' ? (
                 <div className="h-full w-full flex flex-col gap-3.5 overflow-hidden">
                   {/* Mitad Superior: Grilla de Compases, Acordes y Voz Guía */}
-                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.65)] bg-[#090b10]">
+                  <div className="h-[46%] w-full rounded-3xl overflow-hidden border border-white/[0.06] shadow-[0_16px_40px_rgba(0,0,0,0.7)] bg-[#080a0f]/90">
                     <Prompter
                       currentTime={currentTime}
                       bpm={currentSong.prompter_data?.bpm || 0}
@@ -1045,7 +1025,7 @@ export default function LiveConcert() {
                     />
                   </div>
                   {/* Mitad Inferior: Proyección de Letras al Compás y Tiempo Exacto */}
-                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.75)] bg-black relative">
+                  <div className="flex-1 w-full rounded-3xl overflow-hidden border border-white/[0.06] shadow-[0_20px_50px_rgba(0,0,0,0.8)] bg-black/90 relative">
                     <LyricVisualizer
                       currentTime={currentTime}
                       lyrics={currentSong.prompter_data?.lyrics || []}
@@ -1058,7 +1038,7 @@ export default function LiveConcert() {
                   </div>
                 </div>
               ) : viewMode === 'prompter' ? (
-                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.65)] bg-[#090b10]">
+                <div className="h-full relative z-10 w-full rounded-3xl overflow-hidden border border-white/[0.06] shadow-[0_20px_50px_rgba(0,0,0,0.7)] bg-[#080a0f]/90">
                   <Prompter
                     currentTime={currentTime}
                     bpm={currentSong.prompter_data?.bpm || 0}

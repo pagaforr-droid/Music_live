@@ -63,17 +63,17 @@ export const Prompter: React.FC<PrompterProps> = ({
   const [editingChordIdx, setEditingChordIdx] = useState<number | null>(null);
   const [editingChordValue, setEditingChordValue] = useState<string>('');
 
-  // Mapear colores según el nombre de la sección
+  // Mapear colores según el nombre de la sección (Apple Pro Audio / Liquid Glass style)
   const getSectionColor = (name: string) => {
     const lower = (name || '').toLowerCase();
-    if (lower.includes('intro')) return 'bg-pink-500 border-pink-300 text-black';
-    if (lower.includes('verso') || lower.includes('verse')) return 'bg-orange-500 border-orange-300 text-black';
-    if (lower.includes('pre-coro') || lower.includes('precoro')) return 'bg-yellow-400 border-yellow-200 text-black';
-    if (lower.includes('coro') || lower.includes('chorus')) return 'bg-blue-600 border-blue-400 text-white';
-    if (lower.includes('puente') || lower.includes('bridge')) return 'bg-purple-600 border-purple-400 text-white';
-    if (lower.includes('solo') || lower.includes('inter')) return 'bg-emerald-500 border-emerald-300 text-black';
-    if (lower.includes('final') || lower.includes('outro')) return 'bg-red-600 border-red-400 text-white';
-    return 'bg-zinc-600 border-zinc-400 text-white';
+    if (lower.includes('intro')) return 'bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    if (lower.includes('verso') || lower.includes('verse')) return 'bg-cyan-500/20 border-cyan-400 text-cyan-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    if (lower.includes('pre-coro') || lower.includes('precoro')) return 'bg-amber-500/20 border-amber-400 text-amber-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    if (lower.includes('coro') || lower.includes('chorus')) return 'bg-rose-500/25 border-rose-400 text-rose-100 shadow-[0_0_15px_rgba(244,63,94,0.25),inset_0_1px_1px_rgba(255,255,255,0.25)]';
+    if (lower.includes('puente') || lower.includes('bridge')) return 'bg-purple-500/20 border-purple-400 text-purple-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    if (lower.includes('solo') || lower.includes('inter')) return 'bg-emerald-500/20 border-emerald-400 text-emerald-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    if (lower.includes('final') || lower.includes('outro')) return 'bg-red-500/25 border-red-400 text-red-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
+    return 'bg-white/[0.08] border-white/30 text-zinc-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)]';
   };
 
   // Convertir sections a sectionBlocks con duración
@@ -222,26 +222,26 @@ export const Prompter: React.FC<PrompterProps> = ({
   };
 
   return (
-    <div className="prompter-container bg-[#07080c] text-white p-0 rounded-2xl overflow-hidden h-full w-full relative border border-white/[0.08] shadow-[inset_0_0_60px_rgba(0,0,0,0.9)] select-none">
+    <div className="prompter-container bg-gradient-to-b from-[#0a0c12] via-[#07080c] to-[#040507] text-white p-0 rounded-3xl overflow-hidden h-full w-full relative border border-white/[0.06] shadow-[inset_0_0_80px_rgba(0,0,0,0.95)] select-none">
       {/* Header Overlay */}
-      <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-[#0b0d14]/95 via-[#0b0d14]/70 to-transparent px-5 py-3.5 z-20 flex justify-between items-start pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-[#0a0c12]/95 via-[#0a0c12]/70 to-transparent px-6 py-4 z-20 flex justify-between items-start pointer-events-none">
         <div className="flex items-center gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-[#ef4444] shadow-[0_0_8px_#ef4444]" />
+              <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_#f43f5e]" />
               <h2 className="text-lg font-semibold text-white uppercase tracking-[0.12em] drop-shadow-lg leading-none">
                 {currentTime < 0 ? 'CONTEO PRE-ROLL' : activeSection ? (activeSection.name || activeSection.section) : 'EN ESPERA'}
               </h2>
             </div>
-            <p className="text-[10px] text-zinc-400 font-mono mt-1 uppercase tracking-wider pl-4">
+            <p className="text-[10px] text-zinc-400 font-mono mt-1.5 uppercase tracking-wider pl-4">
               GRILLA DE COMPASES, ACORDES Y VOZ GUÍA {onEditChord ? '• DOBLE CLIC EN UN ACORDE PARA EDITAR' : ''}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2.5 pointer-events-auto">
-          {/* Indicador de Pulso del Compás en Tiempo Real (LED Studio Display) */}
-          <div className="stage-tactile-pressed flex items-center gap-1.5 bg-[#0a0c12]/95 border border-white/10 px-3 py-1.5 rounded-full">
+          {/* Indicador de Pulso del Compás en Tiempo Real (Apple Dynamic Studio LED) */}
+          <div className="apple-glass-island flex items-center gap-1.5 p-1 px-3 rounded-full shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
             <span className="text-[10px] font-mono font-medium text-zinc-400 uppercase mr-1 tracking-wider tabular-nums">
               {currentTime < 0 ? 'PRE' : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
             </span>
@@ -254,9 +254,9 @@ export const Prompter: React.FC<PrompterProps> = ({
                   className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-mono font-semibold transition-all tabular-nums ${
                     isCurrentBeat
                       ? beatNum === 1
-                        ? 'bg-[#ef4444] text-white shadow-[0_0_12px_rgba(239,68,68,0.95)] scale-110'
-                        : 'bg-amber-400 text-[#08090c] shadow-[0_0_10px_rgba(251,191,36,0.85)]'
-                      : 'bg-[#131620] text-[#64748b] border border-white/[0.06]'
+                        ? 'ruby-pill-accent text-white scale-110'
+                        : 'amber-pill-accent text-zinc-950 scale-105'
+                      : 'bg-white/[0.04] text-zinc-500 border border-white/[0.05]'
                   }`}
                 >
                   {beatNum}
@@ -268,33 +268,33 @@ export const Prompter: React.FC<PrompterProps> = ({
           {onVampTrigger && (
             <button
               onClick={handleVamp}
-              className={`stage-tactile-btn px-4 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all border ${
+              className={`px-3.5 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all ${
                 isVamping
-                  ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] border-red-400 text-white animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.8)]'
-                  : 'bg-[#141824] border-white/10 text-zinc-200 hover:bg-[#1e2436] hover:text-white'
+                  ? 'ruby-pill-accent text-white animate-pulse'
+                  : 'apple-glass-card text-zinc-200 hover:text-white'
               }`}
               title="Repetir en bucle la sección actual (Vamp Loop)"
             >
-              {isVamping ? '🔁 VAMP ACTIVO (SALIR)' : '🔁 VAMP SECCIÓN'}
+              {isVamping ? '🔁 VAMP ACTIVO' : '🔁 VAMP SECCIÓN'}
             </button>
           )}
         </div>
 
         {/* Cheat Sheet Flotante (Solo Edición) */}
         {isEditing && (
-          <div className="stage-glass-panel absolute bottom-4 left-1/2 transform -translate-x-1/2 border border-[#ef4444]/40 rounded-full px-5 py-2 shadow-[0_12px_36px_rgba(0,0,0,0.85)] z-50 flex space-x-5 items-center pointer-events-auto">
-            <div className="text-[#ef4444] font-extrabold text-[11px] uppercase tracking-widest flex items-center shrink-0">
-              <span className="w-2 h-2 bg-[#ef4444] rounded-full animate-pulse mr-2 shadow-[0_0_8px_#ef4444]" />
+          <div className="apple-glass-island absolute bottom-4 left-1/2 transform -translate-x-1/2 border border-rose-500/30 rounded-full px-5 py-2 shadow-[0_12px_36px_rgba(0,0,0,0.85)] z-50 flex space-x-5 items-center pointer-events-auto">
+            <div className="text-rose-400 font-semibold text-[11px] uppercase tracking-widest flex items-center shrink-0">
+              <span className="w-2 h-2 bg-rose-500 rounded-full animate-pulse mr-2 shadow-[0_0_8px_#f43f5e]" />
               Voz Guía Al Vuelo
             </div>
-            <div className="flex space-x-2.5 text-[10px] text-gray-300 font-mono">
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">I</span> Intro</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">V</span> Verso</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">P</span> Pre-Coro</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">C</span> Coro</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">B</span> Puente</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">S</span> Solo</div>
-              <div><span className="bg-[#151822] text-white px-2 py-0.5 rounded-full border border-white/15">F</span> Final</div>
+            <div className="flex space-x-2.5 text-[10px] text-zinc-300 font-mono">
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">I</span> Intro</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">V</span> Verso</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">P</span> Pre-Coro</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">C</span> Coro</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">B</span> Puente</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">S</span> Solo</div>
+              <div><span className="bg-white/10 text-white px-2 py-0.5 rounded-full border border-white/15">F</span> Final</div>
             </div>
           </div>
         )}
@@ -302,15 +302,15 @@ export const Prompter: React.FC<PrompterProps> = ({
 
       {/* Modal / Popover de Edición Rápida de Acorde */}
       {editingChordIdx !== null && (
-        <div className="stage-glass-panel absolute top-16 left-36 z-50 border border-amber-500/45 rounded-2xl p-4 shadow-[0_24px_60px_rgba(0,0,0,0.92)] w-84 pointer-events-auto">
+        <div className="apple-glass-card absolute top-16 left-36 z-50 border border-amber-500/40 rounded-2xl p-4 shadow-[0_24px_60px_rgba(0,0,0,0.95)] w-84 pointer-events-auto backdrop-blur-2xl">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-400">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-400">
               Editar Acorde #{editingChordIdx + 1}
             </span>
             <button
               type="button"
               onClick={() => setEditingChordIdx(null)}
-              className="w-6 h-6 rounded-full bg-white/[0.05] hover:bg-white/15 text-gray-400 hover:text-white text-xs font-bold flex items-center justify-center transition-colors"
+              className="w-6 h-6 rounded-full bg-white/[0.06] hover:bg-white/15 text-zinc-400 hover:text-white text-xs font-bold flex items-center justify-center transition-colors"
             >
               ✕
             </button>
@@ -325,13 +325,13 @@ export const Prompter: React.FC<PrompterProps> = ({
                 if (e.key === 'Escape') setEditingChordIdx(null);
               }}
               autoFocus
-              className="flex-1 bg-[#08090c] border border-white/15 focus:border-amber-400 rounded-xl px-3 py-1.5 text-lg font-black text-white outline-none"
+              className="flex-1 bg-black/40 border border-white/15 focus:border-amber-400/80 rounded-xl px-3 py-1.5 text-lg font-bold text-white outline-none"
               placeholder="Ej. Cm7, G/B..."
             />
             <button
               type="button"
               onClick={commitChordEdit}
-              className="px-3.5 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-[#08090c] font-black text-xs uppercase tracking-wider shadow-[0_0_14px_rgba(251,191,36,0.4)]"
+              className="px-3.5 py-2 rounded-full amber-pill-accent text-zinc-950 font-bold text-xs uppercase tracking-wider"
             >
               Guardar
             </button>
@@ -342,7 +342,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                   onRemoveChord(editingChordIdx);
                   setEditingChordIdx(null);
                 }}
-                className="px-2.5 py-2 rounded-full bg-[#ef4444]/20 hover:bg-[#ef4444] text-red-300 hover:text-white border border-[#ef4444]/40 font-bold text-xs transition-colors"
+                className="px-2.5 py-2 rounded-full bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 font-bold text-xs transition-colors"
                 title="Eliminar acorde"
               >
                 🗑
@@ -356,7 +356,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                   key={r}
                   type="button"
                   onClick={() => setEditingChordValue(r)}
-                  className="py-1 rounded-lg bg-[#090b10] hover:bg-white/10 border border-white/[0.07] text-[11px] font-bold text-gray-200 transition-colors"
+                  className="py-1 rounded-lg bg-white/[0.04] hover:bg-white/15 border border-white/[0.06] text-[11px] font-semibold text-zinc-200 transition-colors"
                 >
                   {r}
                 </button>
@@ -371,7 +371,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     key={q || 'maj'}
                     type="button"
                     onClick={() => setEditingChordValue(target)}
-                    className="py-1 rounded-lg bg-[#090b10]/80 hover:bg-amber-500/20 border border-white/[0.06] text-[10px] font-mono text-gray-300 transition-colors"
+                    className="py-1 rounded-lg bg-white/[0.03] hover:bg-amber-500/20 hover:border-amber-400/40 border border-white/[0.04] text-[10px] font-mono text-zinc-300 transition-colors"
                   >
                     {target}
                   </button>
@@ -423,9 +423,9 @@ export const Prompter: React.FC<PrompterProps> = ({
       {/* Scrolling Content (Horizontal) */}
       <div className="relative h-full w-full flex items-center">
         {/* Playhead Line (Fixed) */}
-        <div className="absolute top-0 bottom-0 w-1 bg-amber-400 z-30 shadow-[0_0_18px_rgba(251,191,36,1)]" style={{ left: '120px' }}>
-          <div className="absolute -top-2 -left-2 w-5 h-5 bg-amber-400 rounded-full shadow-[0_0_12px_rgba(251,191,36,0.9)]" />
-          <div className="absolute -bottom-2 -left-2 w-5 h-5 bg-amber-400 rounded-full shadow-[0_0_12px_rgba(251,191,36,0.9)]" />
+        <div className="absolute top-0 bottom-0 w-[2px] bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 z-30 shadow-[0_0_20px_rgba(251,191,36,0.95),0_0_6px_rgba(251,191,36,1)]" style={{ left: '120px' }}>
+          <div className="absolute -top-2.5 -left-[7px] w-4 h-4 bg-amber-300 rounded-full shadow-[0_0_14px_rgba(251,191,36,1)] border-2 border-amber-500/80" />
+          <div className="absolute -bottom-2.5 -left-[7px] w-4 h-4 bg-amber-300 rounded-full shadow-[0_0_14px_rgba(251,191,36,1)] border-2 border-amber-500/80" />
         </div>
 
         {/* Tracks Container */}
@@ -457,9 +457,9 @@ export const Prompter: React.FC<PrompterProps> = ({
                     {isEditing && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onRemoveSection && onRemoveSection(i); }}
-                        className="bg-black/60 text-white w-5 h-5 flex items-center justify-center rounded-full hover:bg-[#ef4444] hover:scale-110 transition z-50 shrink-0 ml-2 shadow-lg text-xs"
+                        className="bg-black/60 text-white w-5 h-5 flex items-center justify-center rounded-full hover:bg-rose-500 hover:scale-110 transition z-50 shrink-0 ml-2 shadow-lg text-xs"
                       >
-                        ✖
+                        ✕
                       </button>
                     )}
                   </div>
@@ -478,11 +478,11 @@ export const Prompter: React.FC<PrompterProps> = ({
                   key={i}
                   className={`absolute h-full flex flex-col justify-center border-l-2 ${
                     block.isActive
-                      ? 'border-amber-400 bg-gradient-to-r from-amber-500/25 to-amber-500/5 shadow-[inset_0_0_30px_rgba(251,191,36,0.22)]'
+                      ? 'border-amber-400 bg-gradient-to-b from-amber-500/20 via-amber-500/10 to-transparent shadow-[inset_0_0_30px_rgba(251,191,36,0.25),0_0_20px_rgba(251,191,36,0.2)] ring-1 ring-amber-400/40 backdrop-blur-md'
                       : isPast
-                      ? 'border-white/[0.06] bg-[#0c0e14]/40'
-                      : 'border-white/15 bg-[#111520]/90'
-                  } transition-colors duration-200 cursor-pointer hover:bg-white/10 rounded-r-xl`}
+                      ? 'border-white/[0.04] bg-black/20 opacity-40'
+                      : 'border-white/15 bg-white/[0.035] hover:bg-white/[0.07] backdrop-blur-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
+                  } transition-all duration-200 cursor-pointer rounded-r-2xl`}
                   style={{
                     left: `${block.time * pixelsPerSecond}px`,
                     width: `${Math.max(block.duration * pixelsPerSecond - 2, 24)}px`,
@@ -504,7 +504,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     <span
                       className={`${lyricBlocks.length > 0 ? 'text-3xl' : 'text-4xl'} font-semibold block tracking-tight ${
                         block.isActive
-                          ? 'text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.85)] scale-105'
+                          ? 'text-amber-400 drop-shadow-[0_0_16px_rgba(251,191,36,0.9)] scale-105'
                           : isPast
                           ? 'text-[#64748b]'
                           : 'text-white'
@@ -532,10 +532,10 @@ export const Prompter: React.FC<PrompterProps> = ({
                     onClick={() => onSeek && onSeek(lb.time)}
                     className={`absolute h-full flex items-center px-3.5 rounded-r-xl border-l-2 transition-all cursor-pointer overflow-hidden ${
                       lb.isActive
-                        ? 'bg-gradient-to-r from-[#ef4444]/35 to-[#ef4444]/10 border-[#ef4444] text-white shadow-[0_0_18px_rgba(239,68,68,0.35)] z-20'
+                        ? 'bg-gradient-to-r from-rose-500/35 to-rose-500/10 border-rose-500 text-white shadow-[0_0_18px_rgba(244,63,94,0.35)] z-20'
                         : isPast
-                        ? 'bg-[#0c0e14]/40 border-white/[0.06] text-[#64748b]'
-                        : 'bg-[#131722]/90 border-[#ef4444]/40 text-zinc-200 hover:bg-[#1a2030]'
+                        ? 'bg-black/20 border-white/[0.05] text-[#64748b] opacity-40'
+                        : 'bg-white/[0.04] border-rose-500/40 text-zinc-200 hover:bg-white/[0.08]'
                     }`}
                     style={{
                       left: `${lb.time * pixelsPerSecond}px`,
