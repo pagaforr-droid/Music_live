@@ -37,6 +37,89 @@ export interface PrompterProps {
   onSeek?: (time: number) => void;
 }
 
+// Mapear estilos sólidos de alta visibilidad para músicos y cantantes (Solid DAW Pro Style)
+export interface SectionSolidStyle {
+  bg: string;
+  border: string;
+  text: string;
+  name: string;
+  emoji: string;
+}
+
+export const getSectionSolidStyle = (name: string): SectionSolidStyle => {
+  const lower = (name || '').toLowerCase();
+  if (lower.includes('intro')) {
+    return {
+      bg: 'bg-indigo-600',
+      border: 'border-indigo-700',
+      text: 'text-white',
+      name: 'INTRO',
+      emoji: '🔊',
+    };
+  }
+  if (lower.includes('verso') || lower.includes('verse')) {
+    return {
+      bg: 'bg-sky-600',
+      border: 'border-sky-700',
+      text: 'text-white',
+      name: 'VERSO',
+      emoji: '🎙️',
+    };
+  }
+  if (lower.includes('pre-coro') || lower.includes('precoro') || lower.includes('pre chorus') || lower.includes('prechorus')) {
+    return {
+      bg: 'bg-amber-600',
+      border: 'border-amber-700',
+      text: 'text-white',
+      name: 'PRE-CORO',
+      emoji: '⚡',
+    };
+  }
+  if (lower.includes('coro') || lower.includes('chorus')) {
+    return {
+      bg: 'bg-rose-600',
+      border: 'border-rose-700',
+      text: 'text-white',
+      name: 'CORO',
+      emoji: '🔥',
+    };
+  }
+  if (lower.includes('puente') || lower.includes('bridge')) {
+    return {
+      bg: 'bg-purple-600',
+      border: 'border-purple-700',
+      text: 'text-white',
+      name: 'PUENTE',
+      emoji: '🌉',
+    };
+  }
+  if (lower.includes('solo') || lower.includes('inter') || lower.includes('instr')) {
+    return {
+      bg: 'bg-emerald-600',
+      border: 'border-emerald-700',
+      text: 'text-white',
+      name: 'SOLO / INSTR',
+      emoji: '🎸',
+    };
+  }
+  if (lower.includes('final') || lower.includes('outro') || lower.includes('coda')) {
+    return {
+      bg: 'bg-zinc-800',
+      border: 'border-zinc-900',
+      text: 'text-white',
+      name: 'FINAL',
+      emoji: '🏁',
+    };
+  }
+  return {
+    bg: 'bg-slate-700',
+    border: 'border-slate-800',
+    text: 'text-white',
+    name: (name || 'SECCIÓN').toUpperCase(),
+    emoji: '🎵',
+  };
+};
+
 const PIXELS_PER_BEAT = 150; // Ancho visual de cada golpe (beat)
 const QUICK_ROOTS = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 const QUICK_QUALITIES = ['', 'm', '7', 'm7', 'maj7', 'sus4', 'add9', 'dim'];
@@ -62,19 +145,6 @@ export const Prompter: React.FC<PrompterProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [editingChordIdx, setEditingChordIdx] = useState<number | null>(null);
   const [editingChordValue, setEditingChordValue] = useState<string>('');
-
-  // Mapear colores según el nombre de la sección (Apple Pro Audio / Liquid Glass style)
-  const getSectionColor = (name: string) => {
-    const lower = (name || '').toLowerCase();
-    if (lower.includes('intro')) return 'bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    if (lower.includes('verso') || lower.includes('verse')) return 'bg-cyan-500/20 border-cyan-400 text-cyan-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    if (lower.includes('pre-coro') || lower.includes('precoro')) return 'bg-amber-500/20 border-amber-400 text-amber-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    if (lower.includes('coro') || lower.includes('chorus')) return 'bg-rose-500/25 border-rose-400 text-rose-100 shadow-[0_0_15px_rgba(244,63,94,0.25),inset_0_1px_1px_rgba(255,255,255,0.25)]';
-    if (lower.includes('puente') || lower.includes('bridge')) return 'bg-purple-500/20 border-purple-400 text-purple-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    if (lower.includes('solo') || lower.includes('inter')) return 'bg-emerald-500/20 border-emerald-400 text-emerald-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    if (lower.includes('final') || lower.includes('outro')) return 'bg-red-500/25 border-red-400 text-red-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]';
-    return 'bg-white/[0.08] border-white/30 text-zinc-100 shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)]';
-  };
 
   // Convertir sections a sectionBlocks con duración
   const sectionBlocks = (sections || []).map((sec, i, arr) => {
@@ -430,34 +500,51 @@ export const Prompter: React.FC<PrompterProps> = ({
 
         {/* Tracks Container */}
         <div ref={containerRef} className="absolute left-0 h-72 flex flex-col justify-center gap-2.5 transition-transform duration-75 ease-linear z-10 will-change-transform">
-          {/* Carril 1: Secciones y Voz Guía */}
-          <div className="relative h-12 w-full mt-6">
+          {/* Carril 1: Secciones y Voz Guía (Colores Sólidos de Alta Visibilidad Pro) */}
+          <div className="relative h-11 w-full mt-5">
             {sectionBlocks.map((block, i) => {
               const isActive = currentTime >= block.time && currentTime < block.time + block.duration;
               const isPast = currentTime >= block.time + block.duration;
-              const colorClass = getSectionColor(block.name || block.section || "");
+              const secStyle = getSectionSolidStyle(block.name || block.section || "");
+              const widthPx = Math.max(block.duration * pixelsPerSecond - 4, 38);
 
               return (
                 <div
                   key={`sec-${i}`}
                   onClick={() => onSeek && onSeek(block.time)}
-                  className={`absolute h-full flex flex-col justify-center border-l-4 ${colorClass} ${
-                    isActive ? 'border-l-4 border-[#e11d48] bg-rose-50 text-rose-950 font-bold z-20' : isPast ? 'opacity-40 z-10 text-zinc-400' : 'opacity-90 z-10 text-zinc-800'
-                  } transition-all cursor-pointer rounded-r-xl hover:brightness-105`}
+                  className={`absolute h-full flex items-center justify-between px-3.5 border ${secStyle.bg} ${secStyle.border} ${secStyle.text} ${
+                    isActive
+                      ? 'ring-2 ring-black shadow-md z-30 font-black scale-[1.01]'
+                      : isPast
+                      ? 'opacity-40 z-10 grayscale-[30%]'
+                      : 'opacity-100 z-10 shadow-xs hover:brightness-105'
+                  } transition-all cursor-pointer rounded-xl select-none`}
                   style={{
                     left: `${block.time * pixelsPerSecond}px`,
-                    width: `${block.duration * pixelsPerSecond}px`,
+                    width: `${widthPx}px`,
                   }}
                   title={`Sección Voz Guía: ${block.name || block.section} (${Math.floor(block.time / 60)}:${String(Math.floor(block.time % 60)).padStart(2, '0')})`}
                 >
-                  <div className="px-3.5 flex justify-between items-center w-full">
-                    <span className={`text-xs font-semibold uppercase tracking-wider ${isActive ? 'scale-105' : ''} transition-transform origin-left truncate`}>
-                      🔊 {block.name || block.section}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs shrink-0 drop-shadow-xs">{secStyle.emoji}</span>
+                    <span className="text-xs font-black uppercase tracking-wider truncate drop-shadow-xs">
+                      {block.name || block.section}
+                    </span>
+                    {isActive && (
+                      <span className="px-1.5 py-0.5 rounded bg-white text-black text-[9px] font-black uppercase tracking-widest shrink-0 shadow-xs">
+                        EN VIVO
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <span className="text-[10px] font-mono font-bold opacity-90 tabular-nums">
+                      {Math.floor(block.time / 60)}:{String(Math.floor(block.time % 60)).padStart(2, '0')}
                     </span>
                     {isEditing && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onRemoveSection && onRemoveSection(i); }}
-                        className="bg-black/60 text-white w-5 h-5 flex items-center justify-center rounded-full hover:bg-rose-500 hover:scale-110 transition z-50 shrink-0 ml-2 shadow-lg text-xs"
+                        className="bg-black/60 text-white w-5 h-5 flex items-center justify-center rounded-full hover:bg-rose-500 hover:scale-110 transition z-50 shrink-0 ml-1 shadow-lg text-xs"
                       >
                         ✕
                       </button>

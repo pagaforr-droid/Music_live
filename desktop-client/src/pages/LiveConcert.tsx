@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { Prompter } from '../components/Prompter';
+import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2 } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -55,6 +55,7 @@ export default function LiveConcert() {
   const [songs, setSongs] = useState<any[]>([]);
   const [currentSongIndex, setCurrentSongIndex] = useState<number>(0);
   const currentSong = songs[currentSongIndex] || null;
+  const currentHasLyrics = Boolean(currentSong?.prompter_data?.lyrics && currentSong.prompter_data.lyrics.length > 0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -1012,18 +1013,20 @@ export default function LiveConcert() {
                   const nextSec = songSections[sIdx + 1];
                   const secEnd = nextSec ? nextSec.time : totalDuration;
                   const isSecActive = currentTime >= sec.time && currentTime < secEnd;
+                  const secStyle = getSectionSolidStyle(sec.name || sec.section || '');
                   return (
                     <button
                       key={sIdx}
                       onClick={() => seekTo(sec.time)}
-                      className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 ${
+                      className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
                         isSecActive
-                          ? 'amber-pill-accent text-black font-bold'
-                          : 'apple-glass-card text-zinc-800 font-semibold hover:bg-zinc-100'
+                          ? `${secStyle.bg} text-white font-bold shadow-xs ring-2 ring-black`
+                          : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border border-zinc-200 font-semibold'
                       }`}
                       title={`Saltar a ${sec.name || sec.section}`}
                     >
-                      {sec.name || sec.section}
+                      <span className="text-[10px]">{secStyle.emoji}</span>
+                      <span>{sec.name || sec.section}</span>
                     </button>
                   );
                 })
@@ -1098,18 +1101,40 @@ export default function LiveConcert() {
                       isEditing={false}
                     />
                   </div>
-                  {/* Mitad Inferior: Proyección de Letras al Compás y Tiempo Exacto */}
-                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black relative">
-                    <LyricVisualizer
-                      currentTime={currentTime}
-                      lyrics={currentSong.prompter_data?.lyrics || []}
-                      isPlaying={isPlaying}
-                      settings={currentSong.prompter_data?.lyric_settings}
-                      bpm={currentSong.prompter_data?.bpm || 120}
-                      firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
-                      beatTimes={currentSong.prompter_data?.beatTimes}
-                    />
-                  </div>
+                  {/* Mitad Inferior: Proyección de Letras o Aviso Elegante sin Letras */}
+                  {currentHasLyrics ? (
+                    <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black relative">
+                      <LyricVisualizer
+                        currentTime={currentTime}
+                        lyrics={currentSong.prompter_data?.lyrics || []}
+                        isPlaying={isPlaying}
+                        settings={currentSong.prompter_data?.lyric_settings}
+                        bpm={currentSong.prompter_data?.bpm || 120}
+                        firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
+                        beatTimes={currentSong.prompter_data?.beatTimes}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white flex flex-col items-center justify-center p-8 text-center relative shadow-xs">
+                      <div className="w-14 h-14 rounded-2xl bg-zinc-100 border border-zinc-200 flex items-center justify-center mb-3 shadow-xs">
+                        <Type size={26} className="text-zinc-600" />
+                      </div>
+                      <h3 className="text-sm font-bold text-zinc-900 uppercase tracking-widest">
+                        Canción sin letras sincronizadas
+                      </h3>
+                      <p className="text-xs text-zinc-500 max-w-md mt-1.5 leading-relaxed font-normal">
+                        Esta pista no tiene proyección de lírica configurada en Lyric Studio. Puedes maximizar la vista de acordes para mayor comodidad en vivo.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('prompter')}
+                        className="mt-4 px-4 py-2.5 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
+                      >
+                        <Maximize2 size={13} />
+                        <span>Maximizar a 'Solo Acordes'</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : viewMode === 'prompter' ? (
                 <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white">
@@ -1130,15 +1155,37 @@ export default function LiveConcert() {
                 </div>
               ) : (
                 <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black">
-                  <LyricVisualizer
-                    currentTime={currentTime}
-                    lyrics={currentSong.prompter_data?.lyrics || []}
-                    isPlaying={isPlaying}
-                    settings={currentSong.prompter_data?.lyric_settings}
-                    bpm={currentSong.prompter_data?.bpm || 120}
-                    firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
-                    beatTimes={currentSong.prompter_data?.beatTimes}
-                  />
+                  {currentHasLyrics ? (
+                    <LyricVisualizer
+                      currentTime={currentTime}
+                      lyrics={currentSong.prompter_data?.lyrics || []}
+                      isPlaying={isPlaying}
+                      settings={currentSong.prompter_data?.lyric_settings}
+                      bpm={currentSong.prompter_data?.bpm || 120}
+                      firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
+                      beatTimes={currentSong.prompter_data?.beatTimes}
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-white flex flex-col items-center justify-center p-8 text-center">
+                      <div className="w-16 h-16 rounded-2xl bg-zinc-100 border border-zinc-200 flex items-center justify-center mb-3 shadow-xs">
+                        <Type size={28} className="text-zinc-600" />
+                      </div>
+                      <h3 className="text-base font-bold text-zinc-900 uppercase tracking-widest">
+                        Sin letras para proyectar
+                      </h3>
+                      <p className="text-xs text-zinc-500 max-w-sm mt-1.5 font-normal">
+                        Esta pista no incluye letras sincronizadas. Cambia a la vista de acordes para seguir la progresión armónica.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('prompter')}
+                        className="mt-4 px-4 py-2 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
+                      >
+                        <Maximize2 size={13} />
+                        <span>Ver Acordes del Show</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             ) : (
