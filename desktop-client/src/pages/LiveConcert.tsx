@@ -580,9 +580,9 @@ export default function LiveConcert() {
   const songSections = currentSong?.prompter_data?.sections || [];
 
   return (
-    <div className="h-screen bg-[#0b0d13] text-white flex flex-col font-sans overflow-hidden select-none relative">
-      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO (Colores Enteros, Cero Efecto) */}
-      <header className="h-[90px] px-6 py-2.5 flex items-center justify-between shrink-0 z-20 gap-4 bg-[#0d0f16] border-b border-[#1f2533]">
+    <div className="h-screen bg-white text-zinc-900 flex flex-col font-sans overflow-hidden select-none relative">
+      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO (Entorno Blanco, Letras Negras) */}
+      <header className="h-[90px] px-6 py-2.5 flex items-center justify-between shrink-0 z-20 gap-4 bg-white border-b border-zinc-200">
         {/* ISLA 1: Identidad del Show, Setlist & Modo */}
         <div className="apple-glass-island p-1.5 rounded-full flex items-center gap-2 shrink-0">
           {/* Live Stage Badge Sólido */}
@@ -594,13 +594,13 @@ export default function LiveConcert() {
           {/* Setlist Selector */}
           <div className="relative">
             <select
-              className="bg-transparent hover:bg-[#181c28] focus:bg-[#12151f] text-zinc-200 px-3 py-1.5 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[190px] border border-transparent focus:border-[#232938]"
+              className="bg-transparent hover:bg-zinc-100 focus:bg-white text-zinc-900 px-3 py-1.5 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[190px] border border-transparent focus:border-zinc-300"
               value={selectedSetlistId || ''}
               onChange={(e) => setSelectedSetlistId(e.target.value)}
             >
-              <option value="" className="bg-[#0d0f16]">Cargar Setlist...</option>
+              <option value="" className="bg-white text-zinc-900">Cargar Setlist...</option>
               {setlists.map(sl => (
-                <option key={sl.id} value={sl.id} className="bg-[#0d0f16]">{sl.title}</option>
+                <option key={sl.id} value={sl.id} className="bg-white text-zinc-900">{sl.title}</option>
               ))}
             </select>
           </div>
@@ -611,11 +611,11 @@ export default function LiveConcert() {
               if (isPlaying) return;
               setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
             }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all cursor-pointer text-[10px] font-medium uppercase tracking-wider ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all cursor-pointer text-[10px] font-semibold uppercase tracking-wider ${
               playbackMode === 'LIVE'
-                ? 'bg-[#1e1215] text-[#f43f5e] border border-[#e11d48]'
-                : 'bg-[#1c1810] text-[#f59e0b] border border-[#d97706]'
-            } ${isPlaying ? 'opacity-40 cursor-not-allowed' : 'hover:brightness-110'}`}
+                ? 'bg-rose-50 text-rose-700 border border-rose-300'
+                : 'bg-amber-50 text-amber-800 border border-amber-300'
+            } ${isPlaying ? 'opacity-40 cursor-not-allowed' : 'hover:brightness-105'}`}
             title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV de Consola)" : "Modo Práctica / Ensayo (Audio Ligero MP3)"}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${playbackMode === 'LIVE' ? 'bg-[#e11d48]' : 'bg-[#f59e0b]'}`} />
@@ -627,7 +627,7 @@ export default function LiveConcert() {
         <div className="apple-glass-island px-5 py-2 rounded-2xl flex flex-col items-center flex-1 max-w-[560px]">
           <div className="w-full flex items-center justify-between mb-1.5 px-0.5">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[13.5px] font-semibold text-white truncate max-w-[210px] tracking-tight">
+              <span className="text-[13.5px] font-bold text-zinc-900 truncate max-w-[210px] tracking-tight">
                 {currentSong ? currentSong.title : 'Sin canción activa'}
               </span>
               {currentSong?.prompter_data?.key && (
@@ -638,11 +638,11 @@ export default function LiveConcert() {
             </div>
 
             <div className="flex items-center gap-2.5 shrink-0">
-              <span className="text-3xl leading-none font-mono font-normal text-white tracking-tight tabular-nums">
+              <span className="text-3xl leading-none font-mono font-medium text-black tracking-tight tabular-nums">
                 {formatTime(currentTime)}
               </span>
               {currentSong?.prompter_data?.bpm && (
-                <span className="text-[10.5px] font-mono font-medium px-2.5 py-0.5 rounded-full bg-[#181c28] text-zinc-200 border border-[#232938] tabular-nums">
+                <span className="text-[10.5px] font-mono font-medium px-2.5 py-0.5 rounded-full bg-zinc-100 text-zinc-800 border border-zinc-200 tabular-nums">
                   {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
                 </span>
               )}
@@ -671,12 +671,12 @@ export default function LiveConcert() {
               className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2 transition-all"
               style={{
                 background: currentSong && totalDuration > 0
-                  ? `linear-gradient(to right, #e11d48 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, #1f2533 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
-                  : '#1f2533'
+                  ? `linear-gradient(to right, #e11d48 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, #e2e8f0 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
+                  : '#e2e8f0'
               }}
             />
             {totalDuration > 0 && (
-              <span className="text-[10px] font-mono font-normal text-zinc-400 shrink-0 tabular-nums">
+              <span className="text-[10px] font-mono font-normal text-zinc-600 shrink-0 tabular-nums">
                 {formatTime(Math.max(0, totalDuration - (getPreRoll(currentSong) || 0))).slice(0, 5)}
               </span>
             )}
@@ -688,10 +688,10 @@ export default function LiveConcert() {
           {/* Fader Público FOH (R) */}
           <div className="flex flex-col w-26">
             <div className="flex justify-between items-center mb-1">
-              <span className="text-[9px] text-[#e11d48] font-semibold uppercase tracking-wider flex items-center gap-1">
+              <span className="text-[9px] text-[#e11d48] font-bold uppercase tracking-wider flex items-center gap-1">
                 <Volume2 size={11} /> PÚBLICO (R)
               </span>
-              <span className="text-[10.5px] font-mono font-normal text-zinc-200 tabular-nums">{Math.round(fohVolume * 100)}%</span>
+              <span className="text-[10.5px] font-mono font-medium text-zinc-900 tabular-nums">{Math.round(fohVolume * 100)}%</span>
             </div>
             <input
               type="range" min="0" max="1.3" step="0.01"
@@ -699,18 +699,18 @@ export default function LiveConcert() {
               onChange={(e) => setFohVolume(parseFloat(e.target.value))}
               className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
               style={{
-                background: `linear-gradient(to right, #e11d48 ${(fohVolume / 1.3) * 100}%, #1f2533 ${(fohVolume / 1.3) * 100}%)`
+                background: `linear-gradient(to right, #e11d48 ${(fohVolume / 1.3) * 100}%, #e2e8f0 ${(fohVolume / 1.3) * 100}%)`
               }}
               title="Volumen hacia Consola Principal / Público (Canal Derecho R)"
             />
           </div>
 
-          <div className="w-px h-7 bg-[#1f2533]" />
+          <div className="w-px h-7 bg-zinc-200" />
 
           {/* Fader Músicos CUE (L) */}
           <div className="flex flex-col w-26">
             <div className="flex justify-between items-center mb-1">
-              <span className="text-[9px] text-[#f59e0b] font-semibold uppercase tracking-wider flex items-center gap-1">
+              <span className="text-[9px] text-[#b45309] font-bold uppercase tracking-wider flex items-center gap-1">
                 <Headphones size={11} /> MÚSICOS (L)
               </span>
               <button
@@ -719,7 +719,7 @@ export default function LiveConcert() {
                 className={`text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-all tabular-nums ${
                   muteCueEmergency
                     ? 'bg-[#e11d48] text-white font-bold'
-                    : 'bg-[#181c28] text-zinc-300 hover:text-white border border-[#232938]'
+                    : 'bg-zinc-100 text-zinc-800 hover:bg-zinc-200 border border-zinc-200'
                 }`}
                 title="Silenciar Click/Guía de emergencia"
               >
@@ -735,24 +735,24 @@ export default function LiveConcert() {
               }}
               className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
               style={{
-                background: `linear-gradient(to right, #f59e0b ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%, #1f2533 ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%)`
+                background: `linear-gradient(to right, #f59e0b ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%, #e2e8f0 ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%)`
               }}
               title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
             />
           </div>
 
-          <div className="w-px h-7 bg-[#1f2533]" />
+          <div className="w-px h-7 bg-zinc-200" />
 
           {/* Selector de Ruteo Físico */}
           <div className="flex flex-col">
             <span className="text-[8px] text-zinc-500 font-medium uppercase tracking-wider">Ruteo</span>
             <select
-              className="bg-transparent text-[11px] font-medium outline-none text-zinc-300 cursor-pointer hover:text-white"
+              className="bg-transparent text-[11px] font-medium outline-none text-zinc-800 cursor-pointer hover:text-black"
               value={routingMode}
               onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
             >
-              <option value="StereoSplit" className="bg-[#0d0f16]">Stereo Split</option>
-              <option value="MultiChannel" className="bg-[#0d0f16]">USB Multi</option>
+              <option value="StereoSplit" className="bg-white text-zinc-900">Stereo Split</option>
+              <option value="MultiChannel" className="bg-white text-zinc-900">USB Multi</option>
             </select>
           </div>
 
@@ -762,8 +762,8 @@ export default function LiveConcert() {
             onClick={() => setBroadcastEnabled(!broadcastEnabled)}
             className={`p-2 rounded-xl transition-all flex items-center gap-1.5 ${
               broadcastEnabled
-                ? 'bg-[#15233b] text-[#60a5fa] border border-[#2563eb]'
-                : 'bg-[#181c28] text-zinc-400 hover:text-white border border-[#232938]'
+                ? 'bg-blue-50 text-blue-700 border border-blue-300'
+                : 'bg-zinc-100 text-zinc-600 hover:text-zinc-900 border border-zinc-200'
             }`}
             title={`Transmitir In-Ear WiFi a celulares para ensayos (${connections} conectados)`}
           >
@@ -790,13 +790,13 @@ export default function LiveConcert() {
           </div>
         )}
 
-        {/* SETLIST SIDEBAR (Colores Enteros, Cero Efecto) */}
-        <div className="w-84 bg-[#0d0f16] border-r border-[#1f2533] flex flex-col z-10 shrink-0">
-          <div className="px-5 py-4 border-b border-[#1f2533] bg-[#0d0f16] flex items-center justify-between">
-            <h2 className="font-semibold flex items-center text-white text-xs uppercase tracking-wider">
+        {/* SETLIST SIDEBAR (Fondo Blanco, Letras Negras) */}
+        <div className="w-84 bg-[#f8f9fa] border-r border-zinc-200 flex flex-col z-10 shrink-0">
+          <div className="px-5 py-4 border-b border-zinc-200 bg-white flex items-center justify-between">
+            <h2 className="font-bold flex items-center text-zinc-900 text-xs uppercase tracking-wider">
               <LayoutList size={15} className="mr-2 text-[#e11d48]" /> Repertorio En Vivo
             </h2>
-            <span className="px-2.5 py-0.5 rounded-full bg-[#181c28] border border-[#232938] text-[10px] font-mono font-medium text-zinc-200 tabular-nums">
+            <span className="px-2.5 py-0.5 rounded-full bg-zinc-100 border border-zinc-200 text-[10px] font-mono font-medium text-zinc-800 tabular-nums">
               {songs.length} {songs.length === 1 ? 'TEMA' : 'TEMAS'}
             </span>
           </div>
@@ -813,7 +813,7 @@ export default function LiveConcert() {
                   className={`group p-3 rounded-2xl flex items-center cursor-pointer transition-all duration-200 ${
                     isSelected
                       ? 'hero-card-active'
-                      : 'apple-glass-card hover:bg-[#181c28]'
+                      : 'apple-glass-card hover:bg-zinc-50'
                   }`}
                 >
                   {/* Index Badge or Animated Equalizer Bars */}
@@ -821,7 +821,7 @@ export default function LiveConcert() {
                     className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-mono tabular-nums mr-3.5 shrink-0 transition-all ${
                       isSelected
                         ? 'ruby-pill-accent text-white font-bold'
-                        : 'bg-[#181c28] text-zinc-300 font-medium group-hover:text-white group-hover:bg-[#1f2533]'
+                        : 'bg-zinc-100 text-zinc-700 font-semibold group-hover:bg-zinc-200'
                     }`}
                   >
                     {isSelected && isPlaying ? (
@@ -838,32 +838,32 @@ export default function LiveConcert() {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
-                      <p className={`truncate text-[13.5px] tracking-tight ${isSelected ? 'text-white font-bold' : 'text-zinc-100 font-medium group-hover:text-white'}`}>
+                      <p className={`truncate text-[13.5px] tracking-tight ${isSelected ? 'text-zinc-950 font-bold' : 'text-zinc-800 font-semibold group-hover:text-black'}`}>
                         {s.title}
                       </p>
                       {s.prompter_data?.key && (
-                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full shrink-0 ${isSelected ? 'kapuha-contrast-pill' : 'bg-[#181c28] text-white border border-[#232938]'}`}>
+                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full shrink-0 ${isSelected ? 'kapuha-contrast-pill' : 'bg-zinc-100 text-zinc-800 border border-zinc-200'}`}>
                           {s.prompter_data.key}
                         </span>
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       {!hasMix ? (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#241418] text-[#f43f5e] border border-[#e11d48]/40 font-semibold uppercase tracking-wider">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-semibold uppercase tracking-wider">
                           Sin Mix
                         </span>
                       ) : (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#0f241a] text-[#34d399] border border-[#059669] font-medium uppercase tracking-wide flex items-center gap-1">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold uppercase tracking-wide flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" /> Mix OK
                         </span>
                       )}
                       {hasLyrics && (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#181c28] text-white border border-[#232938] font-medium uppercase tracking-wide">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-800 border border-zinc-200 font-semibold uppercase tracking-wide">
                           Lyrics
                         </span>
                       )}
                       {s.prompter_data?.bpm && (
-                        <span className="text-[9.5px] font-mono font-medium text-zinc-300 tabular-nums">
+                        <span className="text-[9.5px] font-mono font-medium text-zinc-600 tabular-nums">
                           {Math.round(s.prompter_data.bpm)} BPM
                         </span>
                       )}
@@ -873,18 +873,18 @@ export default function LiveConcert() {
               );
             })}
             {songs.length === 0 && (
-              <div className="text-center text-[#64748b] py-14 px-6 text-xs font-normal bg-[#0e1118] rounded-2xl border border-dashed border-[#1f2533]">
+              <div className="text-center text-zinc-500 py-14 px-6 text-xs font-normal bg-white rounded-2xl border border-dashed border-zinc-200">
                 Selecciona un Setlist en la barra superior para cargar las canciones del show.
               </div>
             )}
           </div>
 
-          {/* CONTROLES DE TRANSPORTE DE ESCENARIO (Colores Enteros) */}
-          <div className="p-4 bg-[#0d0f16] border-t border-[#1f2533] grid grid-cols-3 gap-2.5">
+          {/* CONTROLES DE TRANSPORTE DE ESCENARIO */}
+          <div className="p-4 bg-white border-t border-zinc-200 grid grid-cols-3 gap-2.5">
             <button
               onClick={prevSong}
               disabled={currentSongIndex === 0}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
               title="Canción Anterior"
             >
               <SkipBack size={18} />
@@ -892,7 +892,7 @@ export default function LiveConcert() {
             <button
               onClick={stop}
               disabled={!currentSong}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
               title="Detener y volver al Conteo Pre-Roll"
             >
               <Square size={16} fill="currentColor" />
@@ -900,7 +900,7 @@ export default function LiveConcert() {
             <button
               onClick={nextSong}
               disabled={currentSongIndex === songs.length - 1}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white transition-all disabled:opacity-30"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
               title="Siguiente Canción"
             >
               <SkipForward size={18} />
@@ -911,8 +911,8 @@ export default function LiveConcert() {
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
               className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-xs font-semibold transition-all tracking-widest uppercase border ${
                 isPlaying
-                  ? 'bg-white text-black border-white hover:bg-zinc-200'
-                  : 'ruby-pill-accent text-white border-transparent hover:brightness-110 active:scale-[0.98]'
+                  ? 'bg-black text-white border-black hover:bg-zinc-800'
+                  : 'ruby-pill-accent text-white border-transparent hover:brightness-105 active:scale-[0.98]'
               } disabled:opacity-30`}
             >
               {isPlaying ? (
@@ -926,9 +926,9 @@ export default function LiveConcert() {
         </div>
 
         {/* ÁREA PRINCIPAL DE PROYECCIÓN Y MONITOREO EN VIVO */}
-        <div className="flex-1 bg-[#0b0d13] flex flex-col relative overflow-hidden">
+        <div className="flex-1 bg-white flex flex-col relative overflow-hidden">
           {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista + Proyector HDMI */}
-          <div className="h-14 bg-[#0d0f16] border-b border-[#1f2533] px-6 flex items-center justify-between gap-4 z-30 shrink-0">
+          <div className="h-14 bg-white border-b border-zinc-200 px-6 flex items-center justify-between gap-4 z-30 shrink-0">
             {/* Botonera de Salto Rápido a Secciones */}
             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mr-1 shrink-0">
@@ -947,8 +947,8 @@ export default function LiveConcert() {
                       onClick={() => seekTo(sec.time)}
                       className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 ${
                         isSecActive
-                          ? 'amber-pill-accent text-zinc-950 font-semibold'
-                          : 'apple-glass-card text-zinc-300 font-medium hover:text-white'
+                          ? 'amber-pill-accent text-black font-bold'
+                          : 'apple-glass-card text-zinc-800 font-semibold hover:bg-zinc-100'
                       }`}
                       title={`Saltar a ${sec.name || sec.section}`}
                     >
@@ -960,7 +960,7 @@ export default function LiveConcert() {
               {isVamping && (
                 <button
                   onClick={() => handleToggleVampSection(0, 0)}
-                  className="px-3 py-1 rounded-full text-[10px] font-semibold uppercase ruby-pill-accent text-white animate-pulse flex items-center gap-1 shrink-0 ml-1"
+                  className="px-3 py-1 rounded-full text-[10px] font-semibold uppercase ruby-pill-accent text-white flex items-center gap-1 shrink-0 ml-1"
                 >
                   <Repeat size={11} /> Salir Loop
                 </button>
@@ -997,7 +997,7 @@ export default function LiveConcert() {
               <button
                 type="button"
                 onClick={openExternalProjector}
-                className="apple-glass-card px-3.5 py-1.5 rounded-full text-zinc-200 hover:text-white text-[11px] font-medium uppercase tracking-wide flex items-center gap-1.5 transition-all hover:border-[#e11d48]"
+                className="apple-glass-card px-3.5 py-1.5 rounded-full text-zinc-800 hover:text-black text-[11px] font-semibold uppercase tracking-wide flex items-center gap-1.5 transition-all hover:border-[#e11d48]"
                 title="Abrir ventana limpia de Proyección de Letras para arrastrar a pantalla LED / HDMI externo"
               >
                 <ExternalLink size={12} className="text-[#e11d48]" />
@@ -1011,7 +1011,7 @@ export default function LiveConcert() {
               viewMode === 'dual' ? (
                 <div className="h-full w-full flex flex-col gap-3.5 overflow-hidden">
                   {/* Mitad Superior: Grilla de Compases, Acordes y Voz Guía */}
-                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-[#1f2533] bg-[#0b0d13]">
+                  <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white">
                     <Prompter
                       currentTime={currentTime}
                       bpm={currentSong.prompter_data?.bpm || 0}
@@ -1028,7 +1028,7 @@ export default function LiveConcert() {
                     />
                   </div>
                   {/* Mitad Inferior: Proyección de Letras al Compás y Tiempo Exacto */}
-                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-[#1f2533] bg-black relative">
+                  <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black relative">
                     <LyricVisualizer
                       currentTime={currentTime}
                       lyrics={currentSong.prompter_data?.lyrics || []}
@@ -1041,7 +1041,7 @@ export default function LiveConcert() {
                   </div>
                 </div>
               ) : viewMode === 'prompter' ? (
-                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-[#1f2533] bg-[#0b0d13]">
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white">
                   <Prompter
                     currentTime={currentTime}
                     bpm={currentSong.prompter_data?.bpm || 0}
@@ -1058,7 +1058,7 @@ export default function LiveConcert() {
                   />
                 </div>
               ) : (
-                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-[#1f2533] bg-black">
+                <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black">
                   <LyricVisualizer
                     currentTime={currentTime}
                     lyrics={currentSong.prompter_data?.lyrics || []}
@@ -1071,14 +1071,14 @@ export default function LiveConcert() {
                 </div>
               )
             ) : (
-              <div className="h-full flex flex-col items-center justify-center relative overflow-hidden rounded-2xl border border-[#1f2533] bg-[#0e111a]">
-                <div className="w-16 h-16 rounded-2xl bg-[#151924] border border-[#232938] flex items-center justify-center mb-4">
+              <div className="h-full flex flex-col items-center justify-center relative overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50">
+                <div className="w-16 h-16 rounded-2xl bg-white border border-zinc-200 flex items-center justify-center mb-4 shadow-sm">
                   <Music size={28} className="text-[#e11d48]" />
                 </div>
-                <span className="text-zinc-200 text-base font-bold tracking-[0.25em] uppercase">
+                <span className="text-zinc-900 text-base font-bold tracking-[0.25em] uppercase">
                   CONSOLA EN ESPERA DE SETLIST
                 </span>
-                <span className="text-zinc-400 text-xs mt-2 font-normal">
+                <span className="text-zinc-500 text-xs mt-2 font-normal">
                   Selecciona un repertorio en la parte superior para iniciar el show en vivo
                 </span>
               </div>

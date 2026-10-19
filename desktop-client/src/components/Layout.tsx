@@ -275,8 +275,8 @@ export default function Layout() {
         </div>
       </nav>
 
-      {/* Main Content Area - Fondo Entero Sólido (Cero Efectos, Cero Manchas Difusas) */}
-      <main className="flex-1 h-full relative overflow-hidden bg-[#0b0d13]">
+      {/* Main Content Area - Entorno de Trabajo con Fondo Blanco */}
+      <main className="flex-1 h-full relative overflow-hidden bg-white">
         <Outlet />
       </main>
     </div>
