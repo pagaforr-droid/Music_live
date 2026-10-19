@@ -806,23 +806,48 @@ export default function LiveConcert() {
               const hasMix = Boolean(s.foh_mix_url && s.cue_mix_url);
               const hasLyrics = Boolean(s.prompter_data?.lyrics?.length > 0);
               const isSelected = idx === currentSongIndex;
+
+              // Variantes de tema multi-color inspiradas en Uiverse (Emerald, Blue, Amber, Rose, Purple)
+              const themeClasses = [
+                'track-theme-emerald',
+                'track-theme-blue',
+                'track-theme-amber',
+                'track-theme-rose',
+                'track-theme-purple',
+              ];
+              const themeClass = themeClasses[idx % themeClasses.length];
+
+              // Progreso interactivo del track cuando está reproduciéndose
+              const trackProgress = isSelected && totalDuration > 0
+                ? Math.min(100, Math.max(0, ((currentTime + (getPreRoll(currentSong) || 0)) / totalDuration) * 100))
+                : 0;
+
               return (
                 <div
                   key={idx}
                   onClick={() => setCurrentSongIndex(idx)}
-                  className={`group p-3 rounded-2xl flex items-center cursor-pointer transition-all duration-200 ${
-                    isSelected
-                      ? 'hero-card-active'
-                      : 'apple-glass-card hover:bg-zinc-50'
-                  }`}
+                  className={`group live-track-card ${themeClass} ${isSelected ? 'is-selected' : ''}`}
                 >
+                  {/* Barra de progreso inferior reactiva al audio en vivo */}
+                  <div
+                    className="live-track-progress"
+                    style={{
+                      width: isSelected
+                        ? isPlaying
+                          ? `${trackProgress}%`
+                          : '100%'
+                        : '0%',
+                      opacity: isSelected ? 1 : 0,
+                    }}
+                  />
+
                   {/* Index Badge or Animated Equalizer Bars */}
                   <div
-                    className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-mono tabular-nums mr-3.5 shrink-0 transition-all ${
-                      isSelected
-                        ? 'ruby-pill-accent text-white font-bold'
-                        : 'bg-zinc-100 text-zinc-700 font-semibold group-hover:bg-zinc-200'
-                    }`}
+                    className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-mono tabular-nums mr-3 shrink-0 transition-transform group-hover:scale-105 font-bold shadow-xs"
+                    style={{
+                      backgroundColor: 'var(--badge-bg)',
+                      color: 'var(--badge-text)',
+                    }}
                   >
                     {isSelected && isPlaying ? (
                       <div className="flex items-end gap-[2px] h-3.5">
@@ -838,36 +863,82 @@ export default function LiveConcert() {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
-                      <p className={`truncate text-[13.5px] tracking-tight ${isSelected ? 'text-zinc-950 font-bold' : 'text-zinc-800 font-semibold group-hover:text-black'}`}>
+                      <p
+                        className="truncate text-[13.5px] tracking-tight font-bold"
+                        style={{ color: 'var(--title-color)' }}
+                      >
                         {s.title}
                       </p>
                       {s.prompter_data?.key && (
-                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full shrink-0 ${isSelected ? 'kapuha-contrast-pill' : 'bg-zinc-100 text-zinc-800 border border-zinc-200'}`}>
+                        <span
+                          className="text-[9.5px] font-mono px-2 py-0.5 rounded-full shrink-0 font-bold bg-white/80 border shadow-xs"
+                          style={{
+                            color: 'var(--content-color)',
+                            borderColor: 'var(--border-active)',
+                          }}
+                        >
                           {s.prompter_data.key}
                         </span>
                       )}
                     </div>
+
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       {!hasMix ? (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-semibold uppercase tracking-wider">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-100/90 text-rose-800 border border-rose-300 font-semibold uppercase tracking-wider">
                           Sin Mix
                         </span>
                       ) : (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold uppercase tracking-wide flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" /> Mix OK
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-white/90 text-emerald-800 border border-emerald-300 font-bold uppercase tracking-wide flex items-center gap-1 shadow-xs">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Mix OK
                         </span>
                       )}
                       {hasLyrics && (
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-800 border border-zinc-200 font-semibold uppercase tracking-wide">
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-white/90 text-zinc-800 border border-zinc-200 font-semibold uppercase tracking-wide shadow-xs">
                           Lyrics
                         </span>
                       )}
                       {s.prompter_data?.bpm && (
-                        <span className="text-[9.5px] font-mono font-medium text-zinc-600 tabular-nums">
+                        <span
+                          className="text-[9.5px] font-mono font-bold tabular-nums"
+                          style={{ color: 'var(--content-color)' }}
+                        >
                           {Math.round(s.prompter_data.bpm)} BPM
                         </span>
                       )}
                     </div>
+                  </div>
+
+                  {/* Icono temático Uiverse de estado */}
+                  <div
+                    className="ml-2 w-6 h-6 rounded-lg flex items-center justify-center opacity-65 group-hover:opacity-100 transition-opacity shrink-0"
+                    style={{ color: 'var(--content-color)' }}
+                    title={isSelected ? "Pista seleccionada en vivo" : "Hacer clic para activar pista"}
+                  >
+                    {idx % 5 === 0 && (
+                      <svg className="w-4 h-4" aria-hidden="true" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8.5 11.5 11 14l4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
+                    )}
+                    {idx % 5 === 1 && (
+                      <svg className="w-4 h-4" aria-hidden="true" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M10 11h2v5m-2 0h4m-2.592-8.5h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
+                    )}
+                    {idx % 5 === 2 && (
+                      <svg className="w-4 h-4" aria-hidden="true" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 13V8m0 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
+                    )}
+                    {idx % 5 === 3 && (
+                      <svg className="w-4 h-4" aria-hidden="true" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="m15 9-6 6m0-6 6 6m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
+                    )}
+                    {idx % 5 === 4 && (
+                      <svg className="w-4 h-4" aria-hidden="true" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+                      </svg>
+                    )}
                   </div>
                 </div>
               );

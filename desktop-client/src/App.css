@@ -241,3 +241,257 @@ input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.22);
   box-shadow: 0 0 18px rgba(244, 63, 94, 0.9), 0 2px 7px rgba(0, 0, 0, 0.85);
 }
+
+/* =========================================================================
+   LIVE STAGE MULTI-THEMED TRACK CARDS (Uiverse Notification Grid Style)
+   ========================================================================= */
+
+.live-track-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 12px 14px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.04);
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease, background-color 220ms ease;
+  cursor: pointer;
+  background-size: 55px 55px;
+}
+
+.live-track-card:hover {
+  transform: scale(1.015);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.live-track-card:active {
+  transform: scale(0.99);
+}
+
+.live-track-card .live-track-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background-color: var(--progress-color);
+  transition: width 150ms linear;
+  border-radius: 9999px;
+}
+
+/* 1. Success / Emerald Track */
+.track-theme-emerald {
+  --content-color: #047857;
+  --title-color: #064e3b;
+  --bg-color: #e6fbf1;
+  --border-color: #a7f3d0;
+  --border-active: #059669;
+  --progress-color: #059669;
+  --badge-bg: #10b981;
+  --badge-text: #ffffff;
+  --grid-color: rgba(16, 185, 129, 0.22);
+  background-color: var(--bg-color);
+  border: 1.5px solid var(--border-color);
+  background-image: linear-gradient(
+      0deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    );
+}
+.track-theme-emerald:hover {
+  background-color: #d8f8e9;
+}
+
+/* 2. Info / Blue Track */
+.track-theme-blue {
+  --content-color: #1e3a8a;
+  --title-color: #172554;
+  --bg-color: #eff6ff;
+  --border-color: #bfdbfe;
+  --border-active: #2563eb;
+  --progress-color: #2563eb;
+  --badge-bg: #3b82f6;
+  --badge-text: #ffffff;
+  --grid-color: rgba(59, 131, 246, 0.22);
+  background-color: var(--bg-color);
+  border: 1.5px solid var(--border-color);
+  background-image: linear-gradient(
+      0deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    );
+}
+.track-theme-blue:hover {
+  background-color: #e0f0fe;
+}
+
+/* 3. Warning / Amber Track */
+.track-theme-amber {
+  --content-color: #78350f;
+  --title-color: #451a03;
+  --bg-color: #fffbeb;
+  --border-color: #fde68a;
+  --border-active: #d97706;
+  --progress-color: #d97706;
+  --badge-bg: #f59e0b;
+  --badge-text: #000000;
+  --grid-color: rgba(245, 159, 11, 0.22);
+  background-color: var(--bg-color);
+  border: 1.5px solid var(--border-color);
+  background-image: linear-gradient(
+      0deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    );
+}
+.track-theme-amber:hover {
+  background-color: #fef5d6;
+}
+
+/* 4. Error / Rose Track */
+.track-theme-rose {
+  --content-color: #9f1239;
+  --title-color: #4c0519;
+  --bg-color: #fff1f2;
+  --border-color: #fecdd3;
+  --border-active: #e11d48;
+  --progress-color: #e11d48;
+  --badge-bg: #e11d48;
+  --badge-text: #ffffff;
+  --grid-color: rgba(225, 29, 72, 0.22);
+  background-color: var(--bg-color);
+  border: 1.5px solid var(--border-color);
+  background-image: linear-gradient(
+      0deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    );
+}
+.track-theme-rose:hover {
+  background-color: #ffe4e8;
+}
+
+/* 5. Studio / Purple Track */
+.track-theme-purple {
+  --content-color: #6b21a8;
+  --title-color: #3b0764;
+  --bg-color: #faf5ff;
+  --border-color: #e9d5ff;
+  --border-active: #9333ea;
+  --progress-color: #9333ea;
+  --badge-bg: #a855f7;
+  --badge-text: #ffffff;
+  --grid-color: rgba(168, 85, 247, 0.22);
+  background-color: var(--bg-color);
+  border: 1.5px solid var(--border-color);
+  background-image: linear-gradient(
+      0deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    ),
+    linear-gradient(
+      90deg,
+      transparent 23%,
+      var(--grid-color) 24%,
+      var(--grid-color) 25%,
+      transparent 26%,
+      transparent 73%,
+      var(--grid-color) 74%,
+      var(--grid-color) 75%,
+      transparent 76%,
+      transparent
+    );
+}
+.track-theme-purple:hover {
+  background-color: #f3e8ff;
+}
+
+/* Selected Elevated State */
+.live-track-card.is-selected {
+  border-width: 2px !important;
+  border-color: var(--border-active) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border-active) !important;
+  transform: scale(1.02);
+}
