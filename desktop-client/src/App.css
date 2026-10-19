@@ -11,17 +11,17 @@
 :root {
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --stage-bg: #08090c;
-  --stage-surface: #111318;
-  --stage-elevated: #161922;
-  --stage-red: #ef4444;
-  --stage-red-glow: rgba(239, 68, 68, 0.35);
+  --stage-bg: #030407;
+  --stage-surface: #0a0c12;
+  --stage-elevated: #11141e;
+  --stage-red: #ff2d55;
+  --stage-red-glow: rgba(255, 45, 85, 0.45);
 }
 
 body {
   margin: 0;
   padding: 0;
-  background-color: #08090c;
+  background-color: #030407;
   color: #ffffff;
   font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -40,54 +40,69 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Apple Liquid Glass & Stage Aurora System (Kapuha Music + Apple Pro Inspired) */
+/* Kapuha Tri-Tone Luxury Stage Aurora (Blanco Luminous + Negro Intenso + Colores Rojo) */
 .stage-aurora-bg {
-  background-color: #07080b;
+  background-color: #030407;
   background-image: 
-    radial-gradient(ellipse 75% 45% at 50% -10%, rgba(244, 63, 94, 0.14), transparent),
-    radial-gradient(ellipse 55% 35% at 85% 15%, rgba(139, 92, 246, 0.06), transparent),
-    radial-gradient(ellipse 50% 30% at 15% 85%, rgba(251, 191, 36, 0.04), transparent);
+    /* 1. Luminous White Zenith Light (Apple Studio Spotlight) */
+    radial-gradient(ellipse 72% 34% at 50% -8%, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 45%, transparent 74%),
+    /* 2. Kapuha Ruby Crimson Upper-Right Flare */
+    radial-gradient(circle at 86% 12%, rgba(255, 45, 85, 0.36) 0%, rgba(225, 29, 72, 0.20) 32%, rgba(190, 18, 60, 0.06) 58%, transparent 76%),
+    /* 3. Kapuha Coral Scarlet Lower-Left Stage Bloom */
+    radial-gradient(circle at 10% 88%, rgba(225, 29, 72, 0.30) 0%, rgba(159, 18, 57, 0.16) 36%, transparent 68%),
+    /* 4. Center-Stage Ambient Ruby Glow */
+    radial-gradient(ellipse 52% 30% at 52% 48%, rgba(255, 45, 85, 0.10) 0%, transparent 62%),
+    /* 5. Deep Intense Pitch-Black Contrast Base */
+    radial-gradient(circle at 50% 50%, transparent 45%, rgba(1, 2, 4, 0.86) 100%);
+  background-attachment: fixed;
 }
 
 .apple-glass-island {
-  background: linear-gradient(180deg, rgba(24, 27, 36, 0.78) 0%, rgba(14, 16, 22, 0.88) 100%);
-  backdrop-filter: blur(28px) saturate(190%);
-  -webkit-backdrop-filter: blur(28px) saturate(190%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(22, 25, 34, 0.88) 0%, rgba(8, 10, 16, 0.94) 100%);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 
-    inset 0 1px 1px 0 rgba(255, 255, 255, 0.16),
-    0 12px 36px -6px rgba(0, 0, 0, 0.65),
-    0 2px 6px -1px rgba(0, 0, 0, 0.4);
+    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.26),
+    0 16px 42px -8px rgba(0, 0, 0, 0.85),
+    0 4px 14px -2px rgba(255, 45, 85, 0.15);
 }
 
 .apple-glass-card {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.008) 100%);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08), 0 4px 16px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.012) 100%);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.14), 0 6px 20px rgba(0, 0, 0, 0.45);
   transition: all 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .apple-glass-card:hover {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.065) 0%, rgba(255, 255, 255, 0.015) 100%);
-  border-color: rgba(255, 255, 255, 0.11);
-  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.16), 0 8px 24px rgba(0, 0, 0, 0.5);
-  transform: translateY(-1px);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.02) 100%);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.26), 0 10px 28px rgba(0, 0, 0, 0.6);
+  transform: translateY(-1.5px);
 }
 
 .hero-card-active {
-  background: linear-gradient(135deg, rgba(244, 63, 94, 0.20) 0%, rgba(225, 29, 72, 0.08) 50%, rgba(18, 20, 28, 0.95) 100%);
-  border: 1px solid rgba(244, 63, 94, 0.42);
+  background: linear-gradient(135deg, rgba(255, 45, 85, 0.28) 0%, rgba(225, 29, 72, 0.14) 45%, rgba(10, 12, 18, 0.96) 100%);
+  border: 1px solid rgba(255, 45, 85, 0.55);
   box-shadow: 
-    inset 0 1px 2px 0 rgba(255, 255, 255, 0.25),
-    0 12px 36px -6px rgba(244, 63, 94, 0.28),
-    0 4px 14px rgba(0, 0, 0, 0.7);
+    inset 0 1px 2px 0 rgba(255, 255, 255, 0.35),
+    0 16px 42px -6px rgba(255, 45, 85, 0.38),
+    0 6px 18px rgba(0, 0, 0, 0.8);
 }
 
 .ruby-pill-accent {
-  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 55%, #be123c 100%);
-  box-shadow: 0 0 24px rgba(244, 63, 94, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+  background: linear-gradient(135deg, #ff2d55 0%, #e11d48 50%, #be123c 100%);
+  box-shadow: 0 0 28px rgba(255, 45, 85, 0.55), inset 0 1px 1.5px rgba(255, 255, 255, 0.45);
+}
+
+.kapuha-contrast-pill {
+  background: #ffffff;
+  color: #050608;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .amber-pill-accent {

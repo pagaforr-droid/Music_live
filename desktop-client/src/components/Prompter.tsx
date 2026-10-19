@@ -222,18 +222,21 @@ export const Prompter: React.FC<PrompterProps> = ({
   };
 
   return (
-    <div className="prompter-container bg-gradient-to-b from-[#0a0c12] via-[#07080c] to-[#040507] text-white p-0 rounded-3xl overflow-hidden h-full w-full relative border border-white/[0.06] shadow-[inset_0_0_80px_rgba(0,0,0,0.95)] select-none">
+    <div className="prompter-container bg-gradient-to-b from-[#080a10] via-[#030407] to-[#010203] text-white p-0 rounded-3xl overflow-hidden h-full w-full relative border border-white/10 shadow-[inset_0_0_90px_rgba(0,0,0,0.98)] select-none">
+      {/* Ambient ruby spotlight behind active prompter zone */}
+      <div className="pointer-events-none absolute top-1/2 left-[120px] -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-rose-500/[0.12] blur-[90px]" />
+
       {/* Header Overlay */}
-      <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-[#0a0c12]/95 via-[#0a0c12]/70 to-transparent px-6 py-4 z-20 flex justify-between items-start pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-[#080a10]/95 via-[#080a10]/70 to-transparent px-6 py-4 z-20 flex justify-between items-start pointer-events-none">
         <div className="flex items-center gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_10px_#f43f5e]" />
-              <h2 className="text-lg font-semibold text-white uppercase tracking-[0.12em] drop-shadow-lg leading-none">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_12px_#ff2d55]" />
+              <h2 className="text-lg font-bold text-white uppercase tracking-[0.14em] drop-shadow-md leading-none">
                 {currentTime < 0 ? 'CONTEO PRE-ROLL' : activeSection ? (activeSection.name || activeSection.section) : 'EN ESPERA'}
               </h2>
             </div>
-            <p className="text-[10px] text-zinc-400 font-mono mt-1.5 uppercase tracking-wider pl-4">
+            <p className="text-[10px] text-zinc-300 font-mono mt-1.5 uppercase tracking-wider pl-4">
               GRILLA DE COMPASES, ACORDES Y VOZ GUÍA {onEditChord ? '• DOBLE CLIC EN UN ACORDE PARA EDITAR' : ''}
             </p>
           </div>
@@ -241,8 +244,8 @@ export const Prompter: React.FC<PrompterProps> = ({
 
         <div className="flex items-center gap-2.5 pointer-events-auto">
           {/* Indicador de Pulso del Compás en Tiempo Real (Apple Dynamic Studio LED) */}
-          <div className="apple-glass-island flex items-center gap-1.5 p-1 px-3 rounded-full shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
-            <span className="text-[10px] font-mono font-medium text-zinc-400 uppercase mr-1 tracking-wider tabular-nums">
+          <div className="apple-glass-island flex items-center gap-1.5 p-1 px-3 rounded-full shadow-[0_4px_16px_rgba(0,0,0,0.6)]">
+            <span className="text-[10px] font-mono font-medium text-zinc-300 uppercase mr-1 tracking-wider tabular-nums">
               {currentTime < 0 ? 'PRE' : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
             </span>
             {Array.from({ length: beatsPerBar }).map((_, bIdx) => {
@@ -251,12 +254,12 @@ export const Prompter: React.FC<PrompterProps> = ({
               return (
                 <div
                   key={beatNum}
-                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-mono font-semibold transition-all tabular-nums ${
+                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-mono font-bold transition-all tabular-nums ${
                     isCurrentBeat
                       ? beatNum === 1
-                        ? 'ruby-pill-accent text-white scale-110'
-                        : 'amber-pill-accent text-zinc-950 scale-105'
-                      : 'bg-white/[0.04] text-zinc-500 border border-white/[0.05]'
+                        ? 'ruby-pill-accent text-white scale-110 shadow-[0_0_14px_#ff2d55]'
+                        : 'bg-white text-zinc-950 scale-105 font-black shadow-[0_0_10px_rgba(255,255,255,0.8)]'
+                      : 'bg-white/[0.04] text-zinc-400 border border-white/[0.08]'
                   }`}
                 >
                   {beatNum}
@@ -423,9 +426,9 @@ export const Prompter: React.FC<PrompterProps> = ({
       {/* Scrolling Content (Horizontal) */}
       <div className="relative h-full w-full flex items-center">
         {/* Playhead Line (Fixed) */}
-        <div className="absolute top-0 bottom-0 w-[2px] bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 z-30 shadow-[0_0_20px_rgba(251,191,36,0.95),0_0_6px_rgba(251,191,36,1)]" style={{ left: '120px' }}>
-          <div className="absolute -top-2.5 -left-[7px] w-4 h-4 bg-amber-300 rounded-full shadow-[0_0_14px_rgba(251,191,36,1)] border-2 border-amber-500/80" />
-          <div className="absolute -bottom-2.5 -left-[7px] w-4 h-4 bg-amber-300 rounded-full shadow-[0_0_14px_rgba(251,191,36,1)] border-2 border-amber-500/80" />
+        <div className="absolute top-0 bottom-0 w-[2.5px] bg-gradient-to-b from-white via-amber-300 to-rose-500 z-30 shadow-[0_0_24px_rgba(255,255,255,0.85),0_0_14px_rgba(255,45,85,0.95)]" style={{ left: '120px' }}>
+          <div className="absolute -top-2.5 -left-[7px] w-4 h-4 bg-white rounded-full shadow-[0_0_16px_rgba(255,255,255,1)] border-2 border-amber-400" />
+          <div className="absolute -bottom-2.5 -left-[7px] w-4 h-4 bg-white rounded-full shadow-[0_0_16px_rgba(255,255,255,1)] border-2 border-rose-500" />
         </div>
 
         {/* Tracks Container */}
@@ -478,10 +481,10 @@ export const Prompter: React.FC<PrompterProps> = ({
                   key={i}
                   className={`absolute h-full flex flex-col justify-center border-l-2 ${
                     block.isActive
-                      ? 'border-amber-400 bg-gradient-to-b from-amber-500/20 via-amber-500/10 to-transparent shadow-[inset_0_0_30px_rgba(251,191,36,0.25),0_0_20px_rgba(251,191,36,0.2)] ring-1 ring-amber-400/40 backdrop-blur-md'
+                      ? 'border-amber-400 bg-gradient-to-b from-amber-500/25 via-rose-500/15 to-transparent shadow-[inset_0_0_30px_rgba(251,191,36,0.25),0_0_24px_rgba(255,45,85,0.3)] ring-1 ring-amber-400/50 backdrop-blur-md'
                       : isPast
                       ? 'border-white/[0.04] bg-black/20 opacity-40'
-                      : 'border-white/15 bg-white/[0.035] hover:bg-white/[0.07] backdrop-blur-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
+                      : 'border-white/20 bg-white/[0.045] hover:bg-white/[0.09] backdrop-blur-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]'
                   } transition-all duration-200 cursor-pointer rounded-r-2xl`}
                   style={{
                     left: `${block.time * pixelsPerSecond}px`,
@@ -502,12 +505,12 @@ export const Prompter: React.FC<PrompterProps> = ({
                 >
                   <div className="px-3.5">
                     <span
-                      className={`${lyricBlocks.length > 0 ? 'text-3xl' : 'text-4xl'} font-semibold block tracking-tight ${
+                      className={`${lyricBlocks.length > 0 ? 'text-3xl' : 'text-4xl'} font-bold block tracking-tight ${
                         block.isActive
-                          ? 'text-amber-400 drop-shadow-[0_0_16px_rgba(251,191,36,0.9)] scale-105'
+                          ? 'text-amber-300 drop-shadow-[0_0_18px_rgba(251,191,36,0.95)] scale-105'
                           : isPast
-                          ? 'text-[#64748b]'
-                          : 'text-white'
+                          ? 'text-zinc-600'
+                          : 'text-white drop-shadow-[0_2px_12px_rgba(255,255,255,0.3)]'
                       } transition-all origin-left truncate`}
                     >
                       {block.chord}

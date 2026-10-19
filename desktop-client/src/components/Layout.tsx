@@ -28,12 +28,12 @@ export default function Layout() {
     }`;
 
   return (
-    <div className="flex h-screen bg-[#08090c] text-white overflow-hidden selection:bg-rose-500/30 selection:text-white">
+    <div className="flex h-screen bg-[#030407] stage-aurora-bg text-white overflow-hidden selection:bg-rose-500/30 selection:text-white">
       {/* Sidebar Musiko.io + Apple Liquid Glass */}
       <nav
         className={`${
           isSidebarOpen ? 'w-64' : 'w-20'
-        } flex flex-col h-full bg-[#0a0c12]/95 border-r border-white/[0.06] backdrop-blur-3xl relative z-20 shadow-[8px_0_32px_rgba(0,0,0,0.65)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+        } flex flex-col h-full bg-[#06080e]/95 border-r border-white/10 backdrop-blur-3xl relative z-20 shadow-[8px_0_32px_rgba(0,0,0,0.75)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
       >
         {/* Top Window Bar Accents (Musiko.io Style) + Collapse Button */}
         <div
@@ -275,9 +275,14 @@ export default function Layout() {
         </div>
       </nav>
 
-      {/* Main Content Area with Subtle Obsidian Stage Ambient Glow */}
-      <main className="flex-1 h-full relative overflow-hidden bg-[#08090c]">
-        <div className="pointer-events-none absolute -top-40 right-1/4 w-[520px] h-[520px] rounded-full bg-[#ef4444]/[0.03] blur-[130px]" />
+      {/* Main Content Area with Kapuha Tri-Tone Atmosphere (Blanco + Negro Intenso + Colores Rojo) */}
+      <main className="flex-1 h-full relative overflow-hidden bg-transparent">
+        {/* Luminous White Zenith Light Beam */}
+        <div className="pointer-events-none absolute -top-36 left-1/3 w-[680px] h-[340px] rounded-full bg-white/[0.08] blur-[125px]" />
+        {/* Kapuha Ruby Upper Atmospheric Flare */}
+        <div className="pointer-events-none absolute -top-24 right-1/12 w-[550px] h-[550px] rounded-full bg-rose-600/[0.22] blur-[150px]" />
+        {/* Kapuha Coral Scarlet Lower Stage Bloom */}
+        <div className="pointer-events-none absolute -bottom-40 left-1/5 w-[650px] h-[550px] rounded-full bg-rose-500/[0.18] blur-[160px]" />
         <Outlet />
       </main>
     </div>
