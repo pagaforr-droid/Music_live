@@ -777,7 +777,7 @@ export default function LivePrompter() {
           {selectedSongId && !audioLoaded && (
             <button
               onClick={handleLoadAudio}
-              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3.5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3.5 py-2 rounded-full text-[10.5px] font-semibold uppercase tracking-wider transition-all whitespace-nowrap shadow-[0_0_20px_rgba(16,185,129,0.35)]"
             >
               ⚡ Cargar Stems a RAM
             </button>
@@ -809,7 +809,7 @@ export default function LivePrompter() {
           </div>
 
           <div className="bg-[#08090c] border border-white/[0.08] px-4 py-1.5 rounded-full flex items-center justify-center min-w-[112px] shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
-            <span className="text-sm font-mono font-black text-white tracking-wider tabular-nums">
+            <span className="text-sm font-mono font-medium text-white tracking-tight tabular-nums">
               {formatTime(currentTime)}
             </span>
           </div>
@@ -821,7 +821,7 @@ export default function LivePrompter() {
             <button 
               onClick={handleDetectChordsAI}
               disabled={isDetectingChords || !selectedSongId}
-              className="hover:bg-purple-500/25 bg-purple-500/15 text-purple-300 border border-purple-500/35 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.18)]"
+              className="hover:bg-purple-500/25 bg-purple-500/15 text-purple-300 border border-purple-500/35 px-3 py-1 rounded-full text-[10.5px] font-medium uppercase tracking-wide transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.18)]"
               title="Detectar Acordes automáticamente desde la pista ★ Master"
             >
               <Activity size={11} className={isDetectingChords ? "animate-pulse" : ""} />
@@ -859,7 +859,7 @@ export default function LivePrompter() {
           {selectedSongId && (
             <button
               onClick={() => navigate('/lyrics')}
-              className="px-3 py-1.5 rounded-full stage-tactile-btn text-zinc-200 hover:text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all"
+              className="px-3 py-1.5 rounded-full stage-tactile-btn text-zinc-200 hover:text-white text-[10.5px] font-medium uppercase tracking-wide flex items-center gap-1.5 transition-all"
               title="Ir a Lyric Studio para sincronizar la letra de esta canción"
             >
               <span>Lyrics</span>

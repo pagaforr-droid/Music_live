@@ -23,8 +23,8 @@ export default function Layout() {
       isSidebarOpen ? 'space-x-3.5 px-4' : 'justify-center px-0'
     } py-3 rounded-xl transition-all duration-200 ${
       isActive
-        ? 'bg-gradient-to-r from-[#ef4444]/20 via-[#ef4444]/8 to-transparent text-white font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] border border-[#ef4444]/25'
-        : 'text-[#8e96a4] hover:bg-white/[0.04] hover:text-white border border-transparent'
+        ? 'bg-gradient-to-r from-[#ef4444]/20 via-[#ef4444]/8 to-transparent text-white font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] border border-[#ef4444]/25'
+        : 'text-[#8e96a4] hover:bg-white/[0.04] hover:text-white border border-transparent font-normal'
     }`;
 
   return (
@@ -81,12 +81,12 @@ export default function Layout() {
           {isSidebarOpen && (
             <div className="flex flex-col leading-tight overflow-hidden">
               <div className="flex items-center gap-1.5">
-                <span className="text-[15px] font-black tracking-wider text-white">TANDU</span>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-white/[0.08] border border-white/10 text-white font-bold tracking-widest">
+                <span className="text-sm font-semibold tracking-wider text-zinc-100">TANDU</span>
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-zinc-300 font-medium tracking-wider">
                   /STAGE
                 </span>
               </div>
-              <span className="text-[11px] font-extrabold tracking-[0.22em] text-[#ef4444] uppercase mt-0.5 drop-shadow-[0_0_8px_rgba(239,68,68,0.4)]">
+              <span className="text-[10px] font-medium tracking-[0.22em] text-[#ef4444] uppercase mt-0.5">
                 MUSICOS
               </span>
             </div>
@@ -98,7 +98,7 @@ export default function Layout() {
           {/* Group 1: Escenario en Vivo */}
           <div className="space-y-1.5">
             {isSidebarOpen && (
-              <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#64748b]">
+              <div className="px-3 pb-1 text-[9.5px] font-medium uppercase tracking-[0.2em] text-zinc-500">
                 Escenario
               </div>
             )}
@@ -140,7 +140,7 @@ export default function Layout() {
           {/* Group 2: Estudio & Producción */}
           <div className="space-y-1.5">
             {isSidebarOpen && (
-              <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[#64748b]">
+              <div className="px-3 pb-1 text-[9.5px] font-medium uppercase tracking-[0.2em] text-zinc-500">
                 Estudio & Producción
               </div>
             )}
@@ -227,7 +227,7 @@ export default function Layout() {
               <Headphones size={18} className="text-gray-400 group-hover:text-[#ef4444] shrink-0 transition-colors" />
               {isSidebarOpen && (
                 <div className="flex flex-col leading-tight overflow-hidden">
-                  <span className="font-semibold text-xs text-gray-200 whitespace-nowrap">In-Ear Monitor</span>
+                  <span className="font-medium text-xs text-zinc-200 whitespace-nowrap">In-Ear Monitor</span>
                   <span className="text-[9px] font-mono text-amber-400/90 uppercase tracking-wider">Práctica Wi-Fi</span>
                 </div>
               )}
@@ -248,8 +248,8 @@ export default function Layout() {
                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#0d0f14] shadow-[0_0_6px_#10b981]" />
               </div>
               <div className="flex flex-col overflow-hidden">
-                <span className="text-xs font-semibold text-gray-200 truncate">{user?.email}</span>
-                <span className="text-[10px] font-mono text-emerald-400 tracking-wide">STAGE ONLINE</span>
+                <span className="text-xs font-normal text-zinc-300 truncate">{user?.email}</span>
+                <span className="text-[9.5px] font-mono font-medium text-emerald-400 tracking-wider">STAGE ONLINE</span>
               </div>
             </div>
           ) : (
@@ -270,7 +270,7 @@ export default function Layout() {
             title="Cerrar Sesión"
           >
             <LogOut size={15} className="shrink-0" />
-            {isSidebarOpen && <span className="text-xs font-semibold tracking-wide whitespace-nowrap">Cerrar Sesión</span>}
+            {isSidebarOpen && <span className="text-xs font-medium tracking-wide whitespace-nowrap">Cerrar Sesión</span>}
           </button>
         </div>
       </nav>

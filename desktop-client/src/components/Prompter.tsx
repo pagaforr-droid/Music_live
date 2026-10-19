@@ -229,11 +229,11 @@ export const Prompter: React.FC<PrompterProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[#ef4444] shadow-[0_0_8px_#ef4444]" />
-              <h2 className="text-xl font-black text-white uppercase tracking-[0.18em] drop-shadow-lg leading-none">
+              <h2 className="text-lg font-semibold text-white uppercase tracking-[0.12em] drop-shadow-lg leading-none">
                 {currentTime < 0 ? 'CONTEO PRE-ROLL' : activeSection ? (activeSection.name || activeSection.section) : 'EN ESPERA'}
               </h2>
             </div>
-            <p className="text-[10px] text-[#8e96a4] font-mono mt-1 uppercase tracking-wider pl-4">
+            <p className="text-[10px] text-zinc-400 font-mono mt-1 uppercase tracking-wider pl-4">
               GRILLA DE COMPASES, ACORDES Y VOZ GUÍA {onEditChord ? '• DOBLE CLIC EN UN ACORDE PARA EDITAR' : ''}
             </p>
           </div>
@@ -242,7 +242,7 @@ export const Prompter: React.FC<PrompterProps> = ({
         <div className="flex items-center gap-2.5 pointer-events-auto">
           {/* Indicador de Pulso del Compás en Tiempo Real (LED Studio Display) */}
           <div className="stage-tactile-pressed flex items-center gap-1.5 bg-[#0a0c12]/95 border border-white/10 px-3 py-1.5 rounded-full">
-            <span className="text-[10px] font-mono font-bold text-[#8e96a4] uppercase mr-1 tracking-wider">
+            <span className="text-[10px] font-mono font-medium text-zinc-400 uppercase mr-1 tracking-wider tabular-nums">
               {currentTime < 0 ? 'PRE' : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
             </span>
             {Array.from({ length: beatsPerBar }).map((_, bIdx) => {
@@ -251,7 +251,7 @@ export const Prompter: React.FC<PrompterProps> = ({
               return (
                 <div
                   key={beatNum}
-                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black font-mono transition-all ${
+                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-mono font-semibold transition-all tabular-nums ${
                     isCurrentBeat
                       ? beatNum === 1
                         ? 'bg-[#ef4444] text-white shadow-[0_0_12px_rgba(239,68,68,0.95)] scale-110'
@@ -268,10 +268,10 @@ export const Prompter: React.FC<PrompterProps> = ({
           {onVampTrigger && (
             <button
               onClick={handleVamp}
-              className={`stage-tactile-btn px-4 py-1.5 rounded-full font-black text-[11px] uppercase tracking-wider transition-all border ${
+              className={`stage-tactile-btn px-4 py-1.5 rounded-full font-medium text-[11px] uppercase tracking-wide transition-all border ${
                 isVamping
                   ? 'bg-gradient-to-r from-[#ef4444] to-[#dc2626] border-red-400 text-white animate-pulse shadow-[0_0_20px_rgba(239,68,68,0.8)]'
-                  : 'bg-[#141824] border-white/10 text-gray-200 hover:bg-[#1e2436] hover:text-white'
+                  : 'bg-[#141824] border-white/10 text-zinc-200 hover:bg-[#1e2436] hover:text-white'
               }`}
               title="Repetir en bucle la sección actual (Vamp Loop)"
             >
@@ -413,7 +413,7 @@ export const Prompter: React.FC<PrompterProps> = ({
       {/* BPM & Time Signature Indicator */}
       <div className="absolute bottom-3 left-4 z-40 flex items-center gap-2">
         {bpm && (
-          <div className="bg-[#0e1118]/90 border border-white/10 text-gray-200 px-3.5 py-1 rounded-full text-xs font-mono flex items-center shadow-lg">
+          <div className="bg-[#0e1118]/90 border border-white/10 text-zinc-300 px-3.5 py-1 rounded-full text-xs font-mono font-normal flex items-center shadow-lg tabular-nums">
             <div className="w-2 h-2 bg-amber-400 rounded-full mr-2 animate-pulse shadow-[0_0_8px_#fbbf24]" />
             BPM: {Math.round(bpm)} &bull; {timeSignature}
           </div>
@@ -451,7 +451,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                   title={`Sección Voz Guía: ${block.name || block.section} (${Math.floor(block.time / 60)}:${String(Math.floor(block.time % 60)).padStart(2, '0')})`}
                 >
                   <div className="px-3.5 flex justify-between items-center w-full">
-                    <span className={`text-sm font-black uppercase tracking-widest ${isActive ? 'scale-105' : ''} transition-transform origin-left truncate drop-shadow-md`}>
+                    <span className={`text-xs font-semibold uppercase tracking-wider ${isActive ? 'scale-105' : ''} transition-transform origin-left truncate drop-shadow-md`}>
                       🔊 {block.name || block.section}
                     </span>
                     {isEditing && (
@@ -502,7 +502,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                 >
                   <div className="px-3.5">
                     <span
-                      className={`${lyricBlocks.length > 0 ? 'text-4xl' : 'text-5xl'} font-black block ${
+                      className={`${lyricBlocks.length > 0 ? 'text-3xl' : 'text-4xl'} font-semibold block tracking-tight ${
                         block.isActive
                           ? 'text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.85)] scale-105'
                           : isPast
@@ -512,7 +512,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     >
                       {block.chord}
                     </span>
-                    <span className="text-[10px] font-mono text-[#8e96a4] mt-1 block opacity-75">
+                    <span className="text-[10px] font-mono font-normal text-zinc-400 mt-1 block opacity-75 tabular-nums">
                       {Math.floor(block.time / 60)}:{Math.floor(block.time % 60).toString().padStart(2, '0')}
                     </span>
                   </div>
@@ -535,7 +535,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                         ? 'bg-gradient-to-r from-[#ef4444]/35 to-[#ef4444]/10 border-[#ef4444] text-white shadow-[0_0_18px_rgba(239,68,68,0.35)] z-20'
                         : isPast
                         ? 'bg-[#0c0e14]/40 border-white/[0.06] text-[#64748b]'
-                        : 'bg-[#131722]/90 border-[#ef4444]/40 text-gray-200 hover:bg-[#1a2030]'
+                        : 'bg-[#131722]/90 border-[#ef4444]/40 text-zinc-200 hover:bg-[#1a2030]'
                     }`}
                     style={{
                       left: `${lb.time * pixelsPerSecond}px`,
@@ -543,7 +543,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     }}
                     title={lb.text}
                   >
-                    <span className="text-xs font-bold truncate">🎤 {lb.text}</span>
+                    <span className="text-xs font-medium truncate">🎤 {lb.text}</span>
                   </div>
                 );
               })}
