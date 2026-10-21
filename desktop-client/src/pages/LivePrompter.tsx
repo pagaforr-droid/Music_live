@@ -1013,7 +1013,7 @@ export default function LivePrompter() {
                             step="0.01"
                             value={stem.volume}
                             onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                            className="w-full h-1.5 bg-[#252525] rounded-full appearance-none cursor-pointer accent-white hover:accent-zinc-100"
+                            className="neumorphic-prompter-slider cursor-pointer"
                           />
                         </div>
                       </div>
@@ -1034,7 +1034,7 @@ export default function LivePrompter() {
                             step="0.01"
                             value={stem.pan}
                             onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                            className="w-full h-1.5 bg-[#252525] rounded-full appearance-none cursor-pointer accent-white hover:accent-zinc-100"
+                            className="neumorphic-prompter-slider cursor-pointer"
                           />
                         </div>
                       </div>
