@@ -27,24 +27,28 @@ import {
   GripVertical,
   FileText,
   Radio,
-  Sliders,
   Volume2,
   Maximize2,
   CornerDownLeft,
   RotateCcw,
+  Flame,
+  Zap,
+  Check,
 } from 'lucide-react';
 import {
   LyricLine,
-  LyricFontFamily,
+  LyricFontCategory,
+  LyricTextCase,
   LYRIC_EFFECT_PRESETS,
   LYRIC_FONT_PRESETS,
+  LYRIC_FONT_CATEGORIES,
   computeWordTimings,
   parseRawLyricsToPills,
   buildBeatGridMs,
   snapTimeMs,
   extractAudioPeaks,
 } from '../types/lyrics';
-import { renderLyricCanvasFrame } from '../components/LyricVisualizer';
+import { renderLyricCanvasFrame, ensureLyricFontsLoaded } from '../components/LyricVisualizer';
 
 const FAKE_BAND_ID = '00000000-0000-0000-0000-000000000000';
 
@@ -103,6 +107,9 @@ export default function LyricStudio() {
   const [poolFilter, setPoolFilter] = useState<'all' | 'unplaced' | 'placed'>('all');
   const [rawPasteText, setRawPasteText] = useState<string>('');
   const [saveFeedback, setSaveFeedback] = useState<boolean>(false);
+  const [inspectorFontCategory, setInspectorFontCategory] = useState<'all' | LyricFontCategory>('all');
+  const [inspectorEffectFilter, setInspectorEffectFilter] = useState<'all' | 'brutal' | 'classic'>('all');
+  const [showAppliedToast, setShowAppliedToast] = useState<boolean>(false);
 
   // Timeline & CapCut Controls State
   const [pxPerSec, setPxPerSec] = useState<number>(80);
@@ -227,6 +234,7 @@ export default function LyricStudio() {
   // Fetch songs on mount
   useEffect(() => {
     fetchSongs();
+    ensureLyricFontsLoaded().catch(() => {});
     return () => {
       stopAudio();
     };
@@ -885,6 +893,11 @@ export default function LyricStudio() {
       positionY: baseStyle?.positionY ?? 0.5,
       primaryColor: baseStyle?.primaryColor || '#ffffff',
       accentColor: baseStyle?.accentColor || '#ef4444',
+      letterSpacing: baseStyle?.letterSpacing,
+      textCase: baseStyle?.textCase,
+      strokeWidth: baseStyle?.strokeWidth,
+      fxIntensity: baseStyle?.fxIntensity,
+      ghostText: baseStyle?.ghostText,
       words: computeWordTimings('NUEVA FRASE EN ESCENA', 2600),
     };
     commitLyrics((prev) => [...prev, newLine]);
@@ -1037,8 +1050,15 @@ export default function LyricStudio() {
         positionY: selectedLine.positionY,
         primaryColor: selectedLine.primaryColor,
         accentColor: selectedLine.accentColor,
+        letterSpacing: selectedLine.letterSpacing,
+        textCase: selectedLine.textCase,
+        strokeWidth: selectedLine.strokeWidth,
+        fxIntensity: selectedLine.fxIntensity,
+        ghostText: selectedLine.ghostText,
       }))
     );
+    setShowAppliedToast(true);
+    setTimeout(() => setShowAppliedToast(false), 2000);
   };
 
   // 2D Stage Canvas Direct Dragging (Position X/Y with Magnetic Center Guides)
@@ -1095,9 +1115,10 @@ export default function LyricStudio() {
   };
 
   // Export 60fps Video
-  const startExport = () => {
+  const startExport = async () => {
     if (!canvasRef.current) return;
     setIsRecording(true);
+    await ensureLyricFontsLoaded();
     pauseTimeSecRef.current = 0;
     setCurrentTimeMs(0);
 
@@ -1803,78 +1824,307 @@ export default function LyricStudio() {
           </div>
         </main>
 
-        {/* RIGHT PANEL: CAPCUT VISUAL TEMPLATE & TYPOGRAPHY INSPECTOR */}
-        <aside className="w-[320px] bg-[#0b0e14] border-l border-white/[0.07] flex flex-col shrink-0 overflow-y-auto custom-scrollbar">
-          <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between">
+        {/* RIGHT PANEL: KINETIC & LUXURY TYPOGRAPHY INSPECTOR */}
+        <aside className="w-[360px] bg-[#0b0e14] border-l border-white/[0.07] flex flex-col shrink-0 overflow-y-auto custom-scrollbar">
+          <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between sticky top-0 bg-[#0b0e14]/95 backdrop-blur-md z-10">
             <div className="flex items-center gap-2">
-              <Sliders size={14} className="text-red-500" />
-              <h2 className="font-bold text-xs uppercase tracking-wider text-white">
-                Inspector de Estilo CapCut
-              </h2>
+              <Sparkles size={15} className="text-amber-400" />
+              <div>
+                <h2 className="font-black text-xs uppercase tracking-wider text-white">
+                  Inspector Kinetic
+                </h2>
+                <span className="text-[9px] font-semibold text-gray-500 block leading-tight">
+                  HyperFrames & Lujo Visual
+                </span>
+              </div>
             </div>
             {selectedLine && (
               <button
                 onClick={applyStyleToAll}
-                className="text-[10px] font-bold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 px-2 py-1 rounded-md transition-colors"
-                title="Aplicar esta plantilla, fuente y colores a todas las frases de la canción"
+                className={`text-[10px] font-bold px-2.5 py-1 rounded-md transition-all border flex items-center gap-1.5 ${
+                  showAppliedToast
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 scale-105'
+                    : 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20'
+                }`}
+                title="Aplicar tipografía, efecto, tracking y estilo a todas las frases de la canción"
               >
-                Aplicar a Todas
+                {showAppliedToast ? (
+                  <>
+                    <Check size={11} className="text-emerald-400" />
+                    <span>¡Aplicado!</span>
+                  </>
+                ) : (
+                  <span>Aplicar a Todas</span>
+                )}
               </button>
             )}
           </div>
 
           {selectedLine ? (
-            <div className="p-4 space-y-5">
-              {/* 1. Active Phrase Quick Editor */}
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
-                  Texto de la Frase Seleccionada
-                </label>
+            <div className="p-4 space-y-4">
+              {/* 1. Active Phrase Quick Editor & Text Case */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Texto de la Frase
+                  </label>
+                  <span className="text-[9px] font-mono text-gray-500">
+                    {selectedLine.text.length} caracteres
+                  </span>
+                </div>
                 <input
                   type="text"
                   value={selectedLine.text}
-                  onChange={(e) =>
-                    updateLine(selectedLine.id, { text: e.target.value.toUpperCase() })
-                  }
-                  className="w-full bg-[#121722] border border-white/10 focus:border-red-500 rounded-xl px-3 py-2 text-xs font-black text-white outline-none"
+                  onChange={(e) => updateLine(selectedLine.id, { text: e.target.value })}
+                  className="w-full bg-[#121722] border border-white/10 focus:border-red-500 rounded-xl px-3 py-2 text-xs font-bold text-white outline-none"
+                  placeholder="Escribe la letra..."
                 />
+
+                {/* Text Case Selector */}
+                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                  {(
+                    [
+                      { id: 'upper', label: 'MAYÚSCULAS' },
+                      { id: 'title', label: 'Título' },
+                      { id: 'lower', label: 'minúsculas' },
+                    ] as { id: LyricTextCase; label: string }[]
+                  ).map((tc) => {
+                    const active = (selectedLine.textCase || 'upper') === tc.id;
+                    return (
+                      <button
+                        key={tc.id}
+                        type="button"
+                        onClick={() => updateLine(selectedLine.id, { textCase: tc.id })}
+                        className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
+                          active
+                            ? 'bg-red-600 text-white shadow-sm'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {tc.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* 2. CapCut Animation Templates Grid */}
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
-                  Plantillas de Animación Escénica
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {LYRIC_EFFECT_PRESETS.map((preset) => {
+              {/* 2. Animation Templates with HyperFrames Filter */}
+              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Efecto de Animación
+                  </label>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white/5 text-gray-400 border border-white/10">
+                    {LYRIC_EFFECT_PRESETS.length} Efectos
+                  </span>
+                </div>
+
+                {/* Filter Tabs: Todos | Brutal FX | Clásicos */}
+                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'brutal', label: '🔥 Brutal FX' },
+                    { id: 'classic', label: 'Clásicos' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setInspectorEffectFilter(tab.id as any)}
+                      className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
+                        inspectorEffectFilter === tab.id
+                          ? 'bg-white/15 text-white shadow-sm'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                  {LYRIC_EFFECT_PRESETS.filter((preset) => {
+                    if (inspectorEffectFilter === 'brutal') return preset.group === 'brutal';
+                    if (inspectorEffectFilter === 'classic') return preset.group !== 'brutal';
+                    return true;
+                  }).map((preset) => {
                     const active = selectedLine.effect === preset.id;
+                    const isBrutal = preset.group === 'brutal';
                     return (
                       <button
                         key={preset.id}
+                        type="button"
                         onClick={() =>
                           updateLine(selectedLine.id, {
                             effect: preset.id,
-                            accentColor: preset.defaultAccent,
+                            accentColor: selectedLine.accentColor || preset.defaultAccent,
                           })
                         }
-                        className={`p-2.5 rounded-xl text-left border transition-all relative overflow-hidden ${
+                        className={`p-2 rounded-xl text-left border transition-all relative overflow-hidden flex flex-col justify-between ${
                           active
-                            ? 'bg-gradient-to-br ' +
-                              preset.previewGradient +
-                              ' border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)]'
+                            ? isBrutal
+                              ? 'bg-gradient-to-br ' +
+                                preset.previewGradient +
+                                ' border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/50'
+                              : 'bg-gradient-to-br ' +
+                                preset.previewGradient +
+                                ' border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)] ring-1 ring-red-500/50'
                             : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-black/50 text-red-400 border border-white/10">
+                        <div className="flex items-center justify-between mb-1 gap-1">
+                          <span
+                            className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                              isBrutal
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                : 'bg-black/50 text-red-400 border-white/10'
+                            }`}
+                          >
                             {preset.badge}
                           </span>
+                          {isBrutal && (
+                            <span className="text-[8px] text-amber-400 font-bold flex items-center gap-0.5">
+                              <Zap size={9} /> HF
+                            </span>
+                          )}
                         </div>
-                        <div className="text-xs font-extrabold text-white leading-tight">
+                        <div className="text-[11px] font-black text-white leading-tight">
                           {preset.name}
                         </div>
-                        <div className="text-[10px] text-gray-400 mt-1 line-clamp-2 leading-snug">
+                        <div className="text-[9px] text-gray-400 mt-1 line-clamp-2 leading-snug">
                           {preset.description}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Brutalidad / Intensidad FX Slider */}
+                <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 space-y-1.5 mt-2">
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    <span className="flex items-center gap-1 text-amber-400">
+                      <Flame size={12} /> Brutalidad FX
+                    </span>
+                    <span className="font-mono text-amber-300">
+                      {((selectedLine.fxIntensity ?? 1.0) * 100).toFixed(0)}% (
+                      {(selectedLine.fxIntensity ?? 1.0).toFixed(1)}x)
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.0}
+                    max={2.0}
+                    step={0.1}
+                    value={selectedLine.fxIntensity ?? 1.0}
+                    onChange={(e) =>
+                      updateLine(selectedLine.id, { fxIntensity: Number(e.target.value) }, false)
+                    }
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
+                    <span>Sutil (0x)</span>
+                    <span>Normal (1.0x)</span>
+                    <span>Extremo (2.0x)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Luxury Typography Catalog & Visual Picker */}
+              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                    <Type size={12} className="text-red-400" /> Tipografía de Escenario
+                  </label>
+                  <span className="text-[9px] font-mono text-gray-500">
+                    {LYRIC_FONT_PRESETS.length} Familias
+                  </span>
+                </div>
+
+                {/* Category Tabs: Todas | Impacto | Lujo | Tech | Script */}
+                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                  <button
+                    type="button"
+                    onClick={() => setInspectorFontCategory('all')}
+                    className={`flex-1 py-1 rounded text-[9px] font-bold transition-all ${
+                      inspectorFontCategory === 'all'
+                        ? 'bg-red-600 text-white shadow-sm'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Todas
+                  </button>
+                  {LYRIC_FONT_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setInspectorFontCategory(cat.id)}
+                      className={`flex-1 py-1 rounded text-[9px] font-bold transition-all ${
+                        inspectorFontCategory === cat.id
+                          ? 'bg-red-600 text-white shadow-sm'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Visual Font List / Cards */}
+                <div className="space-y-1.5 max-h-[240px] overflow-y-auto custom-scrollbar pr-1">
+                  {LYRIC_FONT_PRESETS.filter((font) => {
+                    if (inspectorFontCategory === 'all') return true;
+                    return font.category === inspectorFontCategory;
+                  }).map((font) => {
+                    const active = selectedLine.fontFamily === font.id;
+                    return (
+                      <button
+                        key={font.id}
+                        type="button"
+                        onClick={() => {
+                          const updates: Partial<LyricLine> = { fontFamily: font.id };
+                          if (
+                            font.tracking !== undefined &&
+                            selectedLine.letterSpacing === undefined
+                          ) {
+                            updates.letterSpacing = font.tracking;
+                          }
+                          if (font.defaultCase && selectedLine.textCase === undefined) {
+                            updates.textCase = font.defaultCase;
+                          }
+                          updateLine(selectedLine.id, updates);
+                        }}
+                        className={`w-full p-2 rounded-xl text-left border transition-all flex items-center justify-between ${
+                          active
+                            ? 'bg-red-600/15 border-red-500 shadow-[0_0_12px_rgba(239,68,68,0.2)] ring-1 ring-red-500/50'
+                            : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0 pr-2">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="text-[10px] font-black text-white truncate">
+                              {font.label}
+                            </span>
+                            <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-white/5 text-gray-400 border border-white/10 uppercase">
+                              {font.category}
+                            </span>
+                          </div>
+                          <div
+                            className="text-sm truncate text-gray-200"
+                            style={{
+                              fontFamily: font.cssStack,
+                              fontWeight: font.weight,
+                              fontStyle: font.italic ? 'italic' : 'normal',
+                            }}
+                          >
+                            TANDU GLORIA
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <span className="text-[9px] font-mono text-gray-500 block">
+                            {font.weight} {font.italic ? 'Italic' : ''}
+                          </span>
+                          {active && (
+                            <span className="inline-block w-2 h-2 rounded-full bg-red-500 mt-1" />
+                          )}
                         </div>
                       </button>
                     );
@@ -1882,29 +2132,9 @@ export default function LyricStudio() {
                 </div>
               </div>
 
-              {/* 3. Typography & Font Scale */}
-              <div className="space-y-3 pt-2 border-t border-white/[0.06]">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5">
-                    <Type size={12} className="text-red-400" /> Tipografía de Escenario
-                  </label>
-                  <select
-                    value={selectedLine.fontFamily}
-                    onChange={(e) =>
-                      updateLine(selectedLine.id, {
-                        fontFamily: e.target.value as LyricFontFamily,
-                      })
-                    }
-                    className="w-full bg-[#121722] border border-white/10 rounded-xl px-3 py-2 text-xs font-bold text-white outline-none cursor-pointer"
-                  >
-                    {LYRIC_FONT_PRESETS.map((f) => (
-                      <option key={f.id} value={f.id} className="bg-[#0b0e14]">
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
+              {/* 4. Optical Adjustments: Size, Tracking, Stroke, Ghost */}
+              <div className="space-y-3 pt-3 border-t border-white/[0.06]">
+                {/* Size */}
                 <div>
                   <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
                     <span>Tamaño en Lienzo</span>
@@ -1921,39 +2151,136 @@ export default function LyricStudio() {
                     className="w-full accent-red-500 cursor-pointer"
                   />
                 </div>
+
+                {/* Letter-spacing / Tracking */}
+                <div>
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                    <span>Tracking / Espaciado</span>
+                    <span className="text-cyan-400 font-mono">
+                      {((selectedLine.letterSpacing ?? 0) * 100).toFixed(0)}% (
+                      {(selectedLine.letterSpacing ?? 0).toFixed(2)}em)
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-0.05}
+                    max={0.2}
+                    step={0.01}
+                    value={selectedLine.letterSpacing ?? 0}
+                    onChange={(e) =>
+                      updateLine(selectedLine.id, { letterSpacing: Number(e.target.value) }, false)
+                    }
+                    className="w-full accent-cyan-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
+                    <span>Condensado (-0.05em)</span>
+                    <span>Normal</span>
+                    <span>Expandido (+0.20em)</span>
+                  </div>
+                </div>
+
+                {/* Stroke Width / Outline */}
+                <div>
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                    <span>Contorno / Trazo Exterior</span>
+                    <span className="text-amber-400 font-mono">
+                      {selectedLine.strokeWidth || 0}px
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={8}
+                    step={0.5}
+                    value={selectedLine.strokeWidth || 0}
+                    onChange={(e) =>
+                      updateLine(selectedLine.id, { strokeWidth: Number(e.target.value) }, false)
+                    }
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                </div>
+
+                {/* Background Ghost Text Switch */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      <Layers size={12} className="text-cyan-400" /> Texto Fantasma
+                    </div>
+                    <div className="text-[9px] text-gray-400 mt-0.5">
+                      Palabra gigante en fondo (6.5% drift)
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateLine(selectedLine.id, { ghostText: !selectedLine.ghostText })
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
+                      selectedLine.ghostText
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.3)]'
+                        : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    {selectedLine.ghostText ? 'ACTIVADO' : 'OFF'}
+                  </button>
+                </div>
               </div>
 
-              {/* 4. Stage Color Swatches */}
-              <div className="space-y-2.5 pt-2 border-t border-white/[0.06]">
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                  Color de Resaltado / Karaoke
-                </label>
-                <div className="flex items-center gap-2">
+              {/* 5. Stage Color Swatches */}
+              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Color de Resaltado / Escenario
+                  </label>
+                  <span className="text-[9px] font-mono text-gray-500">
+                    {selectedLine.accentColor || '#ef4444'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   {[
                     { color: '#ef4444', label: 'Stage Red' },
                     { color: '#ffffff', label: 'Pure White' },
-                    { color: '#f59e0b', label: 'Gold' },
-                    { color: '#06b6d4', label: 'Cyan' },
+                    { color: '#d4af37', label: 'Oro Escenario' },
+                    { color: '#e5e7eb', label: 'Plata Cromo' },
+                    { color: '#f59e0b', label: 'Gold Amber' },
+                    { color: '#06b6d4', label: 'Cyan Neon' },
                     { color: '#10b981', label: 'Emerald' },
-                    { color: '#ec4899', label: 'Rose' },
+                    { color: '#ec4899', label: 'Rose Pink' },
                   ].map((sw) => (
                     <button
                       key={sw.color}
+                      type="button"
                       onClick={() => updateLine(selectedLine.id, { accentColor: sw.color })}
-                      className={`w-7 h-7 rounded-lg border-2 transition-transform ${
-                        (selectedLine.accentColor || '#ef4444') === sw.color
-                          ? 'border-white scale-110 shadow-lg'
+                      className={`w-7 h-7 rounded-lg border-2 transition-transform relative ${
+                        (selectedLine.accentColor || '#ef4444').toLowerCase() ===
+                        sw.color.toLowerCase()
+                          ? 'border-white scale-110 shadow-[0_0_12px_rgba(255,255,255,0.4)]'
                           : 'border-white/15 hover:scale-105'
                       }`}
                       style={{ backgroundColor: sw.color }}
                       title={sw.label}
                     />
                   ))}
+                  {/* Custom Color Input */}
+                  <label
+                    className="w-7 h-7 rounded-lg border-2 border-white/15 hover:border-white/40 cursor-pointer overflow-hidden flex items-center justify-center bg-[#121722] hover:scale-105 transition-transform"
+                    title="Color Personalizado"
+                  >
+                    <input
+                      type="color"
+                      value={selectedLine.accentColor || '#ef4444'}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, { accentColor: e.target.value })
+                      }
+                      className="opacity-0 w-0 h-0"
+                    />
+                    <Sparkles size={12} className="text-gray-300" />
+                  </label>
                 </div>
               </div>
 
-              {/* 5. Word-by-Word Cadence Breakdown */}
-              <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+              {/* 6. Word-by-Word Cadence Breakdown */}
+              <div className="space-y-2 pt-3 border-t border-white/[0.06]">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
                     Palabras Sincronizadas ({(selectedLine.words || []).length})
@@ -1986,7 +2313,8 @@ export default function LyricStudio() {
             </div>
           ) : (
             <div className="p-6 text-center text-gray-500 text-xs">
-              Selecciona una píldora de letra o un clip en la línea de tiempo para personalizar su plantilla y estilo.
+              Selecciona una píldora de letra o un clip en la línea de tiempo para personalizar su
+              plantilla y estilo.
             </div>
           )}
         </aside>

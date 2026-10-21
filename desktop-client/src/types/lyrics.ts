@@ -15,7 +15,15 @@ export type LyricEffectType =
   | 'glitch'
   | 'double-exposure'
   | 'write-on'
-  | 'liquid';
+  | 'liquid'
+  // Brutal FX (HyperFrames motion rules ported to the deterministic canvas renderer)
+  | 'beat-slam'
+  | 'decrypt'
+  | 'depth-extrude'
+  | 'waterfall'
+  | 'luxe-chrome'
+  | 'crash-zoom'
+  | 'font-shuffle';
 
 export type LyricFontFamily =
   | 'Montserrat'
@@ -24,7 +32,24 @@ export type LyricFontFamily =
   | 'Playfair Display'
   | 'Roboto Slab'
   | 'Nexa Rust'
-  | 'Northwell';
+  | 'Northwell'
+  // Luxury typography system
+  | 'Anton'
+  | 'Archivo Black'
+  | 'Unbounded'
+  | 'Bodoni Moda'
+  | 'Fraunces'
+  | 'Instrument Serif'
+  | 'DM Serif Display'
+  | 'Italiana'
+  | 'Syncopate'
+  | 'Space Grotesk'
+  | 'Space Mono'
+  | 'Monoton'
+  | 'Kaushan Script'
+  | 'Yellowtail';
+
+export type LyricTextCase = 'upper' | 'title' | 'lower';
 
 export interface LyricLine {
   id: string;
@@ -41,6 +66,12 @@ export interface LyricLine {
   primaryColor?: string; // Default '#ffffff'
   accentColor?: string; // Default '#ef4444' (TANDU Stage Red)
   words?: LyricWordTiming[];
+  // Luxury typography controls (all optional — undefined reproduces the classic render)
+  letterSpacing?: number; // Tracking in em (default: font preset tracking)
+  textCase?: LyricTextCase; // Applied at draw time only (default 'upper')
+  strokeWidth?: number; // Outline thickness in px at 1080p (default 0)
+  fxIntensity?: number; // "Brutalidad" multiplier 0..2 (default 1)
+  ghostText?: boolean; // Giant drifting ghost word behind the line
 }
 
 export interface LyricEffectPreset {
@@ -50,6 +81,7 @@ export interface LyricEffectPreset {
   description: string;
   previewGradient: string;
   defaultAccent: string;
+  group?: 'classic' | 'brutal';
 }
 
 export const LYRIC_EFFECT_PRESETS: LyricEffectPreset[] = [
@@ -111,21 +143,176 @@ export const LYRIC_EFFECT_PRESETS: LyricEffectPreset[] = [
   },
   {
     id: 'glitch',
-    name: 'Cyber Cut Glitch',
+    name: 'Cyber Glitch RGB',
     badge: 'ELECTRO',
-    description: 'Cortes digitales de alta frecuencia con desplazamiento de matriz.',
+    description: 'Jitter RGB cuantizado + cortes horizontales que convergen y resuelven nítido.',
     previewGradient: 'from-purple-600/35 via-red-500/25 to-black',
     defaultAccent: '#a855f7',
   },
+  // ───────── BRUTAL FX · HyperFrames motion rules (deterministic canvas ports) ─────────
+  {
+    id: 'beat-slam',
+    name: 'Beat Slam Brutal',
+    badge: 'BRUTAL',
+    description: 'Cada palabra golpea con un eje distinto (escala+blur, latigazo, giro) y sacude el escenario.',
+    previewGradient: 'from-orange-600/45 via-red-600/25 to-black',
+    defaultAccent: '#ff5b2e',
+    group: 'brutal',
+  },
+  {
+    id: 'crash-zoom',
+    name: 'Crash Zoom Impact',
+    badge: 'DROP',
+    description: 'Flash de impacto, líneas radiales de velocidad y entrada violenta desde 3x con ecos.',
+    previewGradient: 'from-yellow-500/40 via-red-600/25 to-black',
+    defaultAccent: '#facc15',
+    group: 'brutal',
+  },
+  {
+    id: 'decrypt',
+    name: 'Hacker Decrypt 3D',
+    badge: 'DECODE',
+    description: 'Caracteres que giran en 3D barajando glifos hasta descifrar la palabra real.',
+    previewGradient: 'from-emerald-500/40 via-lime-600/15 to-black',
+    defaultAccent: '#22c55e',
+    group: 'brutal',
+  },
+  {
+    id: 'depth-extrude',
+    name: '3D Depth Extrude',
+    badge: 'POSTER 3D',
+    description: 'Extrusión de 6 capas que crece al entrar y late al pulso del BPM.',
+    previewGradient: 'from-pink-600/40 via-rose-600/20 to-black',
+    defaultAccent: '#ec4899',
+    group: 'brutal',
+  },
+  {
+    id: 'waterfall',
+    name: 'Waterfall Whip',
+    badge: 'CASCADA',
+    description: 'Las palabras suben en latigazo solapado, con peso según su longitud. Sin fundidos.',
+    previewGradient: 'from-sky-500/40 via-blue-700/20 to-black',
+    defaultAccent: '#38bdf8',
+    group: 'brutal',
+  },
+  {
+    id: 'luxe-chrome',
+    name: 'Luxe Chrome Sweep',
+    badge: 'LUJO',
+    description: 'Banda especular metálica oro/cromo que barre el interior de las letras.',
+    previewGradient: 'from-amber-400/45 via-yellow-700/20 to-black',
+    defaultAccent: '#d4af37',
+    group: 'brutal',
+  },
+  {
+    id: 'font-shuffle',
+    name: 'Font Shuffle Beat',
+    badge: 'TIPO-RITMO',
+    description: 'La frase se escribe palabra a palabra y la palabra clave cambia de fuente a cada beat.',
+    previewGradient: 'from-fuchsia-500/40 via-violet-700/20 to-black',
+    defaultAccent: '#d946ef',
+    group: 'brutal',
+  },
+  {
+    id: 'write-on',
+    name: 'Write-On Outline Fill',
+    badge: 'TRAZO',
+    description: 'Se dibuja el contorno de cada palabra y se inunda de color de abajo hacia arriba.',
+    previewGradient: 'from-teal-400/40 via-cyan-700/20 to-black',
+    defaultAccent: '#2dd4bf',
+    group: 'brutal',
+  },
+  {
+    id: 'liquid',
+    name: 'Liquid Wave',
+    badge: 'FLUIDO',
+    description: 'Ondulación líquida por carácter que se asienta al cantarse la palabra.',
+    previewGradient: 'from-indigo-500/40 via-blue-600/20 to-black',
+    defaultAccent: '#818cf8',
+    group: 'brutal',
+  },
+  {
+    id: 'double-exposure',
+    name: 'Double Exposure',
+    badge: 'CINE',
+    description: 'Dos exposiciones desfasadas en escala y color que se funden en pantalla.',
+    previewGradient: 'from-red-500/35 via-cyan-500/20 to-black',
+    defaultAccent: '#f43f5e',
+    group: 'brutal',
+  },
 ];
 
-export const LYRIC_FONT_PRESETS: { id: LyricFontFamily; label: string; sampleClass: string }[] = [
-  { id: 'Montserrat', label: 'Montserrat Black (Escenario)', sampleClass: 'font-sans font-black' },
-  { id: 'Bebas Neue', label: 'Bebas Neue (Impacto Alto)', sampleClass: 'tracking-wider font-bold' },
-  { id: 'Outfit', label: 'Outfit ExtraBold (Moderno)', sampleClass: 'font-extrabold' },
-  { id: 'Playfair Display', label: 'Playfair Display (Editorial)', sampleClass: 'font-serif italic font-bold' },
-  { id: 'Roboto Slab', label: 'Roboto Slab (Sólido)', sampleClass: 'font-serif font-black' },
+export type LyricFontCategory = 'impact' | 'luxury' | 'tech' | 'script';
+
+export interface LyricFontPreset {
+  id: LyricFontFamily;
+  label: string;
+  sampleClass: string;
+  category: LyricFontCategory;
+  cssStack: string; // Canvas / CSS font-family stack
+  weight: number; // REAL weight shipped by the font (no synthetic bold)
+  italic?: boolean;
+  tracking?: number; // Default letter-spacing in em
+  defaultCase?: LyricTextCase;
+}
+
+export const LYRIC_FONT_PRESETS: LyricFontPreset[] = [
+  // IMPACTO / ESCENARIO
+  { id: 'Montserrat', label: 'Montserrat Black', sampleClass: 'font-sans font-black', category: 'impact', cssStack: '"Montserrat", "Inter", sans-serif', weight: 900, tracking: -0.02 },
+  { id: 'Bebas Neue', label: 'Bebas Neue', sampleClass: 'tracking-wider font-bold', category: 'impact', cssStack: '"Bebas Neue", "Oswald", sans-serif', weight: 400, tracking: 0.02 },
+  { id: 'Anton', label: 'Anton', sampleClass: '', category: 'impact', cssStack: '"Anton", "Bebas Neue", sans-serif', weight: 400, tracking: 0 },
+  { id: 'Archivo Black', label: 'Archivo Black', sampleClass: '', category: 'impact', cssStack: '"Archivo Black", "Montserrat", sans-serif', weight: 400, tracking: -0.03 },
+  { id: 'Unbounded', label: 'Unbounded Black', sampleClass: '', category: 'impact', cssStack: '"Unbounded", "Montserrat", sans-serif', weight: 900, tracking: -0.02 },
+  { id: 'Outfit', label: 'Outfit Black', sampleClass: 'font-extrabold', category: 'impact', cssStack: '"Outfit", "Plus Jakarta Sans", sans-serif', weight: 900, tracking: -0.02 },
+  // LUJO EDITORIAL
+  { id: 'Bodoni Moda', label: 'Bodoni Moda (Fashion)', sampleClass: '', category: 'luxury', cssStack: '"Bodoni Moda", "Playfair Display", Georgia, serif', weight: 700, tracking: -0.01 },
+  { id: 'Fraunces', label: 'Fraunces Black Italic', sampleClass: '', category: 'luxury', cssStack: '"Fraunces", Georgia, serif', weight: 900, italic: true, tracking: -0.02, defaultCase: 'title' },
+  { id: 'Instrument Serif', label: 'Instrument Serif Italic', sampleClass: '', category: 'luxury', cssStack: '"Instrument Serif", Georgia, serif', weight: 400, italic: true, tracking: -0.01, defaultCase: 'title' },
+  { id: 'DM Serif Display', label: 'DM Serif Display', sampleClass: '', category: 'luxury', cssStack: '"DM Serif Display", Georgia, serif', weight: 400, tracking: -0.01 },
+  { id: 'Italiana', label: 'Italiana (Haute Couture)', sampleClass: '', category: 'luxury', cssStack: '"Italiana", "Playfair Display", serif', weight: 400, tracking: 0.12 },
+  { id: 'Playfair Display', label: 'Playfair Display Italic', sampleClass: 'font-serif italic font-bold', category: 'luxury', cssStack: '"Playfair Display", Georgia, serif', weight: 900, italic: true, tracking: -0.01 },
+  { id: 'Roboto Slab', label: 'Roboto Slab Black', sampleClass: 'font-serif font-black', category: 'luxury', cssStack: '"Roboto Slab", serif', weight: 900, tracking: -0.01 },
+  // TECH / FUTURISTA
+  { id: 'Syncopate', label: 'Syncopate Wide', sampleClass: '', category: 'tech', cssStack: '"Syncopate", "Unbounded", sans-serif', weight: 700, tracking: 0.08 },
+  { id: 'Space Grotesk', label: 'Space Grotesk', sampleClass: '', category: 'tech', cssStack: '"Space Grotesk", "Inter", sans-serif', weight: 700, tracking: -0.03 },
+  { id: 'Space Mono', label: 'Space Mono (Decrypt)', sampleClass: '', category: 'tech', cssStack: '"Space Mono", "JetBrains Mono", monospace', weight: 700, tracking: 0 },
+  { id: 'Monoton', label: 'Monoton (Neón Retro)', sampleClass: '', category: 'tech', cssStack: '"Monoton", "Bebas Neue", sans-serif', weight: 400, tracking: 0.04 },
+  // SCRIPT / FIRMA
+  { id: 'Kaushan Script', label: 'Kaushan Script', sampleClass: '', category: 'script', cssStack: '"Kaushan Script", cursive', weight: 400, tracking: 0, defaultCase: 'title' },
+  { id: 'Yellowtail', label: 'Yellowtail', sampleClass: '', category: 'script', cssStack: '"Yellowtail", cursive', weight: 400, tracking: 0, defaultCase: 'title' },
 ];
+
+export const LYRIC_FONT_CATEGORIES: { id: LyricFontCategory; label: string }[] = [
+  { id: 'impact', label: 'Impacto' },
+  { id: 'luxury', label: 'Lujo' },
+  { id: 'tech', label: 'Tech' },
+  { id: 'script', label: 'Script' },
+];
+
+/** Resolves the font preset (falls back to Montserrat for legacy / unknown ids). */
+export function getFontPreset(fontFamily?: string): LyricFontPreset {
+  return (
+    LYRIC_FONT_PRESETS.find((f) => f.id === fontFamily) ||
+    LYRIC_FONT_PRESETS[0]
+  );
+}
+
+/** Builds the exact CSS / canvas font shorthand using the font's REAL weight & style. */
+export function buildFontString(fontFamily: string | undefined, sizePx: number): string {
+  const p = getFontPreset(fontFamily);
+  return `${p.italic ? 'italic ' : ''}${p.weight} ${Math.round(sizePx)}px ${p.cssStack}`;
+}
+
+/** Applies draw-time capitalisation without mutating the stored text (word timings stay intact). */
+export function applyTextCase(text: string, textCase: LyricTextCase = 'upper'): string {
+  if (textCase === 'lower') return text.toLocaleLowerCase('es');
+  if (textCase === 'title') {
+    return text
+      .toLocaleLowerCase('es')
+      .replace(/(^|\s)(\S)/g, (_m, sp: string, ch: string) => sp + ch.toLocaleUpperCase('es'));
+  }
+  return text.toLocaleUpperCase('es');
+}
 
 /**
  * Generates proportional word-level timings inside a line so every phrase

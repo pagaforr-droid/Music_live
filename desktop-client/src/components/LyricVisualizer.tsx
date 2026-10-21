@@ -1,5 +1,14 @@
-import React, { useEffect, useRef } from 'react';
-import { LyricLine, computeWordTimings } from '../types/lyrics';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  LyricLine,
+  LyricFontFamily,
+  LyricWordTiming,
+  computeWordTimings,
+  getFontPreset,
+  buildFontString,
+  applyTextCase,
+  LYRIC_FONT_PRESETS,
+} from '../types/lyrics';
 
 export type { LyricLine } from '../types/lyrics';
 
@@ -25,7 +34,30 @@ export interface RenderLyricFrameOptions {
   ) => void;
 }
 
-// Emil Kowalski inspired spring & cubic-bezier easing helpers
+// ════════════════════════════════════════════════════════════════════════════
+//  FONT PRELOADER
+//  Canvas never triggers webfont downloads by itself: without this, the first
+//  frames (and exported videos) silently fall back to a system font.
+// ════════════════════════════════════════════════════════════════════════════
+let fontsReadyPromise: Promise<void> | null = null;
+
+export function ensureLyricFontsLoaded(): Promise<void> {
+  if (typeof document === 'undefined' || !(document as any).fonts) return Promise.resolve();
+  if (!fontsReadyPromise) {
+    const loads = LYRIC_FONT_PRESETS.map((p) =>
+      document.fonts.load(buildFontString(p.id, 64), 'AÁÑZaz09').catch(() => [])
+    );
+    fontsReadyPromise = Promise.all(loads).then(
+      () => undefined,
+      () => undefined
+    );
+  }
+  return fontsReadyPromise;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  EASING (Emil Kowalski / GSAP equivalents — never linear for UI motion)
+// ════════════════════════════════════════════════════════════════════════════
 function easeOutBack(x: number): number {
   const c1 = 1.70158;
   const c3 = c1 + 1;
@@ -40,21 +72,109 @@ function easeInCubic(x: number): number {
   return x * x * x;
 }
 
-function resolveFontFamily(fontFamily?: string): string {
-  switch (fontFamily) {
-    case 'Bebas Neue':
-      return '"Bebas Neue", "Oswald", sans-serif';
-    case 'Playfair Display':
-      return '"Playfair Display", Georgia, serif';
-    case 'Outfit':
-      return '"Outfit", "Plus Jakarta Sans", sans-serif';
-    case 'Roboto Slab':
-      return '"Roboto Slab", serif';
-    case 'Montserrat':
-    default:
-      return '"Montserrat", "Inter", sans-serif';
+/** GSAP power4.out — the hard "slam" landing. */
+function easeOutQuint(x: number): number {
+  return 1 - Math.pow(1 - x, 5);
+}
+
+/** GSAP expo.out — hardest snap (side-snaps, whip-ins, crash zooms). */
+function easeOutExpo(x: number): number {
+  return x >= 1 ? 1 : 1 - Math.pow(2, -10 * x);
+}
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
+}
+
+/**
+ * Deterministic hash (HyperFrames `glitchHash`): pure function of its input so a
+ * seek / export / live replay of the same timestamp always renders the same frame.
+ * NEVER use Math.random() in this renderer.
+ */
+function hash01(n: number): number {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  COLOR HELPERS
+// ════════════════════════════════════════════════════════════════════════════
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  let h = (hex || '#ffffff').replace('#', '').trim();
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const n = parseInt(h.slice(0, 6), 16);
+  if (Number.isNaN(n)) return { r: 255, g: 255, b: 255 };
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function rgba(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${clamp01(alpha)})`;
+}
+
+/** Mixes a color toward white (amt > 0) or black (amt < 0). amt in -1..1 */
+function shade(hex: string, amt: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const target = amt >= 0 ? 255 : 0;
+  const t = Math.abs(amt);
+  const mix = (c: number) => Math.round(c + (target - c) * t);
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  TEXT HELPERS
+// ════════════════════════════════════════════════════════════════════════════
+function setLetterSpacing(ctx: CanvasRenderingContext2D, px: number) {
+  if ('letterSpacing' in ctx) {
+    (ctx as any).letterSpacing = `${px.toFixed(2)}px`;
   }
 }
+
+/** Fill a word with an optional outer outline (stroke drawn first so it sits outside). */
+function fillWord(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  strokeWidth: number,
+  strokeColor: string
+) {
+  if (strokeWidth > 0) {
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.lineWidth = strokeWidth * 2;
+    ctx.strokeStyle = strokeColor;
+    ctx.strokeText(text, x, y);
+    ctx.restore();
+  }
+  ctx.fillText(text, x, y);
+}
+
+/** Per-character x offsets (left edge of each glyph) relative to the word's left edge. */
+function charOffsets(ctx: CanvasRenderingContext2D, word: string): number[] {
+  const chars = Array.from(word);
+  const offsets: number[] = [];
+  let prefix = '';
+  for (const ch of chars) {
+    offsets.push(prefix ? ctx.measureText(prefix).width : 0);
+    prefix += ch;
+  }
+  return offsets;
+}
+
+const DECRYPT_GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&*@!?<>/=+';
+
+const SHUFFLE_FONTS: LyricFontFamily[] = [
+  'Bodoni Moda',
+  'Space Mono',
+  'Fraunces',
+  'Anton',
+  'Instrument Serif',
+  'Syncopate',
+  'Monoton',
+  'Archivo Black',
+];
 
 interface WrappedWordItem {
   word: string;
@@ -121,8 +241,37 @@ function layoutWordsMultiLine(
   return { items, blockWidth: maxRowWidth, blockHeight };
 }
 
+/** Quantized, decaying screen-shake triggered on every word onset (kinetic-beat-slam chrome). */
+function computeOnsetShake(
+  elapsedMs: number,
+  timings: LyricWordTiming[],
+  amplitude: number,
+  seed: number
+): { x: number; y: number } {
+  if (amplitude <= 0) return { x: 0, y: 0 };
+  let lastOnset = -1;
+  let onsetIndex = 0;
+  for (let i = 0; i < timings.length; i++) {
+    if (timings[i].startOffsetMs <= elapsedMs) {
+      lastOnset = timings[i].startOffsetMs;
+      onsetIndex = i;
+    }
+  }
+  if (lastOnset < 0) return { x: 0, y: 0 };
+  const dt = elapsedMs - lastOnset;
+  if (dt > 260) return { x: 0, y: 0 };
+  const decay = Math.exp(-dt / 70);
+  const step = Math.floor(elapsedMs / 33); // ~30fps quantization = the digital stutter
+  const amp = amplitude * (onsetIndex === 0 ? 1.4 : 1) * decay;
+  return {
+    x: (hash01(step * 13 + seed) * 2 - 1) * amp,
+    y: (hash01(step * 29 + seed + 7) * 2 - 1) * amp * 0.6,
+  };
+}
+
 /**
  * Master Deterministic 60fps Stage Canvas Renderer shared between LyricStudio and LiveConcert.
+ * Pure function of `timeMs` — the same timestamp always yields the same frame (seek/export safe).
  */
 export function renderLyricCanvasFrame(
   ctx: CanvasRenderingContext2D,
@@ -210,32 +359,41 @@ export function renderLyricCanvasFrame(
   // 3. Render Placed Active Lyric Lines
   const placedLyrics = (lyrics || []).filter((l) => l.placed !== false);
 
-  placedLyrics.forEach((line) => {
+  placedLyrics.forEach((line, lineIdx) => {
     if (timeMs < line.startMs || timeMs > line.startMs + line.durationMs) return;
 
     const elapsedMs = timeMs - line.startMs;
     const progress = Math.max(0, Math.min(1, elapsedMs / Math.max(100, line.durationMs)));
 
-    const fontFace = resolveFontFamily(line.fontFamily);
+    const preset = getFontPreset(line.fontFamily);
     const baseFontSize = line.fontSize || 108;
+    const fontString = buildFontString(line.fontFamily, baseFontSize);
     const posX = (line.positionX !== undefined ? line.positionX : 0.5) * canvasW;
     const posY = (line.positionY !== undefined ? line.positionY : 0.5) * canvasH;
     const primaryColor = line.primaryColor || '#ffffff';
     const accentColor = line.accentColor || '#ef4444';
+    const trackingPx = (line.letterSpacing ?? preset.tracking ?? 0) * baseFontSize;
+    const textCase = line.textCase ?? preset.defaultCase ?? 'upper';
+    const strokeWidth = Math.max(0, line.strokeWidth || 0);
+    const intensity = Math.max(0, Math.min(2, line.fxIntensity ?? 1));
+    const seed = lineIdx * 1013 + Math.round(line.startMs);
 
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `900 ${baseFontSize}px ${fontFace}`;
+    ctx.font = fontString;
+    setLetterSpacing(ctx, trackingPx);
 
-    const words = line.text
+    const rawWords = line.text
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    if (words.length === 0) {
+    if (rawWords.length === 0) {
       ctx.restore();
       return;
     }
+    // Draw-time capitalisation per word keeps word count (and timings) perfectly aligned.
+    const words = rawWords.map((w) => applyTextCase(w, textCase));
 
     const wordTimings = computeWordTimings(line.text, line.durationMs, line.words);
     const wordSpacing = Math.round(baseFontSize * 0.34);
@@ -263,6 +421,61 @@ export function renderLyricCanvasFrame(
     let lineEnvelope = 1;
     if (progress < 0.08) lineEnvelope = easeOutCubic(progress / 0.08);
     else if (progress > 0.9) lineEnvelope = 1 - easeInCubic((progress - 0.9) / 0.1);
+
+    // ── LINE-LEVEL LAYER A: Ghost text (giant drifting word behind the phrase) ──
+    if (line.ghostText) {
+      const ghostWord = words.reduce((a, b) => (b.length > a.length ? b : a), words[0]);
+      ctx.save();
+      ctx.font = buildFontString(line.fontFamily, baseFontSize * 3.1);
+      ctx.globalAlpha = 0.065 * lineEnvelope;
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(ghostWord, posX + 90 - progress * 180, posY);
+      ctx.restore();
+    }
+
+    // ── LINE-LEVEL LAYER B: Crash-zoom impact flash + radial speed lines ──
+    if (line.effect === 'crash-zoom' && intensity > 0) {
+      if (elapsedMs < 140) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(0.75, (1 - elapsedMs / 140) * 0.55 * intensity);
+        ctx.fillStyle = shade(accentColor, 0.65);
+        ctx.fillRect(0, 0, canvasW, canvasH);
+        ctx.restore();
+      }
+      if (elapsedMs < 420) {
+        const p = elapsedMs / 420;
+        const LINES = 30;
+        ctx.save();
+        ctx.lineCap = 'round';
+        for (let i = 0; i < LINES; i++) {
+          const angle = (i / LINES) * Math.PI * 2 + hash01(seed + i) * 0.18;
+          const r0 = 140 + easeOutCubic(p) * canvasW * 0.42 + hash01(seed + i * 3) * 60;
+          const len = (1 - p) * (160 + hash01(seed + i * 7) * 240) * Math.min(1.5, intensity);
+          ctx.strokeStyle = rgba(i % 3 === 0 ? '#ffffff' : accentColor, (1 - p) * 0.85);
+          ctx.lineWidth = 3 + hash01(seed + i * 11) * 6;
+          ctx.beginPath();
+          ctx.moveTo(posX + Math.cos(angle) * r0, posY + Math.sin(angle) * r0);
+          ctx.lineTo(posX + Math.cos(angle) * (r0 + len), posY + Math.sin(angle) * (r0 + len));
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    // ── LINE-LEVEL LAYER C: Onset screen-shake (applies to every word of the line) ──
+    if (line.effect === 'beat-slam' || line.effect === 'crash-zoom') {
+      const amp = (line.effect === 'crash-zoom' ? 30 : 20) * intensity;
+      const shake = computeOnsetShake(elapsedMs, wordTimings, amp, seed);
+      ctx.translate(shake.x, shake.y);
+    }
+
+    // Keyword (longest word) for the font-shuffle effect
+    let keywordIndex = 0;
+    if (line.effect === 'font-shuffle') {
+      words.forEach((w, i) => {
+        if (w.length > words[keywordIndex].length) keywordIndex = i;
+      });
+    }
 
     items.forEach((item) => {
       const wt = wordTimings[item.wordIndex] || {
@@ -316,7 +529,7 @@ export function renderLyricCanvasFrame(
         // Unsung base text (ghosted white)
         ctx.globalAlpha = lineEnvelope * (isWordCompleted ? 0.95 : 0.32);
         ctx.fillStyle = primaryColor;
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
 
         // Progressive wipe fill on active/completed word
         if (wordProgress > 0) {
@@ -359,7 +572,7 @@ export function renderLyricCanvasFrame(
           ctx.shadowBlur = 16;
           ctx.fillStyle = primaryColor;
         }
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, isWordActive ? primaryColor : accentColor);
       }
 
       // EFFECT 3: SMOOTH BLUR REVEAL (Cinematic Optical Focus)
@@ -394,7 +607,7 @@ export function renderLyricCanvasFrame(
         ctx.fillStyle = primaryColor;
         ctx.shadowColor = accentColor;
         ctx.shadowBlur = isWordActive ? 24 : 8;
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
       }
 
       // EFFECT 4: NEON STAGE ARENA (Double Tube Glow + Pulse)
@@ -407,7 +620,7 @@ export function renderLyricCanvasFrame(
         ctx.shadowColor = accentColor;
         ctx.shadowBlur = isWordActive ? 42 : 18;
         ctx.strokeStyle = accentColor;
-        ctx.lineWidth = isWordActive ? 6 : 3;
+        ctx.lineWidth = (isWordActive ? 6 : 3) + strokeWidth;
         ctx.strokeText(item.word, 0, 0);
 
         ctx.fillStyle = isWordActive ? '#ffffff' : 'rgba(255,255,255,0.85)';
@@ -430,7 +643,7 @@ export function renderLyricCanvasFrame(
         ctx.fillText(item.word, 7, 7);
 
         ctx.fillStyle = primaryColor;
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
       }
 
       // EFFECT 6: CHROMATIC GLOW (RGB Split)
@@ -454,7 +667,7 @@ export function renderLyricCanvasFrame(
         ctx.translate(drawX, drawY);
         ctx.globalAlpha = lineEnvelope;
         ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, rgba(accentColor, 0.5));
 
         ctx.save();
         ctx.beginPath();
@@ -472,20 +685,449 @@ export function renderLyricCanvasFrame(
         ctx.restore();
       }
 
-      // EFFECT 8: GLITCH (Digital Cut)
-      else {
+      // EFFECT 8: CYBER GLITCH (HyperFrames `chromatic-glitch` — quantized RGB jitter + slices)
+      else if (line.effect === 'glitch') {
         ctx.translate(drawX, drawY);
-        ctx.globalAlpha = lineEnvelope;
-        const isGlitching = isWordActive && Math.sin(timeMs * 0.09 + item.wordIndex) > 0.55;
-        if (isGlitching) {
-          const shiftX = Math.sin(timeMs * 0.3) * 12;
+        ctx.globalAlpha = lineEnvelope * (wordElapsed < 0 ? 0.35 : 1);
+
+        // Envelope: violent at the onset (power3.in decay), plus one short emphasis burst mid-word.
+        const GLITCH_DUR = 380;
+        let amp = 0;
+        if (wordElapsed >= 0 && wordElapsed < GLITCH_DUR) amp = 1 - Math.pow(wordElapsed / GLITCH_DUR, 3);
+        const burstAt = wt.durationMs * 0.58;
+        if (isWordActive && wordElapsed > burstAt && wordElapsed < burstAt + 140) {
+          amp = Math.max(amp, 0.55 * (1 - (wordElapsed - burstAt) / 140));
+        }
+        amp *= intensity;
+
+        const step = Math.floor(timeMs / 42); // quantized time — the stutter IS the effect
+        if (amp > 0.02) {
+          const jx = (hash01(step * 13 + item.wordIndex * 7) * 2 - 1) * 14 * amp;
+          const jy = (hash01(step * 29 + item.wordIndex * 11) * 2 - 1) * 5 * amp;
+          // RGB ghosts behind (warm + cool)
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.fillStyle = rgba(accentColor, 0.85);
+          ctx.fillText(item.word, jx, jy);
+          ctx.fillStyle = 'rgba(6, 182, 212, 0.85)';
+          ctx.fillText(item.word, -jx, -jy);
+          ctx.restore();
+          // Slice displacement: horizontal bands converge back to 0
+          const SLICES = 6;
+          const top = -baseFontSize * 0.62;
+          const bandH = (baseFontSize * 1.24) / SLICES;
+          ctx.fillStyle = primaryColor;
+          for (let b = 0; b < SLICES; b++) {
+            const ox = (hash01(step * 17 + b * 31 + item.wordIndex * 5) * 2 - 1) * 64 * amp;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(-item.width / 2 - 120, top + b * bandH, item.width + 240, bandH + 1);
+            ctx.clip();
+            ctx.fillText(item.word, ox, 0);
+            ctx.restore();
+          }
+        } else {
+          // Clean resolve — bit-exact rest state
+          ctx.fillStyle = primaryColor;
+          if (isWordActive) {
+            ctx.shadowColor = accentColor;
+            ctx.shadowBlur = 22;
+          }
+          fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
+        }
+      }
+
+      // EFFECT 9: BEAT SLAM BRUTAL (HyperFrames `kinetic-beat-slam` — distinct entrance per word)
+      else if (line.effect === 'beat-slam') {
+        if (wordElapsed < 0) {
+          ctx.restore();
+          return;
+        }
+        const ENTRY = 420;
+        const p = clamp01(wordElapsed / ENTRY);
+        const mode = item.wordIndex % 3;
+        let tx = 0;
+        let ty = 0;
+        let rot = 0;
+        let scale = 1;
+        let blurPx = 0;
+
+        if (mode === 0) {
+          // Scale + blur slam (power4.out)
+          const e = easeOutQuint(p);
+          scale = 1 + (1 - e) * 0.85 * intensity;
+          blurPx = (1 - e) * 16 * intensity;
+        } else if (mode === 1) {
+          // Side snap (expo.out) — direction alternates deterministically
+          const dir = hash01(seed + item.wordIndex) > 0.5 ? 1 : -1;
+          tx = (1 - easeOutExpo(p)) * 340 * dir * intensity;
+          blurPx = (1 - easeOutExpo(p)) * 8 * intensity;
+        } else {
+          // Rise + rotate (circ-like heavy rise)
+          const e = easeOutCubic(p);
+          ty = (1 - e) * 110 * intensity;
+          rot = (1 - e) * 0.16 * intensity;
+        }
+
+        ctx.translate(drawX + tx, drawY + ty);
+        ctx.rotate(rot);
+        ctx.scale(scale, scale);
+        if (blurPx > 0.5) ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
+        ctx.globalAlpha = lineEnvelope * Math.min(1, p * 5);
+
+        if (isWordActive) {
           ctx.fillStyle = accentColor;
-          ctx.fillText(item.word, shiftX, -4);
-          ctx.fillStyle = '#06b6d4';
-          ctx.fillText(item.word, -shiftX, 4);
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = 34;
+        } else {
+          ctx.fillStyle = primaryColor;
+          ctx.shadowColor = 'rgba(0,0,0,0.8)';
+          ctx.shadowBlur = 14;
+        }
+        fillWord(ctx, item.word, 0, 0, strokeWidth, isWordActive ? primaryColor : accentColor);
+
+        // White impact flash on the very first frames of the hit
+        if (p < 0.12) {
+          ctx.filter = 'none';
+          ctx.globalAlpha = (1 - p / 0.12) * 0.9 * lineEnvelope;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(item.word, 0, 0);
+        }
+      }
+
+      // EFFECT 10: CRASH ZOOM IMPACT (crash-zoom-in + motion echoes)
+      else if (line.effect === 'crash-zoom') {
+        if (wordElapsed < 0) {
+          ctx.restore();
+          return;
+        }
+        const ENTRY = 300;
+        const p = clamp01(wordElapsed / ENTRY);
+        const e = easeOutExpo(p);
+        const scale = 1 + (1 - e) * 2.2 * Math.max(0.3, intensity);
+
+        ctx.translate(drawX, drawY);
+        // Motion echoes collapsing into the lead copy
+        if (p < 1) {
+          for (let k = 3; k >= 1; k--) {
+            ctx.save();
+            const s = scale * (1 + k * 0.16 * (1 - e));
+            ctx.scale(s, s);
+            ctx.globalAlpha = (0.22 * (1 - p)) / k * lineEnvelope;
+            ctx.fillStyle = accentColor;
+            ctx.fillText(item.word, 0, 0);
+            ctx.restore();
+          }
+        }
+        ctx.scale(scale, scale);
+        ctx.globalAlpha = lineEnvelope * Math.min(1, p * 3);
+        ctx.fillStyle = isWordActive ? '#ffffff' : primaryColor;
+        ctx.shadowColor = isWordActive ? accentColor : 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = isWordActive ? 38 : 14;
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
+      }
+
+      // EFFECT 11: HACKER DECRYPT 3D (HyperFrames `hacker-flip-3d`)
+      else if (line.effect === 'decrypt') {
+        if (wordElapsed < 0) {
+          ctx.restore();
+          return;
+        }
+        const chars = Array.from(item.word);
+        const offsets = charOffsets(ctx, item.word);
+        const FLIP = 520;
+        const stagger = Math.max(18, Math.min(55, (wt.durationMs * 0.5) / Math.max(1, chars.length)));
+        const left = drawX - item.width / 2;
+        const hingeY = drawY + baseFontSize * 0.42;
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = lineEnvelope;
+
+        chars.forEach((ch, ci) => {
+          const cp = clamp01((wordElapsed - ci * stagger) / FLIP);
+          if (cp <= 0) return;
+          const angle = (1 - easeOutCubic(cp)) * (Math.PI / 2);
+          const scaleY = Math.max(0.03, Math.cos(angle));
+          const decoded = cp >= 0.62;
+          const glyph = decoded
+            ? ch
+            : DECRYPT_GLYPHS[
+                Math.floor(
+                  hash01(ci * 1000 + item.wordIndex * 97 + Math.floor(timeMs / 50)) * DECRYPT_GLYPHS.length
+                )
+              ];
+          ctx.save();
+          ctx.translate(left + offsets[ci], hingeY);
+          ctx.scale(1, scaleY);
+          ctx.globalAlpha = lineEnvelope * Math.min(1, cp * 2);
+          if (!decoded) {
+            ctx.fillStyle = accentColor;
+            ctx.shadowColor = accentColor;
+            ctx.shadowBlur = 18 * intensity;
+          } else if (isWordActive) {
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = accentColor;
+            ctx.shadowBlur = 24;
+          } else {
+            ctx.fillStyle = primaryColor;
+          }
+          fillWord(ctx, glyph, 0, -baseFontSize * 0.42, strokeWidth, accentColor);
+          ctx.restore();
+        });
+      }
+
+      // EFFECT 12: 3D DEPTH EXTRUDE (HyperFrames `3d-text-depth-layers` + beat pulse)
+      else if (line.effect === 'depth-extrude') {
+        if (wordElapsed < 0) {
+          ctx.restore();
+          return;
+        }
+        const LAYERS = 6;
+        const grow = easeOutCubic(clamp01(wordElapsed / 500));
+        const entry = easeOutBack(clamp01(wordElapsed / 300));
+        const scale = (0.86 + 0.14 * entry) * (isWordActive ? 1.04 : 1);
+        const off = 5 * Math.max(0.4, intensity) * (1 + beatPulse * 0.5) * grow;
+
+        ctx.translate(drawX, drawY);
+        ctx.scale(scale, scale);
+        ctx.globalAlpha = lineEnvelope;
+        // Back-to-front: translucent accent cast (light from upper-left)
+        for (let i = LAYERS; i >= 1; i--) {
+          ctx.fillStyle = rgba(accentColor, Math.max(0.85 - i * 0.12, 0.15));
+          ctx.fillText(item.word, i * off, i * off);
         }
         ctx.fillStyle = primaryColor;
-        ctx.fillText(item.word, 0, 0);
+        fillWord(ctx, item.word, 0, 0, strokeWidth, shade(accentColor, -0.4));
+      }
+
+      // EFFECT 13: WATERFALL WHIP (HyperFrames `waterfall-entry` — binary opacity, weighted travel)
+      else if (line.effect === 'waterfall') {
+        const leadMs = 60; // lead the anchor so the word LANDS on its onset
+        const arrival = wordElapsed + leadMs;
+        if (arrival < 0) {
+          ctx.restore();
+          return;
+        }
+        const len = Array.from(item.word).length;
+        const travel = (len >= 6 ? 80 : len >= 3 ? 48 : 34) * Math.max(0.4, intensity);
+        const dur = len >= 6 ? 200 : len >= 3 ? 160 : 120;
+        const p = clamp01(arrival / dur);
+        const e = easeOutQuint(p);
+        const y = (1 - e) * travel;
+
+        ctx.translate(drawX, drawY + y);
+        ctx.globalAlpha = lineEnvelope; // binary 0→1 — never fade an arrival
+        if (p < 1) {
+          // velocity smear echoes trailing below
+          ctx.save();
+          ctx.fillStyle = rgba(accentColor, 0.18 * (1 - p));
+          ctx.fillText(item.word, 0, travel * (1 - e) * 0.5);
+          ctx.fillText(item.word, 0, travel * (1 - e));
+          ctx.restore();
+        }
+        if (isWordActive) {
+          ctx.scale(1.04, 1.04);
+          ctx.fillStyle = accentColor;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = 26;
+        } else {
+          ctx.fillStyle = primaryColor;
+        }
+        fillWord(ctx, item.word, 0, 0, strokeWidth, isWordActive ? primaryColor : accentColor);
+      }
+
+      // EFFECT 14: LUXE CHROME SWEEP (chrome-sweep / gradient-text-sweep inside the glyphs)
+      else if (line.effect === 'luxe-chrome') {
+        const started = wordElapsed >= 0;
+        const entry = started ? easeOutCubic(clamp01(wordElapsed / 360)) : 0;
+        const scale = 0.96 + 0.04 * entry;
+        ctx.translate(drawX, drawY);
+        ctx.scale(scale, scale);
+        ctx.globalAlpha = lineEnvelope * (started ? 0.35 + 0.65 * entry : 0.28);
+
+        // Metallic vertical gradient (light top, dark horizon, light bottom)
+        const h = baseFontSize * 0.55;
+        const metal = ctx.createLinearGradient(0, -h, 0, h);
+        metal.addColorStop(0, shade(accentColor, 0.85));
+        metal.addColorStop(0.42, shade(accentColor, 0.15));
+        metal.addColorStop(0.5, shade(accentColor, -0.45));
+        metal.addColorStop(0.58, shade(accentColor, 0.05));
+        metal.addColorStop(1, shade(accentColor, 0.7));
+
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowBlur = 18;
+        ctx.shadowOffsetY = 6;
+        ctx.fillStyle = metal;
+        fillWord(ctx, item.word, 0, 0, strokeWidth, shade(accentColor, -0.55));
+        ctx.restore();
+
+        // Thin dark engraving line for definition
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = shade(accentColor, -0.6);
+        ctx.strokeText(item.word, 0, 0);
+
+        // Specular band sweeps once through the letters at the word onset, again on the beat
+        if (started) {
+          const sweepP = clamp01(wordElapsed / 650);
+          const beatSweep = isWordActive ? (timeMs % beatPeriodMs) / beatPeriodMs : 1;
+          const passes = sweepP < 1 ? [sweepP] : isWordActive ? [beatSweep] : [];
+          passes.forEach((sp) => {
+            const span = item.width + 400;
+            const cx = -item.width / 2 - 200 + span * sp;
+            const band = ctx.createLinearGradient(cx - 120, -h, cx + 120, h);
+            band.addColorStop(0, 'rgba(255,255,255,0)');
+            band.addColorStop(0.5, `rgba(255,255,255,${0.92 * Math.min(1, intensity)})`);
+            band.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = band;
+            ctx.fillText(item.word, 0, 0);
+          });
+        }
+      }
+
+      // EFFECT 15: FONT SHUFFLE BEAT (typewriter-phrase-keyword-shuffle)
+      else if (line.effect === 'font-shuffle') {
+        if (wordElapsed < 0) {
+          ctx.restore();
+          return;
+        }
+        const pop = easeOutBack(clamp01(wordElapsed / 110));
+        ctx.translate(drawX, drawY + (1 - pop) * 6);
+        ctx.globalAlpha = lineEnvelope * Math.min(1, wordElapsed / 60);
+
+        if (item.wordIndex === keywordIndex) {
+          const lockAt = line.durationMs * 0.74;
+          let fontId: LyricFontFamily | undefined = line.fontFamily;
+          if (elapsedMs < lockAt) {
+            const beatIdx = Math.floor(wordElapsed / beatPeriodMs);
+            if (beatIdx >= 1) fontId = SHUFFLE_FONTS[(beatIdx - 1 + item.wordIndex) % SHUFFLE_FONTS.length];
+          }
+          ctx.font = buildFontString(fontId, baseFontSize);
+          // Fit the shuffled face into the keyword's original slot — no layout jump.
+          const w = Math.max(1, ctx.measureText(item.word).width);
+          const fit = Math.max(0.6, Math.min(1.35, item.width / w));
+          ctx.scale(fit * (0.92 + 0.08 * pop), fit * (0.92 + 0.08 * pop));
+          ctx.fillStyle = accentColor;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = isWordActive ? 30 : 12;
+          fillWord(ctx, item.word, 0, 0, strokeWidth, primaryColor);
+        } else {
+          ctx.scale(0.92 + 0.08 * pop, 0.92 + 0.08 * pop);
+          ctx.fillStyle = primaryColor;
+          if (isWordActive) {
+            ctx.shadowColor = rgba(primaryColor, 0.6);
+            ctx.shadowBlur = 20;
+          }
+          fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
+        }
+      }
+
+      // EFFECT 16: WRITE-ON OUTLINE FILL (outline-to-fill)
+      else if (line.effect === 'write-on') {
+        ctx.translate(drawX, drawY);
+        ctx.globalAlpha = lineEnvelope;
+        const outlineW = Math.max(2, baseFontSize * 0.024);
+        const halfW = item.width / 2 + 12;
+        const fullH = baseFontSize * 1.3;
+
+        if (wordElapsed < 0) {
+          // Faint ghost outline waiting to be written
+          ctx.strokeStyle = rgba(primaryColor, 0.18);
+          ctx.lineWidth = outlineW;
+          ctx.strokeText(item.word, 0, 0);
+        } else {
+          const traceDur = Math.min(420, wt.durationMs * 0.5);
+          const fillDur = Math.min(380, wt.durationMs * 0.5);
+          const traceP = easeOutCubic(clamp01(wordElapsed / traceDur));
+          const fillP = easeOutCubic(clamp01((wordElapsed - traceDur * 0.6) / fillDur));
+
+          // Phase A: contour drawn left → right
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(-halfW, -fullH / 2, halfW * 2 * traceP, fullH);
+          ctx.clip();
+          ctx.strokeStyle = accentColor;
+          ctx.lineWidth = outlineW;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = 14 * intensity;
+          ctx.strokeText(item.word, 0, 0);
+          ctx.restore();
+
+          // Phase B: color floods bottom → top
+          if (fillP > 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(-halfW, fullH / 2 - fullH * fillP, halfW * 2, fullH * fillP);
+            ctx.clip();
+            ctx.fillStyle = isWordActive ? accentColor : primaryColor;
+            if (isWordActive) {
+              ctx.shadowColor = accentColor;
+              ctx.shadowBlur = 24;
+            }
+            fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
+            ctx.restore();
+          }
+        }
+      }
+
+      // EFFECT 17: LIQUID WAVE (text-wave-distort per character)
+      else if (line.effect === 'liquid') {
+        const chars = Array.from(item.word);
+        const offsets = charOffsets(ctx, item.word);
+        const settle = isWordCompleted ? 0.12 : isWordActive ? 1 - wordProgress * 0.6 : 0.55;
+        const A = baseFontSize * 0.16 * intensity * settle;
+        const left = drawX - item.width / 2;
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = lineEnvelope * (wordElapsed < 0 ? 0.45 : 1);
+        if (isWordActive) {
+          ctx.fillStyle = accentColor;
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = 26;
+        } else {
+          ctx.fillStyle = primaryColor;
+        }
+        chars.forEach((ch, ci) => {
+          const phase = timeMs * 0.006 + ci * 0.55 + item.wordIndex * 1.3;
+          ctx.save();
+          ctx.translate(left + offsets[ci], drawY + Math.sin(phase) * A);
+          ctx.rotate(Math.cos(phase) * 0.09 * intensity * settle);
+          fillWord(ctx, ch, 0, 0, strokeWidth, isWordActive ? primaryColor : accentColor);
+          ctx.restore();
+        });
+      }
+
+      // EFFECT 18: DOUBLE EXPOSURE (two offset screen-blended exposures converge on the word)
+      else if (line.effect === 'double-exposure') {
+        const spread = isWordCompleted ? 0 : isWordActive ? (1 - easeOutCubic(wordProgress)) * 0.45 : 1;
+        const off = spread * 26 * Math.max(0.3, intensity);
+        const breathe = 1 + 0.06 * spread * Math.sin(timeMs * 0.002 + item.wordIndex);
+        ctx.translate(drawX, drawY);
+        ctx.globalAlpha = lineEnvelope;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.save();
+        ctx.scale(breathe, breathe);
+        ctx.fillStyle = rgba(accentColor, 0.8);
+        ctx.fillText(item.word, -off, -off * 0.3);
+        ctx.restore();
+        ctx.fillStyle = 'rgba(34, 211, 238, 0.7)';
+        ctx.fillText(item.word, off, off * 0.3);
+        ctx.restore();
+        // Resolve into the solid word as the exposures converge
+        ctx.globalAlpha = lineEnvelope * (1 - spread);
+        ctx.fillStyle = primaryColor;
+        if (isWordActive) {
+          ctx.shadowColor = accentColor;
+          ctx.shadowBlur = 22;
+        }
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
+      }
+
+      // FALLBACK: clean fade (unknown / legacy effect ids never break the stage)
+      else {
+        ctx.translate(drawX, drawY);
+        ctx.globalAlpha = lineEnvelope * (wordElapsed < 0 ? 0.4 : 1);
+        ctx.fillStyle = isWordActive ? accentColor : primaryColor;
+        fillWord(ctx, item.word, 0, 0, strokeWidth, accentColor);
       }
 
       ctx.restore();
@@ -522,6 +1164,7 @@ export function renderLyricCanvasFrame(
       ctx.restore();
     }
 
+    setLetterSpacing(ctx, 0);
     ctx.restore();
   });
 }
@@ -533,6 +1176,18 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
   bpm,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [fontsTick, setFontsTick] = useState(0);
+
+  // Re-render once every lyric webfont is available (avoids system-font fallback frames)
+  useEffect(() => {
+    let alive = true;
+    ensureLyricFontsLoaded().then(() => {
+      if (alive) setFontsTick((t) => t + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -556,7 +1211,7 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
     };
-  }, [currentTime, lyrics, isPlaying, bpm]);
+  }, [currentTime, lyrics, isPlaying, bpm, fontsTick]);
 
   return (
     <div className="w-full h-full flex items-center justify-center bg-[#050608] relative overflow-hidden">
