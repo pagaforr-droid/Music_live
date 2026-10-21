@@ -10,7 +10,7 @@ import {
   type DspPreset,
   type PitchMode,
 } from '../lib/dspDecorrelator';
-import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud, Star, ArrowRight, Edit3, Save } from 'lucide-react';
+import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud, Star, ArrowRight, Edit3, Save, Search, ChevronRight, Layers } from 'lucide-react';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -37,6 +37,7 @@ export default function StemStudio() {
   const [stems, setStems] = useState<any[]>([]);
   const [loadingSongs, setLoadingSongs] = useState(true);
   const [loadingStems, setLoadingStems] = useState(false);
+  const [projectSearch, setProjectSearch] = useState('');
 
   // AI Generator & Grid Metadata state
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
@@ -1022,139 +1023,384 @@ export default function StemStudio() {
       {/* Main Workspace */}
       <div className="flex flex-1 overflow-hidden relative z-10">
         {/* Sidebar - Project/Song Browser */}
-        <div className="w-76 flex flex-col bg-white border-r border-zinc-200 shrink-0 z-10 shadow-xs">
+        <div className="w-84 xl:w-90 flex flex-col bg-white border-r border-zinc-200 shrink-0 z-10 shadow-xs select-none">
+          {/* Studio Header */}
           <div className="px-4 py-3.5 border-b border-zinc-200 bg-white flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2">
-              <Music size={14} className="text-[#e11d48]" />
-              <h2 className="text-[11px] font-extrabold text-zinc-950 uppercase tracking-[0.16em]">Proyectos ({songs.length})</h2>
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center text-[#e11d48] shadow-2xs">
+                <Music size={14} strokeWidth={2.5} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-[11px] font-black text-zinc-950 uppercase tracking-[0.16em]">Proyectos</h2>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 border border-zinc-200 tabular-nums">
+                  {songs.length}
+                </span>
+              </div>
             </div>
+
+            {/* + Nuevo button with offer-card__btn pill aesthetic */}
             <button
               onClick={handleCreateNewProject}
-              className="px-3 py-1 flex items-center gap-1 rounded-full bg-zinc-100 hover:bg-black text-zinc-800 hover:text-white border border-zinc-200 text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer shadow-xs"
-              title="Crear Nueva Canción"
+              className="group pl-2.5 pr-3 py-1 flex items-center gap-1.5 rounded-full bg-zinc-950 hover:bg-[#e11d48] text-white border border-transparent text-[10px] font-bold uppercase tracking-wider transition-all duration-200 cursor-pointer shadow-xs active:scale-95"
+              title="Crear Nueva Canción / Proyecto"
             >
-              <Plus size={11} />
+              <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center text-white transition-transform group-hover:rotate-90 duration-200">
+                <Plus size={10} strokeWidth={3} />
+              </span>
               <span>Nuevo</span>
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-2.5 space-y-1.5">
+          {/* Search Filter Bar */}
+          <div className="px-3.5 py-2.5 border-b border-zinc-100 bg-zinc-50/50">
+            <div className="relative flex items-center">
+              <Search size={12} className="absolute left-2.5 text-zinc-400 pointer-events-none" />
+              <input
+                type="text"
+                value={projectSearch}
+                onChange={(e) => setProjectSearch(e.target.value)}
+                placeholder="Buscar canciones o pistas..."
+                className="w-full pl-7 pr-7 py-1.5 text-xs rounded-xl bg-white border border-zinc-200 focus:border-[#e11d48] focus:ring-1 focus:ring-[#e11d48]/20 outline-none text-zinc-900 placeholder:text-zinc-400 font-medium transition-all shadow-2xs"
+              />
+              {projectSearch && (
+                <button
+                  type="button"
+                  onClick={() => setProjectSearch('')}
+                  className="absolute right-2.5 text-zinc-400 hover:text-black text-xs font-bold p-0.5"
+                  title="Limpiar búsqueda"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Projects List with offer-card option styling */}
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
             {loadingSongs ? (
-              <div className="flex items-center gap-2.5 text-zinc-500 p-4">
-                <Loader2 size={14} className="animate-spin text-[#e11d48]" />
-                <span className="text-xs font-medium">Cargando proyectos...</span>
+              <div className="flex items-center gap-2.5 text-zinc-500 p-6 justify-center">
+                <Loader2 size={16} className="animate-spin text-[#e11d48]" />
+                <span className="text-xs font-semibold">Cargando catálogo...</span>
               </div>
             ) : songs.length === 0 ? (
-              <div className="text-zinc-500 text-xs p-6 text-center rounded-2xl border border-dashed border-zinc-200 bg-zinc-50">
-                No hay proyectos aún. Crea uno nuevo o sube tus stems.
+              <div className="text-zinc-500 text-xs p-8 text-center rounded-2xl border border-dashed border-zinc-200 bg-zinc-50/50 flex flex-col items-center gap-3">
+                <FolderPlus size={28} className="text-zinc-400" />
+                <p className="font-medium">No hay proyectos aún. Crea uno nuevo o sube tus stems.</p>
+                <button
+                  onClick={handleCreateNewProject}
+                  className="mt-1 px-4 py-1.5 rounded-full bg-zinc-900 text-white text-[11px] font-bold hover:bg-[#e11d48] transition-all cursor-pointer shadow-xs active:scale-95"
+                >
+                  + Crear Primer Proyecto
+                </button>
               </div>
             ) : (
-              songs.map((song, sIdx) => {
-                const pd = song.prompter_data || {};
-                const hasGrid = Boolean(pd.bpm || (pd.beatTimes && pd.beatTimes.length > 0));
-                const hasChords = Boolean(pd.chords && pd.chords.length > 0);
-                const hasLyrics = Boolean(pd.lyrics && pd.lyrics.length > 0);
-                const hasLiveMix = Boolean((song.foh_mix_url && song.cue_mix_url) || pd.live_mix_url);
-                const isSelected = selectedSongId === song.id;
+              (() => {
+                const filtered = songs.filter(s =>
+                  !projectSearch.trim() || s.title?.toLowerCase().includes(projectSearch.toLowerCase())
+                );
 
-                return (
-                  <div
-                    key={song.id}
-                    onClick={() => setSelectedSongId(song.id)}
-                    className={`w-full text-left p-3 rounded-2xl text-xs transition-all duration-200 cursor-pointer group border relative ${
-                      isSelected
-                        ? 'bg-rose-50/70 border-2 border-[#e11d48] text-zinc-950 font-bold shadow-xs'
-                        : 'bg-zinc-50 hover:bg-zinc-100 border-zinc-200 text-zinc-800 font-semibold'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-zinc-500 text-xs p-6 text-center rounded-2xl border border-dashed border-zinc-200 bg-zinc-50">
+                      No se encontraron proyectos con "{projectSearch}".
+                    </div>
+                  );
+                }
+
+                return filtered.map((song, sIdx) => {
+                  const pd = song.prompter_data || {};
+                  const hasGrid = Boolean(pd.bpm || (pd.beatTimes && pd.beatTimes.length > 0));
+                  const hasChords = Boolean(pd.chords && pd.chords.length > 0);
+                  const hasLyrics = Boolean(pd.lyrics && pd.lyrics.length > 0);
+                  const hasLiveMix = Boolean((song.foh_mix_url && song.cue_mix_url) || pd.live_mix_url);
+                  const isSelected = selectedSongId === song.id;
+
+                  return (
+                    <div
+                      key={song.id}
+                      onClick={() => setSelectedSongId(song.id)}
+                      className={`group relative w-full text-left p-3.5 rounded-[20px] text-xs transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer border overflow-hidden active:scale-[0.985] ${
+                        isSelected
+                          ? 'bg-gradient-to-r from-rose-50/90 via-rose-50/40 to-white border-2 border-[#e11d48] text-zinc-950 font-bold shadow-[0_8px_24px_rgba(225,29,72,0.12)]'
+                          : 'bg-white hover:bg-zinc-50/90 border-zinc-200/90 hover:border-zinc-300 text-zinc-800 font-semibold shadow-xs hover:shadow-sm'
+                      }`}
+                    >
+                      {/* Left Accent Bar for Selected Item */}
+                      {isSelected && (
+                        <div className="absolute left-0 top-3 bottom-3 w-1.25 bg-[#e11d48] rounded-r-full shadow-[0_0_10px_#e11d48]" />
+                      )}
+
+                      {/* Top Row: Track Number Squircle, Title, Pipeline Progress & Actions */}
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <span
+                            className={`w-7 h-7 rounded-xl flex items-center justify-center text-[10px] font-mono font-black shrink-0 transition-all duration-200 ${
+                              isSelected
+                                ? 'bg-[#e11d48] text-white shadow-xs scale-105'
+                                : 'bg-zinc-100 text-zinc-700 border border-zinc-200/80 group-hover:bg-zinc-200/80 group-hover:text-black'
+                            }`}
+                          >
+                            {String(sIdx + 1).padStart(2, '0')}
+                          </span>
+                          <div className="truncate font-bold text-[13px] text-zinc-950 tracking-tight group-hover:text-black">
+                            {song.title}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {/* Micro Readiness Tracker (offer-card__progress micro) */}
+                          <div
+                            className="hidden sm:flex items-center gap-1 bg-zinc-100/90 px-1.5 py-1 rounded-full border border-zinc-200/60"
+                            title="Pipeline: Stems > Grilla > Acordes > Letras/Mix"
+                          >
+                            <div className="w-1.5 h-1.5 rounded-full bg-rose-500" title="Stems multitrack" />
+                            <div
+                              className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                                hasGrid ? 'bg-purple-500 shadow-[0_0_6px_#a855f7]' : 'bg-zinc-300'
+                              }`}
+                              title={hasGrid ? 'Grilla & BPM' : 'Sin Grilla'}
+                            />
+                            <div
+                              className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                                hasChords ? 'bg-sky-500 shadow-[0_0_6px_#0ea5e9]' : 'bg-zinc-300'
+                              }`}
+                              title={hasChords ? 'Acordes Detectados' : 'Sin Acordes'}
+                            />
+                            <div
+                              className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                                hasLyrics || hasLiveMix ? 'bg-emerald-500 shadow-[0_0_6px_#10b981]' : 'bg-zinc-300'
+                              }`}
+                              title={hasLyrics || hasLiveMix ? 'Show / Mix Listo' : 'Pendiente'}
+                            />
+                          </div>
+
+                          {/* Quick Actions (fade in on hover) */}
+                          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                            <button
+                              type="button"
+                              onClick={(e) => handleRenameProject(song, e)}
+                              className="p-1 rounded-lg hover:bg-zinc-200 text-zinc-500 hover:text-black transition-all cursor-pointer"
+                              title="Renombrar proyecto"
+                            >
+                              <Edit3 size={11} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteProject(song, e)}
+                              className="p-1 rounded-lg hover:bg-rose-100 text-zinc-400 hover:text-rose-600 transition-all cursor-pointer"
+                              title="Eliminar proyecto"
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+
+                          {/* Sleek Circular Arrow (offer-card__option-arrow) */}
+                          <div
+                            className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-200 shrink-0 ${
+                              isSelected
+                                ? 'bg-[#e11d48] text-white shadow-xs'
+                                : 'bg-zinc-100 text-zinc-400 group-hover:bg-zinc-200 group-hover:text-zinc-800 group-hover:translate-x-0.5'
+                            }`}
+                          >
+                            <ChevronRight size={12} strokeWidth={2.5} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Badges Row */}
+                      <div className="flex flex-wrap items-center gap-1 pl-9">
+                        {pd.bpm && (
+                          <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-white text-zinc-800 border border-zinc-200 tabular-nums shadow-2xs">
+                            {Math.round(Number(pd.bpm))} BPM
+                          </span>
+                        )}
                         <span
-                          className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-mono font-black shrink-0 ${
-                            isSelected
-                              ? 'bg-[#e11d48] text-white shadow-xs'
-                              : 'bg-white text-zinc-700 border border-zinc-200'
+                          className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs transition-all ${
+                            hasGrid
+                              ? 'bg-purple-50 text-purple-800 border-purple-200'
+                              : 'bg-zinc-50 text-zinc-400 border-zinc-200/80'
                           }`}
                         >
-                          {String(sIdx + 1).padStart(2, '0')}
+                          Grilla
                         </span>
-                        <div className="truncate font-bold text-[13px] text-zinc-950 tracking-tight">{song.title}</div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => handleRenameProject(song, e)}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-zinc-200 text-zinc-500 hover:text-black transition-all"
-                          title="Renombrar proyecto"
+                        <span
+                          className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs transition-all ${
+                            hasChords
+                              ? 'bg-sky-50 text-sky-800 border-sky-200'
+                              : 'bg-zinc-50 text-zinc-400 border-zinc-200/80'
+                          }`}
                         >
-                          <Edit3 size={11} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteProject(song, e)}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-rose-100 text-zinc-400 hover:text-rose-600 transition-all"
-                          title="Eliminar proyecto"
+                          Acordes
+                        </span>
+                        <span
+                          className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs transition-all ${
+                            hasLyrics
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : 'bg-zinc-50 text-zinc-400 border-zinc-200/80'
+                          }`}
                         >
-                          <Trash2 size={11} />
-                        </button>
+                          Lyrics
+                        </span>
+                        {hasLiveMix && (
+                          <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-2xs flex items-center gap-1 font-bold">
+                            Mix Listo
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-1 mt-2 pl-8">
-                      {pd.bpm && (
-                        <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-white text-zinc-800 border border-zinc-200 tabular-nums shadow-xs">
-                          {Math.round(Number(pd.bpm))} BPM
-                        </span>
-                      )}
-                      <span
-                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-xs ${
-                          hasGrid
-                            ? 'bg-purple-50 text-purple-800 border-purple-200'
-                            : 'bg-white text-zinc-400 border-zinc-200'
-                        }`}
-                      >
-                        Grilla
-                      </span>
-                      <span
-                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-xs ${
-                          hasChords
-                            ? 'bg-sky-50 text-sky-800 border-sky-200'
-                            : 'bg-white text-zinc-400 border-zinc-200'
-                        }`}
-                      >
-                        Acordes
-                      </span>
-                      <span
-                        className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full border shadow-xs ${
-                          hasLyrics
-                            ? 'bg-amber-50 text-amber-800 border-amber-200'
-                            : 'bg-white text-zinc-400 border-zinc-200'
-                        }`}
-                      >
-                        Lyrics
-                      </span>
-                      {hasLiveMix && (
-                        <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-xs">
-                          Mix Listo
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+                  );
+                });
+              })()
             )}
+          </div>
+
+          {/* Sidebar Bottom Footer Indicator */}
+          <div className="p-3 border-t border-zinc-200 bg-zinc-50/70 flex items-center justify-between text-[11px] text-zinc-500 font-medium">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+              Nube Sincronizada
+            </span>
+            <span className="text-[10px] font-mono font-semibold text-zinc-400">TANDU STAGE</span>
           </div>
         </div>
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col overflow-y-auto bg-[#f8f9fa] custom-scrollbar relative">
           {!selectedSongId ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-6">
-              <div className="max-w-lg w-full">
-                <StemUploader
-                  songId={selectedSongId}
-                  bandId={FAKE_BAND_ID}
-                  onUploadComplete={handleUploadComplete}
-                />
+            <div className="flex-1 flex flex-col items-center justify-center p-6 sm:p-10 overflow-y-auto my-auto">
+              {/* DAW Launchpad Card inspired by user snippet */}
+              <div className="offer-card animate-in fade-in zoom-in-95 duration-300">
+                {/* Progress Tracker Bar */}
+                <div className="offer-card__progress">
+                  <div className="offer-card__progress-step offer-card__progress-step--active" title="Paso 1: Stems Multitrack" />
+                  <div className="offer-card__progress-step" title="Paso 2: Detección BPM & Grilla" />
+                  <div className="offer-card__progress-step" title="Paso 3: Extracción Acordes IA" />
+                  <div className="offer-card__progress-step" title="Paso 4: Letras Sincronizadas" />
+                  <div className="offer-card__progress-step" title="Paso 5: Mezcla FOH & In-Ear" />
+                  <div className="offer-card__progress-step" title="Paso 6: Show en Vivo" />
+                </div>
+
+                {/* Header with 3D Folder Graphic */}
+                <div className="offer-card__header">
+                  <div className="offer-card__icon-container">
+                    <svg className="folder-svg" viewBox="0 0 100 100" fill="none">
+                      <path d="M15 35 C15 30 20 25 25 25 L40 25 C45 25 48 28 50 32 L53 36 C55 39 58 40 62 40 L75 40 C80 40 85 45 85 50 L85 80 C85 88 78 92 75 92 L25 92 C18 92 15 88 15 80 Z" fill="#20222a" />
+                      <g transform="translate(0, -2)">
+                        <path d="M30 25 L65 25 C68 25 70 27 70 30 L70 50 C70 53 68 55 65 55 L30 55 C27 55 25 53 25 50 L25 30 C25 27 27 25 30 25 Z" fill="#9da1b4" transform="rotate(-12 50 50)" />
+                        <path d="M35 30 L70 30 C73 30 75 32 75 35 L75 55 C75 58 73 60 70 60 L35 60 C32 60 30 58 30 55 L30 35 C30 32 32 30 35 30 Z" fill="#ffffff" transform="rotate(-4 50 50)" />
+                        <text x={37} y={44} fontFamily="'Geist', 'Inter', sans-serif" fontSize={5.5} fill="#09090b" fontWeight={700} letterSpacing="0.05em" transform="rotate(-4 50 50)">
+                          STEMS LIVE
+                        </text>
+                      </g>
+                      <path d="M10 48 C10 43 15 40 22 40 L78 40 C85 40 90 43 90 48 L88 80 C87 88 80 94 75 94 L25 94 C20 94 13 88 12 80 Z" fill="url(#folderFrontDaw)" />
+                      <path d="M10 48 C10 43 15 40 22 40 L78 40 C85 40 90 43 90 48 L89 54 L11 54 Z" fill="rgba(255,255,255,0.08)" />
+                      <defs>
+                        <linearGradient id="folderFrontDaw" x1={0} y1={0} x2={0} y2={1}>
+                          <stop offset="0%" stopColor="#373946" />
+                          <stop offset="100%" stopColor="#1a1c24" />
+                        </linearGradient>
+                      </defs>
+                    </svg>
+                  </div>
+                  <div className="offer-card__title">Estudio de Producción & Stems</div>
+                  <div className="offer-card__subtitle">
+                    Selecciona un proyecto de la lista lateral o elige cómo deseas inicializar tu sesión de show en vivo:
+                  </div>
+                </div>
+
+                {/* Interactive Options */}
+                <div className="offer-card__options">
+                  <label
+                    className="offer-card__option"
+                    onClick={() => handleCreateNewProject()}
+                  >
+                    <div className="offer-card__option-content">
+                      <div className="offer-card__option-icon-wrapper">
+                        <FolderPlus size={18} />
+                      </div>
+                      <div className="offer-card__option-text">
+                        <span className="offer-card__option-title">Crear Nuevo Proyecto</span>
+                        <span className="offer-card__option-desc">Inicializa una sesión limpia en la nube</span>
+                      </div>
+                      <div className="offer-card__option-arrow">
+                        <ChevronRight size={14} />
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className="offer-card__option"
+                    onClick={() => {
+                      if (songs.length > 0) {
+                        setSelectedSongId(songs[0].id);
+                      } else {
+                        handleCreateNewProject();
+                      }
+                    }}
+                  >
+                    <div className="offer-card__option-content">
+                      <div className="offer-card__option-icon-wrapper" style={{ background: '#1c1b36', color: '#8b5cf6' }}>
+                        <Layers size={18} />
+                      </div>
+                      <div className="offer-card__option-text">
+                        <span className="offer-card__option-title">Cargar Stems Separados</span>
+                        <span className="offer-card__option-desc">Batería, Bajo, Guitarras, Voces, Metrónomo</span>
+                      </div>
+                      <div className="offer-card__option-arrow">
+                        <ChevronRight size={14} />
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className="offer-card__option"
+                    onClick={() => {
+                      if (songs.length > 0) {
+                        setSelectedSongId(songs[0].id);
+                        setShowSplitterComplement(true);
+                      } else {
+                        handleCreateNewProject();
+                      }
+                    }}
+                  >
+                    <div className="offer-card__option-content">
+                      <div className="offer-card__option-icon-wrapper" style={{ background: '#2e1f0e', color: '#f59e0b' }}>
+                        <Sparkles size={18} />
+                      </div>
+                      <div className="offer-card__option-text">
+                        <span className="offer-card__option-title">Separador Inteligente IA</span>
+                        <span className="offer-card__option-desc">Sube 1 archivo MP3/WAV y extrae los stems</span>
+                      </div>
+                      <div className="offer-card__option-arrow">
+                        <ChevronRight size={14} />
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Footer Buttons */}
+                <div className="offer-card__footer">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/hub')}
+                    className="offer-card__btn offer-card__btn--back"
+                  >
+                    <span className="offer-card__btn-icon">
+                      <ArrowRight size={13} className="rotate-180" />
+                    </span>
+                    Hub Principal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/editor')}
+                    className="offer-card__btn offer-card__btn--skip"
+                  >
+                    Prompter
+                    <span className="offer-card__btn-icon">
+                      <ArrowRight size={13} />
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
