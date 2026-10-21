@@ -34,14 +34,20 @@ import {
   Flame,
   Zap,
   Check,
+  Palette,
+  Image as ImageIcon,
+  SunMedium,
 } from 'lucide-react';
 import {
   LyricLine,
   LyricFontCategory,
   LyricTextCase,
+  LyricBackgroundConfig,
   LYRIC_EFFECT_PRESETS,
   LYRIC_FONT_PRESETS,
   LYRIC_FONT_CATEGORIES,
+  LYRIC_BACKGROUND_PRESETS,
+  DEFAULT_LYRIC_BACKGROUND,
   computeWordTimings,
   parseRawLyricsToPills,
   buildBeatGridMs,
@@ -110,6 +116,9 @@ export default function LyricStudio() {
   const [inspectorFontCategory, setInspectorFontCategory] = useState<'all' | LyricFontCategory>('all');
   const [inspectorEffectFilter, setInspectorEffectFilter] = useState<'all' | 'brutal' | 'classic'>('all');
   const [showAppliedToast, setShowAppliedToast] = useState<boolean>(false);
+  const [backgroundConfig, setBackgroundConfig] = useState<LyricBackgroundConfig>(DEFAULT_LYRIC_BACKGROUND);
+  const [inspectorTab, setInspectorTab] = useState<'text' | 'background'>('text');
+  const bgImageRef = useRef<HTMLImageElement | null>(null);
 
   // Timeline & CapCut Controls State
   const [pxPerSec, setPxPerSec] = useState<number>(80);
@@ -388,6 +397,10 @@ export default function LyricStudio() {
     setHistoryFuture([]);
     setSelectedLineId(normalizedLyrics[0]?.id || null);
 
+    const loadedBg =
+      (song.prompter_data?.background as LyricBackgroundConfig) || DEFAULT_LYRIC_BACKGROUND;
+    setBackgroundConfig(loadedBg);
+
     // Fetch stems from Supabase so the user can choose Vocal stem or Full Mix
     const { data: stemsData } = await supabase
       .from('stems')
@@ -479,6 +492,8 @@ export default function LyricStudio() {
       snapGuideX,
       snapGuideY,
       bpm,
+      background: backgroundConfig,
+      backgroundImageElement: bgImageRef.current,
       onUpdateBoundingBox: (lineId, box) => {
         boundingBoxesRef.current[lineId] = box;
       },
@@ -498,7 +513,32 @@ export default function LyricStudio() {
     if (isPlayingRef.current) {
       rafRef.current = requestAnimationFrame(renderStageCanvas);
     }
-  }, [bpm, pxPerSec, selectedLineId, showSafeZones, snapGuideX, snapGuideY, totalDurationMs]);
+  }, [
+    bpm,
+    pxPerSec,
+    selectedLineId,
+    showSafeZones,
+    snapGuideX,
+    snapGuideY,
+    totalDurationMs,
+    backgroundConfig,
+  ]);
+
+  // Preload custom background image if specified
+  useEffect(() => {
+    if (!backgroundConfig.imageUrl) {
+      bgImageRef.current = null;
+      renderStageCanvas();
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = backgroundConfig.imageUrl;
+    img.onload = () => {
+      bgImageRef.current = img;
+      renderStageCanvas();
+    };
+  }, [backgroundConfig.imageUrl, renderStageCanvas]);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -845,7 +885,11 @@ export default function LyricStudio() {
   // Save to Supabase (100% compatible with LiveConcert.tsx)
   const handleSave = async () => {
     if (!songData) return;
-    const newPrompterData = { ...songData.prompter_data, lyrics };
+    const newPrompterData = {
+      ...songData.prompter_data,
+      lyrics,
+      background: backgroundConfig,
+    };
     const { error } = await supabase
       .from('songs')
       .update({ prompter_data: newPrompterData })
@@ -1730,7 +1774,11 @@ export default function LyricStudio() {
           {/* 16:9 Stage Preview Canvas Container (Supports Direct Drag & Drop from Pool + 2D Dragging) */}
           <div className="flex-1 flex items-center justify-center p-6 relative overflow-hidden">
             <div
-              className="w-full max-w-4xl aspect-video bg-black rounded-2xl overflow-hidden shadow-[0_25px_70px_rgba(0,0,0,0.85)] border border-white/10 relative group"
+              className={`w-full max-w-4xl aspect-video rounded-2xl overflow-hidden shadow-[0_25px_70px_rgba(0,0,0,0.85)] border border-white/10 relative group ${
+                backgroundConfig.type === 'transparent'
+                  ? 'bg-[repeating-conic-gradient(#1f2937_0%_25%,#111827_0%_50%)] bg-[length:24px_24px]'
+                  : 'bg-black'
+              }`}
               onDragOver={(e) => {
                 e.preventDefault();
               }}
@@ -1860,461 +1908,754 @@ export default function LyricStudio() {
             )}
           </div>
 
-          {selectedLine ? (
-            <div className="p-4 space-y-4">
-              {/* 1. Active Phrase Quick Editor & Text Case */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    Texto de la Frase
-                  </label>
-                  <span className="text-[9px] font-mono text-gray-500">
-                    {selectedLine.text.length} caracteres
-                  </span>
-                </div>
-                <input
-                  type="text"
-                  value={selectedLine.text}
-                  onChange={(e) => updateLine(selectedLine.id, { text: e.target.value })}
-                  className="w-full bg-[#121722] border border-white/10 focus:border-red-500 rounded-xl px-3 py-2 text-xs font-bold text-white outline-none"
-                  placeholder="Escribe la letra..."
-                />
+          {/* Studio Mode Switcher: Frase & Tipografía vs Fondo de Escenario */}
+          <div className="grid grid-cols-2 p-1.5 bg-[#0e121a] border-b border-white/[0.06] gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setInspectorTab('text')}
+              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+                inspectorTab === 'text'
+                  ? 'bg-red-600 text-white shadow-md'
+                  : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
+              }`}
+            >
+              <Type size={12} /> Frase & Efectos
+            </button>
+            <button
+              type="button"
+              onClick={() => setInspectorTab('background')}
+              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+                inspectorTab === 'background'
+                  ? 'bg-red-600 text-white shadow-md'
+                  : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
+              }`}
+            >
+              <Palette size={12} /> Fondo Escénico
+            </button>
+          </div>
 
-                {/* Text Case Selector */}
-                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
-                  {(
-                    [
-                      { id: 'upper', label: 'MAYÚSCULAS' },
-                      { id: 'title', label: 'Título' },
-                      { id: 'lower', label: 'minúsculas' },
-                    ] as { id: LyricTextCase; label: string }[]
-                  ).map((tc) => {
-                    const active = (selectedLine.textCase || 'upper') === tc.id;
-                    return (
-                      <button
-                        key={tc.id}
-                        type="button"
-                        onClick={() => updateLine(selectedLine.id, { textCase: tc.id })}
-                        className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
-                          active
-                            ? 'bg-red-600 text-white shadow-sm'
-                            : 'text-gray-400 hover:text-white'
-                        }`}
-                      >
-                        {tc.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 2. Animation Templates with HyperFrames Filter */}
-              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    Efecto de Animación
-                  </label>
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white/5 text-gray-400 border border-white/10">
-                    {LYRIC_EFFECT_PRESETS.length} Efectos
-                  </span>
-                </div>
-
-                {/* Filter Tabs: Todos | Brutal FX | Clásicos */}
-                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
-                  {[
-                    { id: 'all', label: 'Todos' },
-                    { id: 'brutal', label: '🔥 Brutal FX' },
-                    { id: 'classic', label: 'Clásicos' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setInspectorEffectFilter(tab.id as any)}
-                      className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
-                        inspectorEffectFilter === tab.id
-                          ? 'bg-white/15 text-white shadow-sm'
-                          : 'text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
-                  {LYRIC_EFFECT_PRESETS.filter((preset) => {
-                    if (inspectorEffectFilter === 'brutal') return preset.group === 'brutal';
-                    if (inspectorEffectFilter === 'classic') return preset.group !== 'brutal';
-                    return true;
-                  }).map((preset) => {
-                    const active = selectedLine.effect === preset.id;
-                    const isBrutal = preset.group === 'brutal';
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() =>
-                          updateLine(selectedLine.id, {
-                            effect: preset.id,
-                            accentColor: selectedLine.accentColor || preset.defaultAccent,
-                          })
-                        }
-                        className={`p-2 rounded-xl text-left border transition-all relative overflow-hidden flex flex-col justify-between ${
-                          active
-                            ? isBrutal
-                              ? 'bg-gradient-to-br ' +
-                                preset.previewGradient +
-                                ' border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/50'
-                              : 'bg-gradient-to-br ' +
-                                preset.previewGradient +
-                                ' border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)] ring-1 ring-red-500/50'
-                            : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1 gap-1">
-                          <span
-                            className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
-                              isBrutal
-                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                                : 'bg-black/50 text-red-400 border-white/10'
-                            }`}
-                          >
-                            {preset.badge}
-                          </span>
-                          {isBrutal && (
-                            <span className="text-[8px] text-amber-400 font-bold flex items-center gap-0.5">
-                              <Zap size={9} /> HF
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] font-black text-white leading-tight">
-                          {preset.name}
-                        </div>
-                        <div className="text-[9px] text-gray-400 mt-1 line-clamp-2 leading-snug">
-                          {preset.description}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Brutalidad / Intensidad FX Slider */}
-                <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 space-y-1.5 mt-2">
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    <span className="flex items-center gap-1 text-amber-400">
-                      <Flame size={12} /> Brutalidad FX
-                    </span>
-                    <span className="font-mono text-amber-300">
-                      {((selectedLine.fxIntensity ?? 1.0) * 100).toFixed(0)}% (
-                      {(selectedLine.fxIntensity ?? 1.0).toFixed(1)}x)
+          {inspectorTab === 'text' ? (
+            selectedLine ? (
+              <div className="p-4 space-y-4">
+                {/* 1. Active Phrase Quick Editor & Text Case */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Texto de la Frase
+                    </label>
+                    <span className="text-[9px] font-mono text-gray-500">
+                      {selectedLine.text.length} caracteres
                     </span>
                   </div>
                   <input
-                    type="range"
-                    min={0.0}
-                    max={2.0}
-                    step={0.1}
-                    value={selectedLine.fxIntensity ?? 1.0}
-                    onChange={(e) =>
-                      updateLine(selectedLine.id, { fxIntensity: Number(e.target.value) }, false)
-                    }
-                    className="w-full accent-amber-500 cursor-pointer"
+                    type="text"
+                    value={selectedLine.text}
+                    onChange={(e) => updateLine(selectedLine.id, { text: e.target.value })}
+                    className="w-full bg-[#121722] border border-white/10 focus:border-red-500 rounded-xl px-3 py-2 text-xs font-bold text-white outline-none"
+                    placeholder="Escribe la letra..."
                   />
-                  <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
-                    <span>Sutil (0x)</span>
-                    <span>Normal (1.0x)</span>
-                    <span>Extremo (2.0x)</span>
+
+                  {/* Text Case Selector */}
+                  <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                    {(
+                      [
+                        { id: 'upper', label: 'MAYÚSCULAS' },
+                        { id: 'title', label: 'Título' },
+                        { id: 'lower', label: 'minúsculas' },
+                      ] as { id: LyricTextCase; label: string }[]
+                    ).map((tc) => {
+                      const active = (selectedLine.textCase || 'upper') === tc.id;
+                      return (
+                        <button
+                          key={tc.id}
+                          type="button"
+                          onClick={() => updateLine(selectedLine.id, { textCase: tc.id })}
+                          className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
+                            active
+                              ? 'bg-red-600 text-white shadow-sm'
+                              : 'text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          {tc.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
 
-              {/* 3. Luxury Typography Catalog & Visual Picker */}
-              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-                    <Type size={12} className="text-red-400" /> Tipografía de Escenario
-                  </label>
-                  <span className="text-[9px] font-mono text-gray-500">
-                    {LYRIC_FONT_PRESETS.length} Familias
-                  </span>
+                {/* 2. Animation Templates with HyperFrames Filter */}
+                <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Efecto de Animación
+                    </label>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white/5 text-gray-400 border border-white/10">
+                      {LYRIC_EFFECT_PRESETS.length} Efectos
+                    </span>
+                  </div>
+
+                  {/* Filter Tabs: Todos | Brutal FX | Clásicos */}
+                  <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'brutal', label: '🔥 Brutal FX' },
+                      { id: 'classic', label: 'Clásicos' },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setInspectorEffectFilter(tab.id as any)}
+                        className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
+                          inspectorEffectFilter === tab.id
+                            ? 'bg-white/15 text-white shadow-sm'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                    {LYRIC_EFFECT_PRESETS.filter((preset) => {
+                      if (inspectorEffectFilter === 'brutal') return preset.group === 'brutal';
+                      if (inspectorEffectFilter === 'classic') return preset.group !== 'brutal';
+                      return true;
+                    }).map((preset) => {
+                      const active = selectedLine.effect === preset.id;
+                      const isBrutal = preset.group === 'brutal';
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() =>
+                            updateLine(selectedLine.id, {
+                              effect: preset.id,
+                              accentColor: selectedLine.accentColor || preset.defaultAccent,
+                            })
+                          }
+                          className={`p-2 rounded-xl text-left border transition-all relative overflow-hidden flex flex-col justify-between ${
+                            active
+                              ? isBrutal
+                                ? 'bg-gradient-to-br ' +
+                                  preset.previewGradient +
+                                  ' border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/50'
+                                : 'bg-gradient-to-br ' +
+                                  preset.previewGradient +
+                                  ' border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)] ring-1 ring-red-500/50'
+                              : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1 gap-1">
+                            <span
+                              className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                                isBrutal
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                : 'bg-black/50 text-red-400 border-white/10'
+                              }`}
+                            >
+                              {preset.badge}
+                            </span>
+                            {isBrutal && (
+                              <span className="text-[8px] text-amber-400 font-bold flex items-center gap-0.5">
+                                <Zap size={9} /> HF
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] font-black text-white leading-tight">
+                            {preset.name}
+                          </div>
+                          <div className="text-[9px] text-gray-400 mt-1 line-clamp-2 leading-snug">
+                            {preset.description}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Brutalidad / Intensidad FX Slider */}
+                  <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 space-y-1.5 mt-2">
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      <span className="flex items-center gap-1 text-amber-400">
+                        <Flame size={12} /> Brutalidad FX
+                      </span>
+                      <span className="font-mono text-amber-300">
+                        {((selectedLine.fxIntensity ?? 1.0) * 100).toFixed(0)}% (
+                        {(selectedLine.fxIntensity ?? 1.0).toFixed(1)}x)
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={2.0}
+                      step={0.1}
+                      value={selectedLine.fxIntensity ?? 1.0}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, { fxIntensity: Number(e.target.value) }, false)
+                      }
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
+                      <span>Sutil (0x)</span>
+                      <span>Normal (1.0x)</span>
+                      <span>Extremo (2.0x)</span>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Category Tabs: Todas | Impacto | Lujo | Tech | Script */}
-                <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
-                  <button
-                    type="button"
-                    onClick={() => setInspectorFontCategory('all')}
-                    className={`flex-1 py-1 rounded text-[9px] font-bold transition-all ${
-                      inspectorFontCategory === 'all'
-                        ? 'bg-red-600 text-white shadow-sm'
-                        : 'text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    Todas
-                  </button>
-                  {LYRIC_FONT_CATEGORIES.map((cat) => (
+                {/* 3. Luxury Typography Catalog & Visual Picker */}
+                <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                      <Type size={12} className="text-red-400" /> Tipografía de Escenario
+                    </label>
+                    <span className="text-[9px] font-mono text-gray-500">
+                      {LYRIC_FONT_PRESETS.length} Familias
+                    </span>
+                  </div>
+
+                  {/* Category Tabs: Todas | Impacto | Lujo | Tech | Script */}
+                  <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
                     <button
-                      key={cat.id}
                       type="button"
-                      onClick={() => setInspectorFontCategory(cat.id)}
+                      onClick={() => setInspectorFontCategory('all')}
                       className={`flex-1 py-1 rounded text-[9px] font-bold transition-all ${
-                        inspectorFontCategory === cat.id
+                        inspectorFontCategory === 'all'
                           ? 'bg-red-600 text-white shadow-sm'
                           : 'text-gray-400 hover:text-white'
                       }`}
                     >
-                      {cat.label}
+                      Todas
                     </button>
-                  ))}
-                </div>
-
-                {/* Visual Font List / Cards */}
-                <div className="space-y-1.5 max-h-[240px] overflow-y-auto custom-scrollbar pr-1">
-                  {LYRIC_FONT_PRESETS.filter((font) => {
-                    if (inspectorFontCategory === 'all') return true;
-                    return font.category === inspectorFontCategory;
-                  }).map((font) => {
-                    const active = selectedLine.fontFamily === font.id;
-                    return (
+                    {LYRIC_FONT_CATEGORIES.map((cat) => (
                       <button
-                        key={font.id}
+                        key={cat.id}
                         type="button"
-                        onClick={() => {
-                          const updates: Partial<LyricLine> = { fontFamily: font.id };
-                          if (
-                            font.tracking !== undefined &&
-                            selectedLine.letterSpacing === undefined
-                          ) {
-                            updates.letterSpacing = font.tracking;
-                          }
-                          if (font.defaultCase && selectedLine.textCase === undefined) {
-                            updates.textCase = font.defaultCase;
-                          }
-                          updateLine(selectedLine.id, updates);
-                        }}
-                        className={`w-full p-2 rounded-xl text-left border transition-all flex items-center justify-between ${
-                          active
-                            ? 'bg-red-600/15 border-red-500 shadow-[0_0_12px_rgba(239,68,68,0.2)] ring-1 ring-red-500/50'
-                            : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
+                        onClick={() => setInspectorFontCategory(cat.id)}
+                        className={`flex-1 py-1 rounded text-[9px] font-bold transition-all ${
+                          inspectorFontCategory === cat.id
+                            ? 'bg-red-600 text-white shadow-sm'
+                            : 'text-gray-400 hover:text-white'
                         }`}
                       >
-                        <div className="flex-1 min-w-0 pr-2">
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span className="text-[10px] font-black text-white truncate">
-                              {font.label}
-                            </span>
-                            <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-white/5 text-gray-400 border border-white/10 uppercase">
-                              {font.category}
-                            </span>
-                          </div>
-                          <div
-                            className="text-sm truncate text-gray-200"
-                            style={{
-                              fontFamily: font.cssStack,
-                              fontWeight: font.weight,
-                              fontStyle: font.italic ? 'italic' : 'normal',
-                            }}
-                          >
-                            TANDU GLORIA
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <span className="text-[9px] font-mono text-gray-500 block">
-                            {font.weight} {font.italic ? 'Italic' : ''}
-                          </span>
-                          {active && (
-                            <span className="inline-block w-2 h-2 rounded-full bg-red-500 mt-1" />
-                          )}
-                        </div>
+                        {cat.label}
                       </button>
-                    );
-                  })}
+                    ))}
+                  </div>
+
+                  {/* Visual Font List / Cards */}
+                  <div className="space-y-1.5 max-h-[240px] overflow-y-auto custom-scrollbar pr-1">
+                    {LYRIC_FONT_PRESETS.filter((font) => {
+                      if (inspectorFontCategory === 'all') return true;
+                      return font.category === inspectorFontCategory;
+                    }).map((font) => {
+                      const active = selectedLine.fontFamily === font.id;
+                      return (
+                        <button
+                          key={font.id}
+                          type="button"
+                          onClick={() => {
+                            const updates: Partial<LyricLine> = { fontFamily: font.id };
+                            if (
+                              font.tracking !== undefined &&
+                              selectedLine.letterSpacing === undefined
+                            ) {
+                              updates.letterSpacing = font.tracking;
+                            }
+                            if (font.defaultCase && selectedLine.textCase === undefined) {
+                              updates.textCase = font.defaultCase;
+                            }
+                            updateLine(selectedLine.id, updates);
+                          }}
+                          className={`w-full p-2 rounded-xl text-left border transition-all flex items-center justify-between ${
+                            active
+                              ? 'bg-red-600/15 border-red-500 shadow-[0_0_12px_rgba(239,68,68,0.2)] ring-1 ring-red-500/50'
+                              : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
+                          }`}
+                        >
+                          <div className="flex-1 min-w-0 pr-2">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-[10px] font-black text-white truncate">
+                                {font.label}
+                              </span>
+                              <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-white/5 text-gray-400 border border-white/10 uppercase">
+                                {font.category}
+                              </span>
+                            </div>
+                            <div
+                              className="text-sm truncate text-gray-200"
+                              style={{
+                                fontFamily: font.cssStack,
+                                fontWeight: font.weight,
+                                fontStyle: font.italic ? 'italic' : 'normal',
+                              }}
+                            >
+                              TANDU GLORIA
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <span className="text-[9px] font-mono text-gray-500 block">
+                              {font.weight} {font.italic ? 'Italic' : ''}
+                            </span>
+                            {active && (
+                              <span className="inline-block w-2 h-2 rounded-full bg-red-500 mt-1" />
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 4. Optical Adjustments: Size, Tracking, Stroke, Ghost */}
+                <div className="space-y-3 pt-3 border-t border-white/[0.06]">
+                  {/* Size */}
+                  <div>
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                      <span>Tamaño en Lienzo</span>
+                      <span className="text-red-400 font-mono">{selectedLine.fontSize || 108}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={54}
+                      max={170}
+                      value={selectedLine.fontSize || 108}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, { fontSize: Number(e.target.value) }, false)
+                      }
+                      className="w-full accent-red-500 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Letter-spacing / Tracking */}
+                  <div>
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                      <span>Tracking / Espaciado</span>
+                      <span className="text-cyan-400 font-mono">
+                        {((selectedLine.letterSpacing ?? 0) * 100).toFixed(0)}% (
+                        {(selectedLine.letterSpacing ?? 0).toFixed(2)}em)
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-0.05}
+                      max={0.2}
+                      step={0.01}
+                      value={selectedLine.letterSpacing ?? 0}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, { letterSpacing: Number(e.target.value) }, false)
+                      }
+                      className="w-full accent-cyan-500 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
+                      <span>Condensado (-0.05em)</span>
+                      <span>Normal</span>
+                      <span>Expandido (+0.20em)</span>
+                    </div>
+                  </div>
+
+                  {/* Stroke Width / Outline */}
+                  <div>
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                      <span>Contorno / Trazo Exterior</span>
+                      <span className="text-amber-400 font-mono">
+                        {selectedLine.strokeWidth || 0}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={8}
+                      step={0.5}
+                      value={selectedLine.strokeWidth || 0}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, { strokeWidth: Number(e.target.value) }, false)
+                      }
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Background Ghost Text Switch */}
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                        <Layers size={12} className="text-cyan-400" /> Texto Fantasma
+                      </div>
+                      <div className="text-[9px] text-gray-400 mt-0.5">
+                        Palabra gigante en fondo (6.5% drift)
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateLine(selectedLine.id, { ghostText: !selectedLine.ghostText })
+                      }
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
+                        selectedLine.ghostText
+                          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.3)]'
+                          : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {selectedLine.ghostText ? 'ACTIVADO' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 5. Stage Color Swatches */}
+                <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Color de Resaltado / Escenario
+                    </label>
+                    <span className="text-[9px] font-mono text-gray-500">
+                      {selectedLine.accentColor || '#ef4444'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[
+                      { color: '#ef4444', label: 'Stage Red' },
+                      { color: '#ffffff', label: 'Pure White' },
+                      { color: '#d4af37', label: 'Oro Escenario' },
+                      { color: '#e5e7eb', label: 'Plata Cromo' },
+                      { color: '#f59e0b', label: 'Gold Amber' },
+                      { color: '#06b6d4', label: 'Cyan Neon' },
+                      { color: '#10b981', label: 'Emerald' },
+                      { color: '#ec4899', label: 'Rose Pink' },
+                    ].map((sw) => (
+                      <button
+                        key={sw.color}
+                        type="button"
+                        onClick={() => updateLine(selectedLine.id, { accentColor: sw.color })}
+                        className={`w-7 h-7 rounded-lg border-2 transition-transform relative ${
+                          (selectedLine.accentColor || '#ef4444').toLowerCase() ===
+                          sw.color.toLowerCase()
+                            ? 'border-white scale-110 shadow-[0_0_12px_rgba(255,255,255,0.4)]'
+                            : 'border-white/15 hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: sw.color }}
+                        title={sw.label}
+                      />
+                    ))}
+                    {/* Custom Color Input */}
+                    <label
+                      className="w-7 h-7 rounded-lg border-2 border-white/15 hover:border-white/40 cursor-pointer overflow-hidden flex items-center justify-center bg-[#121722] hover:scale-105 transition-transform"
+                      title="Color Personalizado"
+                    >
+                      <input
+                        type="color"
+                        value={selectedLine.accentColor || '#ef4444'}
+                        onChange={(e) =>
+                          updateLine(selectedLine.id, { accentColor: e.target.value })
+                        }
+                        className="opacity-0 w-0 h-0"
+                      />
+                      <Sparkles size={12} className="text-gray-300" />
+                    </label>
+                  </div>
+                </div>
+
+                {/* 6. Word-by-Word Cadence Breakdown */}
+                <div className="space-y-2 pt-3 border-t border-white/[0.06]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Palabras Sincronizadas ({(selectedLine.words || []).length})
+                    </span>
+                    <button
+                      onClick={() => handleSplitLine(selectedLine)}
+                      className="text-[10px] text-red-400 hover:text-red-300 font-bold flex items-center gap-1"
+                    >
+                      <Scissors size={11} /> Dividir Frase
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {computeWordTimings(
+                      selectedLine.text,
+                      selectedLine.durationMs,
+                      selectedLine.words
+                    ).map((w, idx) => (
+                      <div
+                        key={idx}
+                        className="px-2 py-1 rounded-lg bg-[#121722] border border-white/[0.07] text-[10px] flex items-center gap-1.5"
+                      >
+                        <span className="font-bold text-white">{w.word}</span>
+                        <span className="font-mono text-gray-500">
+                          {(w.durationMs / 1000).toFixed(2)}s
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-
-              {/* 4. Optical Adjustments: Size, Tracking, Stroke, Ghost */}
-              <div className="space-y-3 pt-3 border-t border-white/[0.06]">
-                {/* Size */}
+            ) : (
+              <div className="p-6 text-center text-gray-500 text-xs space-y-3">
+                <p>
+                  Selecciona una frase de la canción en la línea de tiempo para personalizar su
+                  tipografía, efectos cinéticos y estilos.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setInspectorTab('background')}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[10px] uppercase tracking-wider transition-all"
+                >
+                  Configurar Fondo de Escenario
+                </button>
+              </div>
+            )
+          ) : (
+            <div className="p-4 space-y-4">
+              {/* STAGE BACKGROUND STUDIO */}
+              <div className="flex items-center justify-between">
                 <div>
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
-                    <span>Tamaño en Lienzo</span>
-                    <span className="text-red-400 font-mono">{selectedLine.fontSize || 108}px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={54}
-                    max={170}
-                    value={selectedLine.fontSize || 108}
-                    onChange={(e) =>
-                      updateLine(selectedLine.id, { fontSize: Number(e.target.value) }, false)
-                    }
-                    className="w-full accent-red-500 cursor-pointer"
-                  />
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Atmósfera del Escenario
+                  </label>
+                  <span className="text-[9px] text-gray-500">
+                    Se proyecta en HDMI y exportación de video
+                  </span>
                 </div>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-red-600/20 text-red-300 border border-red-500/30 uppercase">
+                  {backgroundConfig.type}
+                </span>
+              </div>
 
-                {/* Letter-spacing / Tracking */}
-                <div>
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
-                    <span>Tracking / Espaciado</span>
-                    <span className="text-cyan-400 font-mono">
-                      {((selectedLine.letterSpacing ?? 0) * 100).toFixed(0)}% (
-                      {(selectedLine.letterSpacing ?? 0).toFixed(2)}em)
+              {/* Preset Cards Grid */}
+              <div className="space-y-1.5 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
+                {LYRIC_BACKGROUND_PRESETS.map((preset) => {
+                  const active = backgroundConfig.type === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() =>
+                        setBackgroundConfig((prev) => ({
+                          ...prev,
+                          type: preset.id,
+                        }))
+                      }
+                      className={`w-full p-2.5 rounded-xl text-left border transition-all flex items-center gap-3 ${
+                        active
+                          ? 'bg-red-600/15 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)] ring-1 ring-red-500/50'
+                          : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06]'
+                      }`}
+                    >
+                      <div
+                        className="w-10 h-10 rounded-lg shrink-0 border border-white/20 shadow-inner flex items-center justify-center overflow-hidden"
+                        style={{ background: preset.previewBg }}
+                      >
+                        {preset.id === 'transparent' && (
+                          <span className="text-[8px] font-mono text-white/70 bg-black/50 px-1 rounded">
+                            ALPHA
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <span className="text-[11px] font-black text-white truncate">
+                            {preset.label}
+                          </span>
+                          <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-white/5 text-gray-400 border border-white/10 uppercase">
+                            {preset.badge}
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-gray-400 line-clamp-2 leading-tight">
+                          {preset.description}
+                        </p>
+                      </div>
+                      {active && (
+                        <div className="shrink-0 w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Custom Solid Color Controls */}
+              {backgroundConfig.type === 'custom-solid' && (
+                <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Color Sólido HEX
+                    </label>
+                    <span className="text-[10px] font-mono text-white">
+                      {backgroundConfig.customColor || '#050608'}
                     </span>
                   </div>
-                  <input
-                    type="range"
-                    min={-0.05}
-                    max={0.2}
-                    step={0.01}
-                    value={selectedLine.letterSpacing ?? 0}
-                    onChange={(e) =>
-                      updateLine(selectedLine.id, { letterSpacing: Number(e.target.value) }, false)
-                    }
-                    className="w-full accent-cyan-500 cursor-pointer"
-                  />
-                  <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
-                    <span>Condensado (-0.05em)</span>
-                    <span>Normal</span>
-                    <span>Expandido (+0.20em)</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={backgroundConfig.customColor || '#050608'}
+                      onChange={(e) =>
+                        setBackgroundConfig((prev) => ({
+                          ...prev,
+                          customColor: e.target.value,
+                        }))
+                      }
+                      className="w-10 h-8 rounded-lg border border-white/20 bg-transparent cursor-pointer"
+                    />
+                    <input
+                      type="text"
+                      value={backgroundConfig.customColor || '#050608'}
+                      onChange={(e) =>
+                        setBackgroundConfig((prev) => ({
+                          ...prev,
+                          customColor: e.target.value,
+                        }))
+                      }
+                      className="flex-1 bg-[#0b0e14] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-red-500"
+                      placeholder="#050608"
+                    />
                   </div>
                 </div>
+              )}
 
-                {/* Stroke Width / Outline */}
-                <div>
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
-                    <span>Contorno / Trazo Exterior</span>
-                    <span className="text-amber-400 font-mono">
-                      {selectedLine.strokeWidth || 0}px
-                    </span>
+              {/* Custom Image Controls */}
+              {backgroundConfig.type === 'custom-image' && (
+                <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                      <ImageIcon size={12} className="text-cyan-400" /> Imagen de Fondo
+                    </label>
+                    {backgroundConfig.imageUrl && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBackgroundConfig((prev) => ({ ...prev, imageUrl: undefined }))
+                        }
+                        className="text-[9px] font-bold text-red-400 hover:text-red-300"
+                      >
+                        Quitar
+                      </button>
+                    )}
                   </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={8}
-                    step={0.5}
-                    value={selectedLine.strokeWidth || 0}
-                    onChange={(e) =>
-                      updateLine(selectedLine.id, { strokeWidth: Number(e.target.value) }, false)
-                    }
-                    className="w-full accent-amber-500 cursor-pointer"
-                  />
-                </div>
 
-                {/* Background Ghost Text Switch */}
+                  {backgroundConfig.imageUrl ? (
+                    <div className="relative aspect-video rounded-lg overflow-hidden border border-white/10 group">
+                      <img
+                        src={backgroundConfig.imageUrl}
+                        alt="Background preview"
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <span className="text-[10px] font-bold text-white bg-black/60 px-2 py-1 rounded">
+                          Cargada correctamente
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="border border-dashed border-white/20 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-gray-400 mb-2">
+                        Selecciona una foto o imagen de concierto
+                      </p>
+                      <label className="inline-block px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[10px] uppercase cursor-pointer transition-colors">
+                        Subir Imagen Local
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                setBackgroundConfig((prev) => ({
+                                  ...prev,
+                                  imageUrl: reader.result as string,
+                                }));
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[9px] font-bold text-gray-400 uppercase mb-1">
+                      O pega una URL directa:
+                    </label>
+                    <input
+                      type="url"
+                      value={backgroundConfig.imageUrl || ''}
+                      onChange={(e) =>
+                        setBackgroundConfig((prev) => ({
+                          ...prev,
+                          imageUrl: e.target.value || undefined,
+                        }))
+                      }
+                      placeholder="https://ejemplo.com/fondo.jpg"
+                      className="w-full bg-[#0b0e14] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-red-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Dynamic Lighting & FX Switches */}
+              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                {/* BPM Pulse Toggle */}
                 <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
-                      <Layers size={12} className="text-cyan-400" /> Texto Fantasma
+                      <SunMedium size={12} className="text-amber-400" /> Pulso con BPM
                     </div>
                     <div className="text-[9px] text-gray-400 mt-0.5">
-                      Palabra gigante en fondo (6.5% drift)
+                      Respiración lumínica al compás musical (60 FPS)
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() =>
-                      updateLine(selectedLine.id, { ghostText: !selectedLine.ghostText })
+                      setBackgroundConfig((prev) => ({
+                        ...prev,
+                        pulseWithBpm: prev.pulseWithBpm === false ? true : false,
+                      }))
                     }
                     className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
-                      selectedLine.ghostText
+                      backgroundConfig.pulseWithBpm !== false
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                        : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    {backgroundConfig.pulseWithBpm !== false ? 'ACTIVADO' : 'OFF'}
+                  </button>
+                </div>
+
+                {/* Atmospheric Particles Toggle */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      <Sparkles size={12} className="text-cyan-400" /> Partículas de Escenario
+                    </div>
+                    <div className="text-[9px] text-gray-400 mt-0.5">
+                      Polvo de luz y bokeh flotando en segundo plano
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBackgroundConfig((prev) => ({
+                        ...prev,
+                        particles: !prev.particles,
+                      }))
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
+                      backgroundConfig.particles
                         ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.3)]'
                         : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
                     }`}
                   >
-                    {selectedLine.ghostText ? 'ACTIVADO' : 'OFF'}
+                    {backgroundConfig.particles ? 'ACTIVADO' : 'OFF'}
                   </button>
                 </div>
               </div>
 
-              {/* 5. Stage Color Swatches */}
-              <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    Color de Resaltado / Escenario
-                  </label>
-                  <span className="text-[9px] font-mono text-gray-500">
-                    {selectedLine.accentColor || '#ef4444'}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {[
-                    { color: '#ef4444', label: 'Stage Red' },
-                    { color: '#ffffff', label: 'Pure White' },
-                    { color: '#d4af37', label: 'Oro Escenario' },
-                    { color: '#e5e7eb', label: 'Plata Cromo' },
-                    { color: '#f59e0b', label: 'Gold Amber' },
-                    { color: '#06b6d4', label: 'Cyan Neon' },
-                    { color: '#10b981', label: 'Emerald' },
-                    { color: '#ec4899', label: 'Rose Pink' },
-                  ].map((sw) => (
-                    <button
-                      key={sw.color}
-                      type="button"
-                      onClick={() => updateLine(selectedLine.id, { accentColor: sw.color })}
-                      className={`w-7 h-7 rounded-lg border-2 transition-transform relative ${
-                        (selectedLine.accentColor || '#ef4444').toLowerCase() ===
-                        sw.color.toLowerCase()
-                          ? 'border-white scale-110 shadow-[0_0_12px_rgba(255,255,255,0.4)]'
-                          : 'border-white/15 hover:scale-105'
-                      }`}
-                      style={{ backgroundColor: sw.color }}
-                      title={sw.label}
-                    />
-                  ))}
-                  {/* Custom Color Input */}
-                  <label
-                    className="w-7 h-7 rounded-lg border-2 border-white/15 hover:border-white/40 cursor-pointer overflow-hidden flex items-center justify-center bg-[#121722] hover:scale-105 transition-transform"
-                    title="Color Personalizado"
-                  >
-                    <input
-                      type="color"
-                      value={selectedLine.accentColor || '#ef4444'}
-                      onChange={(e) =>
-                        updateLine(selectedLine.id, { accentColor: e.target.value })
-                      }
-                      className="opacity-0 w-0 h-0"
-                    />
-                    <Sparkles size={12} className="text-gray-300" />
-                  </label>
-                </div>
+              {/* Cloud Persistence Note */}
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] text-[10px] text-gray-400 leading-relaxed">
+                <span className="font-bold text-white block mb-0.5">Sincronización Escénica:</span>
+                Este fondo se guarda en la nube con la canción al hacer clic en{' '}
+                <strong>"Guardar en Nube"</strong> y se proyectará exactamente igual en la pantalla
+                gigante de <strong>Live Concert</strong> y en los videos WebM exportados.
               </div>
-
-              {/* 6. Word-by-Word Cadence Breakdown */}
-              <div className="space-y-2 pt-3 border-t border-white/[0.06]">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    Palabras Sincronizadas ({(selectedLine.words || []).length})
-                  </span>
-                  <button
-                    onClick={() => handleSplitLine(selectedLine)}
-                    className="text-[10px] text-red-400 hover:text-red-300 font-bold flex items-center gap-1"
-                  >
-                    <Scissors size={11} /> Dividir Frase
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {computeWordTimings(
-                    selectedLine.text,
-                    selectedLine.durationMs,
-                    selectedLine.words
-                  ).map((w, idx) => (
-                    <div
-                      key={idx}
-                      className="px-2 py-1 rounded-lg bg-[#121722] border border-white/[0.07] text-[10px] flex items-center gap-1.5"
-                    >
-                      <span className="font-bold text-white">{w.word}</span>
-                      <span className="font-mono text-gray-500">
-                        {(w.durationMs / 1000).toFixed(2)}s
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="p-6 text-center text-gray-500 text-xs">
-              Selecciona una píldora de letra o un clip en la línea de tiempo para personalizar su
-              plantilla y estilo.
             </div>
           )}
         </aside>

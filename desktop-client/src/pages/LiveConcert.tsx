@@ -19,6 +19,7 @@ export default function LiveConcert() {
     bpm?: number;
     firstBeatOffset?: number;
     beatTimes?: number[];
+    background?: any;
   }>({
     currentTime: 0,
     isPlaying: false,
@@ -191,6 +192,7 @@ export default function LiveConcert() {
         bpm: currentSong.prompter_data?.bpm || 120,
         firstBeatOffset: currentSong.prompter_data?.firstBeatOffset || 0,
         beatTimes: currentSong.prompter_data?.beatTimes,
+        background: currentSong.prompter_data?.background,
       },
     });
   }, [currentTime, isPlaying, currentSong, isProjectorWindow]);
@@ -573,6 +575,7 @@ export default function LiveConcert() {
           bpm={projectorState.bpm}
           firstBeatOffset={projectorState.firstBeatOffset}
           beatTimes={projectorState.beatTimes}
+          background={projectorState.background}
         />
       </div>
     );
@@ -1112,6 +1115,7 @@ export default function LiveConcert() {
                         bpm={currentSong.prompter_data?.bpm || 120}
                         firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
                         beatTimes={currentSong.prompter_data?.beatTimes}
+                        background={currentSong.prompter_data?.background}
                       />
                     </div>
                   ) : (
@@ -1164,6 +1168,7 @@ export default function LiveConcert() {
                       bpm={currentSong.prompter_data?.bpm || 120}
                       firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
                       beatTimes={currentSong.prompter_data?.beatTimes}
+                      background={currentSong.prompter_data?.background}
                     />
                   ) : (
                     <div className="h-full w-full bg-white flex flex-col items-center justify-center p-8 text-center">

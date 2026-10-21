@@ -3,6 +3,7 @@ import {
   LyricLine,
   LyricFontFamily,
   LyricWordTiming,
+  LyricBackgroundConfig,
   computeWordTimings,
   getFontPreset,
   buildFontString,
@@ -20,6 +21,7 @@ interface LyricVisualizerProps {
   bpm?: number;
   firstBeatOffset?: number;
   beatTimes?: number[];
+  background?: LyricBackgroundConfig;
 }
 
 export interface RenderLyricFrameOptions {
@@ -28,6 +30,8 @@ export interface RenderLyricFrameOptions {
   snapGuideX?: boolean;
   snapGuideY?: boolean;
   bpm?: number;
+  background?: LyricBackgroundConfig;
+  backgroundImageElement?: HTMLImageElement | null;
   onUpdateBoundingBox?: (
     lineId: string,
     box: { x: number; y: number; width: number; height: number }
@@ -283,36 +287,116 @@ export function renderLyricCanvasFrame(
 ) {
   const { showSafeZones, selectedLineId, snapGuideX, snapGuideY, bpm = 120, onUpdateBoundingBox } = options;
 
-  // 1. Deep Obsidian & Stage Red Atmospheric Background
+  // 1. Customizable Stage Background
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#050608';
-  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  const bgConfig = options.background || { type: 'obsidian-red', pulseWithBpm: true };
+  const bgType = bgConfig.type || 'obsidian-red';
+  const pulseEnabled = bgConfig.pulseWithBpm !== false;
 
   const beatPeriodMs = 60000 / Math.max(40, Math.min(240, bpm || 120));
-  const beatPulse = Math.pow(0.5 + 0.5 * Math.sin((timeMs / beatPeriodMs) * Math.PI * 2), 2);
+  const beatPulse = pulseEnabled
+    ? Math.pow(0.5 + 0.5 * Math.sin((timeMs / beatPeriodMs) * Math.PI * 2), 2)
+    : 0;
 
-  const centerGrad = ctx.createRadialGradient(
-    canvasW * 0.5,
-    canvasH * 0.52,
-    10,
-    canvasW * 0.5,
-    canvasH * 0.52,
-    canvasW * 0.68
-  );
-  centerGrad.addColorStop(0, `rgba(239, 68, 68, ${0.11 + beatPulse * 0.05})`);
-  centerGrad.addColorStop(0.45, `rgba(25, 10, 16, ${0.22 + beatPulse * 0.04})`);
-  centerGrad.addColorStop(1, '#050608');
-  ctx.fillStyle = centerGrad;
-  ctx.fillRect(0, 0, canvasW, canvasH);
+  if (bgType === 'transparent') {
+    ctx.clearRect(0, 0, canvasW, canvasH);
+  } else if (bgType === 'pure-black') {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else if (bgType === 'chroma-green') {
+    ctx.fillStyle = '#00ff00';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else if (bgType === 'chroma-blue') {
+    ctx.fillStyle = '#0000ff';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else if (bgType === 'custom-solid') {
+    ctx.fillStyle = bgConfig.customColor || '#050608';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else if (bgType === 'custom-image' && options.backgroundImageElement) {
+    const img = options.backgroundImageElement;
+    const scale = Math.max(canvasW / img.width, canvasH / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    const x = (canvasW - w) / 2;
+    const y = (canvasH - h) / 2;
+    ctx.drawImage(img, x, y, w, h);
+    // Subtle dark cinematic tint so lyrics remain readable
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else {
+    // Atmospheric Presets (obsidian-red, warm-gold, cyber-blue, midnight-purple)
+    let baseColor = '#050608';
+    let r = 239, g = 68, b = 68; // default red
+    if (bgType === 'warm-gold') {
+      baseColor = '#090805';
+      r = 212; g = 175; b = 55;
+    } else if (bgType === 'cyber-blue') {
+      baseColor = '#030812';
+      r = 6; g = 182; b = 212;
+    } else if (bgType === 'midnight-purple') {
+      baseColor = '#080410';
+      r = 168; g = 85; b = 247;
+    }
 
-  // Subtle LED Stage Horizon Line
-  const horizonGrad = ctx.createLinearGradient(0, 0, canvasW, 0);
-  horizonGrad.addColorStop(0, 'rgba(239,68,68,0)');
-  horizonGrad.addColorStop(0.5, `rgba(239,68,68,${0.12 + beatPulse * 0.08})`);
-  horizonGrad.addColorStop(1, 'rgba(239,68,68,0)');
-  ctx.fillStyle = horizonGrad;
-  ctx.fillRect(0, canvasH - 6, canvasW, 6);
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    const centerGrad = ctx.createRadialGradient(
+      canvasW * 0.5,
+      canvasH * 0.52,
+      10,
+      canvasW * 0.5,
+      canvasH * 0.52,
+      canvasW * 0.68
+    );
+    centerGrad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${0.11 + beatPulse * 0.05})`);
+    centerGrad.addColorStop(
+      0.45,
+      `rgba(${Math.round(r * 0.15)}, ${Math.round(g * 0.15)}, ${Math.round(b * 0.15)}, ${
+        0.22 + beatPulse * 0.04
+      })`
+    );
+    centerGrad.addColorStop(1, baseColor);
+    ctx.fillStyle = centerGrad;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    // Subtle LED Stage Horizon Line
+    const horizonGrad = ctx.createLinearGradient(0, 0, canvasW, 0);
+    horizonGrad.addColorStop(0, `rgba(${r},${g},${b},0)`);
+    horizonGrad.addColorStop(0.5, `rgba(${r},${g},${b},${0.12 + beatPulse * 0.08})`);
+    horizonGrad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = horizonGrad;
+    ctx.fillRect(0, canvasH - 6, canvasW, 6);
+  }
+
+  // 1.5. Stage Atmospheric Bokeh / Particles (Deterministic 60fps)
+  if (bgConfig.particles && bgType !== 'transparent') {
+    ctx.save();
+    const particleCount = 28;
+    for (let p = 0; p < particleCount; p++) {
+      const seed = p * 197.33;
+      const speed = 0.00015 + hash01(seed) * 0.00015;
+      const px = ((hash01(seed + 1) + timeMs * speed * 0.3) % 1) * canvasW;
+      const rawY = (hash01(seed + 2) - timeMs * speed) % 1;
+      const py = (rawY < 0 ? rawY + 1 : rawY) * canvasH;
+      const radius = 3 + hash01(seed + 3) * 9;
+      const alpha = (0.08 + hash01(seed + 4) * 0.14) * (1 + beatPulse * 0.3);
+
+      const radGrad = ctx.createRadialGradient(px, py, 0, px, py, radius * 2.5);
+      radGrad.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+      radGrad.addColorStop(0.4, `rgba(255, 255, 255, ${alpha * 0.4})`);
+      radGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+      ctx.fillStyle = radGrad;
+      ctx.beginPath();
+      ctx.arc(px, py, radius * 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   ctx.restore();
 
   // 2. Optional Safe Zones & Magnetic Center Guides (Editor Mode)
@@ -1174,6 +1258,7 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
   lyrics,
   isPlaying,
   bpm,
+  background,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [fontsTick, setFontsTick] = useState(0);
@@ -1199,7 +1284,10 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
 
     const render = () => {
       const timeMs = currentTime * 1000;
-      renderLyricCanvasFrame(ctx, canvas.width, canvas.height, timeMs, lyrics, { bpm });
+      renderLyricCanvasFrame(ctx, canvas.width, canvas.height, timeMs, lyrics, {
+        bpm,
+        background,
+      });
 
       if (isPlaying) {
         animationFrameId = requestAnimationFrame(render);
@@ -1211,10 +1299,16 @@ export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({
     return () => {
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
     };
-  }, [currentTime, lyrics, isPlaying, bpm, fontsTick]);
+  }, [currentTime, lyrics, isPlaying, bpm, background, fontsTick]);
+
+  const isTransparent = background?.type === 'transparent';
 
   return (
-    <div className="w-full h-full flex items-center justify-center bg-[#050608] relative overflow-hidden">
+    <div
+      className={`w-full h-full flex items-center justify-center relative overflow-hidden ${
+        isTransparent ? 'bg-transparent' : 'bg-[#050608]'
+      }`}
+    >
       <canvas
         ref={canvasRef}
         width={1920}

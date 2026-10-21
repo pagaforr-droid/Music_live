@@ -542,3 +542,107 @@ export function extractAudioPeaks(audioBuffer: AudioBuffer, bucketCount: number 
 
   return peaks.map((p) => Math.max(0.04, Math.min(1, p / globalMax)));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUSTOMIZABLE STAGE BACKGROUND TYPES & PRESETS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type LyricBackgroundType =
+  | 'obsidian-red'      // Default TANDU stage pulse
+  | 'pure-black'        // Absolute #000000 for zero-emission LED screens
+  | 'transparent'       // Alpha 0 for live OBS/vMix camera overlays
+  | 'chroma-green'      // #00ff00 for hardware broadcast switchers
+  | 'chroma-blue'       // #0000ff broadcast chroma
+  | 'warm-gold'         // Warm amber worship glow
+  | 'cyber-blue'        // Electric cyan arena glow
+  | 'midnight-purple'   // Deep concert violet pulse
+  | 'custom-solid'      // User-defined hex color
+  | 'custom-image';     // Custom user image URL
+
+export interface LyricBackgroundConfig {
+  type: LyricBackgroundType;
+  customColor?: string;      // Used when type === 'custom-solid'
+  imageUrl?: string;         // Used when type === 'custom-image'
+  particles?: boolean;       // Floating stage bokeh / dust reacting to BPM
+  pulseWithBpm?: boolean;    // Ambient pulse toggle (default true)
+}
+
+export interface LyricBackgroundPreset {
+  id: LyricBackgroundType;
+  label: string;
+  badge: string;
+  description: string;
+  previewBg: string; // CSS background for UI preview card
+}
+
+export const DEFAULT_LYRIC_BACKGROUND: LyricBackgroundConfig = {
+  type: 'obsidian-red',
+  particles: false,
+  pulseWithBpm: true,
+};
+
+export const LYRIC_BACKGROUND_PRESETS: LyricBackgroundPreset[] = [
+  {
+    id: 'obsidian-red',
+    label: 'Obsidian Red',
+    badge: 'TANDU STAGE',
+    description: 'Negro carbón con halo rojo reactivo al compás del BPM y línea de horizonte LED.',
+    previewBg: 'radial-gradient(circle at center, rgba(239,68,68,0.5) 0%, #050608 80%)',
+  },
+  {
+    id: 'pure-black',
+    label: 'Negro Puro LED',
+    badge: 'OLED / 0% EMISIÓN',
+    description: 'Negro absoluto (#000000) para apagar los diodos de pantallas gigantes LED.',
+    previewBg: '#000000',
+  },
+  {
+    id: 'transparent',
+    label: 'Transparente (Alpha)',
+    badge: 'OBS / OVERLAYS',
+    description: 'Canal alfa 0 para superponer letras sobre cámaras en vivo en OBS, vMix o ProPresenter.',
+    previewBg: 'repeating-conic-gradient(#1f2937 0% 25%, #111827 0% 50%) 50% / 12px 12px',
+  },
+  {
+    id: 'chroma-green',
+    label: 'Chroma Verde',
+    badge: 'BROADCAST',
+    description: 'Verde puro (#00FF00) para switchers de video profesionales (Blackmagic ATEM).',
+    previewBg: '#00ff00',
+  },
+  {
+    id: 'warm-gold',
+    label: 'Oro Worship',
+    badge: 'CATEDRAL',
+    description: 'Atmósfera dorada cálida con pulso ámbar para momentos de adoración y acústicos.',
+    previewBg: 'radial-gradient(circle at center, rgba(212,175,55,0.55) 0%, #0a0804 80%)',
+  },
+  {
+    id: 'cyber-blue',
+    label: 'Cyber Arena',
+    badge: 'ELECTRO / ROCK',
+    description: 'Resplandor azul cian eléctrico con pulso percutivo de alta energía.',
+    previewBg: 'radial-gradient(circle at center, rgba(6,182,212,0.55) 0%, #040812 80%)',
+  },
+  {
+    id: 'midnight-purple',
+    label: 'Midnight Violet',
+    badge: 'FESTIVAL',
+    description: 'Púrpura y fucsia profundo con halo de escenario místico.',
+    previewBg: 'radial-gradient(circle at center, rgba(168,85,247,0.55) 0%, #080410 80%)',
+  },
+  {
+    id: 'custom-solid',
+    label: 'Color Personalizado',
+    badge: 'SÓLIDO',
+    description: 'Define cualquier color HEX fijo para adaptarse a la paleta del evento.',
+    previewBg: 'linear-gradient(135deg, #374151 0%, #111827 100%)',
+  },
+  {
+    id: 'custom-image',
+    label: 'Imagen de Fondo',
+    badge: 'TEXTURA / FOTO',
+    description: 'Carga un fondo personalizado de luces, concierto o logo de la banda.',
+    previewBg: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+  },
+];
