@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAudioEngine, StemTrack } from '../hooks/useAudioEngine';
 import { Prompter } from '../components/Prompter';
-import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Music, Headphones, Activity, Sparkles, Loader2, Disc3, Star, ArrowRight } from 'lucide-react';
+import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight } from 'lucide-react';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -895,120 +895,155 @@ export default function LivePrompter() {
           </div>
         )}
 
-        {/* MIXER SIDEBAR (QClay Hardware Channel Rack) */}
-        <div className="w-[340px] shrink-0 flex flex-col bg-[#0b0d13] border-r border-white/[0.06] z-10 shadow-[10px_0_30px_rgba(0,0,0,0.45)]">
-          <div className="h-10 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#10131c]">
-            <span className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-300">Consola de Canales</span>
-            <span className="text-[9px] text-zinc-400 font-mono bg-[#08090c] border border-white/[0.06] px-2 py-0.5 rounded-full tabular-nums">{stems.length} Canales</span>
+        {/* MIXER SIDEBAR (Neumorphic Channel Rack) */}
+        <div className="w-[380px] xl:w-[410px] shrink-0 flex flex-col bg-[#111111] border-r border-white/[0.06] z-10 shadow-[10px_0_30px_rgba(0,0,0,0.6)] select-none">
+          <div className="h-12 border-b border-white/[0.06] flex items-center justify-between px-5 bg-[#161616]">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+              <span className="text-[11px] font-black uppercase tracking-[0.18em] text-white">Consola de Pistas</span>
+            </div>
+            <span className="text-[10px] text-zinc-300 font-mono font-bold bg-[#191919] border border-white/10 px-2.5 py-0.5 rounded-full tabular-nums shadow-[inset_2px_2px_4px_#050505]">
+              {stems.length} Pistas
+            </span>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
-            {stems.map((stem) => {
-              const nameLower = stem.name.toLowerCase();
-              const dbMatch = dbStems.find((d: any) => d.id === stem.id);
-              const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
-              let Icon = Music;
-              let themeClass = 'text-zinc-400';
-              
-              if (isMasterRef) {
-                Icon = Star; themeClass = 'text-amber-400';
-              } else if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
-                Icon = Activity; themeClass = 'text-orange-400';
-              } else if (nameLower.includes('vocal') || nameLower.includes('voz') || nameLower.includes('mic')) {
-                Icon = Mic; themeClass = 'text-cyan-400';
-              } else if (nameLower.includes('bass') || nameLower.includes('bajo')) {
-                Icon = Music; themeClass = 'text-purple-400';
-              } else if (nameLower.includes('guit')) {
-                Icon = Music; themeClass = 'text-amber-400';
-              } else if (nameLower.includes('key') || nameLower.includes('piano') || nameLower.includes('synth')) {
-                Icon = Music; themeClass = 'text-pink-400';
-              } else if (stem.type === 'Click') {
-                Icon = Headphones; themeClass = 'text-emerald-500';
-              } else if (stem.type === 'Cues') {
-                Icon = Mic; themeClass = 'text-blue-400';
-              }
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+            {stems.length === 0 ? (
+              <div className="text-zinc-500 text-xs p-8 text-center rounded-2xl border border-dashed border-white/10 bg-[#161616]">
+                No hay canales de audio cargados para esta canción.
+              </div>
+            ) : (
+              stems.map((stem, sIdx) => {
+                const dbMatch = dbStems.find((d: any) => d.id === stem.id);
+                const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
+                const nameLower = stem.name.toLowerCase();
 
-              const routeBadge = stem.type === 'Instrument' ? 'FOH (R)' : 'MÚSICOS (L)';
+                let routeBadge = stem.type === 'Instrument' ? 'FOH (R)' : 'MÚSICOS (L)';
+                let badgeClass = 'text-zinc-300 border-white/10';
 
-              return (
-                <div
-                  key={stem.id}
-                  className={`flex flex-col border rounded-xl overflow-hidden transition-all ${
-                    isMasterRef
-                      ? 'bg-gradient-to-r from-amber-500/10 to-[#11131a] border-amber-500/35 shadow-[0_4px_14px_rgba(245,158,11,0.08)]'
-                      : stem.muted
-                      ? 'bg-[#0a0c11]/70 border-white/[0.04] opacity-65'
-                      : 'bg-[#12151f] border-white/[0.07] shadow-[0_4px_12px_rgba(0,0,0,0.3)]'
-                  }`}
-                >
-                  <div className="flex items-center p-2.5 border-b border-white/[0.04] gap-2">
-                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center bg-[#08090c] border border-white/[0.06] shrink-0 ${themeClass}`}>
-                      <Icon size={12} />
+                if (isMasterRef) {
+                  routeBadge = '★ FOH MASTER (R)';
+                  badgeClass = 'text-amber-300 border-amber-500/40 bg-amber-500/10';
+                } else if (stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr')) {
+                  routeBadge = 'MÚSICOS (L)';
+                  badgeClass = 'text-cyan-300 border-cyan-500/40 bg-cyan-500/10';
+                } else if (stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz')) {
+                  routeBadge = 'MÚSICOS (L)';
+                  badgeClass = 'text-rose-400 border-rose-500/40 bg-rose-500/10';
+                } else if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
+                  badgeClass = 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10';
+                }
+
+                return (
+                  <div
+                    key={stem.id}
+                    className={`w-full rounded-[24px] bg-[#191919] p-4 flex flex-col transition-all duration-300 relative select-none shadow-[6px_6px_24px_#040404,-4px_-4px_20px_#2a2a2a] hover:shadow-[8px_8px_30px_#020202,-5px_-5px_25px_#333333] border border-white/[0.04] ${
+                      stem.muted ? 'opacity-65 grayscale-[30%]' : 'opacity-100'
+                    } ${
+                      stem.solo ? 'ring-2 ring-amber-400 shadow-[0_0_24px_rgba(245,158,11,0.4)]' : ''
+                    }`}
+                  >
+                    {/* Nombre Completo de la Pista (Title arriba, tal como en la captura) */}
+                    <div className="px-1 pt-0.5 pb-2.5">
+                      <h3
+                        className="text-white text-[15px] font-extrabold tracking-tight leading-snug break-words"
+                        title={stem.name}
+                      >
+                        {stem.name}
+                      </h3>
                     </div>
-                    <span className="text-[11px] font-bold text-zinc-100 truncate flex-1 tracking-tight" title={stem.name}>
-                      {stem.name}
-                    </span>
-                    {isMasterRef ? (
-                      <span
-                        className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
-                        title="Pista Master de referencia para IA. Inicia silenciada (M) para no duplicar instrumentos al exportar tu mezcla."
-                      >
-                        ★ MASTER REF
-                      </span>
-                    ) : (
-                      <span className={`text-[8px] font-mono px-2 py-0.5 rounded-full shrink-0 ${
-                        stem.type === 'Instrument'
-                          ? 'bg-[#08090c] text-zinc-400 border border-white/[0.06]'
-                          : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
-                      }`}>
-                        {routeBadge}
-                      </span>
-                    )}
-                    <div className="flex gap-1 shrink-0">
-                      <button
-                        onClick={() => toggleMute(stem.id)}
-                        className={`w-6 h-6 flex items-center justify-center rounded-lg text-[9px] font-black transition-all ${
-                          stem.muted
-                            ? 'bg-[#ef4444] text-white shadow-[0_0_10px_rgba(239,68,68,0.6)] border border-red-400/50'
-                            : 'stage-tactile-btn text-zinc-400 hover:text-white'
-                        }`}
-                        title={stem.muted ? "Canal Silenciado (No sonará en la exportación)" : "Silenciar Canal (Mute)"}
-                      >
-                        M
-                      </button>
-                      <button
-                        onClick={() => toggleSolo(stem.id)}
-                        className={`w-6 h-6 flex items-center justify-center rounded-lg text-[9px] font-black transition-all ${
-                          stem.solo
-                            ? 'bg-amber-400 text-black shadow-[0_0_10px_rgba(251,191,36,0.65)] border border-amber-300'
-                            : 'stage-tactile-btn text-zinc-400 hover:text-white'
-                        }`}
-                        title="Escuchar en Solo"
-                      >
-                        S
-                      </button>
+
+                    {/* Dock Inferior Hundido Neumórfico (Exacto a la captura enviada) */}
+                    <div className="w-full bg-[#131313] rounded-[20px] p-3.5 flex flex-col gap-3 shadow-[inset_3px_3px_10px_#060606,inset_-2px_-2px_8px_#262626] border border-white/[0.02]">
+                      
+                      {/* Fila 1: CANAL 01 (Left) | ★ FOH MASTER (R) (Center) | [M] [S] (Right) */}
+                      <div className="flex items-center justify-between gap-2">
+                        {/* Left: CANAL 01 */}
+                        <span className="text-[11px] font-mono text-zinc-400 font-bold tracking-wider shrink-0">
+                          CANAL {String(sIdx + 1).padStart(2, '0')}
+                        </span>
+
+                        {/* Center: Badge de Salida / Ruteo */}
+                        <div className="flex-1 flex justify-center">
+                          <span className={`text-[10px] font-mono font-bold px-3 py-0.5 rounded-full border uppercase tracking-wider shadow-inner ${badgeClass}`}>
+                            {routeBadge}
+                          </span>
+                        </div>
+
+                        {/* Right: Botones táctiles Mute / Solo */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleMute(stem.id)}
+                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold transition-all cursor-pointer ${
+                              stem.muted
+                                ? 'bg-[#ef4444] text-white shadow-[0_0_12px_rgba(239,68,68,0.7)]'
+                                : 'bg-[#1c1c1c] text-zinc-300 hover:text-white shadow-[2px_2px_6px_#060606,-1px_-1px_4px_#2c2c2c] active:shadow-[inset_2px_2px_4px_#050505]'
+                            }`}
+                            title={stem.muted ? "Canal Silenciado" : "Silenciar Canal (Mute)"}
+                          >
+                            M
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleSolo(stem.id)}
+                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold transition-all cursor-pointer ${
+                              stem.solo
+                                ? 'bg-amber-400 text-black shadow-[0_0_14px_rgba(245,158,11,0.8)] font-black'
+                                : 'bg-[#1c1c1c] text-zinc-300 hover:text-white shadow-[2px_2px_6px_#060606,-1px_-1px_4px_#2c2c2c] active:shadow-[inset_2px_2px_4px_#050505]'
+                            }`}
+                            title="Escuchar en Solo"
+                          >
+                            S
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Fila 2: VOL 41% + Slider */}
+                      <div className="flex items-center gap-3">
+                        <div className="w-18 shrink-0 flex items-center gap-1.5 font-mono text-[11px] font-black text-zinc-300">
+                          <span className="tracking-widest">VOL</span>
+                          <span className="text-white">{Math.round(stem.volume * 100)}%</span>
+                        </div>
+                        <div className="flex-1 flex items-center">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            value={stem.volume}
+                            onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
+                            className="w-full h-1.5 bg-[#252525] rounded-full appearance-none cursor-pointer accent-white hover:accent-zinc-100"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Fila 3: PAN R100 + Slider */}
+                      <div className="flex items-center gap-3">
+                        <div className="w-18 shrink-0 flex items-center gap-1.5 font-mono text-[11px] font-black text-zinc-300">
+                          <span className="tracking-widest">PAN</span>
+                          <span className="text-white">
+                            {stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`}
+                          </span>
+                        </div>
+                        <div className="flex-1 flex items-center">
+                          <input
+                            type="range"
+                            min="-1"
+                            max="1"
+                            step="0.01"
+                            value={stem.pan}
+                            onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
+                            className="w-full h-1.5 bg-[#252525] rounded-full appearance-none cursor-pointer accent-white hover:accent-zinc-100"
+                          />
+                        </div>
+                      </div>
+
                     </div>
                   </div>
-                  
-                  <div className="flex items-center px-3 py-2 gap-3 bg-[#090b10]">
-                    <div className="flex items-center gap-2 flex-1">
-                      <span className="text-[8px] text-zinc-500 font-black tracking-wider">VOL</span>
-                      <input 
-                        type="range" min="0" max="1" step="0.01" value={stem.volume} onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                        className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-[#ef4444] hover:accent-red-400"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2 w-24">
-                      <span className="text-[8px] text-zinc-500 font-black tracking-wider">PAN</span>
-                      <input 
-                        type="range" min="-1" max="1" step="0.01" value={stem.pan} onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                        className="w-full h-1.5 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-zinc-400 hover:accent-zinc-200"
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
