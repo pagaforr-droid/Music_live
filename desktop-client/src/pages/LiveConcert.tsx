@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -67,6 +67,51 @@ export default function LiveConcert() {
   const [isRefreshingSong, setIsRefreshingSong] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
+  // Modo Concierto (Stage Lock / Key Arms)
+  const [isConcertMode, setIsConcertMode] = useState<boolean>(false);
+  const isConcertModeRef = useRef<boolean>(false);
+  useEffect(() => { isConcertModeRef.current = isConcertMode; }, [isConcertMode]);
+
+  // Stage OSD Feedback Flotante
+  const [stageOsd, setStageOsd] = useState<{
+    type: 'play' | 'pause' | 'stop' | 'next' | 'prev' | 'mode_on' | 'mode_off';
+    label: string;
+    sublabel?: string;
+  } | null>(null);
+  const osdTimeoutRef = useRef<any>(null);
+
+  const triggerStageOsd = (
+    type: 'play' | 'pause' | 'stop' | 'next' | 'prev' | 'mode_on' | 'mode_off',
+    label: string,
+    sublabel?: string
+  ) => {
+    if (osdTimeoutRef.current) clearTimeout(osdTimeoutRef.current);
+    setStageOsd({ type, label, sublabel });
+    osdTimeoutRef.current = setTimeout(() => {
+      setStageOsd(null);
+    }, 850);
+  };
+
+  const toggleConcertMode = () => {
+    setIsConcertMode((prev) => {
+      const next = !prev;
+      if (next) {
+        triggerStageOsd(
+          'mode_on',
+          'MODO CONCIERTO ARMADO',
+          'Barra espaciadora y pedales listos para el show'
+        );
+      } else {
+        triggerStageOsd(
+          'mode_off',
+          'MODO EDICIÓN / REPOSO',
+          'Atajos en reposo (Seguro contra disparos accidentales)'
+        );
+      }
+      return next;
+    });
+  };
+
   // Faders Independientes: Salida Público (FOH - R), Salida Músicos (CUE - L) y Master
   const [masterVolume] = useState<number>(1.0);
   const [fohVolume, setFohVolume] = useState<number>(1.0);
@@ -123,6 +168,8 @@ export default function LiveConcert() {
   const autoPlayOnLoadRef = useRef(false);
   const songsRef = useRef<any[]>([]);
   const currentSongIndexRef = useRef<number>(0);
+  const currentSongRef = useRef<any>(null);
+  const isLoadingRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (isProjectorWindow) return;
@@ -150,6 +197,8 @@ export default function LiveConcert() {
 
   useEffect(() => { songsRef.current = songs; }, [songs]);
   useEffect(() => { currentSongIndexRef.current = currentSongIndex; }, [currentSongIndex]);
+  useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
 
   // When song index changes, load the audio automatically
   useEffect(() => {
@@ -340,7 +389,7 @@ export default function LiveConcert() {
   const loadSongAudio = async (song: any, shouldAutoPlay = false) => {
     if (!audioCtxRef.current) return;
     
-    pause();
+    pause(true);
     setCurrentTime(-getPreRoll(song));
     setAudioTime(0);
     pauseTimeRef.current = 0;
@@ -538,9 +587,10 @@ export default function LiveConcert() {
     setIsPlaying(true);
     isPlayingRef.current = true;
     updateTime();
+    triggerStageOsd('play', 'LANZANDO SHOW', currentSong?.title || '');
   };
 
-  const pause = () => {
+  const pause = (silent = false) => {
     if (!audioCtxRef.current || !isPlayingRef.current) return;
     
     if (fohSourceRef.current) {
@@ -558,6 +608,14 @@ export default function LiveConcert() {
     
     if (broadcastEnabled) {
        broadcast({ type: 'PAUSE' });
+    }
+
+    if (!silent) {
+      triggerStageOsd(
+        'pause',
+        'SHOW EN PAUSA',
+        isConcertModeRef.current ? 'Presiona [ESPACIO] para reanudar' : 'Haz clic para reanudar'
+      );
     }
   };
 
@@ -589,7 +647,7 @@ export default function LiveConcert() {
 
     // Fin de canción: auto-avance al siguiente track
     if (totalDuration > 0 && globalTime >= totalDuration) {
-      pause();
+      pause(true);
       const idx = currentSongIndexRef.current;
       const allSongs = songsRef.current;
       if (idx < allSongs.length - 1) {
@@ -608,7 +666,7 @@ export default function LiveConcert() {
     if (!audioCtxRef.current) return;
     const wasPlaying = isPlayingRef.current;
     
-    if (wasPlaying) pause();
+    if (wasPlaying) pause(true);
     
     const preRoll = getPreRoll(currentSong);
     const globalTime = Math.max(0, Math.min(newVisualTime + preRoll, totalDuration));
@@ -637,22 +695,108 @@ export default function LiveConcert() {
   };
 
   const stop = () => {
-    pause();
+    pause(true);
     pauseTimeRef.current = 0;
     setCurrentTime(-getPreRoll(currentSong));
+    setAudioTime(0);
+    triggerStageOsd('stop', 'SHOW DETENIDO', 'Rebobinado al Conteo Pre-Roll');
   };
 
   const nextSong = () => {
     if (currentSongIndex < songs.length - 1) {
-      setCurrentSongIndex(prev => prev + 1);
+      const nextIdx = currentSongIndex + 1;
+      setCurrentSongIndex(nextIdx);
+      triggerStageOsd('next', 'SIGUIENTE CANCIÓN', songs[nextIdx]?.title || '');
     }
   };
 
   const prevSong = () => {
     if (currentSongIndex > 0) {
-      setCurrentSongIndex(prev => prev - 1);
+      const prevIdx = currentSongIndex - 1;
+      setCurrentSongIndex(prevIdx);
+      triggerStageOsd('prev', 'CANCIÓN ANTERIOR', songs[prevIdx]?.title || '');
     }
   };
+
+  // Atajos de Teclado y Pedales de Escenario (Armados EXCLUSIVAMENTE en Modo Concierto)
+  useEffect(() => {
+    if (isProjectorWindow) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. Si Modo Concierto está apagado, no intervenir en absoluto
+      if (!isConcertModeRef.current) return;
+
+      // 2. Si el usuario está escribiendo en un input, textarea, select, no interferir
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      // 3. Ignorar repeticiones por mantener tecla o pedal presionado
+      if (e.repeat) return;
+
+      const code = e.code;
+      const key = e.key;
+
+      // ESPACIO: Play / Pause toggle
+      if (code === 'Space' || key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        const curSong = currentSongRef.current;
+        if (isLoadingRef.current || !curSong || !curSong.foh_mix_url) return;
+
+        if (isPlayingRef.current) {
+          pause();
+        } else {
+          play();
+        }
+        return;
+      }
+
+      // S o Escape: Stop
+      if (code === 'KeyS' || key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        stop();
+        return;
+      }
+
+      // Flecha Derecha o N: Siguiente canción
+      if (code === 'ArrowRight' || code === 'KeyN') {
+        e.preventDefault();
+        e.stopPropagation();
+        nextSong();
+        return;
+      }
+
+      // Flecha Izquierda o P: Canción anterior
+      if (code === 'ArrowLeft' || code === 'KeyP') {
+        e.preventDefault();
+        e.stopPropagation();
+        prevSong();
+        return;
+      }
+
+      // M: Silenciar / Restaurar CUE de Músicos
+      if (code === 'KeyM') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMuteCueEmergency((prev) => !prev);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, { passive: false });
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isProjectorWindow]);
 
   const formatTime = (time: number) => {
     if (isNaN(time)) return '00:00.00';
@@ -686,9 +830,14 @@ export default function LiveConcert() {
 
   return (
     <div className="h-screen bg-white text-zinc-900 flex flex-col font-sans overflow-hidden select-none relative">
+      {/* Indicador luminoso superior de MODO CONCIERTO ARMADO */}
+      {isConcertMode && (
+        <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#e11d48] z-50 shadow-[0_0_12px_#e11d48] animate-pulse" />
+      )}
+
       {/* HEADER / CONSOLA MAESTRA DE ESCENARIO (Entorno Blanco, Letras Negras) */}
       <header className="h-[90px] px-6 py-2.5 flex items-center justify-between shrink-0 z-20 gap-4 bg-white border-b border-zinc-200">
-        {/* ISLA 1: Identidad del Show, Setlist & Modo */}
+        {/* ISLA 1: Identidad del Show, Setlist, Modo & Armado de Concierto */}
         <div className="apple-glass-island p-1.5 rounded-full flex items-center gap-2 shrink-0">
           {/* Live Stage Badge Sólido */}
           <div className="ruby-pill-accent text-white font-semibold px-3.5 py-1.5 rounded-full uppercase tracking-[0.14em] text-[10.5px] flex items-center gap-2">
@@ -699,9 +848,13 @@ export default function LiveConcert() {
           {/* Setlist Selector */}
           <div className="relative">
             <select
-              className="bg-transparent hover:bg-zinc-100 focus:bg-white text-zinc-900 px-3 py-1.5 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[190px] border border-transparent focus:border-zinc-300"
+              disabled={isConcertMode}
+              className={`bg-transparent hover:bg-zinc-100 focus:bg-white text-zinc-900 px-3 py-1.5 rounded-full outline-none font-medium text-xs transition-all cursor-pointer max-w-[190px] border border-transparent focus:border-zinc-300 ${
+                isConcertMode ? 'opacity-60 cursor-not-allowed' : ''
+              }`}
               value={selectedSetlistId || ''}
               onChange={(e) => setSelectedSetlistId(e.target.value)}
+              title={isConcertMode ? "Repertorio bloqueado durante Modo Concierto" : "Seleccionar Setlist"}
             >
               <option value="" className="bg-white text-zinc-900">Cargar Setlist...</option>
               {setlists.map(sl => (
@@ -726,6 +879,39 @@ export default function LiveConcert() {
             <span className={`w-1.5 h-1.5 rounded-full ${playbackMode === 'LIVE' ? 'bg-[#e11d48]' : 'bg-[#f59e0b]'}`} />
             <span>{playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}</span>
           </div>
+
+          {/* Botón Maestro "MODO CONCIERTO" */}
+          <button
+            type="button"
+            onClick={toggleConcertMode}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full transition-all cursor-pointer text-[10px] font-bold uppercase tracking-wider select-none ${
+              isConcertMode
+                ? 'bg-[#e11d48] text-white shadow-sm ring-2 ring-[#e11d48]/25 hover:bg-[#be123c]'
+                : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 border border-zinc-200'
+            }`}
+            title={
+              isConcertMode
+                ? "MODO CONCIERTO ARMADO: Barra espaciadora y pedales activos"
+                : "Activar Modo Concierto para armar la barra espaciadora y pedales"
+            }
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isConcertMode ? 'bg-white animate-ping' : 'bg-zinc-400'
+              }`}
+            />
+            {isConcertMode ? (
+              <>
+                <Radio size={11} className="animate-pulse" />
+                <span>EN CONCIERTO</span>
+              </>
+            ) : (
+              <>
+                <Lock size={10} />
+                <span>MODO CONCIERTO: OFF</span>
+              </>
+            )}
+          </button>
         </div>
 
         {/* ISLA 2: Reloj Digital, Título & Scrubber de Escenario */}
@@ -1057,33 +1243,84 @@ export default function LiveConcert() {
 
           {/* CONTROLES DE TRANSPORTE DE ESCENARIO */}
           <div className="p-4 bg-white border-t border-zinc-200 grid grid-cols-3 gap-2.5">
+            {/* Header de Modo Concierto & Teclado Armado */}
+            <div className="col-span-3 flex items-center justify-between pb-2 mb-0.5 border-b border-zinc-100">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isConcertMode ? 'bg-[#e11d48] animate-ping' : 'bg-zinc-400'
+                  }`}
+                />
+                <span className="text-[10px] font-bold tracking-wider uppercase text-zinc-700">
+                  {isConcertMode ? 'TECLADO / PEDAL ARMADO' : 'MODO REPOSO'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={toggleConcertMode}
+                className={`px-2.5 py-1 rounded-full text-[9.5px] font-bold tracking-wider uppercase transition-all flex items-center gap-1 cursor-pointer ${
+                  isConcertMode
+                    ? 'bg-[#e11d48] text-white shadow-xs hover:bg-[#be123c]'
+                    : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 border border-zinc-200'
+                }`}
+                title="Conmutar Modo Concierto para armar o desarmar atajos de teclado y pedales"
+              >
+                {isConcertMode ? (
+                  <>
+                    <Radio size={10} className="animate-pulse" />
+                    <span>EN CONCIERTO</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock size={10} />
+                    <span>ACTIVAR</span>
+                  </>
+                )}
+              </button>
+            </div>
+
             <button
               onClick={prevSong}
               disabled={currentSongIndex === 0}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
-              title="Canción Anterior"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
+              title={isConcertMode ? "Canción Anterior [Flecha Izq / P]" : "Canción Anterior"}
             >
               <SkipBack size={18} />
+              {isConcertMode && (
+                <span className="absolute bottom-1 text-[8px] font-mono text-zinc-400 group-hover:text-zinc-600">
+                  ◀
+                </span>
+              )}
             </button>
             <button
               onClick={stop}
               disabled={!currentSong}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
-              title="Detener y volver al Conteo Pre-Roll"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
+              title={isConcertMode ? "Detener y volver al Conteo Pre-Roll [S / Escape]" : "Detener y volver al Conteo Pre-Roll"}
             >
               <Square size={16} fill="currentColor" />
+              {isConcertMode && (
+                <span className="absolute bottom-1 text-[8px] font-mono text-zinc-400 group-hover:text-zinc-600">
+                  ESC
+                </span>
+              )}
             </button>
             <button
               onClick={nextSong}
               disabled={currentSongIndex === songs.length - 1}
-              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30"
-              title="Siguiente Canción"
+              className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
+              title={isConcertMode ? "Siguiente Canción [Flecha Der / N]" : "Siguiente Canción"}
             >
               <SkipForward size={18} />
+              {isConcertMode && (
+                <span className="absolute bottom-1 text-[8px] font-mono text-zinc-400 group-hover:text-zinc-600">
+                  ▶
+                </span>
+              )}
             </button>
 
             <button
-              onClick={isPlaying ? pause : play}
+              onClick={isPlaying ? () => pause() : () => play()}
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
               className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-xs font-semibold transition-all tracking-widest uppercase border ${
                 isPlaying
@@ -1091,12 +1328,19 @@ export default function LiveConcert() {
                   : 'ruby-pill-accent text-white border-transparent hover:brightness-105 active:scale-[0.98]'
               } disabled:opacity-30`}
             >
-              {isPlaying ? (
-                <Pause size={19} fill="currentColor" className="mr-2" />
-              ) : (
-                <Play size={19} fill="currentColor" className="mr-2 ml-0.5" />
-              )}
-              {isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}
+              <div className="flex items-center justify-center gap-2">
+                {isPlaying ? (
+                  <Pause size={19} fill="currentColor" className="mr-0.5" />
+                ) : (
+                  <Play size={19} fill="currentColor" className="mr-0.5 ml-0.5" />
+                )}
+                <span>{isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}</span>
+                {isConcertMode && (
+                  <kbd className="ml-2 text-[9px] font-mono px-2 py-0.5 rounded-md bg-white/20 border border-white/30 text-white tracking-widest font-bold">
+                    ESPACIO
+                  </kbd>
+                )}
+              </div>
             </button>
           </div>
         </div>
@@ -1359,6 +1603,54 @@ export default function LiveConcert() {
           </div>
         </div>
       </div>
+
+      {/* HUD OSD Flotante de Escenario (Feedback táctil instantáneo a distancia) */}
+      {stageOsd && (
+        <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center">
+          <div className="apple-glass-card bg-black/90 backdrop-blur-md text-white border border-white/15 px-8 py-5 rounded-3xl shadow-2xl flex items-center gap-4 transition-all">
+            {stageOsd.type === 'play' && (
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-400 shrink-0">
+                <Play size={24} fill="currentColor" className="ml-1" />
+              </div>
+            )}
+            {stageOsd.type === 'pause' && (
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shrink-0">
+                <Pause size={24} fill="currentColor" />
+              </div>
+            )}
+            {stageOsd.type === 'stop' && (
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border border-rose-400/40 flex items-center justify-center text-rose-400 shrink-0">
+                <Square size={20} fill="currentColor" />
+              </div>
+            )}
+            {(stageOsd.type === 'next' || stageOsd.type === 'prev') && (
+              <div className="w-12 h-12 rounded-2xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400 shrink-0">
+                {stageOsd.type === 'next' ? <SkipForward size={22} /> : <SkipBack size={22} />}
+              </div>
+            )}
+            {stageOsd.type === 'mode_on' && (
+              <div className="w-12 h-12 rounded-2xl bg-[#e11d48]/25 border border-[#e11d48]/50 flex items-center justify-center text-[#e11d48] shrink-0">
+                <Radio size={24} className="animate-pulse" />
+              </div>
+            )}
+            {stageOsd.type === 'mode_off' && (
+              <div className="w-12 h-12 rounded-2xl bg-zinc-700/40 border border-zinc-600/50 flex items-center justify-center text-zinc-300 shrink-0">
+                <Lock size={22} />
+              </div>
+            )}
+            <div className="flex flex-col text-left min-w-0">
+              <span className="text-sm font-bold tracking-wider uppercase text-white">
+                {stageOsd.label}
+              </span>
+              {stageOsd.sublabel && (
+                <span className="text-xs text-zinc-400 max-w-sm truncate font-medium mt-0.5">
+                  {stageOsd.sublabel}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
