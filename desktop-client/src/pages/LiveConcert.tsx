@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2 } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -60,8 +60,12 @@ export default function LiveConcert() {
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [audioTime, setAudioTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
   const [routingMode, setRoutingMode] = useState<'StereoSplit' | 'MultiChannel'>('StereoSplit');
+
+  const [isRefreshingSong, setIsRefreshingSong] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
   // Faders Independientes: Salida Público (FOH - R), Salida Músicos (CUE - L) y Master
   const [masterVolume] = useState<number>(1.0);
@@ -156,7 +160,7 @@ export default function LiveConcert() {
       loadSongAudio(currentSong, autoPlayOnLoadRef.current);
       autoPlayOnLoadRef.current = false;
     }
-  }, [currentSongIndex, currentSong, broadcastEnabled, isProjectorWindow]);
+  }, [currentSongIndex, currentSong?.id, broadcastEnabled, isProjectorWindow]);
 
   // Actualizar ganancias en tiempo real (Master, FOH Público y CUE Músicos)
   useEffect(() => {
@@ -178,13 +182,13 @@ export default function LiveConcert() {
     }
   }, [cueVolume, muteCueEmergency]);
 
-  // Sincronizar con ventana de Proyector Externo HDMI
+  // Sincronizar con ventana de Proyector Externo HDMI (Envía audioTime para sincronía exacta de letras)
   useEffect(() => {
     if (isProjectorWindow || !projectorChannelRef.current || !currentSong) return;
     projectorChannelRef.current.postMessage({
       type: 'PROJECTOR_SYNC',
       payload: {
-        currentTime,
+        currentTime: audioTime,
         isPlaying,
         title: currentSong.title,
         lyrics: currentSong.prompter_data?.lyrics || [],
@@ -195,7 +199,7 @@ export default function LiveConcert() {
         background: currentSong.prompter_data?.background,
       },
     });
-  }, [currentTime, isPlaying, currentSong, isProjectorWindow]);
+  }, [audioTime, isPlaying, currentSong, isProjectorWindow]);
 
   const openExternalProjector = () => {
     window.open(
@@ -240,11 +244,105 @@ export default function LiveConcert() {
     }
   };
 
+  const refreshSongData = async (targetSongId?: string, silent = false) => {
+    const songId = targetSongId || currentSong?.id;
+    if (!songId) return;
+
+    if (!silent) setIsRefreshingSong(true);
+    try {
+      const { data, error } = await supabase
+        .from('songs')
+        .select('id, title, foh_mix_url, cue_mix_url, foh_mobile_url, cue_mobile_url, prompter_data')
+        .eq('id', songId)
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setSongs((prevSongs) =>
+          prevSongs.map((s) => (s.id === songId ? { ...s, ...data } : s))
+        );
+        setSyncFeedback('¡Letras sincronizadas!');
+        setTimeout(() => setSyncFeedback(null), 2500);
+      }
+    } catch (err: any) {
+      console.warn('[LiveConcert] Error refreshing song data:', err);
+    } finally {
+      if (!silent) setIsRefreshingSong(false);
+    }
+  };
+
+  // Escucha instantánea de cambios guardados en Lyric Studio (Cero Latencia <1ms en la misma máquina)
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const bc = new BroadcastChannel('tandu_stage_sync');
+    bc.onmessage = (event) => {
+      if (event.data?.type === 'SONG_LYRICS_UPDATED' && event.data.songId) {
+        const { songId, prompter_data } = event.data;
+        setSongs((prevSongs) =>
+          prevSongs.map((s) =>
+            s.id === songId ? { ...s, prompter_data: prompter_data || s.prompter_data } : s
+          )
+        );
+        setSyncFeedback('¡Letras actualizadas en vivo!');
+        setTimeout(() => setSyncFeedback(null), 2500);
+      }
+    };
+
+    return () => {
+      bc.close();
+    };
+  }, []);
+
+  // Supabase Realtime channel para sincronización entre diferentes computadoras/músicos
+  useEffect(() => {
+    if (isProjectorWindow) return;
+    const channel = supabase
+      .channel('live_concert_songs_sync')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'songs' },
+        (payload) => {
+          if (payload.new && payload.new.id) {
+            const updated = payload.new;
+            setSongs((prevSongs) =>
+              prevSongs.map((s) =>
+                s.id === updated.id
+                  ? {
+                      ...s,
+                      prompter_data: updated.prompter_data || s.prompter_data,
+                      title: updated.title || s.title,
+                    }
+                  : s
+              )
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isProjectorWindow]);
+
+  // Revalidar canción al regresar el foco a la ventana de Live Concert
+  useEffect(() => {
+    if (isProjectorWindow) return;
+    const onFocus = () => {
+      if (currentSong?.id) {
+        refreshSongData(currentSong.id, true);
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [currentSong?.id, isProjectorWindow]);
+
   const loadSongAudio = async (song: any, shouldAutoPlay = false) => {
     if (!audioCtxRef.current) return;
     
     pause();
     setCurrentTime(-getPreRoll(song));
+    setAudioTime(0);
     pauseTimeRef.current = 0;
     
     if (nextFohBufferRef.current && nextCueBufferRef.current) {
@@ -453,6 +551,7 @@ export default function LiveConcert() {
     }
     
     pauseTimeRef.current = audioCtxRef.current.currentTime - startTimeRef.current;
+    setAudioTime(Math.max(0, pauseTimeRef.current));
     setIsPlaying(false);
     isPlayingRef.current = false;
     cancelAnimationFrame(animationFrameRef.current);
@@ -500,6 +599,7 @@ export default function LiveConcert() {
       return;
     }
 
+    setAudioTime(Math.max(0, globalTime));
     setCurrentTime(visualTime);
     animationFrameRef.current = requestAnimationFrame(updateTime);
   };
@@ -515,6 +615,7 @@ export default function LiveConcert() {
     
     pauseTimeRef.current = globalTime;
     setCurrentTime(newVisualTime);
+    setAudioTime(Math.max(0, globalTime));
     
     if (broadcastEnabled) {
        broadcast({ type: 'SEEK', offset: globalTime });
@@ -1080,6 +1181,33 @@ export default function LiveConcert() {
                 <ExternalLink size={12} className="text-[#e11d48]" />
                 <span>Proyector HDMI</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => refreshSongData()}
+                disabled={!currentSong || isRefreshingSong}
+                className={`apple-glass-card px-3.5 py-1.5 rounded-full text-[11px] font-semibold uppercase tracking-wide flex items-center gap-1.5 transition-all cursor-pointer ${
+                  syncFeedback
+                    ? 'border-emerald-500 text-emerald-600 bg-emerald-50/50'
+                    : 'text-zinc-800 hover:text-black hover:border-zinc-400'
+                }`}
+                title="Sincronizar letras y cambios guardados recientemente en Lyric Studio"
+              >
+                {syncFeedback ? (
+                  <>
+                    <Check size={12} className="text-emerald-500" />
+                    <span>{syncFeedback}</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw
+                      size={12}
+                      className={`text-[#e11d48] ${isRefreshingSong ? 'animate-spin' : ''}`}
+                    />
+                    <span>{isRefreshingSong ? 'Sincronizando...' : 'Sincronizar'}</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
@@ -1108,7 +1236,7 @@ export default function LiveConcert() {
                   {currentHasLyrics ? (
                     <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black relative">
                       <LyricVisualizer
-                        currentTime={currentTime}
+                        currentTime={audioTime}
                         lyrics={currentSong.prompter_data?.lyrics || []}
                         isPlaying={isPlaying}
                         settings={currentSong.prompter_data?.lyric_settings}
@@ -1127,16 +1255,27 @@ export default function LiveConcert() {
                         Canción sin letras sincronizadas
                       </h3>
                       <p className="text-xs text-zinc-500 max-w-md mt-1.5 leading-relaxed font-normal">
-                        Esta pista no tiene proyección de lírica configurada en Lyric Studio. Puedes maximizar la vista de acordes para mayor comodidad en vivo.
+                        Esta pista aún no tiene lírica cargada o acaba de ser configurada en Lyric Studio.
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => setViewMode('prompter')}
-                        className="mt-4 px-4 py-2.5 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
-                      >
-                        <Maximize2 size={13} />
-                        <span>Maximizar a 'Solo Acordes'</span>
-                      </button>
+                      <div className="flex items-center gap-2 mt-4">
+                        <button
+                          type="button"
+                          onClick={() => refreshSongData()}
+                          disabled={isRefreshingSong}
+                          className="px-4 py-2.5 rounded-xl border border-zinc-300 hover:bg-zinc-100 text-zinc-800 font-bold text-xs uppercase tracking-wider transition-all shadow-xs flex items-center gap-2 cursor-pointer active:scale-95"
+                        >
+                          <RefreshCw size={13} className={isRefreshingSong ? 'animate-spin text-[#e11d48]' : 'text-[#e11d48]'} />
+                          <span>{isRefreshingSong ? 'Buscando letras...' : 'Sincronizar ahora'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setViewMode('prompter')}
+                          className="px-4 py-2.5 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
+                        >
+                          <Maximize2 size={13} />
+                          <span>Maximizar a 'Solo Acordes'</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1161,7 +1300,7 @@ export default function LiveConcert() {
                 <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black">
                   {currentHasLyrics ? (
                     <LyricVisualizer
-                      currentTime={currentTime}
+                      currentTime={audioTime}
                       lyrics={currentSong.prompter_data?.lyrics || []}
                       isPlaying={isPlaying}
                       settings={currentSong.prompter_data?.lyric_settings}
@@ -1179,16 +1318,27 @@ export default function LiveConcert() {
                         Sin letras para proyectar
                       </h3>
                       <p className="text-xs text-zinc-500 max-w-sm mt-1.5 font-normal">
-                        Esta pista no incluye letras sincronizadas. Cambia a la vista de acordes para seguir la progresión armónica.
+                        Esta pista aún no tiene lírica cargada o acaba de ser configurada en Lyric Studio.
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => setViewMode('prompter')}
-                        className="mt-4 px-4 py-2 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
-                      >
-                        <Maximize2 size={13} />
-                        <span>Ver Acordes del Show</span>
-                      </button>
+                      <div className="flex items-center gap-2 mt-4">
+                        <button
+                          type="button"
+                          onClick={() => refreshSongData()}
+                          disabled={isRefreshingSong}
+                          className="px-4 py-2 rounded-xl border border-zinc-300 hover:bg-zinc-100 text-zinc-800 font-bold text-xs uppercase tracking-wider transition-all shadow-xs flex items-center gap-2 cursor-pointer active:scale-95"
+                        >
+                          <RefreshCw size={13} className={isRefreshingSong ? 'animate-spin text-[#e11d48]' : 'text-[#e11d48]'} />
+                          <span>{isRefreshingSong ? 'Buscando letras...' : 'Sincronizar ahora'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setViewMode('prompter')}
+                          className="px-4 py-2 rounded-xl bg-black hover:bg-zinc-800 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-sm flex items-center gap-2 cursor-pointer active:scale-95"
+                        >
+                          <Maximize2 size={13} />
+                          <span>Ver Acordes del Show</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

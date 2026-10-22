@@ -441,10 +441,16 @@ export function renderLyricCanvasFrame(
   }
 
   // 3. Render Placed Active Lyric Lines
-  const placedLyrics = (lyrics || []).filter((l) => l.placed !== false);
+  const candidates = (lyrics || []).filter((l) => l.text && l.text.trim().length > 0);
+  const placedLyrics = candidates.some((l) => l.placed !== false)
+    ? candidates.filter((l) => l.placed !== false)
+    : candidates;
+
+  let activeLineCount = 0;
 
   placedLyrics.forEach((line, lineIdx) => {
     if (timeMs < line.startMs || timeMs > line.startMs + line.durationMs) return;
+    activeLineCount++;
 
     const elapsedMs = timeMs - line.startMs;
     const progress = Math.max(0, Math.min(1, elapsedMs / Math.max(100, line.durationMs)));
@@ -1251,6 +1257,88 @@ export function renderLyricCanvasFrame(
     setLetterSpacing(ctx, 0);
     ctx.restore();
   });
+
+  // 4. Stage Intro & Interlude HUD Cue (Rhythmic entrance cue when no lyrics are currently singing)
+  if (activeLineCount === 0 && placedLyrics.length > 0) {
+    const upcoming = placedLyrics
+      .filter((l) => l.startMs > timeMs)
+      .sort((a, b) => a.startMs - b.startMs)[0];
+
+    if (upcoming) {
+      const msUntil = upcoming.startMs - timeMs;
+      // Show cue when within 25 seconds before entrance
+      if (msUntil <= 25000 && msUntil > 0) {
+        const firstLineStart = placedLyrics.reduce((min, l) => Math.min(min, l.startMs), Infinity);
+        const isIntro = timeMs < firstLineStart;
+        const secondsUntil = (msUntil / 1000).toFixed(1);
+        const bpm = options?.bpm || 120;
+        const beatDurationMs = 60000 / Math.max(20, bpm);
+        const beatFraction = (timeMs % beatDurationMs) / beatDurationMs;
+        const pulse = Math.sin(beatFraction * Math.PI);
+
+        ctx.save();
+        const pillW = 640;
+        const pillH = 136;
+        const pillX = (canvasW - pillW) / 2;
+        const pillY = canvasH * 0.74;
+
+        // Glass backdrop with breathing border
+        ctx.fillStyle = 'rgba(8, 10, 14, 0.78)';
+        ctx.strokeStyle = `rgba(225, 29, 72, ${0.4 + pulse * 0.4})`;
+        ctx.lineWidth = 2.5;
+
+        // Rounded rect
+        ctx.beginPath();
+        const r = 24;
+        ctx.moveTo(pillX + r, pillY);
+        ctx.lineTo(pillX + pillW - r, pillY);
+        ctx.quadraticCurveTo(pillX + pillW, pillY, pillX + pillW, pillY + r);
+        ctx.lineTo(pillX + pillW, pillY + pillH - r);
+        ctx.quadraticCurveTo(pillX + pillW, pillY + pillH, pillX + pillW - r, pillY + pillH);
+        ctx.lineTo(pillX + r, pillY + pillH);
+        ctx.quadraticCurveTo(pillX, pillY + pillH, pillX, pillY + pillH - r);
+        ctx.lineTo(pillX, pillY + r);
+        ctx.quadraticCurveTo(pillX, pillY, pillX + r, pillY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Header tag: "INTRO MUSICAL" or "INTERLUDIO" + countdown
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 22px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = '#ef4444';
+        const tagText = isIntro ? 'INTRO MUSICAL' : 'INTERLUDIO';
+        ctx.fillText(`${tagText}  ·  ENTRA EN ${secondsUntil}s`, canvasW / 2, pillY + 36);
+
+        // Preview of upcoming phrase
+        ctx.font = '600 30px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+        const previewRaw = upcoming.text.trim();
+        const previewText = previewRaw.length > 38 ? previewRaw.substring(0, 36) + '...' : previewRaw;
+        ctx.fillText(`"${previewText}"`, canvasW / 2, pillY + 78);
+
+        // Pulsing beat dots
+        const dotCount = 4;
+        const dotSpacing = 24;
+        const startDotX = canvasW / 2 - ((dotCount - 1) * dotSpacing) / 2;
+        const activeDotIdx = Math.floor((timeMs / beatDurationMs) % dotCount);
+
+        for (let d = 0; d < dotCount; d++) {
+          const dotX = startDotX + d * dotSpacing;
+          const dotY = pillY + 112;
+          const isDotActive = d === activeDotIdx;
+
+          ctx.beginPath();
+          ctx.arc(dotX, dotY, isDotActive ? 5 : 3, 0, Math.PI * 2);
+          ctx.fillStyle = isDotActive ? '#ef4444' : 'rgba(255, 255, 255, 0.28)';
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+    }
+  }
 }
 
 export const LyricVisualizer: React.FC<LyricVisualizerProps> = ({

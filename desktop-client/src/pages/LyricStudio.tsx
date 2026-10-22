@@ -899,6 +899,19 @@ export default function LyricStudio() {
       setSongData({ ...songData, prompter_data: newPrompterData });
       setSaveFeedback(true);
       setTimeout(() => setSaveFeedback(false), 2500);
+
+      // Instant local broadcast for Live Concert / Prompter tabs without needing a page refresh
+      try {
+        const bc = new BroadcastChannel('tandu_stage_sync');
+        bc.postMessage({
+          type: 'SONG_LYRICS_UPDATED',
+          songId: songData.id,
+          prompter_data: newPrompterData,
+        });
+        bc.close();
+      } catch (bcErr) {
+        console.warn('[LyricStudio] BroadcastChannel error:', bcErr);
+      }
     } else {
       alert(`Error al guardar: ${error.message}`);
     }
