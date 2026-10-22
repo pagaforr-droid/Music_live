@@ -93,6 +93,7 @@ export default function LiveConcert() {
   };
 
   const toggleConcertMode = () => {
+    (document.activeElement as HTMLElement)?.blur();
     setIsConcertMode((prev) => {
       const next = !prev;
       if (next) {
@@ -170,6 +171,12 @@ export default function LiveConcert() {
   const currentSongIndexRef = useRef<number>(0);
   const currentSongRef = useRef<any>(null);
   const isLoadingRef = useRef<boolean>(false);
+
+  const playRef = useRef<() => void>(() => {});
+  const pauseRef = useRef<(silent?: boolean) => void>(() => {});
+  const stopRef = useRef<() => void>(() => {});
+  const nextSongRef = useRef<() => void>(() => {});
+  const prevSongRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (isProjectorWindow) return;
@@ -496,9 +503,10 @@ export default function LiveConcert() {
   };
 
   const getPreRoll = (song: any) => {
-    if (!song?.prompter_data?.bpm) return 0;
-    const beatsPerMeasure = parseInt(song.prompter_data.timeSignature?.split('/')[0]) || 4;
-    const raw = (60 / song.prompter_data.bpm) * beatsPerMeasure * 2;
+    const s = song || currentSongRef.current || currentSong;
+    if (!s?.prompter_data?.bpm) return 0;
+    const beatsPerMeasure = parseInt(s.prompter_data.timeSignature?.split('/')[0]) || 4;
+    const raw = (60 / s.prompter_data.bpm) * beatsPerMeasure * 2;
     return Math.min(raw, 16);
   };
 
@@ -623,7 +631,8 @@ export default function LiveConcert() {
     if (!audioCtxRef.current || !isPlayingRef.current) return;
     
     const globalTime = audioCtxRef.current.currentTime - startTimeRef.current;
-    const preRoll = getPreRoll(currentSong);
+    const curSong = currentSongRef.current || currentSong;
+    const preRoll = getPreRoll(curSong);
     const visualTime = globalTime - preRoll;
     const remaining = totalDuration - globalTime;
 
@@ -668,7 +677,8 @@ export default function LiveConcert() {
     
     if (wasPlaying) pause(true);
     
-    const preRoll = getPreRoll(currentSong);
+    const curSong = currentSongRef.current || currentSong;
+    const preRoll = getPreRoll(curSong);
     const globalTime = Math.max(0, Math.min(newVisualTime + preRoll, totalDuration));
     
     pauseTimeRef.current = globalTime;
@@ -697,7 +707,8 @@ export default function LiveConcert() {
   const stop = () => {
     pause(true);
     pauseTimeRef.current = 0;
-    setCurrentTime(-getPreRoll(currentSong));
+    const curSong = currentSongRef.current || currentSong;
+    setCurrentTime(-getPreRoll(curSong));
     setAudioTime(0);
     triggerStageOsd('stop', 'SHOW DETENIDO', 'Rebobinado al Conteo Pre-Roll');
   };
@@ -718,6 +729,14 @@ export default function LiveConcert() {
     }
   };
 
+  useEffect(() => {
+    playRef.current = play;
+    pauseRef.current = pause;
+    stopRef.current = stop;
+    nextSongRef.current = nextSong;
+    prevSongRef.current = prevSong;
+  });
+
   // Atajos de Teclado y Pedales de Escenario (Armados EXCLUSIVAMENTE en Modo Concierto)
   useEffect(() => {
     if (isProjectorWindow) return;
@@ -726,17 +745,15 @@ export default function LiveConcert() {
       // 1. Si Modo Concierto está apagado, no intervenir en absoluto
       if (!isConcertModeRef.current) return;
 
-      // 2. Si el usuario está escribiendo en un input, textarea, select, no interferir
+      // 2. Si el usuario está escribiendo en un campo de texto, textarea o elemento editable, no interferir
       const target = e.target as HTMLElement | null;
-      if (
+      const isTextInput =
         target &&
-        (target.tagName === 'INPUT' ||
+        ((target.tagName === 'INPUT' && (target as HTMLInputElement).type !== 'range') ||
           target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
+          target.isContentEditable);
+
+      if (isTextInput) return;
 
       // 3. Ignorar repeticiones por mantener tecla o pedal presionado
       if (e.repeat) return;
@@ -748,13 +765,15 @@ export default function LiveConcert() {
       if (code === 'Space' || key === ' ') {
         e.preventDefault();
         e.stopPropagation();
+        (document.activeElement as HTMLElement)?.blur();
+
         const curSong = currentSongRef.current;
         if (isLoadingRef.current || !curSong || !curSong.foh_mix_url) return;
 
         if (isPlayingRef.current) {
-          pause();
+          pauseRef.current();
         } else {
-          play();
+          playRef.current();
         }
         return;
       }
@@ -763,7 +782,8 @@ export default function LiveConcert() {
       if (code === 'KeyS' || key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        stop();
+        (document.activeElement as HTMLElement)?.blur();
+        stopRef.current();
         return;
       }
 
@@ -771,7 +791,8 @@ export default function LiveConcert() {
       if (code === 'ArrowRight' || code === 'KeyN') {
         e.preventDefault();
         e.stopPropagation();
-        nextSong();
+        (document.activeElement as HTMLElement)?.blur();
+        nextSongRef.current();
         return;
       }
 
@@ -779,7 +800,8 @@ export default function LiveConcert() {
       if (code === 'ArrowLeft' || code === 'KeyP') {
         e.preventDefault();
         e.stopPropagation();
-        prevSong();
+        (document.activeElement as HTMLElement)?.blur();
+        prevSongRef.current();
         return;
       }
 
@@ -792,9 +814,19 @@ export default function LiveConcert() {
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (!isConcertModeRef.current) return;
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown, { passive: false });
+    window.addEventListener('keyup', handleKeyUp, { passive: false });
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
     };
   }, [isProjectorWindow]);
 
@@ -1280,7 +1312,10 @@ export default function LiveConcert() {
             </div>
 
             <button
-              onClick={prevSong}
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                prevSong();
+              }}
               disabled={currentSongIndex === 0}
               className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
               title={isConcertMode ? "Canción Anterior [Flecha Izq / P]" : "Canción Anterior"}
@@ -1293,7 +1328,10 @@ export default function LiveConcert() {
               )}
             </button>
             <button
-              onClick={stop}
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                stop();
+              }}
               disabled={!currentSong}
               className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
               title={isConcertMode ? "Detener y volver al Conteo Pre-Roll [S / Escape]" : "Detener y volver al Conteo Pre-Roll"}
@@ -1306,7 +1344,10 @@ export default function LiveConcert() {
               )}
             </button>
             <button
-              onClick={nextSong}
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                nextSong();
+              }}
               disabled={currentSongIndex === songs.length - 1}
               className="stage-tactile-btn py-3 rounded-xl flex items-center justify-center text-zinc-700 hover:text-black transition-all disabled:opacity-30 relative group"
               title={isConcertMode ? "Siguiente Canción [Flecha Der / N]" : "Siguiente Canción"}
@@ -1320,7 +1361,14 @@ export default function LiveConcert() {
             </button>
 
             <button
-              onClick={isPlaying ? () => pause() : () => play()}
+              onClick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                if (isPlaying) {
+                  pause();
+                } else {
+                  play();
+                }
+              }}
               disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
               className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-xs font-semibold transition-all tracking-widest uppercase border ${
                 isPlaying
@@ -1365,7 +1413,10 @@ export default function LiveConcert() {
                   return (
                     <button
                       key={sIdx}
-                      onClick={() => seekTo(sec.time)}
+                      onClick={(e) => {
+                        (e.currentTarget as HTMLElement)?.blur();
+                        seekTo(sec.time);
+                      }}
                       className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
                         isSecActive
                           ? `${secStyle.bg} text-white font-bold shadow-xs ring-2 ring-black`
