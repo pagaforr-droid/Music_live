@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
+import { generateClickBuffer, scheduleSectionVoiceCues } from '../utils/cueEngine';
 
 export type StemType = 'Click' | 'Cues' | 'Instrument';
 export type RoutingMode = 'StereoSplit' | 'MultiChannel';
@@ -14,122 +15,6 @@ export interface StemTrack {
   solo: boolean;
   targetOutputChannel?: number; // Used in MultiChannel mode
 }
-
-const generateClickBuffer = (ctx: AudioContext, frequency: number) => {
-  const sampleRate = ctx.sampleRate;
-  const duration = 0.05;
-  const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i++) {
-    const t = i / sampleRate;
-    const env = Math.exp(-t * 80); 
-    // Usamos Math.cos para generar un transitorio (transient) instantáneo en t=0 (pico máximo inicial)
-    data[i] = Math.cos(2 * Math.PI * frequency * t) * env * 0.8;
-  }
-  return buffer;
-};
-
-// Resolver de forma inteligente el archivo de voz guía según el nombre de sección (Español / Inglés)
-const resolveCueBufferName = (rawName: string, cueBuffers: Record<string, any>): string => {
-  const lower = (rawName || '').toLowerCase().trim();
-  if (cueBuffers[lower]) return lower;
-  if (lower.includes('intro') && cueBuffers['intro']) return 'intro';
-  if ((lower.includes('pre-coro') || lower.includes('precoro') || lower.includes('pre chorus') || lower.includes('prechorus')) && cueBuffers['pre-coro']) return 'pre-coro';
-  if ((lower.includes('coro') || lower.includes('chorus')) && cueBuffers['coro']) return 'coro';
-  if ((lower.includes('verso') || lower.includes('verse')) && cueBuffers['verso']) return 'verso';
-  if ((lower.includes('puente') || lower.includes('bridge')) && cueBuffers['puente']) return 'puente';
-  if (lower.includes('solo') && cueBuffers['solo']) return 'solo';
-  if ((lower.includes('final') || lower.includes('outro') || lower.includes('ending')) && cueBuffers['final']) return 'final';
-  return '';
-};
-
-// Programador unificado de Guías de Voz: Coloca el conteo en el compás inmediatamente previo al inicio de la sección
-const scheduleSectionVoiceCues = (
-  sections: any[] | undefined,
-  bTimes: number[],
-  beatsPerMeasure: number,
-  preRollDuration: number,
-  cueBuffers: Record<string, any>,
-  schedule: (bufName: string, beatIndex: number) => void
-) => {
-  if (!bTimes || bTimes.length === 0 || beatsPerMeasure <= 0) return;
-
-  const scheduledBeats = new Set<number>();
-
-  // 1. Encontrar el índice de beat donde arranca físicamente la música (t = preRollDuration)
-  let songStartBeatIdx = 0;
-  let minStartDiff = Infinity;
-  for (let i = 0; i < bTimes.length; i++) {
-    const diff = Math.abs(bTimes[i] - preRollDuration);
-    if (diff < minStartDiff) {
-      minStartDiff = diff;
-      songStartBeatIdx = i;
-    }
-  }
-
-  // 2. Programar cues para todas las secciones válidas
-  const validSections = (sections || []).filter((s: any) => typeof s.time === 'number');
-  let hasHandledSongStart = false;
-
-  validSections.forEach((section: any) => {
-    const secTime = section.time + preRollDuration;
-    let nearestBeatIdx = -1;
-    let minDiff = Infinity;
-    for (let i = 0; i < bTimes.length; i++) {
-      const diff = Math.abs(bTimes[i] - secTime);
-      if (diff < minDiff) {
-        minDiff = diff;
-        nearestBeatIdx = i;
-      }
-    }
-
-    if (minDiff > 1.2 || nearestBeatIdx < beatsPerMeasure) return;
-
-    // El compás de conteo previo inicia exactamente 1 compás antes del downbeat de la sección
-    const leadInStartIdx = nearestBeatIdx - beatsPerMeasure;
-    const resolvedName = resolveCueBufferName(section.name || section.section || '', cueBuffers);
-
-    // Pulso 1 del compás de conteo: Nombre de sección (e.g. "Intro", "Coro") o '1' si no existe audio específico
-    const beat1Cue = resolvedName || '1';
-    if (!scheduledBeats.has(leadInStartIdx)) {
-      schedule(beat1Cue, leadInStartIdx);
-      scheduledBeats.add(leadInStartIdx);
-    }
-
-    // Pulsos 2 .. beatsPerMeasure en conteo progresivo natural: '2', '3', '4' hacia el golpe 1
-    for (let b = 2; b <= beatsPerMeasure; b++) {
-      const bIdx = leadInStartIdx + (b - 1);
-      const cueNum = String(b);
-      if (cueBuffers[cueNum] && !scheduledBeats.has(bIdx)) {
-        schedule(cueNum, bIdx);
-        scheduledBeats.add(bIdx);
-      }
-    }
-
-    if (Math.abs(nearestBeatIdx - songStartBeatIdx) <= 1) {
-      hasHandledSongStart = true;
-    }
-  });
-
-  // 3. Fallback inteligente: Si no hay sección creada al inicio (t = preRollDuration),
-  // programar el conteo previo para que el tema no comience en seco sin aviso
-  if (!hasHandledSongStart && songStartBeatIdx >= beatsPerMeasure) {
-    const leadInStartIdx = songStartBeatIdx - beatsPerMeasure;
-    const defaultCue = cueBuffers['intro'] ? 'intro' : '1';
-    if (!scheduledBeats.has(leadInStartIdx)) {
-      schedule(defaultCue, leadInStartIdx);
-      scheduledBeats.add(leadInStartIdx);
-    }
-    for (let b = 2; b <= beatsPerMeasure; b++) {
-      const bIdx = leadInStartIdx + (b - 1);
-      const cueNum = String(b);
-      if (cueBuffers[cueNum] && !scheduledBeats.has(bIdx)) {
-        schedule(cueNum, bIdx);
-        scheduledBeats.add(bIdx);
-      }
-    }
-  }
-};
 
 export const useAudioEngine = (initialStems: StemTrack[]) => {
   const audioContext = useRef<AudioContext | null>(null);

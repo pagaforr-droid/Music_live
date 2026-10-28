@@ -4,6 +4,7 @@ import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
 import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
+import { loadCueBuffers, synthesizeLiveCueBuffer, CueBuffersMap, CueOffsetsMap } from '../utils/cueEngine';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -65,6 +66,21 @@ export default function LiveConcert() {
   const [routingMode, setRoutingMode] = useState<'StereoSplit' | 'MultiChannel'>('StereoSplit');
 
   const [isRefreshingSong, setIsRefreshingSong] = useState(false);
+
+  // Cache en RAM de Guías de Voz para generación dinámica con cero latencia
+  const cueBuffersCache = useRef<CueBuffersMap>({});
+  const cueOffsetsCache = useRef<CueOffsetsMap>({});
+
+  useEffect(() => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    loadCueBuffers(audioCtxRef.current).then(({ cueBuffers, cueOffsets }) => {
+      cueBuffersCache.current = cueBuffers;
+      cueOffsetsCache.current = cueOffsets;
+      console.log('[LiveConcert] ✅ Guías de voz precargadas en RAM:', Object.keys(cueBuffers).length);
+    });
+  }, []);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
   // Modo Concierto (Stage Lock / Key Arms)
@@ -425,31 +441,44 @@ export default function LiveConcert() {
     const targetFohUrl = mode === 'REHEARSAL' && song.foh_mobile_url ? song.foh_mobile_url : song.foh_mix_url;
     const targetCueUrl = mode === 'REHEARSAL' && song.cue_mobile_url ? song.cue_mobile_url : song.cue_mix_url;
 
-    if (!targetFohUrl || !targetCueUrl) {
-       setLoadStatus('Falta exportar el Mix En Vivo de esta canción en Studio Prompter.');
+    if (!targetFohUrl) {
+       setLoadStatus('Falta exportar el Mix En Vivo (FOH) de esta canción en Studio Prompter.');
        return;
     }
 
     setIsLoading(true);
-    setLoadStatus(mode === 'REHEARSAL' ? 'Cargando Audio Ligero de Práctica...' : 'Cargando Audio Master de Consola (FOH + Músicos)...');
+    setLoadStatus(mode === 'REHEARSAL' ? 'Cargando Audio Ligero de Práctica...' : 'Cargando Audio Master de Consola (FOH)...');
     
     try {
-      const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl),
-        fetch(targetCueUrl),
-      ]);
-      const [fohArray, cueArray] = await Promise.all([
-        fohRes.arrayBuffer(),
-        cueRes.arrayBuffer(),
-      ]);
+      const fohRes = await fetch(targetFohUrl);
+      const fohArray = await fohRes.arrayBuffer();
       setLoadStatus('Decodificando canales en RAM (Cero Latencia)...');
-      const [decodedFoh, decodedCue] = await Promise.all([
-        audioCtxRef.current.decodeAudioData(fohArray),
-        audioCtxRef.current.decodeAudioData(cueArray),
-      ]);
+      const decodedFoh = await audioCtxRef.current.decodeAudioData(fohArray);
       fohBufferRef.current = decodedFoh;
+
+      // Generación o decodificación del CUE en RAM con sincronía matemática perfecta
+      let decodedCue: AudioBuffer | null = null;
+      if (song.prompter_data && song.prompter_data.bpm) {
+        if (Object.keys(cueBuffersCache.current).length === 0) {
+          const loaded = await loadCueBuffers(audioCtxRef.current);
+          cueBuffersCache.current = loaded.cueBuffers;
+          cueOffsetsCache.current = loaded.cueOffsets;
+        }
+        setLoadStatus('Sincronizando Metrónomo IA y Voz Guía en RAM...');
+        decodedCue = await synthesizeLiveCueBuffer(
+          audioCtxRef.current,
+          song.prompter_data,
+          decodedFoh.duration,
+          cueBuffersCache.current,
+          cueOffsetsCache.current
+        );
+      } else if (targetCueUrl) {
+        const cueRes = await fetch(targetCueUrl);
+        const cueArray = await cueRes.arrayBuffer();
+        decodedCue = await audioCtxRef.current.decodeAudioData(cueArray);
+      }
+
       cueBufferRef.current = decodedCue;
-      
       setTotalDuration(fohBufferRef.current.duration);
       setLoadStatus('');
       
@@ -479,19 +508,30 @@ export default function LiveConcert() {
 
     isPrefetchingRef.current = true;
     try {
-      const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl),
-        fetch(targetCueUrl),
-      ]);
-      const [fohArray, cueArray] = await Promise.all([
-        fohRes.arrayBuffer(),
-        cueRes.arrayBuffer(),
-      ]);
+      const fohRes = await fetch(targetFohUrl);
+      const fohArray = await fohRes.arrayBuffer();
       if (!audioCtxRef.current) return;
-      const [fohBuf, cueBuf] = await Promise.all([
-        audioCtxRef.current.decodeAudioData(fohArray),
-        audioCtxRef.current.decodeAudioData(cueArray),
-      ]);
+      const fohBuf = await audioCtxRef.current.decodeAudioData(fohArray);
+      
+      let cueBuf: AudioBuffer | null = null;
+      if (nextSong.prompter_data && nextSong.prompter_data.bpm) {
+        if (Object.keys(cueBuffersCache.current).length === 0) {
+          const loaded = await loadCueBuffers(audioCtxRef.current);
+          cueBuffersCache.current = loaded.cueBuffers;
+          cueOffsetsCache.current = loaded.cueOffsets;
+        }
+        cueBuf = await synthesizeLiveCueBuffer(
+          audioCtxRef.current,
+          nextSong.prompter_data,
+          fohBuf.duration,
+          cueBuffersCache.current,
+          cueOffsetsCache.current
+        );
+      } else if (targetCueUrl) {
+        const cueRes = await fetch(targetCueUrl);
+        const cueArray = await cueRes.arrayBuffer();
+        cueBuf = await audioCtxRef.current.decodeAudioData(cueArray);
+      }
       nextFohBufferRef.current = fohBuf;
       nextCueBufferRef.current = cueBuf;
     } catch (e) {
