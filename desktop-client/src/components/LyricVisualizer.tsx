@@ -1322,7 +1322,8 @@ export function renderLyricCanvasFrame(
         const dotCount = 4;
         const dotSpacing = 24;
         const startDotX = canvasW / 2 - ((dotCount - 1) * dotSpacing) / 2;
-        const activeDotIdx = Math.floor((timeMs / beatDurationMs) % dotCount);
+        const rawDot = Math.floor(timeMs / beatDurationMs) % dotCount;
+        const activeDotIdx = ((rawDot % dotCount) + dotCount) % dotCount;
 
         for (let d = 0; d < dotCount; d++) {
           const dotX = startDotX + d * dotSpacing;

@@ -29,6 +29,108 @@ const generateClickBuffer = (ctx: AudioContext, frequency: number) => {
   return buffer;
 };
 
+// Resolver de forma inteligente el archivo de voz guía según el nombre de sección (Español / Inglés)
+const resolveCueBufferName = (rawName: string, cueBuffers: Record<string, any>): string => {
+  const lower = (rawName || '').toLowerCase().trim();
+  if (cueBuffers[lower]) return lower;
+  if (lower.includes('intro') && cueBuffers['intro']) return 'intro';
+  if ((lower.includes('pre-coro') || lower.includes('precoro') || lower.includes('pre chorus') || lower.includes('prechorus')) && cueBuffers['pre-coro']) return 'pre-coro';
+  if ((lower.includes('coro') || lower.includes('chorus')) && cueBuffers['coro']) return 'coro';
+  if ((lower.includes('verso') || lower.includes('verse')) && cueBuffers['verso']) return 'verso';
+  if ((lower.includes('puente') || lower.includes('bridge')) && cueBuffers['puente']) return 'puente';
+  if (lower.includes('solo') && cueBuffers['solo']) return 'solo';
+  if ((lower.includes('final') || lower.includes('outro') || lower.includes('ending')) && cueBuffers['final']) return 'final';
+  return '';
+};
+
+// Programador unificado de Guías de Voz: Coloca el conteo en el compás inmediatamente previo al inicio de la sección
+const scheduleSectionVoiceCues = (
+  sections: any[] | undefined,
+  bTimes: number[],
+  beatsPerMeasure: number,
+  preRollDuration: number,
+  cueBuffers: Record<string, any>,
+  schedule: (bufName: string, beatIndex: number) => void
+) => {
+  if (!bTimes || bTimes.length === 0 || beatsPerMeasure <= 0) return;
+
+  const scheduledBeats = new Set<number>();
+
+  // 1. Encontrar el índice de beat donde arranca físicamente la música (t = preRollDuration)
+  let songStartBeatIdx = 0;
+  let minStartDiff = Infinity;
+  for (let i = 0; i < bTimes.length; i++) {
+    const diff = Math.abs(bTimes[i] - preRollDuration);
+    if (diff < minStartDiff) {
+      minStartDiff = diff;
+      songStartBeatIdx = i;
+    }
+  }
+
+  // 2. Programar cues para todas las secciones válidas
+  const validSections = (sections || []).filter((s: any) => typeof s.time === 'number');
+  let hasHandledSongStart = false;
+
+  validSections.forEach((section: any) => {
+    const secTime = section.time + preRollDuration;
+    let nearestBeatIdx = -1;
+    let minDiff = Infinity;
+    for (let i = 0; i < bTimes.length; i++) {
+      const diff = Math.abs(bTimes[i] - secTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nearestBeatIdx = i;
+      }
+    }
+
+    if (minDiff > 1.2 || nearestBeatIdx < beatsPerMeasure) return;
+
+    // El compás de conteo previo inicia exactamente 1 compás antes del downbeat de la sección
+    const leadInStartIdx = nearestBeatIdx - beatsPerMeasure;
+    const resolvedName = resolveCueBufferName(section.name || section.section || '', cueBuffers);
+
+    // Pulso 1 del compás de conteo: Nombre de sección (e.g. "Intro", "Coro") o '1' si no existe audio específico
+    const beat1Cue = resolvedName || '1';
+    if (!scheduledBeats.has(leadInStartIdx)) {
+      schedule(beat1Cue, leadInStartIdx);
+      scheduledBeats.add(leadInStartIdx);
+    }
+
+    // Pulsos 2 .. beatsPerMeasure en conteo progresivo natural: '2', '3', '4' hacia el golpe 1
+    for (let b = 2; b <= beatsPerMeasure; b++) {
+      const bIdx = leadInStartIdx + (b - 1);
+      const cueNum = String(b);
+      if (cueBuffers[cueNum] && !scheduledBeats.has(bIdx)) {
+        schedule(cueNum, bIdx);
+        scheduledBeats.add(bIdx);
+      }
+    }
+
+    if (Math.abs(nearestBeatIdx - songStartBeatIdx) <= 1) {
+      hasHandledSongStart = true;
+    }
+  });
+
+  // 3. Fallback inteligente: Si no hay sección creada al inicio (t = preRollDuration),
+  // programar el conteo previo para que el tema no comience en seco sin aviso
+  if (!hasHandledSongStart && songStartBeatIdx >= beatsPerMeasure) {
+    const leadInStartIdx = songStartBeatIdx - beatsPerMeasure;
+    const defaultCue = cueBuffers['intro'] ? 'intro' : '1';
+    if (!scheduledBeats.has(leadInStartIdx)) {
+      schedule(defaultCue, leadInStartIdx);
+      scheduledBeats.add(leadInStartIdx);
+    }
+    for (let b = 2; b <= beatsPerMeasure; b++) {
+      const bIdx = leadInStartIdx + (b - 1);
+      const cueNum = String(b);
+      if (cueBuffers[cueNum] && !scheduledBeats.has(bIdx)) {
+        schedule(cueNum, bIdx);
+        scheduledBeats.add(bIdx);
+      }
+    }
+  }
+};
+
 export const useAudioEngine = (initialStems: StemTrack[]) => {
   const audioContext = useRef<AudioContext | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -503,16 +605,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       const manualOffset = (prompterData.beatTimes && prompterData.beatTimes.length > 0) ? manualGridOffset : 0;
 
-      prompterData.sections.forEach((section: any) => {
-         const secTime = section.time + preRollDuration;
-         let nearestBeatIdx = 0;
-         let minDiff = Infinity;
-         for (let i = 0; i < bTimes.length; i++) {
-            const diff = Math.abs(bTimes[i] - secTime);
-            if (diff < minDiff) { minDiff = diff; nearestBeatIdx = i; }
-         }
-         
-         const schedule = (bufName: string, bIdx: number) => {
+      const schedule = (bufName: string, bIdx: number) => {
             const buf = cueBuffersRef.current[bufName];
             const cueOffset = cueOffsetsRef.current[bufName] || 0;
             if (buf && bIdx >= 0 && bIdx < bTimes.length) {
@@ -534,18 +627,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                }
             }
          };
-         
-         let sName = (section.name || section.section || '').toLowerCase();
-         if (!cueBuffersRef.current[sName]) sName = '';
-         
-         if (section.time < 0.5) {
-            if (sName) schedule(sName, 0);
-            schedule('3', 1); schedule('2', 2); schedule('1', 3);
-         } else if (minDiff < 1.0 && nearestBeatIdx >= 4) {
-            if (sName) schedule(sName, nearestBeatIdx - 4);
-            schedule('3', nearestBeatIdx - 3); schedule('2', nearestBeatIdx - 2); schedule('1', nearestBeatIdx - 1);
-         }
-      });
+
+         const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
+         scheduleSectionVoiceCues(
+            prompterData.sections,
+            bTimes,
+            beatsPerMeasure,
+            preRollDuration,
+            cueBuffersRef.current,
+            schedule
+         );
     }
     
     startTime.current = now - globalOffset;
@@ -816,16 +907,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
            }
            const manualOffset = (prompterData.beatTimes && prompterData.beatTimes.length > 0) ? manualGridOffset : 0;
 
-           prompterData.sections.forEach((section: any) => {
-              const secTime = section.time + preRollDuration;
-              let nearestBeatIdx = 0;
-              let minDiff = Infinity;
-              for (let i = 0; i < bTimes.length; i++) {
-                 const diff = Math.abs(bTimes[i] - secTime);
-                 if (diff < minDiff) { minDiff = diff; nearestBeatIdx = i; }
-              }
-              
-              const schedule = (bufName: string, bIdx: number) => {
+           const schedule = (bufName: string, bIdx: number) => {
                  const buf = cueBuffersRef.current[bufName];
                  const cueOffset = cueOffsetsRef.current[bufName] || 0;
                  if (buf && bIdx >= 0 && bIdx < bTimes.length) {
@@ -845,18 +927,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                     }
                  }
               };
-              
-              let sName = (section.name || section.section || '').toLowerCase();
-              if (!cueBuffersRef.current[sName]) sName = '';
-              
-              if (section.time < 0.5) {
-                 if (sName) schedule(sName, 0);
-                 schedule('3', 1); schedule('2', 2); schedule('1', 3);
-              } else if (minDiff < 1.0 && nearestBeatIdx >= 4) {
-                 if (sName) schedule(sName, nearestBeatIdx - 4);
-                 schedule('3', nearestBeatIdx - 3); schedule('2', nearestBeatIdx - 2); schedule('1', nearestBeatIdx - 1);
-              }
-           });
+
+              const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
+              scheduleSectionVoiceCues(
+                 prompterData.sections,
+                 bTimes,
+                 beatsPerMeasure,
+                 preRollDuration,
+                 cueBuffersRef.current,
+                 schedule
+              );
         }
       }
 
@@ -1143,16 +1223,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
            }
            const manualOffset = (prompterData.beatTimes && prompterData.beatTimes.length > 0) ? manualGridOffset : 0;
 
-           prompterData.sections.forEach((section: any) => {
-              const secTime = section.time + preRollDuration;
-              let nearestBeatIdx = 0;
-              let minDiff = Infinity;
-              for (let j = 0; j < bTimes.length; j++) {
-                 const diff = Math.abs(bTimes[j] - secTime);
-                 if (diff < minDiff) { minDiff = diff; nearestBeatIdx = j; }
-              }
-              
-              const schedule = (bufName: string, bIdx: number) => {
+           const schedule = (bufName: string, bIdx: number) => {
                  const buf = cueBuffersRef.current[bufName];
                  const cueOffset = cueOffsetsRef.current[bufName] || 0;
                  if (buf && bIdx >= 0 && bIdx < bTimes.length) {
@@ -1172,18 +1243,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                     }
                  }
               };
-              
-              let sName = (section.name || section.section || '').toLowerCase();
-              if (!cueBuffersRef.current[sName]) sName = '';
-              
-              if (section.time < 0.5) {
-                 if (sName) schedule(sName, 0);
-                 schedule('3', 1); schedule('2', 2); schedule('1', 3);
-              } else if (minDiff < 1.0 && nearestBeatIdx >= 4) {
-                 if (sName) schedule(sName, nearestBeatIdx - 4);
-                 schedule('3', nearestBeatIdx - 3); schedule('2', nearestBeatIdx - 2); schedule('1', nearestBeatIdx - 1);
-              }
-           });
+
+              const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
+              scheduleSectionVoiceCues(
+                 prompterData.sections,
+                 bTimes,
+                 beatsPerMeasure,
+                 preRollDuration,
+                 cueBuffersRef.current,
+                 schedule
+              );
         }
       } else {
         const buffer = buffers.current.get(stem.id);
@@ -1339,16 +1408,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
            }
            const manualOffset = (prompterData.beatTimes && prompterData.beatTimes.length > 0) ? manualGridOffset : 0;
 
-           prompterData.sections.forEach((section: any) => {
-              const secTime = section.time + preRollDuration;
-              let nearestBeatIdx = 0;
-              let minDiff = Infinity;
-              for (let j = 0; j < bTimes.length; j++) {
-                 const diff = Math.abs(bTimes[j] - secTime);
-                 if (diff < minDiff) { minDiff = diff; nearestBeatIdx = j; }
-              }
-              
-              const schedule = (bufName: string, bIdx: number) => {
+           const schedule = (bufName: string, bIdx: number) => {
                  const buf = cueBuffersRef.current[bufName];
                  const cueOffset = cueOffsetsRef.current[bufName] || 0;
                  if (buf && bIdx >= 0 && bIdx < bTimes.length) {
@@ -1368,18 +1428,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                     }
                  }
               };
-              
-              let sName = (section.name || section.section || '').toLowerCase();
-              if (!cueBuffersRef.current[sName]) sName = '';
-              
-              if (section.time < 0.5) {
-                 if (sName) schedule(sName, 0);
-                 schedule('3', 1); schedule('2', 2); schedule('1', 3);
-              } else if (minDiff < 1.0 && nearestBeatIdx >= 4) {
-                 if (sName) schedule(sName, nearestBeatIdx - 4);
-                 schedule('3', nearestBeatIdx - 3); schedule('2', nearestBeatIdx - 2); schedule('1', nearestBeatIdx - 1);
-              }
-           });
+
+              const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
+              scheduleSectionVoiceCues(
+                 prompterData.sections,
+                 bTimes,
+                 beatsPerMeasure,
+                 preRollDuration,
+                 cueBuffersRef.current,
+                 schedule
+              );
         }
       } else {
         const buffer = buffers.current.get(stem.id);

@@ -170,7 +170,10 @@ export const Prompter: React.FC<PrompterProps> = ({
     const totalBeats = Math.floor(rel / beatDur);
     const beatInBar = (((totalBeats % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
     const barNumber = Math.floor(totalBeats / beatsPerBar) + 1;
-    return { beatInBar, barNumber };
+    const isPreRoll = rel < 0;
+    // En pre-roll de 2 compases: totalBeats < -beatsPerBar es Compás 1 (-2), totalBeats >= -beatsPerBar es Compás 2 (-1)
+    const preRollBarIndex = totalBeats < -beatsPerBar ? 1 : 2;
+    return { beatInBar, barNumber, isPreRoll, preRollBarIndex };
   }, [currentTime, baseOffset, gridOffset, activeBpm, beatsPerBar]);
 
   // Auto-scroll logic horizontal based on currentTime
@@ -300,7 +303,7 @@ export const Prompter: React.FC<PrompterProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48]" />
               <h2 className="text-base font-bold text-black uppercase tracking-[0.14em] leading-none">
-                {currentTime < 0 ? 'CONTEO PRE-ROLL' : activeSection ? (activeSection.name || activeSection.section) : 'EN ESPERA'}
+                {currentTime < 0 ? (currentBeatInfo.preRollBarIndex === 1 ? 'CONTEO PRE-ROLL (TEMPO)' : 'CONTEO PRE-ROLL (VOZ GUÍA)') : activeSection ? (activeSection.name || activeSection.section) : 'EN ESPERA'}
               </h2>
             </div>
             <p className="text-[10px] text-zinc-500 font-mono mt-1.5 uppercase tracking-wider pl-4">
@@ -313,7 +316,7 @@ export const Prompter: React.FC<PrompterProps> = ({
           {/* Indicador de Pulso del Compás en Tiempo Real (Fondo Blanco) */}
           <div className="apple-glass-island flex items-center gap-1.5 p-1 px-3 rounded-full bg-zinc-100 border border-zinc-200">
             <span className="text-[10px] font-mono font-semibold text-zinc-700 uppercase mr-1 tracking-wider tabular-nums">
-              {currentTime < 0 ? 'PRE' : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
+              {currentTime < 0 ? `PRE ${currentBeatInfo.preRollBarIndex}/2` : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
             </span>
             {Array.from({ length: beatsPerBar }).map((_, bIdx) => {
               const beatNum = bIdx + 1;
