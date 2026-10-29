@@ -251,7 +251,8 @@ class Predictor(BasePredictor):
         ghost_midi_bass: bool = True,
         constellation_poison: bool = False,
         lock_original_pitch: bool = True,
-        pitch_mode: str = "a432_detune",
+        pitch_mode: str = "drop_semitone",
+        smart_remix: bool = True,
         tape_warmth_bed: bool = True,
         side_bloom: bool = True,
         anti_suno_humanizer: bool = True,
@@ -268,15 +269,33 @@ class Predictor(BasePredictor):
         length = wav_f64.shape[-1]
         t = np.arange(length, dtype=np.float64)
 
-        resolved_pitch_mode = pitch_mode if pitch_mode in ("a432_detune", "lock_440", "varispeed_up") else (
-            "a432_detune" if lock_original_pitch else "varispeed_up"
+        resolved_pitch_mode = pitch_mode if pitch_mode in ("drop_semitone", "a432_detune", "detune_down", "lock_440", "varispeed_up") else (
+            "drop_semitone" if lock_original_pitch else "varispeed_up"
         )
 
         # ==================================================================
-        # 1. Pitch & Speed Control: A=432 Hz (-31.8c, 100% Phase Coherent)
+        # 1. Pitch & Speed Control: Drop Eb (-100c), A=432 Hz (-31.8c), Detune (-50c)
         #    OR Pure Lock 440 Hz OR Varispeed (+2% to +4%)
         # ==================================================================
-        if resolved_pitch_mode == "a432_detune":
+        if resolved_pitch_mode == "drop_semitone":
+            base_speed = 2.0 ** (-1.0 / 12.0)
+            n_est = int((length - 4) / base_speed)
+            t_warp = np.clip(base_speed * np.arange(n_est, dtype=np.float64) + 1.0, 1.0, length - 3.01)
+            y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
+            for ch in range(wav_f64.shape[0]):
+                y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
+            n_out = y_processed.shape[-1]
+            t_out = np.arange(n_out, dtype=np.float64) / sr
+        elif resolved_pitch_mode == "detune_down":
+            base_speed = 2.0 ** (-0.5 / 12.0)
+            n_est = int((length - 4) / base_speed)
+            t_warp = np.clip(base_speed * np.arange(n_est, dtype=np.float64) + 1.0, 1.0, length - 3.01)
+            y_processed = np.zeros((wav_f64.shape[0], len(t_warp)), dtype=np.float64)
+            for ch in range(wav_f64.shape[0]):
+                y_processed[ch] = cls._cubic_catmull_rom_1d(wav_f64[ch], t_warp)
+            n_out = y_processed.shape[-1]
+            t_out = np.arange(n_out, dtype=np.float64) / sr
+        elif resolved_pitch_mode == "a432_detune":
             base_speed = 432.0 / 440.0
             n_est = int((length - 4) / base_speed)
             t_warp = np.clip(base_speed * np.arange(n_est, dtype=np.float64) + 1.0, 1.0, length - 3.01)
@@ -319,6 +338,31 @@ class Predictor(BasePredictor):
 
             n_out = y_processed.shape[-1]
             t_out = np.arange(n_out, dtype=np.float64) / sr
+
+        # ==================================================================
+        # 1A. Smart Dynamic Stem/Spectral Remixer (In-Flight Multi-Element Rebalancing)
+        # ==================================================================
+        if smart_remix and y_processed.shape[0] >= 2:
+            mid = 0.5 * (y_processed[0] + y_processed[1])
+            side = 0.5 * (y_processed[0] - y_processed[1])
+
+            # Pocket vocal mid body (400 Hz - 3500 Hz)
+            b_mid, a_mid = signal.butter(2, [400.0 / (sr / 2.0), 3500.0 / (sr / 2.0)], btype="bandpass")
+            vocal_mid = signal.filtfilt(b_mid, a_mid, mid)
+            mid = mid - 0.10 * vocal_mid
+
+            # High percussive transient edge (>3000 Hz)
+            b_punch, a_punch = signal.butter(2, 3000.0 / (sr / 2.0), btype="highpass")
+            punch_l = signal.filtfilt(b_punch, a_punch, y_processed[0])
+            punch_r = signal.filtfilt(b_punch, a_punch, y_processed[1])
+
+            # Side 3D expansion (>300 Hz)
+            b_side, a_side = signal.butter(2, 300.0 / (sr / 2.0), btype="highpass")
+            side_highs = signal.filtfilt(b_side, a_side, side)
+            side = side + 0.14 * side_highs
+
+            y_processed[0] = mid + side + 0.09 * punch_l
+            y_processed[1] = mid - side + 0.09 * punch_r
 
         # ==================================================================
         # 1B. Suno AI Neutralizer v2: Ultrasonic Cutoff, 5 Notches, Neural Grid Disruptor
@@ -746,9 +790,13 @@ class Predictor(BasePredictor):
             default="stealth",
         ),
         pitch_mode: str = Input(
-            description="Modo de afinación: a432_detune (-31.8c A=432Hz + Detune ±6c), lock_440 (Tono original 440Hz), varispeed_up (+3% rápido)",
-            choices=["a432_detune", "lock_440", "varispeed_up"],
-            default="a432_detune",
+            description="Modo de afinación: drop_semitone (-100c Eb Drop), a432_detune (-31.8c A=432Hz), detune_down (-50c), lock_440 (Tono original 440Hz), varispeed_up (+3% rápido)",
+            choices=["drop_semitone", "a432_detune", "detune_down", "lock_440", "varispeed_up"],
+            default="drop_semitone",
+        ),
+        smart_remix: bool = Input(
+            description="Remezcla dinámica espectral: balance de bolsillo vocal, transientes rítmicos y dimensión Side 3D",
+            default=True,
         ),
         lock_original_pitch: bool = Input(
             description="Compatibilidad legado: si pitch_mode no se define, True fija afinación natural sin acelerar",
@@ -800,6 +848,7 @@ class Predictor(BasePredictor):
             constellation_poison=constellation_poison,
             lock_original_pitch=lock_original_pitch,
             pitch_mode=pitch_mode,
+            smart_remix=smart_remix,
             anti_suno_humanizer=anti_suno_humanizer,
             human_transient_punch=human_transient_punch,
             tape_warmth_bed=tape_warmth_bed,

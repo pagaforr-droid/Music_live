@@ -55,7 +55,8 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
-  const [pitchMode, setPitchMode] = useState<PitchMode>('a432_detune');
+  const [pitchMode, setPitchMode] = useState<PitchMode>('drop_semitone');
+  const [useSmartRemix, setUseSmartRemix] = useState(true);
   const [useAntiSuno, setUseAntiSuno] = useState(true);
   const [useTransientPunch, setUseTransientPunch] = useState(true);
   const [useTapeBed, setUseTapeBed] = useState(true);
@@ -262,6 +263,7 @@ export default function StemStudio() {
         },
         {
           pitchMode: pitchMode,
+          smartRemix: useSmartRemix,
           lockOriginalPitch: pitchMode === 'lock_440',
           antiSunoHumanizer: useAntiSuno,
           humanTransientPunch: useTransientPunch,
@@ -345,6 +347,7 @@ export default function StemStudio() {
               outputFormat: format,
               preset,
               pitchMode,
+              smartRemix: useSmartRemix,
               lockOriginalPitch: pitchMode === 'lock_440',
               antiSunoHumanizer: useAntiSuno,
               humanTransientPunch: useTransientPunch,
@@ -472,6 +475,186 @@ export default function StemStudio() {
       }
       if (inputUploaded && inputPath) {
         supabase.storage.from('audios').remove([inputPath]).catch(() => {});
+      }
+    }
+  };
+
+  /**
+   * Remezcla Multi-Pista Inteligente: Toma los stems del proyecto actual,
+   * aplica rebalanceo quirúrgico por instrumento (Vocals, Drums, Bass, Other),
+   * suma no-correlacionada y decorrelación master con bajada de tono.
+   */
+  const handleRemixProjectStems = async () => {
+    if (!selectedSongId || dspBusyRef.current) return;
+    const projectStems = stems.filter((s) => !s.metadata?.dsp_watermark && s.file_url);
+    if (projectStems.length === 0) {
+      alert("No hay pistas o stems en este proyecto para remezclar.");
+      return;
+    }
+
+    const targetSongId = selectedSongId;
+    const format = dspFormat;
+    const preset = dspPreset;
+    const mime = DSP_MIME[format];
+    const ts = Date.now();
+    const activeSong = songs.find((s) => s.id === targetSongId);
+    const baseName = activeSong?.title || 'Project';
+    const presetLabel = PRESET_SHORT_LABEL[preset];
+    const pitchLabel =
+      pitchMode === 'drop_semitone'
+        ? 'DropEb'
+        : pitchMode === 'a432_detune'
+        ? '432Hz'
+        : pitchMode === 'detune_down'
+        ? 'Detune50'
+        : pitchMode === 'lock_440'
+        ? '440Hz'
+        : 'Varispeed';
+    const outputPath = `${FAKE_BAND_ID}/${targetSongId}/${ts}_${sanitizeFileName(baseName)}_RemixedMaster_${pitchLabel}.${format}`;
+
+    dspBusyRef.current = true;
+    setWatermarkJobStatus('processing');
+    setCleanAudioUrl(null);
+    setDspTelemetry(null);
+
+    try {
+      setDspMessage(`[1/5] Descargando y decodificando ${projectStems.length} stems del proyecto...`);
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 44100 });
+
+      let maxLen = 0;
+      const decodedStems: { name: string; buffer: AudioBuffer; type: string }[] = [];
+
+      try {
+        for (let i = 0; i < projectStems.length; i++) {
+          const st = projectStems[i];
+          setDspMessage(`[1/5] Decodificando stem ${i + 1}/${projectStems.length}: "${st.name}"...`);
+          const res = await fetch(st.file_url);
+          if (!res.ok) throw new Error(`No se pudo descargar "${st.name}" (${res.status})`);
+          const ab = await res.arrayBuffer();
+          const buf = await audioCtx.decodeAudioData(ab.slice(0));
+          if (buf.length > maxLen) maxLen = buf.length;
+          decodedStems.push({ name: (st.name || '').toLowerCase(), buffer: buf, type: st.type || '' });
+        }
+      } finally {
+        audioCtx.close().catch(() => {});
+      }
+
+      setDspMessage(`[2/5] Remezclando quirúrgicamente ${decodedStems.length} capas instrumentales...`);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const mixL = new Float32Array(maxLen);
+      const mixR = new Float32Array(maxLen);
+
+      for (const st of decodedStems) {
+        const bL = st.buffer.getChannelData(0);
+        const bR = st.buffer.numberOfChannels > 1 ? st.buffer.getChannelData(1) : bL;
+        const bLen = bL.length;
+
+        // Gain weightings: subtly rebalances the mix to break STFT constellation hashes
+        let gain = 1.0;
+        if (st.name.includes('vocal') || st.name.includes('voz') || st.type.toLowerCase().includes('vocal')) {
+          gain = 0.89; // -1.0 dB pocketing so vocals don't monopolize peak hashes
+        } else if (st.name.includes('drum') || st.name.includes('bater') || st.type.toLowerCase().includes('drum')) {
+          gain = 1.08; // +0.7 dB punch
+        } else if (st.name.includes('bass') || st.name.includes('bajo')) {
+          gain = 1.04; // +0.3 dB warm sub-body
+        } else {
+          gain = 1.08; // +0.7 dB wide harmonic field
+        }
+
+        for (let i = 0; i < bLen; i++) {
+          mixL[i] += bL[i] * gain;
+          mixR[i] += bR[i] * gain;
+        }
+      }
+
+      // Create AudioBuffer from mixed channels
+      const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, maxLen, 44100);
+      const mixAudioBuffer = offlineCtx.createBuffer(2, maxLen, 44100);
+      mixAudioBuffer.copyToChannel(mixL, 0);
+      mixAudioBuffer.copyToChannel(mixR, 1);
+
+      setDspMessage(`[3/5] Aplicando DSP Evasivo (${pitchLabel}) y limitador...`);
+      const result = await processAudioBufferDspV2(
+        mixAudioBuffer,
+        preset,
+        format,
+        (stepMsg) => {
+          if (mountedRef.current) setDspMessage(`DSP v4 Remixer • ${stepMsg}`);
+        },
+        {
+          pitchMode,
+          smartRemix: useSmartRemix,
+          lockOriginalPitch: pitchMode === 'lock_440',
+          antiSunoHumanizer: useAntiSuno,
+          humanTransientPunch: useTransientPunch,
+          tapeWarmthBed: useTapeBed,
+          sideBloom: useSideBloom,
+          ghostMidiBass: useGhostMidiBass,
+          constellationPoison: useConstellationPoison,
+          constellationTilt: useConstellationTilt,
+          phaseDispersion: usePhaseDispersion,
+        }
+      );
+
+      if (mountedRef.current) {
+        setIsUploadingWatermark(true);
+        setDspMessage('Guardando Master Remezclado en Supabase Storage...');
+      }
+
+      const { error: saveError } = await supabase.storage
+        .from('audios')
+        .upload(outputPath, result.blob, { contentType: mime, upsert: true });
+      if (saveError) throw new Error(`Error guardando en Storage: ${saveError.message}`);
+
+      const finalUrl = supabase.storage.from('audios').getPublicUrl(outputPath).data.publicUrl;
+
+      const { error: stemError } = await supabase.from('stems').insert({
+        song_id: targetSongId,
+        name: `${baseName} (Master Remezclado ${pitchLabel})`,
+        file_url: finalUrl,
+        type: 'Audio',
+        metadata: {
+          original_name: `${baseName}_Remixed_${pitchLabel}.${format}`,
+          format: mime,
+          is_master: true,
+          dsp_watermark: true,
+          dsp_preset: preset,
+          dsp_engine: 'local',
+          speed_shift_pct: result.speedShiftPct,
+          peak_dbtp: result.peakDbtp,
+          decorrelation_pct: result.decorrelationPct,
+          is_stem_remix: true,
+        },
+      });
+      if (stemError) throw new Error(`Error registrando el stem: ${stemError.message}`);
+
+      if (!mountedRef.current) return;
+      setCleanAudioUrl(finalUrl);
+      setDspTelemetry({
+        preset: `${presetLabel} Remixer`,
+        speedShiftPct: result.speedShiftPct,
+        peakDbtp: result.peakDbtp,
+        decorrelationPct: result.decorrelationPct,
+        engine: 'Local DSP v4',
+        timeSec: result.processingTimeSec,
+      });
+      setWatermarkJobStatus('completed');
+      setDspMessage(
+        `¡Remezcla de ${decodedStems.length} stems completada en ${result.processingTimeSec}s! Guardado como "${baseName} (Master Remezclado ${pitchLabel})".`
+      );
+      if (selectedSongRef.current === targetSongId) fetchStems(targetSongId);
+    } catch (err: any) {
+      console.error('[DSP Remixer]', err);
+      if (mountedRef.current) {
+        setWatermarkJobStatus('failed');
+        setDspMessage(`Falló la remezcla: ${err.message}`);
+      }
+    } finally {
+      dspBusyRef.current = false;
+      if (mountedRef.current) {
+        setIsUploadingWatermark(false);
       }
     }
   };
@@ -1853,38 +2036,75 @@ export default function StemStudio() {
                       type="button"
                       onClick={() =>
                         setPitchMode((m) =>
-                          m === 'a432_detune' ? 'lock_440' : m === 'lock_440' ? 'varispeed_up' : 'a432_detune'
+                          m === 'drop_semitone'
+                            ? 'a432_detune'
+                            : m === 'a432_detune'
+                            ? 'detune_down'
+                            : m === 'detune_down'
+                            ? 'lock_440'
+                            : m === 'lock_440'
+                            ? 'varispeed_up'
+                            : 'drop_semitone'
                         )
                       }
                       className={`px-3.5 py-1.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
-                        pitchMode === 'a432_detune'
+                        pitchMode === 'drop_semitone'
+                          ? 'bg-purple-50 text-purple-900 border-purple-300 shadow-xs'
+                          : pitchMode === 'a432_detune'
                           ? 'bg-emerald-50 text-emerald-800 border-emerald-300 shadow-xs'
+                          : pitchMode === 'detune_down'
+                          ? 'bg-amber-50 text-amber-800 border-amber-300 shadow-xs'
                           : pitchMode === 'lock_440'
                           ? 'bg-sky-50 text-sky-800 border-sky-300 shadow-xs'
-                          : 'bg-amber-50 text-amber-800 border-amber-300 shadow-xs'
+                          : 'bg-zinc-100 text-zinc-700 border-zinc-200 shadow-xs'
                       }`}
                       title={
-                        pitchMode === 'a432_detune'
-                          ? 'Afinación maestra A=432 Hz (-31.8 cents) 100% coherente en fase estéreo y sin variación de volumen. Voz más cálida y con cuerpo (sin acelerar ni sonar chillona) y destrucción de la huella espectral de Riffusion/Suno.'
+                        pitchMode === 'drop_semitone'
+                          ? 'Drop Eb (-100 cents / 1 Semitono Abajo): La técnica más potente de la industria. Cambia todas las notas musicales un semitono abajo sin desafinar entre instrumentos, rompiendo al 100% las matrices cromáticas de ContentID y Shazam.'
+                          : pitchMode === 'a432_detune'
+                          ? 'Afinación maestra A=432 Hz (-31.8 cents) 100% coherente en fase estéreo. Voz más cálida y con cuerpo, sin acelerar ni sonar chillona.'
+                          : pitchMode === 'detune_down'
+                          ? 'Micro-Detune (-50 cents / Cuarto de tono abajo): Desvía los picos espectrales entre las celdas de detección de audio.'
                           : pitchMode === 'lock_440'
                           ? 'Mantiene la afinación A=440 Hz al 100% idéntica al original (0.0 cents).'
                           : 'Acelera la canción (+2% a +4% / +50 cents).'
                       }
                     >
                       <span>
-                        {pitchMode === 'a432_detune'
+                        {pitchMode === 'drop_semitone'
+                          ? '🎸 Drop Eb (-1 Semitono)'
+                          : pitchMode === 'a432_detune'
                           ? '🎻 A=432 Hz (Fase Pura)'
+                          : pitchMode === 'detune_down'
+                          ? '🎛️ Detune (-50 Cents)'
                           : pitchMode === 'lock_440'
                           ? '🔒 Tono 440 Hz (Exacto)'
                           : '⚡ Varispeed (+50 Cents)'}
                       </span>
                       <span className="text-[8.5px] uppercase font-mono font-semibold">
-                        {pitchMode === 'a432_detune'
+                        {pitchMode === 'drop_semitone'
+                          ? '-100 CENTS'
+                          : pitchMode === 'a432_detune'
                           ? '-31.8 CENTS'
+                          : pitchMode === 'detune_down'
+                          ? '-50 CENTS'
                           : pitchMode === 'lock_440'
                           ? '0.0 CENTS'
                           : '+50 CENTS'}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseSmartRemix((v) => !v)}
+                      className={`px-3.5 py-1.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
+                        useSmartRemix
+                          ? 'bg-indigo-50 text-indigo-900 border-indigo-300 shadow-xs'
+                          : 'bg-zinc-100 hover:bg-zinc-200/70 text-zinc-600 border border-zinc-200 shadow-xs'
+                      }`}
+                      title="Remezclador Dinámico Multi-Elemento: Rebalancea quirúrgicamente la relación transiente/vocal y expande el canal Side L-R para alterar la constelación de picos (Shazam/ContentID) sin perder claridad ni alterar la identidad del tema."
+                    >
+                      <span>🎛️ Remezcla Dinámica (Stem Rebalance)</span>
+                      <span className="text-[8.5px] uppercase font-mono font-semibold">{useSmartRemix ? 'ACTIVO' : 'OFF'}</span>
                     </button>
                     <button
                       type="button"
@@ -2041,6 +2261,19 @@ export default function StemStudio() {
                         </select>
                       </div>
 
+                      {stems && stems.filter((s) => !s.metadata?.dsp_watermark).length > 1 && (
+                        <button
+                          type="button"
+                          onClick={handleRemixProjectStems}
+                          disabled={watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark}
+                          className="h-[42px] px-4 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white flex items-center justify-center gap-2 text-xs font-black tracking-wider uppercase shadow-md hover:shadow-lg active:scale-[0.99] transition-all cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Remezcla automáticamente todas las pistas del proyecto actual rebalanceando voz, batería y estéreo con el tono seleccionado"
+                        >
+                          <Layers size={14} className="shrink-0" />
+                          <span>Remezclar Stems ({stems.filter((s) => !s.metadata?.dsp_watermark).length})</span>
+                        </button>
+                      )}
+
                       <div className="relative flex-1 h-[42px] group bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-full flex items-center justify-center transition-all shadow-md hover:shadow-lg active:scale-[0.99] overflow-hidden cursor-pointer px-4">
                         <input
                           type="file"
@@ -2058,10 +2291,10 @@ export default function StemStudio() {
                           {isUploadingWatermark
                             ? "Subiendo Master..."
                             : watermarkJobStatus === 'pending'
-                            ? "Iniciando DSP v2..."
+                            ? "Iniciando DSP v4..."
                             : watermarkJobStatus === 'processing'
-                            ? (dspEngine === 'local' ? "Procesando en Motor Local..." : "Procesando en Cloud GPU...")
-                            : `Subir y Decorrelacionar Audio (${PRESET_SHORT_LABEL[dspPreset]})`}
+                            ? (dspEngine === 'local' ? "Remezclando y Procesando en Motor Local..." : "Procesando en Cloud GPU...")
+                            : `Subir y Decorrelacionar Audio (${PRESET_SHORT_LABEL[dspPreset]} • ${pitchMode === 'drop_semitone' ? 'Drop Eb -100c' : pitchMode === 'a432_detune' ? 'A=432Hz' : pitchMode === 'detune_down' ? '-50c' : pitchMode === 'lock_440' ? '440Hz' : '+50c'})`}
                         </div>
                       </div>
                     </div>

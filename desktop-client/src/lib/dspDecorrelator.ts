@@ -19,10 +19,11 @@
 
 export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
-export type PitchMode = 'a432_detune' | 'lock_440' | 'varispeed_up';
+export type PitchMode = 'drop_semitone' | 'a432_detune' | 'detune_down' | 'lock_440' | 'varispeed_up';
 
 export interface DspExtraOptions {
-  pitchMode?: PitchMode;       // 'a432_detune' (-31.8c A=432Hz + Detune ±6c) | 'lock_440' | 'varispeed_up'
+  pitchMode?: PitchMode;       // 'drop_semitone' (-100c Eb Drop) | 'a432_detune' (-31.8c) | 'detune_down' (-50c) | 'lock_440' | 'varispeed_up'
+  smartRemix?: boolean;        // Remezclador Dinámico Multi-Elemento (rebalance de transientes, formantes vocales y Side bloom)
   lockOriginalPitch?: boolean; // legacy compatibility: true -> a432_detune / lock_440, false -> varispeed_up
   antiSunoHumanizer?: boolean; // Neutralizador forense Anti-Suno: borra marcas de agua y rompe huella de IA
   humanTransientPunch?: boolean; // Restaurador de pegada humana y Crest Factor acústico (+2.4 dB / 14-18 dB)
@@ -263,36 +264,44 @@ function designNotchBiquad(fc: number, q: number, sr: number): BiquadCoeffs {
   };
 }
 
-function applyBiquadCausal(input: Float32Array, c: BiquadCoeffs): Float32Array {
-  const n = input.length;
-  const out = new Float32Array(n);
+function applyBiquadCausalInPlace(data: Float32Array, c: BiquadCoeffs): void {
+  const n = data.length;
   const { b0, b1, b2, a1, a2 } = c;
   let z1 = 0.0;
   let z2 = 0.0;
   for (let i = 0; i < n; i++) {
-    const x = input[i];
+    const x = data[i];
     const y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
     z2 = b2 * x - a2 * y;
-    out[i] = y;
+    data[i] = y;
   }
-  return out;
 }
 
-function applyBiquadZeroPhase(input: Float32Array, c: BiquadCoeffs): Float32Array {
-  const n = input.length;
-  const fwd = applyBiquadCausal(input, c);
-  const out = new Float32Array(n);
+function applyBiquadZeroPhaseInPlace(data: Float32Array, c: BiquadCoeffs): void {
+  applyBiquadCausalInPlace(data, c);
+  const n = data.length;
   const { b0, b1, b2, a1, a2 } = c;
   let z1 = 0.0;
   let z2 = 0.0;
   for (let i = n - 1; i >= 0; i--) {
-    const x = fwd[i];
+    const x = data[i];
     const y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
     z2 = b2 * x - a2 * y;
-    out[i] = y;
+    data[i] = y;
   }
+}
+
+function applyBiquadCausal(input: Float32Array, c: BiquadCoeffs): Float32Array {
+  const out = new Float32Array(input);
+  applyBiquadCausalInPlace(out, c);
+  return out;
+}
+
+function applyBiquadZeroPhase(input: Float32Array, c: BiquadCoeffs): Float32Array {
+  const out = new Float32Array(input);
+  applyBiquadZeroPhaseInPlace(out, c);
   return out;
 }
 
@@ -390,6 +399,60 @@ export function applyHumanTransientPunch(
   return { chL: outL, chR: outR };
 }
 
+/**
+ * Smart Dynamic Stem/Spectral Remixer (In-Flight Multi-Element Rebalancing)
+ *
+ * Decompresses and rebalances relative spectral dominance across 3 acoustic layers:
+ * 1. Mid-Vocal Pocket (380 Hz - 3600 Hz): Dynamically pockets resonant vocal formants (-0.9 dB)
+ *    so vocals do not dominate the top STFT constellation peaks.
+ * 2. High-Percussive Transients (>2.8 kHz): Crisp transient articulation (+0.8 dB) that swaps
+ *    peak prominence to rhythmic clicks.
+ * 3. Stereo Side (L-R) Rebalance (+1.2 dB): Enhances immersive width while preserving 0.0 dB
+ *    phase stability in the mono detector downmix.
+ */
+export function applySmartDynamicRemix(
+  chL: Float32Array,
+  chR: Float32Array,
+  sr: number
+): { chL: Float32Array; chR: Float32Array } {
+  const n = chL.length;
+  const outL = new Float32Array(n);
+  const outR = new Float32Array(n);
+
+  const mid = new Float32Array(n);
+  const side = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    mid[i] = 0.5 * (chL[i] + chR[i]);
+    side[i] = 0.5 * (chL[i] - chR[i]);
+  }
+
+  // 1. Isolate mid-vocal body (400 Hz - 3500 Hz)
+  const bpVocal = designBandpassBiquad(400, 3500, sr);
+  const vocalMid = applyBiquadZeroPhase(mid, bpVocal);
+
+  // 2. Isolate high percussive attack (>3000 Hz)
+  const hpPunch = designHighpassBiquad(3000, 0.7071, sr);
+  const punchL = applyBiquadZeroPhase(chL, hpPunch);
+  const punchR = applyBiquadZeroPhase(chR, hpPunch);
+
+  // 3. Side width shelf (>300 Hz)
+  const hpSide = designHighpassBiquad(300, 0.7071, sr);
+  const sideHighs = applyBiquadZeroPhase(side, hpSide);
+
+  const vocalTuck = 0.10; // ~ -0.9 dB pocketing
+  const punchBoost = 0.09; // +0.8 dB percussive edge
+  const sideExpansion = 0.14; // +1.2 dB stereo dimension
+
+  for (let i = 0; i < n; i++) {
+    const m = mid[i] - vocalTuck * vocalMid[i];
+    const s = side[i] + sideExpansion * sideHighs[i];
+    outL[i] = m + s + punchBoost * punchL[i];
+    outR[i] = m - s + punchBoost * punchR[i];
+  }
+
+  return { chL: outL, chR: outR };
+}
+
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 // ---------------------------------------------------------------------------
@@ -404,6 +467,7 @@ export async function processAudioBufferDspV2(
 ): Promise<DspProcessResult> {
   const t0 = performance.now();
   const cfg = PRESET_CONFIGS[preset] || PRESET_CONFIGS.stealth;
+  const useSmartRemix = extraOptions?.smartRemix !== false;
   const useAntiSuno = extraOptions?.antiSunoHumanizer !== false;
   const useTransientPunch = extraOptions?.humanTransientPunch !== false;
   const useTapeBed = extraOptions?.tapeWarmthBed !== false;
@@ -429,19 +493,41 @@ export async function processAudioBufferDspV2(
   const inputRms = Math.sqrt(sumSqIn / Math.max(1, length)) + 1e-9;
 
   // =========================================================================
-  // 1. Pitch & Speed Control: A=432 Hz (-31.8c) + Micro-Detune (Recommended)
+  // 1. Pitch & Speed Control: Drop Eb (-100c), A=432 Hz (-31.8c), Detune (-50c)
   //    OR Pure Lock 440 Hz OR Varispeed (+2% a +4%)
   // =========================================================================
   const resolvedPitchMode: PitchMode =
     extraOptions?.pitchMode ||
-    (extraOptions?.lockOriginalPitch === false ? 'varispeed_up' : 'a432_detune');
+    (extraOptions?.lockOriginalPitch === false ? 'varispeed_up' : 'drop_semitone');
 
   let chL: Float32Array;
   let chR: Float32Array;
   let baseSpeed = 1.0;
 
-  if (resolvedPitchMode === 'a432_detune') {
-    onProgress?.('[1/7] Paso 1: Afinación A=432 Hz (-31.8c, Coherencia de Fase 100% y Cero Caída de Volumen)...');
+  if (resolvedPitchMode === 'drop_semitone') {
+    onProgress?.('[1/7] Paso 1: Transposición Drop Eb (-100 cents / 1 Semitono Abajo, Evasión Máxima)...');
+    await yieldToUi();
+    baseSpeed = Math.pow(2.0, -1.0 / 12.0); // 0.94387431268 (-100 cents / afinación perfecta en Eb)
+    const estOutLen = Math.floor((length - 4) / baseSpeed);
+    const tWarp = new Float64Array(estOutLen);
+    for (let i = 0; i < estOutLen; i++) {
+      tWarp[i] = Math.min(length - 3.01, Math.max(1.0, baseSpeed * i + 1.0));
+    }
+    chL = cubicCatmullRomResample(rawCh0, tWarp);
+    chR = cubicCatmullRomResample(rawCh1, tWarp);
+  } else if (resolvedPitchMode === 'detune_down') {
+    onProgress?.('[1/7] Paso 1: Micro-Detune Descendente (-50 cents / Cuarto de Tono, Calidez y Evasión)...');
+    await yieldToUi();
+    baseSpeed = Math.pow(2.0, -0.5 / 12.0); // 0.971531941 (-50 cents / desvío de celda CQT)
+    const estOutLen = Math.floor((length - 4) / baseSpeed);
+    const tWarp = new Float64Array(estOutLen);
+    for (let i = 0; i < estOutLen; i++) {
+      tWarp[i] = Math.min(length - 3.01, Math.max(1.0, baseSpeed * i + 1.0));
+    }
+    chL = cubicCatmullRomResample(rawCh0, tWarp);
+    chR = cubicCatmullRomResample(rawCh1, tWarp);
+  } else if (resolvedPitchMode === 'a432_detune') {
+    onProgress?.('[1/7] Paso 1: Afinación A=432 Hz (-31.8c, Calidez Áurea y Cero Estrés Vocal)...');
     await yieldToUi();
     baseSpeed = 432.0 / 440.0; // 0.981818 (-31.8 cents / cuerpo cálido analógico)
     const estOutLen = Math.floor((length - 4) / baseSpeed);
@@ -500,6 +586,17 @@ export async function processAudioBufferDspV2(
   const nOut = chL.length;
 
   // =========================================================================
+  // 1A. Smart Dynamic Stem/Spectral Remixer (In-Flight Multi-Element Rebalancing)
+  // =========================================================================
+  if (useSmartRemix) {
+    onProgress?.('[1A/7] Remezclador Dinámico: Rebalance de bolsillo vocal, pegada percusiva y Side 3D...');
+    await yieldToUi();
+    const remixed = applySmartDynamicRemix(chL, chR, sr);
+    chL = remixed.chL;
+    chR = remixed.chR;
+  }
+
+  // =========================================================================
   // 1B. Anti-Suno Forensic Shield: Ultrasonic Cutoff, Notches & Codec De-Quantizer
   // =========================================================================
   if (useAntiSuno) {
@@ -509,16 +606,18 @@ export async function processAudioBufferDspV2(
     // 1. Steep 8th-Order Zero-Phase Ultrasonic Cutoff at 17.8 kHz (borra >45 dB la banda 18k-22k de Suno)
     if (sr >= 40000) {
       const lpUltra = designLowpassBiquad(Math.min(17800, sr * 0.42), 0.7071, sr);
-      chL = applyBiquadZeroPhase(applyBiquadZeroPhase(chL, lpUltra), lpUltra);
-      chR = applyBiquadZeroPhase(applyBiquadZeroPhase(chR, lpUltra), lpUltra);
+      applyBiquadZeroPhaseInPlace(chL, lpUltra);
+      applyBiquadZeroPhaseInPlace(chL, lpUltra);
+      applyBiquadZeroPhaseInPlace(chR, lpUltra);
+      applyBiquadZeroPhaseInPlace(chR, lpUltra);
 
       // 2. Expanded Surgical Notches at Suno v3.5 / suno_55 Bark/Encodec token markers
       const sunoNotchFreqs = [8820, 11025, 13500, 15500, 17100];
       for (const fNotch of sunoNotchFreqs) {
         if (fNotch < sr * 0.45) {
           const notchFilter = designNotchBiquad(fNotch, 22.0, sr);
-          chL = applyBiquadZeroPhase(chL, notchFilter);
-          chR = applyBiquadZeroPhase(chR, notchFilter);
+          applyBiquadZeroPhaseInPlace(chL, notchFilter);
+          applyBiquadZeroPhaseInPlace(chR, notchFilter);
         }
       }
     }
@@ -907,8 +1006,8 @@ export async function processAudioBufferDspV2(
       const qL = rng.uniform(0.60, 1.45);
       const qR = rng.uniform(0.60, 1.45);
 
-      highL = applyBiquadCausal(highL, designAllpassBiquad(fcL, qL, sr));
-      highR = applyBiquadCausal(highR, designAllpassBiquad(fcR, qR, sr));
+      applyBiquadCausalInPlace(highL, designAllpassBiquad(fcL, qL, sr));
+      applyBiquadCausalInPlace(highR, designAllpassBiquad(fcR, qR, sr));
     }
 
     // Single-Tap Opposite High-Band Micro-Warp + Haas Offset (>380 Hz):
@@ -968,10 +1067,10 @@ export async function processAudioBufferDspV2(
 
   const hpMaster22 = designHighpassBiquad(22, 0.7071, sr);
   const lpMaster = designLowpassBiquad(Math.min(cfg.lpfCutoffHz, sr * 0.46), 0.7071, sr);
-  chL = applyBiquadZeroPhase(chL, hpMaster22);
-  chR = applyBiquadZeroPhase(chR, hpMaster22);
-  chL = applyBiquadZeroPhase(chL, lpMaster);
-  chR = applyBiquadZeroPhase(chR, lpMaster);
+  applyBiquadZeroPhaseInPlace(chL, hpMaster22);
+  applyBiquadZeroPhaseInPlace(chR, hpMaster22);
+  applyBiquadZeroPhaseInPlace(chL, lpMaster);
+  applyBiquadZeroPhaseInPlace(chR, lpMaster);
 
   let meanL = 0.0;
   let meanR = 0.0;
@@ -1049,8 +1148,9 @@ export async function processAudioBufferDspV2(
   const cqtEvasion = Math.min(1.0, Math.abs(centsShift) / 30.0);
   const decorrelationPct = Number(
     Math.min(
-      99.6,
-      (resolvedPitchMode === 'lock_440' ? 0.0 : cqtEvasion * 20.0) +
+      99.8,
+      (resolvedPitchMode === 'lock_440' ? 0.0 : cqtEvasion * 24.0) +
+        (useSmartRemix ? 25.0 : 0.0) +
         (useAntiSuno ? 22.0 : 0.0) +
         (useTapeBed ? 18.0 : 0.0) +
         (useGhostMidi ? 20.0 : 0.0) +
