@@ -62,7 +62,7 @@ export default function LiveConcert() {
   const [currentTime, setCurrentTime] = useState(0);
   const [audioTime, setAudioTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
-  const [routingMode, setRoutingMode] = useState<'StereoSplit' | 'MultiChannel'>('StereoSplit');
+  const [routingMode, setRoutingMode] = useState<'StereoInEar' | 'StereoSplit' | 'MultiChannel'>('StereoInEar');
 
   const [isRefreshingSong, setIsRefreshingSong] = useState(false);
 
@@ -239,6 +239,19 @@ export default function LiveConcert() {
       cueGainRef.current.gain.setTargetAtTime(effectiveCue, audioCtxRef.current.currentTime, 0.03);
     }
   }, [cueVolume, muteCueEmergency]);
+
+  // Transición suave de paneo dinámico al alternar el modo de ruteo
+  useEffect(() => {
+    if (fohPannerRef.current && cuePannerRef.current && audioCtxRef.current) {
+      if (routingMode === 'StereoInEar') {
+        fohPannerRef.current.pan.setTargetAtTime(0, audioCtxRef.current.currentTime, 0.04);
+        cuePannerRef.current.pan.setTargetAtTime(0, audioCtxRef.current.currentTime, 0.04);
+      } else if (routingMode === 'StereoSplit') {
+        fohPannerRef.current.pan.setTargetAtTime(1, audioCtxRef.current.currentTime, 0.04);
+        cuePannerRef.current.pan.setTargetAtTime(-1, audioCtxRef.current.currentTime, 0.04);
+      }
+    }
+  }, [routingMode]);
 
   // Sincronizar con ventana de Proyector Externo HDMI (Envía audioTime para sincronía exacta de letras)
   useEffect(() => {
@@ -527,7 +540,7 @@ export default function LiveConcert() {
     const maxChannels = ctx.destination.maxChannelCount;
     let actualRoutingMode = routingMode;
     if (routingMode === 'MultiChannel' && maxChannels < 4) {
-      actualRoutingMode = 'StereoSplit';
+      actualRoutingMode = 'StereoInEar';
     }
 
     if (actualRoutingMode === 'MultiChannel') {
@@ -543,7 +556,18 @@ export default function LiveConcert() {
     cueGainRef.current = ctx.createGain();
     cueGainRef.current.gain.value = muteCueEmergency ? 0 : cueVolume;
 
-    if (actualRoutingMode === 'StereoSplit') {
+    if (actualRoutingMode === 'StereoInEar') {
+      // In-Ear Estéreo Saludable: FOH (Música Estéreo completa) + CUE (Clic/Guías Estéreo o Centro)
+      fohPannerRef.current = ctx.createStereoPanner();
+      fohPannerRef.current.pan.value = 0; // FOH Estéreo Nativo
+      fohGainRef.current.connect(fohPannerRef.current);
+      fohPannerRef.current.connect(masterGainRef.current);
+
+      cuePannerRef.current = ctx.createStereoPanner();
+      cuePannerRef.current.pan.value = 0; // CUE Centro / Estéreo Nativo
+      cueGainRef.current.connect(cuePannerRef.current);
+      cuePannerRef.current.connect(masterGainRef.current);
+    } else if (actualRoutingMode === 'StereoSplit') {
       // Stereo Split: CUE (Músicos) -> Left (-1), FOH (Público) -> Right (+1)
       fohPannerRef.current = ctx.createStereoPanner();
       fohPannerRef.current.pan.value = 1; // FOH to Right
@@ -1061,7 +1085,7 @@ export default function LiveConcert() {
               style={{
                 background: `linear-gradient(to right, #f59e0b ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%, #e2e8f0 ${(((muteCueEmergency ? 0 : cueVolume) / 1.3) * 100)}%)`
               }}
-              title="Volumen de Click y Voz Guía hacia Consola de Músicos (Canal Izquierdo L)"
+              title="Volumen de Click y Voz Guía hacia Monitores / In-Ears (Balance Saludable)"
             />
           </div>
 
@@ -1071,12 +1095,13 @@ export default function LiveConcert() {
           <div className="flex flex-col">
             <span className="text-[8px] text-zinc-500 font-medium uppercase tracking-wider">Ruteo</span>
             <select
-              className="bg-transparent text-[11px] font-medium outline-none text-zinc-800 cursor-pointer hover:text-black"
+              className="bg-transparent text-[11px] font-semibold outline-none text-zinc-800 cursor-pointer hover:text-black"
               value={routingMode}
-              onChange={(e) => setRoutingMode(e.target.value as 'StereoSplit' | 'MultiChannel')}
+              onChange={(e) => setRoutingMode(e.target.value as 'StereoInEar' | 'StereoSplit' | 'MultiChannel')}
             >
-              <option value="StereoSplit" className="bg-white text-zinc-900">Stereo Split</option>
-              <option value="MultiChannel" className="bg-white text-zinc-900">USB Multi</option>
+              <option value="StereoInEar" className="bg-white text-zinc-900">🎧 In-Ear Estéreo (Recomendado)</option>
+              <option value="StereoSplit" className="bg-white text-zinc-900">🔀 Split L/R (Cable Y)</option>
+              <option value="MultiChannel" className="bg-white text-zinc-900">🎛️ USB Multi (4+ Ch)</option>
             </select>
           </div>
 

@@ -148,6 +148,7 @@ export default function LivePrompter() {
       
       // 1. Fetch Prompter Data
       const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
+      const loadedPrompterData = songData?.prompter_data || {};
       if (songData && songData.prompter_data) {
         setPrompterData({
           chords: [],
@@ -197,28 +198,32 @@ export default function LivePrompter() {
           };
         });
 
-        // Insertar el Metrónomo IA Sintético
+        // Recuperar configuración persistida de Metrónomo y Cues (o balance seguro por defecto)
+        const savedClick = loadedPrompterData?.mixConfig?.click;
+        const savedCues = loadedPrompterData?.mixConfig?.cues;
+
+        // Insertar el Metrónomo IA Sintético (paneo y volumen configurables, por defecto Centro 0)
         engineStems.push({
           id: 'synthetic-click',
           name: 'Metrónomo IA',
           type: 'Click',
           url: '', // Se genera matemáticamente en RAM
-          volume: 0.8,
-          pan: 0,
-          muted: false,
+          volume: savedClick?.volume !== undefined ? Number(savedClick.volume) : 0.8,
+          pan: savedClick?.pan !== undefined ? Number(savedClick.pan) : 0,
+          muted: savedClick?.muted !== undefined ? Boolean(savedClick.muted) : false,
           solo: false,
           targetOutputChannel: 0
         });
 
-        // Insertar las Guías IA Sintéticas (Voz Guía)
+        // Insertar las Guías IA Sintéticas (Voz Guía con paneo configurable, por defecto Centro 0)
         engineStems.push({
           id: 'synthetic-cues',
           name: 'Voz Guía IA',
           type: 'Cues',
           url: '', // Se genera matemáticamente en RAM
-          volume: 0.8,
-          pan: 0,
-          muted: false,
+          volume: savedCues?.volume !== undefined ? Number(savedCues.volume) : 0.8,
+          pan: savedCues?.pan !== undefined ? Number(savedCues.pan) : 0,
+          muted: savedCues?.muted !== undefined ? Boolean(savedCues.muted) : false,
           solo: false,
           targetOutputChannel: 0
         });
@@ -267,11 +272,24 @@ export default function LivePrompter() {
       });
 
       await Promise.all(updates);
+
+      // Persistir configuración de Metrónomo IA y Voz Guía IA en prompter_data
+      const clickStem = stems.find(s => s.id === 'synthetic-click');
+      const cueStem = stems.find(s => s.id === 'synthetic-cues');
+      const updatedPrompterData = {
+        ...prompterData,
+        mixConfig: {
+          click: clickStem ? { volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted } : undefined,
+          cues: cueStem ? { volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted } : undefined,
+        }
+      };
+      setPrompterData(updatedPrompterData);
+      await persistPrompterDataSafe(selectedSongId, updatedPrompterData);
       
       const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId).order('name');
       if (data) setDbStems(data);
 
-      alert('¡Configuración de canales guardada exitosamente!');
+      alert('¡Configuración de faders, paneos y guías guardada exitosamente!');
     } catch (err: any) {
       alert(`Error al guardar configuración: ${err.message}`);
     }
@@ -692,12 +710,21 @@ export default function LivePrompter() {
 
   const handleExportLiveMix = async () => {
     if (!selectedSongId) return;
-    if (confirm('¿Exportar el Mix En Vivo con los canales activos actuales?\n\n• Salida Público (FOH): Stems activos configurados\n• Salida Músicos (CUE): Metrónomo + Voz Guía\n• Versión Ligera MP3 para In-Ears de Práctica')) {
+    if (confirm('¿Exportar el Mix En Vivo con la distribución espacial estéreo actual?\n\n• Salida Público (FOH): Stems de instrumentos con balance y paneo estéreo real (L / C / R)\n• Salida Músicos (CUE): Metrónomo y Voz Guía balanceados (Centro o paneo configurado)\n• In-Ears de Práctica: Mezcla estéreo saludable para proteger los oídos de los músicos')) {
       setIsExporting(true);
       try {
-        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        const clickStem = stems.find(s => s.id === 'synthetic-click');
+        const cueStem = stems.find(s => s.id === 'synthetic-cues');
+        const updatedPrompterData = {
+          ...prompterData,
+          mixConfig: {
+            click: clickStem ? { volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted } : undefined,
+            cues: cueStem ? { volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted } : undefined,
+          }
+        };
+        const merged = await persistPrompterDataSafe(selectedSongId, updatedPrompterData);
         await exportLiveMix(selectedSongId, FAKE_BAND_ID, merged, setExportProgress);
-        alert('¡Mix En Vivo (Público FOH + Músicos CUE) exportado y listo para el Setlist!');
+        alert('¡Mix En Vivo (Público FOH Estéreo + Músicos CUE Balanceado) exportado y listo para el Setlist!');
       } catch (err: any) {
         alert(err.message);
       } finally {
@@ -918,20 +945,26 @@ export default function LivePrompter() {
                 const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
                 const nameLower = stem.name.toLowerCase();
 
-                let routeBadge = stem.type === 'Instrument' ? 'FOH (R)' : 'MÚSICOS (L)';
+                const isClick = stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr');
+                const isCue = stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz');
+                const panDisplay = stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`;
+
+                let routeBadge = `FOH (${panDisplay})`;
                 let badgeClass = 'text-zinc-300 border-white/10';
 
                 if (isMasterRef) {
-                  routeBadge = '★ FOH MASTER (R)';
+                  routeBadge = `★ FOH MASTER (${panDisplay})`;
                   badgeClass = 'text-amber-300 border-amber-500/40 bg-amber-500/10';
-                } else if (stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr')) {
-                  routeBadge = 'MÚSICOS (L)';
+                } else if (isClick) {
+                  routeBadge = `CUE CLIC (${panDisplay})`;
                   badgeClass = 'text-cyan-300 border-cyan-500/40 bg-cyan-500/10';
-                } else if (stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz')) {
-                  routeBadge = 'MÚSICOS (L)';
+                } else if (isCue) {
+                  routeBadge = `CUE GUÍA (${panDisplay})`;
                   badgeClass = 'text-rose-400 border-rose-500/40 bg-rose-500/10';
                 } else if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
                   badgeClass = 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10';
+                } else {
+                  badgeClass = 'text-indigo-300 border-indigo-500/40 bg-indigo-500/10';
                 }
 
                 return (
@@ -1018,15 +1051,35 @@ export default function LivePrompter() {
                         </div>
                       </div>
 
-                      {/* Fila 3: PAN R100 + Slider */}
-                      <div className="flex items-center gap-3">
-                        <div className="w-18 shrink-0 flex items-center gap-1.5 font-mono text-[11px] font-black text-zinc-300">
+                      {/* Fila 3: PAN + Slider + Botones Rápidos L / C / R */}
+                      <div className="flex items-center gap-2">
+                        <div className="w-18 shrink-0 flex items-center gap-1 font-mono text-[11px] font-black text-zinc-300">
                           <span className="tracking-widest">PAN</span>
-                          <span className="text-white">
+                          <span className={`text-[10px] font-bold ${
+                            stem.pan === 0 
+                              ? 'text-cyan-400' 
+                              : stem.pan < 0 
+                              ? 'text-amber-400' 
+                              : 'text-emerald-400'
+                          }`}>
                             {stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`}
                           </span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex items-center gap-1.5">
+                          {/* Botón Rápido L (-100%) */}
+                          <button
+                            type="button"
+                            onClick={() => handlePanChange(stem.id, -1)}
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
+                              stem.pan <= -0.95
+                                ? 'bg-amber-500 text-black shadow-[0_0_8px_rgba(245,158,11,0.6)] font-black'
+                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
+                            }`}
+                            title="Pan Izquierda (L 100%)"
+                          >
+                            L
+                          </button>
+
                           <input
                             type="range"
                             min="-1"
@@ -1034,8 +1087,36 @@ export default function LivePrompter() {
                             step="0.01"
                             value={stem.pan}
                             onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                            className="neumorphic-prompter-slider cursor-pointer"
+                            className="neumorphic-prompter-slider cursor-pointer flex-1"
                           />
+
+                          {/* Botón Rápido C (0% Centro - Protección Auditiva) */}
+                          <button
+                            type="button"
+                            onClick={() => handlePanChange(stem.id, 0)}
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
+                              Math.abs(stem.pan) < 0.05
+                                ? 'bg-cyan-400 text-black shadow-[0_0_8px_rgba(34,211,238,0.6)] font-black'
+                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
+                            }`}
+                            title="Centrar Audio (C 0% - Balanceado para In-Ears)"
+                          >
+                            C
+                          </button>
+
+                          {/* Botón Rápido R (+100%) */}
+                          <button
+                            type="button"
+                            onClick={() => handlePanChange(stem.id, 1)}
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
+                              stem.pan >= 0.95
+                                ? 'bg-emerald-500 text-black shadow-[0_0_8px_rgba(16,185,129,0.6)] font-black'
+                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
+                            }`}
+                            title="Pan Derecha (R 100%)"
+                          >
+                            R
+                          </button>
                         </div>
                       </div>
 
@@ -1098,7 +1179,7 @@ export default function LivePrompter() {
                   onClick={handleSaveMixConfig}
                   disabled={!selectedSongId}
                   className="px-3 py-1.5 stage-tactile-btn text-zinc-200 hover:text-white rounded-full text-[10px] font-bold uppercase tracking-wider transition-all"
-                  title="Guardar volúmenes y mutes de los canales"
+                  title="Guardar volúmenes, paneos y mutes de todos los canales (incluye Metrónomo y Voz Guía)"
                 >
                   Guardar Faders
                 </button>
@@ -1107,8 +1188,8 @@ export default function LivePrompter() {
                 <button
                   onClick={handleExportLiveMix}
                   disabled={isExporting || !audioLoaded}
-                  className="px-4 py-1.5 bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] text-white rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-red-400/30"
-                  title="Renderizar y subir la mezcla configurada (Salida Público FOH + Salida Músicos CUE) lista para usar en el Setlist En Vivo"
+                  className="px-4 py-1.5 bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] text-white rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-red-400/30 cursor-pointer"
+                  title="Renderizar y subir la mezcla espacial optimizada (FOH en estéreo real + CUE balanceado para protección auditiva)"
                 >
                   {isExporting ? (exportProgress || 'Exportando...') : '🚀 Exportar Mix En Vivo (FOH / CUE)'}
                 </button>

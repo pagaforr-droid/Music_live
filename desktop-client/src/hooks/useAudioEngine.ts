@@ -2,7 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { generateClickBuffer, scheduleSectionVoiceCues } from '../utils/cueEngine';
 
 export type StemType = 'Click' | 'Cues' | 'Instrument';
-export type RoutingMode = 'StereoSplit' | 'MultiChannel';
+export type RoutingMode = 'StereoInEar' | 'StereoSplit' | 'MultiChannel';
 
 export interface StemTrack {
   id: string;
@@ -21,7 +21,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const isPlayingRef = useRef(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [routingMode, setRoutingMode] = useState<RoutingMode>('StereoSplit');
+  const [routingMode, setRoutingMode] = useState<RoutingMode>('StereoInEar');
   const [masterVolume, setMasterVolume] = useState<number>(1.0);
   const globalMasterGainNode = useRef<GainNode | null>(null);
 
@@ -284,8 +284,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
     const maxChannels = ctx.destination.maxChannelCount;
     if (routingMode === 'MultiChannel' && maxChannels < 4) {
-      console.warn("Hardware interface only supports", maxChannels, "channels. Falling back to StereoSplit.");
-      setRoutingMode('StereoSplit');
+      console.warn("Hardware interface only supports", maxChannels, "channels. Falling back to StereoInEar.");
+      setRoutingMode('StereoInEar');
     }
 
     if (routingMode === 'MultiChannel') {
@@ -303,7 +303,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
          const gain = ctx.createGain();
          gain.gain.value = isMuted ? 0 : stem.volume;
-         if (routingMode === 'StereoSplit') {
+         if (routingMode === 'StereoInEar' || routingMode === 'StereoSplit') {
            const panner = ctx.createStereoPanner();
            panner.pan.value = stem.pan || 0;
            gain.connect(panner);
@@ -330,7 +330,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       source.connect(gain);
       
-      if (routingMode === 'StereoSplit') {
+      if (routingMode === 'StereoInEar' || routingMode === 'StereoSplit') {
         const panner = ctx.createStereoPanner();
         panner.pan.value = stem.pan || 0;
         gain.connect(panner);
