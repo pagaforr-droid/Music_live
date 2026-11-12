@@ -3,7 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAudioEngine, StemTrack } from '../hooks/useAudioEngine';
 import { Prompter, SectionEvent } from '../components/Prompter';
-import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight, Check, PanelLeftClose, PanelLeftOpen, Sliders, ChevronDown, ChevronUp, Minimize2, Maximize2 } from 'lucide-react';
+import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight, Check, PanelLeftClose, PanelLeftOpen, Sliders, ChevronDown, ChevronUp, Minimize2, Maximize2, X, RotateCcw } from 'lucide-react';
+import {
+  InstrumentCategory,
+  SELECTABLE_INSTRUMENT_PRESETS,
+  detectInstrumentCategory,
+  extractCleanTrackLabel,
+  getInstrumentPreset,
+  InstrumentSvgIcon,
+} from '../utils/instrumentIcons';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -62,6 +70,7 @@ export default function LivePrompter() {
     sections: any[];
     lyrics?: any[];
     lyric_settings?: any;
+    mixConfig?: any;
     lastAiDetection?: string;
   }>({ chords: [], sections: [], lyrics: [] });
   
@@ -107,6 +116,9 @@ export default function LivePrompter() {
   const [isConsoleCollapsed, setIsConsoleCollapsed] = useState<boolean>(false);
   const [isCompactChannels, setIsCompactChannels] = useState<boolean>(false);
   const [collapsedTrackIds, setCollapsedTrackIds] = useState<Record<string, boolean>>({});
+  const [editingTrackPopoverId, setEditingTrackPopoverId] = useState<string | null>(null);
+  const [trackAliasDraft, setTrackAliasDraft] = useState<string>('');
+  const [isSavingTrackMeta, setIsSavingTrackMeta] = useState<boolean>(false);
 
   const prompterDataRef = useRef(prompterData);
   useEffect(() => {
@@ -169,6 +181,7 @@ export default function LivePrompter() {
       setHasUnsavedSections(false);
       setWaveformPeaks([]);
       setSaveToastMsg(null);
+      setEditingTrackPopoverId(null);
       setLoop(0, 0, false);
       pause(); // Stop any current playback
       
@@ -306,8 +319,13 @@ export default function LivePrompter() {
       const updatedPrompterData = {
         ...prompterData,
         mixConfig: {
-          click: clickStem ? { volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted } : undefined,
-          cues: cueStem ? { volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted } : undefined,
+          ...(prompterData.mixConfig || {}),
+          click: clickStem
+            ? { ...(prompterData.mixConfig?.click || {}), volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted }
+            : undefined,
+          cues: cueStem
+            ? { ...(prompterData.mixConfig?.cues || {}), volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted }
+            : undefined,
         }
       };
       setPrompterData(updatedPrompterData);
@@ -319,6 +337,68 @@ export default function LivePrompter() {
       alert('¡Configuración de faders, paneos y guías guardada exitosamente!');
     } catch (err: any) {
       alert(`Error al guardar configuración: ${err.message}`);
+    }
+  };
+
+  /**
+   * Actualiza y persiste quirúrgicamente el icono instrumental y/o alias corto de una pista
+   * en metadata sin reiniciar ni recargar el motor de audio.
+   */
+  const handleUpdateTrackMeta = async (
+    stemId: string,
+    patch: { instrument_icon?: InstrumentCategory | null; display_name?: string | null }
+  ) => {
+    if (!selectedSongId) return;
+    setIsSavingTrackMeta(true);
+    try {
+      if (stemId === 'synthetic-click' || stemId === 'synthetic-cues') {
+        const key = stemId === 'synthetic-click' ? 'click' : 'cues';
+        const prevSection = prompterData.mixConfig?.[key] || {};
+        const nextSection: any = { ...prevSection };
+        if ('instrument_icon' in patch) {
+          if (patch.instrument_icon) nextSection.instrument_icon = patch.instrument_icon;
+          else delete nextSection.instrument_icon;
+        }
+        if ('display_name' in patch) {
+          if (patch.display_name && patch.display_name.trim()) nextSection.display_name = patch.display_name.trim();
+          else delete nextSection.display_name;
+        }
+        const nextPrompterData = {
+          ...prompterData,
+          mixConfig: {
+            ...(prompterData.mixConfig || {}),
+            [key]: nextSection,
+          },
+        };
+        await persistPrompterDataSafe(selectedSongId, nextPrompterData);
+        return;
+      }
+
+      const originalStem = dbStems.find((dbS: any) => dbS.id === stemId);
+      const nextMetadata: Record<string, any> = { ...(originalStem?.metadata || {}) };
+      if ('instrument_icon' in patch) {
+        if (patch.instrument_icon) nextMetadata.instrument_icon = patch.instrument_icon;
+        else delete nextMetadata.instrument_icon;
+      }
+      if ('display_name' in patch) {
+        if (patch.display_name && patch.display_name.trim()) nextMetadata.display_name = patch.display_name.trim();
+        else delete nextMetadata.display_name;
+      }
+
+      // Actualización optimista en memoria
+      setDbStems((prev: any[]) =>
+        prev.map((d: any) => (d.id === stemId ? { ...d, metadata: nextMetadata } : d))
+      );
+
+      const { error } = await supabase
+        .from('stems')
+        .update({ metadata: nextMetadata })
+        .eq('id', stemId);
+      if (error) throw error;
+    } catch (err: any) {
+      console.error('Error guardando metadata de icono/alias de pista:', err);
+    } finally {
+      setIsSavingTrackMeta(false);
     }
   };
 
@@ -1062,35 +1142,33 @@ export default function LivePrompter() {
 
         {/* MIXER SIDEBAR (Apple Design Collapsible Soft Surface Console) */}
         <aside
-          className={`apple-console-font shrink-0 flex flex-col bg-[#F3F5F8] border-r border-slate-200/90 z-20 select-none transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] shadow-[4px_0_24px_rgba(15,23,42,0.05)] ${
-            isConsoleCollapsed ? 'w-[60px]' : 'w-[348px] xl:w-[376px]'
+          className={`apple-console-font shrink-0 flex flex-col bg-[#F5F6F8] border-r border-slate-200/85 z-20 select-none transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] shadow-[4px_0_24px_rgba(15,23,42,0.04)] ${
+            isConsoleCollapsed ? 'w-[64px]' : 'w-[356px] xl:w-[388px]'
           }`}
         >
-          {/* Console Header */}
-          <div className="h-12 border-b border-slate-200/80 flex items-center justify-between px-3.5 bg-white/85 backdrop-blur-md shrink-0">
+          {/* Console Header (Sin truncamiento de título) */}
+          <div className="h-12 border-b border-slate-200/80 flex items-center justify-between px-3 bg-white/90 backdrop-blur-md shrink-0 gap-2">
             {isConsoleCollapsed ? (
               <button
                 type="button"
                 onClick={() => setIsConsoleCollapsed(false)}
-                className="w-9 h-9 mx-auto rounded-xl bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 text-slate-700 flex items-center justify-center transition-all cursor-pointer shadow-2xs"
+                className="w-9 h-9 mx-auto rounded-xl bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 text-slate-700 flex items-center justify-center transition-all cursor-pointer"
                 title="Desplegar Consola de Pistas"
               >
                 <PanelLeftOpen size={16} />
               </button>
             ) : (
               <>
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-7 h-7 rounded-lg bg-slate-100 border border-slate-200/80 flex items-center justify-center text-slate-700 shrink-0 shadow-2xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-7 h-7 rounded-lg bg-slate-100 border border-slate-200/80 flex items-center justify-center text-slate-700 shrink-0">
                     <Sliders size={13.5} />
                   </div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-[13px] font-semibold tracking-[-0.018em] text-slate-800 truncate">
-                      Consola de Pistas
-                    </span>
-                    <span className="text-[11px] text-slate-500 font-medium bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-full tabular-nums shrink-0">
-                      {stems.length}
-                    </span>
-                  </div>
+                  <span className="text-[13px] font-semibold tracking-[-0.018em] text-slate-800 whitespace-nowrap">
+                    Pistas
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-semibold bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-full tabular-nums shrink-0">
+                    {stems.length}
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -1098,9 +1176,9 @@ export default function LivePrompter() {
                     <button
                       type="button"
                       onClick={() => setIsCompactChannels((prev) => !prev)}
-                      className={`h-7 px-2 rounded-lg text-[11px] font-medium flex items-center gap-1 border transition-all cursor-pointer ${
+                      className={`h-7 px-2.5 rounded-lg text-[11px] font-medium flex items-center gap-1 border transition-all cursor-pointer whitespace-nowrap ${
                         isCompactChannels
-                          ? 'bg-slate-800 text-white border-slate-800 shadow-2xs'
+                          ? 'bg-slate-800 text-white border-slate-800'
                           : 'bg-slate-100/90 hover:bg-slate-200/75 text-slate-600 border-slate-200/80'
                       }`}
                       title={isCompactChannels ? 'Mostrar faders completos' : 'Vista compacta de pistas'}
@@ -1112,11 +1190,14 @@ export default function LivePrompter() {
 
                   <button
                     type="button"
-                    onClick={() => setIsConsoleCollapsed(true)}
-                    className="h-7 px-2 rounded-lg bg-slate-100/90 hover:bg-slate-200/80 border border-slate-200/80 text-slate-600 hover:text-slate-900 flex items-center gap-1 text-[11px] font-medium transition-all cursor-pointer"
+                    onClick={() => {
+                      setEditingTrackPopoverId(null);
+                      setIsConsoleCollapsed(true);
+                    }}
+                    className="h-7 px-2.5 rounded-lg bg-slate-100/90 hover:bg-slate-200/80 border border-slate-200/80 text-slate-600 hover:text-slate-900 flex items-center gap-1 text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap"
                     title="Plegar Consola de Pistas para ampliar el Studio Prompter"
                   >
-                    <PanelLeftClose size={13.5} />
+                    <PanelLeftClose size={13} />
                     <span>Plegar</span>
                   </button>
                 </div>
@@ -1124,284 +1205,422 @@ export default function LivePrompter() {
             )}
           </div>
 
-          {/* Console Body */}
-          {isConsoleCollapsed ? (
-            <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col items-center gap-2 custom-scrollbar">
-              {stems.map((stem, sIdx) => {
-                const dbMatch = dbStems.find((d: any) => d.id === stem.id);
-                const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
-                const nameLower = stem.name.toLowerCase();
-                const isClick = stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr');
-                const isCue = stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz');
+          {/* Helper para resolver presentación limpia de cada pista */}
+          {(() => {
+            const allStemNames = stems.map((item) => item.name);
 
-                let pillStyle = 'bg-white border-slate-200/90 text-slate-700 hover:border-slate-300';
-                if (isMasterRef) pillStyle = 'bg-amber-50/90 border-amber-200 text-amber-800';
-                else if (isClick) pillStyle = 'bg-sky-50/90 border-sky-200 text-sky-800';
-                else if (isCue) pillStyle = 'bg-rose-50/90 border-rose-200 text-rose-800';
+            const resolveTrackInfo = (stem: StemTrack) => {
+              const dbMatch = dbStems.find((d: any) => d.id === stem.id);
+              const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
+              const syntheticMeta =
+                stem.id === 'synthetic-click'
+                  ? prompterData.mixConfig?.click
+                  : stem.id === 'synthetic-cues'
+                  ? prompterData.mixConfig?.cues
+                  : undefined;
 
-                return (
-                  <button
-                    key={stem.id}
-                    type="button"
-                    onClick={() => setIsConsoleCollapsed(false)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      toggleMute(stem.id);
-                    }}
-                    className={`w-10 h-10 rounded-xl border flex flex-col items-center justify-center relative transition-all cursor-pointer shadow-2xs ${pillStyle} ${
-                      stem.muted ? 'opacity-45' : ''
-                    } ${stem.solo ? 'ring-2 ring-amber-400' : ''}`}
-                    title={`${stem.name} • Vol ${Math.round(stem.volume * 100)}% (Clic para abrir consola, Clic derecho para Mute)`}
-                  >
-                    <span className="text-[10px] font-semibold tabular-nums leading-none">
-                      {String(sIdx + 1).padStart(2, '0')}
-                    </span>
-                    <span className="text-[8.5px] font-medium text-slate-400 truncate max-w-[30px] mt-0.5">
-                      {stem.name.slice(0, 3)}
-                    </span>
-                    {stem.muted && (
-                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border-2 border-[#F3F5F8]" />
-                    )}
-                    {stem.solo && !stem.muted && (
-                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#F3F5F8]" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5 custom-scrollbar">
-              {stems.length === 0 ? (
-                <div className="text-slate-500 text-[12.5px] font-medium p-8 text-center rounded-2xl border border-dashed border-slate-300/80 bg-white/70">
-                  No hay canales de audio cargados para esta canción.
+              const savedIcon = (dbMatch?.metadata?.instrument_icon || syntheticMeta?.instrument_icon) as
+                | InstrumentCategory
+                | undefined;
+              const savedAlias = (dbMatch?.metadata?.display_name || syntheticMeta?.display_name || '').trim();
+
+              const autoCategory = detectInstrumentCategory(stem.name, stem.type, isMasterRef);
+              const category: InstrumentCategory = savedIcon || autoCategory;
+              const preset = getInstrumentPreset(category);
+              const autoCleanName = extractCleanTrackLabel(stem.name, allStemNames);
+              const displayName = savedAlias || autoCleanName;
+
+              return {
+                isMasterRef,
+                savedIcon,
+                savedAlias,
+                autoCategory,
+                category,
+                preset,
+                autoCleanName,
+                displayName,
+              };
+            };
+
+            if (isConsoleCollapsed) {
+              return (
+                <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col items-center gap-2 custom-scrollbar">
+                  {stems.map((stem, sIdx) => {
+                    const info = resolveTrackInfo(stem);
+                    return (
+                      <button
+                        key={stem.id}
+                        type="button"
+                        onClick={() => setIsConsoleCollapsed(false)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          toggleMute(stem.id);
+                        }}
+                        className={`w-11 h-11 rounded-xl border flex flex-col items-center justify-center relative transition-all cursor-pointer ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:brightness-95 ${
+                          stem.muted ? 'opacity-40 grayscale' : ''
+                        } ${stem.solo ? 'ring-2 ring-amber-400' : ''}`}
+                        title={`${String(sIdx + 1).padStart(2, '0')} · ${info.displayName} (${info.preset.label}) • Vol ${Math.round(stem.volume * 100)}%\nClic para desplegar · Clic derecho para Mute`}
+                      >
+                        <InstrumentSvgIcon category={info.category} size={17} />
+                        <span className="text-[8.5px] font-semibold tabular-nums leading-none mt-0.5 opacity-75">
+                          {String(sIdx + 1).padStart(2, '0')}
+                        </span>
+                        {stem.muted && (
+                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border-2 border-[#F5F6F8]" />
+                        )}
+                        {stem.solo && !stem.muted && (
+                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#F5F6F8]" />
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
-              ) : (
-                stems.map((stem, sIdx) => {
-                  const dbMatch = dbStems.find((d: any) => d.id === stem.id);
-                  const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
-                  const nameLower = stem.name.toLowerCase();
+              );
+            }
 
-                  const isClick = stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr');
-                  const isCue = stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz');
-                  const isRhythm = nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc') || nameLower.includes('bass') || nameLower.includes('bajo');
-                  const panDisplay = stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`;
+            return (
+              <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
+                {stems.length === 0 ? (
+                  <div className="text-slate-500 text-[12.5px] font-medium p-8 text-center rounded-2xl border border-dashed border-slate-300/80 bg-white/80">
+                    No hay canales de audio cargados para esta canción.
+                  </div>
+                ) : (
+                  stems.map((stem, sIdx) => {
+                    const info = resolveTrackInfo(stem);
+                    const panDisplay =
+                      stem.pan === 0
+                        ? 'C'
+                        : stem.pan < 0
+                        ? `L${Math.abs(Math.round(stem.pan * 100))}`
+                        : `R${Math.round(stem.pan * 100)}`;
 
-                  let routeBadge = `FOH · ${panDisplay}`;
-                  let badgeClass = 'bg-slate-100 text-slate-600 border-slate-200/80';
-                  let cardSurfaceClass = 'bg-white border-slate-200/85 hover:border-slate-300/90';
-                  let accentFillColor = '#3b82f6';
+                    const isClick = info.category === 'click' || stem.type === 'Click';
+                    const isCue = info.category === 'cue' || stem.type === 'Cues';
+                    const routeLabel = info.isMasterRef
+                      ? `Master · ${panDisplay}`
+                      : isClick
+                      ? `Cue Clic · ${panDisplay}`
+                      : isCue
+                      ? `Cue Guía · ${panDisplay}`
+                      : `FOH · ${panDisplay}`;
 
-                  if (isMasterRef) {
-                    routeBadge = `★ Master · ${panDisplay}`;
-                    badgeClass = 'bg-amber-100/80 text-amber-800 border-amber-200/90';
-                    cardSurfaceClass = 'bg-[#FFFDF8] border-amber-200/75 hover:border-amber-300/90';
-                    accentFillColor = '#f59e0b';
-                  } else if (isClick) {
-                    routeBadge = `Cue Clic · ${panDisplay}`;
-                    badgeClass = 'bg-sky-100/80 text-sky-800 border-sky-200/90';
-                    cardSurfaceClass = 'bg-[#F7FBFF] border-sky-200/75 hover:border-sky-300/90';
-                    accentFillColor = '#0284c7';
-                  } else if (isCue) {
-                    routeBadge = `Cue Guía · ${panDisplay}`;
-                    badgeClass = 'bg-rose-100/80 text-rose-800 border-rose-200/90';
-                    cardSurfaceClass = 'bg-[#FFF8F9] border-rose-200/75 hover:border-rose-300/90';
-                    accentFillColor = '#e11d48';
-                  } else if (isRhythm) {
-                    badgeClass = 'bg-emerald-100/75 text-emerald-800 border-emerald-200/90';
-                    cardSurfaceClass = 'bg-[#F8FCF9] border-emerald-200/70 hover:border-emerald-300/85';
-                    accentFillColor = '#10b981';
-                  } else {
-                    badgeClass = 'bg-indigo-50 text-indigo-700 border-indigo-200/75';
-                    cardSurfaceClass = 'bg-white border-slate-200/85 hover:border-indigo-200/90';
-                    accentFillColor = '#6366f1';
-                  }
+                    const isTrackFolded = isCompactChannels || Boolean(collapsedTrackIds[stem.id]);
+                    const isPopoverOpen = editingTrackPopoverId === stem.id;
+                    const volPercent = Math.round(stem.volume * 100);
+                    const panPercent = ((stem.pan + 1) / 2) * 100; // 0..100, center=50
+                    const panFillStart = Math.min(50, panPercent);
+                    const panFillEnd = Math.max(50, panPercent);
+                    const panColor =
+                      Math.abs(stem.pan) < 0.05 ? '#94a3b8' : stem.pan < 0 ? '#f59e0b' : '#10b981';
 
-                  const isTrackFolded = isCompactChannels || Boolean(collapsedTrackIds[stem.id]);
-                  const volPercent = Math.round(stem.volume * 100);
-
-                  return (
-                    <div
-                      key={stem.id}
-                      className={`w-full rounded-2xl p-3.5 flex flex-col transition-all duration-200 relative select-none border shadow-[0_2px_8px_rgba(15,23,42,0.03)] hover:shadow-[0_6px_16px_rgba(15,23,42,0.06)] ${cardSurfaceClass} ${
-                        stem.muted ? 'opacity-60' : 'opacity-100'
-                      } ${
-                        stem.solo ? 'ring-2 ring-amber-400 shadow-[0_4px_16px_rgba(245,158,11,0.18)]' : ''
-                      }`}
-                    >
-                      {/* Fila Superior: Índice + Nombre de Pista Apple Typography + Ruta + M / S + Plegar */}
-                      <div className="flex items-center justify-between gap-2">
-                        <div
-                          className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
-                          onClick={() =>
-                            setCollapsedTrackIds((prev) => ({
-                              ...prev,
-                              [stem.id]: !isTrackFolded,
-                            }))
-                          }
-                          title="Clic para plegar o desplegar controles de esta pista"
-                        >
-                          <span className="text-[10.5px] font-semibold text-slate-400 bg-slate-100/90 border border-slate-200/70 px-1.5 py-0.5 rounded-md tabular-nums shrink-0">
-                            {String(sIdx + 1).padStart(2, '0')}
-                          </span>
-                          <h3
-                            className="text-slate-800 text-[13.5px] font-semibold tracking-[-0.015em] leading-snug truncate"
-                            title={stem.name}
-                          >
-                            {stem.name}
-                          </h3>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border tracking-[-0.01em] ${badgeClass}`}>
-                            {routeBadge}
-                          </span>
-
-                          {/* Botón Mute */}
-                          <button
-                            type="button"
-                            onClick={() => toggleMute(stem.id)}
-                            className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
-                              stem.muted
-                                ? 'bg-rose-500 text-white border-rose-600 shadow-[0_2px_6px_rgba(244,63,94,0.35)]'
-                                : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/80'
-                            }`}
-                            title={stem.muted ? 'Canal Silenciado' : 'Silenciar Canal (Mute)'}
-                          >
-                            M
-                          </button>
-
-                          {/* Botón Solo */}
-                          <button
-                            type="button"
-                            onClick={() => toggleSolo(stem.id)}
-                            className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
-                              stem.solo
-                                ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-[0_2px_6px_rgba(245,158,11,0.35)] font-bold'
-                                : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/80'
-                            }`}
-                            title="Escuchar en Solo"
-                          >
-                            S
-                          </button>
-
-                          {/* Botón Plegar Individual */}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCollapsedTrackIds((prev) => ({
-                                ...prev,
-                                [stem.id]: !isTrackFolded,
-                              }))
-                            }
-                            className="w-6 h-6 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
-                            title={isTrackFolded ? 'Mostrar faders de canal' : 'Ocultar faders de canal'}
-                          >
-                            {isTrackFolded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Controles Desplegables (Volumen y Paneo L / C / R con acabado Apple) */}
-                      {!isTrackFolded && (
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-2.5">
-                          {/* Fila Volumen */}
-                          <div className="flex items-center gap-3">
-                            <div className="w-16 shrink-0 flex items-center justify-between text-[11px]">
-                              <span className="font-medium text-slate-400">Vol</span>
-                              <span className="font-semibold text-slate-700 tabular-nums">{volPercent}%</span>
-                            </div>
-                            <div className="flex-1 flex items-center">
-                              <input
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                value={stem.volume}
-                                onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                                className="apple-studio-slider cursor-pointer"
-                                style={{
-                                  background: `linear-gradient(to right, ${accentFillColor} 0%, ${accentFillColor} ${volPercent}%, #e2e8f0 ${volPercent}%, #e2e8f0 100%)`,
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Fila Paneo + Botones Segmented Apple L / C / R */}
-                          <div className="flex items-center gap-3">
-                            <div className="w-16 shrink-0 flex items-center justify-between text-[11px]">
-                              <span className="font-medium text-slate-400">Pan</span>
+                    return (
+                      <div
+                        key={stem.id}
+                        className={`w-full rounded-2xl bg-white p-3 flex flex-col transition-all duration-200 relative select-none border border-slate-200/80 shadow-[0_1px_4px_rgba(15,23,42,0.03)] hover:border-slate-300/90 hover:shadow-[0_4px_14px_rgba(15,23,42,0.05)] ${
+                          stem.muted ? 'opacity-60' : 'opacity-100'
+                        } ${stem.solo ? 'ring-2 ring-amber-400/90 border-amber-300' : ''}`}
+                      >
+                        {/* Cabecera Apple de 2 zonas: [Icono Configurable + Nombre Limpio + Metadata] | [M] [S] [⌄] */}
+                        <div className="flex items-center justify-between gap-2.5">
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            {/* Botón de Icono Instrumental Configurable */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isPopoverOpen) {
+                                  setEditingTrackPopoverId(null);
+                                } else {
+                                  setTrackAliasDraft(info.savedAlias);
+                                  setEditingTrackPopoverId(stem.id);
+                                }
+                              }}
+                              className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 transition-all cursor-pointer relative group ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:scale-[1.04] active:scale-[0.97]`}
+                              title={`Icono: ${info.preset.label} (Clic para cambiar icono o etiqueta)`}
+                            >
+                              <InstrumentSvgIcon category={info.category} size={18} />
                               <span
-                                className={`font-semibold tabular-nums text-[10.5px] ${
-                                  stem.pan === 0
-                                    ? 'text-sky-600'
-                                    : stem.pan < 0
-                                    ? 'text-amber-600'
-                                    : 'text-emerald-600'
+                                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
+                                  info.savedIcon ? 'bg-slate-700' : 'bg-slate-300 group-hover:bg-slate-500'
                                 }`}
-                              >
-                                {panDisplay}
+                              />
+                            </button>
+
+                            {/* Jerarquía de 2 Líneas: Nombre Limpio + Canal/Instrumento/Ruta */}
+                            <div
+                              className="min-w-0 flex-1 cursor-pointer"
+                              onClick={() =>
+                                setCollapsedTrackIds((prev) => ({
+                                  ...prev,
+                                  [stem.id]: !isTrackFolded,
+                                }))
+                              }
+                              title={`${stem.name}\nClic para plegar o desplegar controles`}
+                            >
+                              <h3 className="text-slate-900 text-[13.5px] font-semibold tracking-[-0.016em] leading-tight truncate">
+                                {info.displayName}
+                              </h3>
+                              <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-medium truncate">
+                                <span className="tabular-nums text-slate-500">
+                                  {String(sIdx + 1).padStart(2, '0')}
+                                </span>
+                                <span>&middot;</span>
+                                <span className={`${info.preset.badgeText} font-medium`}>
+                                  {info.preset.shortLabel}
+                                </span>
+                                <span>&middot;</span>
+                                <span className="truncate">{routeLabel}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Controles Derecha: [M] [S] [⌄] */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleMute(stem.id)}
+                              className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
+                                stem.muted
+                                  ? 'bg-rose-500 text-white border-rose-500 shadow-[0_1px_4px_rgba(244,63,94,0.3)]'
+                                  : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/75'
+                              }`}
+                              title={stem.muted ? 'Canal Silenciado' : 'Silenciar Canal (Mute)'}
+                            >
+                              M
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => toggleSolo(stem.id)}
+                              className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
+                                stem.solo
+                                  ? 'bg-amber-400 text-slate-950 border-amber-400 font-bold shadow-[0_1px_4px_rgba(245,158,11,0.3)]'
+                                  : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/75'
+                              }`}
+                              title="Escuchar en Solo"
+                            >
+                              S
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCollapsedTrackIds((prev) => ({
+                                  ...prev,
+                                  [stem.id]: !isTrackFolded,
+                                }))
+                              }
+                              className="w-6 h-6 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
+                              title={isTrackFolded ? 'Mostrar faders de canal' : 'Ocultar faders de canal'}
+                            >
+                              {isTrackFolded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Popover Apple para Elegir Icono Instrumental + Alias */}
+                        {isPopoverOpen && (
+                          <div
+                            className="mt-2.5 p-3 rounded-xl bg-[#F8FAFC] border border-slate-200/90 shadow-[0_8px_24px_rgba(15,23,42,0.08)] flex flex-col gap-2.5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-semibold text-slate-700 tracking-tight">
+                                Icono de pista
                               </span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleUpdateTrackMeta(stem.id, { instrument_icon: null });
+                                  }}
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors cursor-pointer flex items-center gap-1 ${
+                                    !info.savedIcon
+                                      ? 'bg-slate-800 text-white border-slate-800'
+                                      : 'bg-white text-slate-600 hover:bg-slate-100 border-slate-200'
+                                  }`}
+                                  title="Volver a detección automática según el nombre"
+                                >
+                                  <RotateCcw size={10} />
+                                  Auto
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingTrackPopoverId(null)}
+                                  className="w-5 h-5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 flex items-center justify-center cursor-pointer"
+                                  title="Cerrar"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
                             </div>
 
-                            <div className="flex-1 flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handlePanChange(stem.id, -1)}
-                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
-                                  stem.pan <= -0.95
-                                    ? 'bg-amber-500 text-white border-amber-600 shadow-2xs'
-                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
-                                }`}
-                                title="Pan Izquierda (L 100%)"
-                              >
-                                L
-                              </button>
+                            {/* Grid de Instrumentos */}
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {SELECTABLE_INSTRUMENT_PRESETS.map((presetOpt) => {
+                                const isActive = info.category === presetOpt.id;
+                                return (
+                                  <button
+                                    key={presetOpt.id}
+                                    type="button"
+                                    disabled={isSavingTrackMeta}
+                                    onClick={() =>
+                                      handleUpdateTrackMeta(stem.id, { instrument_icon: presetOpt.id })
+                                    }
+                                    className={`px-2 py-1.5 rounded-lg border text-left flex items-center gap-1.5 transition-all cursor-pointer ${
+                                      isActive
+                                        ? `${presetOpt.badgeBg} ${presetOpt.badgeText} ${presetOpt.badgeBorder} ring-1 ring-slate-300 font-semibold`
+                                        : 'bg-white hover:bg-slate-100/80 text-slate-600 border-slate-200/75 font-medium'
+                                    }`}
+                                  >
+                                    <InstrumentSvgIcon category={presetOpt.id} size={13.5} className="shrink-0" />
+                                    <span className="text-[10px] truncate">{presetOpt.label}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
 
+                            {/* Alias corto opcional */}
+                            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-200/70">
                               <input
-                                type="range"
-                                min="-1"
-                                max="1"
-                                step="0.01"
-                                value={stem.pan}
-                                onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                                className="apple-studio-slider cursor-pointer flex-1"
+                                type="text"
+                                value={trackAliasDraft}
+                                onChange={(e) => setTrackAliasDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    handleUpdateTrackMeta(stem.id, { display_name: trackAliasDraft });
+                                    setEditingTrackPopoverId(null);
+                                  } else if (e.key === 'Escape') {
+                                    setEditingTrackPopoverId(null);
+                                  }
+                                }}
+                                placeholder={`Nombre corto (${info.autoCleanName})`}
+                                className="flex-1 min-w-0 bg-white border border-slate-200/90 rounded-lg px-2 py-1 text-[11px] text-slate-800 placeholder:text-slate-400 outline-none focus:border-slate-400"
                               />
-
                               <button
                                 type="button"
-                                onClick={() => handlePanChange(stem.id, 0)}
-                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
-                                  Math.abs(stem.pan) < 0.05
-                                    ? 'bg-sky-500 text-white border-sky-600 shadow-2xs'
-                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
-                                }`}
-                                title="Centrar Audio (C 0% - Balanceado para In-Ears)"
+                                onClick={() => {
+                                  handleUpdateTrackMeta(stem.id, { display_name: trackAliasDraft });
+                                  setEditingTrackPopoverId(null);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-[10.5px] font-medium transition-colors cursor-pointer shrink-0"
                               >
-                                C
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handlePanChange(stem.id, 1)}
-                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
-                                  stem.pan >= 0.95
-                                    ? 'bg-emerald-500 text-white border-emerald-600 shadow-2xs'
-                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
-                                }`}
-                                title="Pan Derecha (R 100%)"
-                              >
-                                R
+                                Aplicar
                               </button>
                             </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
+                        )}
+
+                        {/* Controles Desplegables (Volumen + Paneo Bipolar Apple) */}
+                        {!isTrackFolded && (
+                          <div className="mt-2.5 pt-2.5 border-t border-slate-100 flex flex-col gap-2">
+                            {/* Fila Volumen */}
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-14 shrink-0 flex items-center justify-between text-[11px]">
+                                <span className="font-medium text-slate-400">Vol</span>
+                                <span className="font-semibold text-slate-700 tabular-nums">{volPercent}%</span>
+                              </div>
+                              <div className="flex-1 flex items-center">
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="1"
+                                  step="0.01"
+                                  value={stem.volume}
+                                  onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
+                                  className="apple-studio-slider cursor-pointer"
+                                  style={{
+                                    background: `linear-gradient(to right, ${info.preset.accentColor} 0%, ${info.preset.accentColor} ${volPercent}%, #e2e8f0 ${volPercent}%, #e2e8f0 100%)`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Fila Paneo Bipolar (Referencia Central + Segmented Pill L | C | R) */}
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-14 shrink-0 flex items-center justify-between text-[11px]">
+                                <span className="font-medium text-slate-400">Pan</span>
+                                <span
+                                  className={`font-semibold tabular-nums text-[10.5px] ${
+                                    Math.abs(stem.pan) < 0.05
+                                      ? 'text-slate-500'
+                                      : stem.pan < 0
+                                      ? 'text-amber-600'
+                                      : 'text-emerald-600'
+                                  }`}
+                                >
+                                  {panDisplay}
+                                </span>
+                              </div>
+
+                              <div className="flex-1 flex items-center gap-2">
+                                <div className="relative flex-1 flex items-center">
+                                  {/* Marca sutil de centro (0) */}
+                                  <span className="absolute left-1/2 -translate-x-1/2 w-[1.5px] h-2.5 bg-slate-300/90 rounded-full pointer-events-none" />
+                                  <input
+                                    type="range"
+                                    min="-1"
+                                    max="1"
+                                    step="0.01"
+                                    value={stem.pan}
+                                    onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
+                                    className="apple-studio-slider cursor-pointer relative z-10"
+                                    style={{
+                                      background: `linear-gradient(to right, #e2e8f0 0%, #e2e8f0 ${panFillStart}%, ${panColor} ${panFillStart}%, ${panColor} ${panFillEnd}%, #e2e8f0 ${panFillEnd}%, #e2e8f0 100%)`,
+                                    }}
+                                  />
+                                </div>
+
+                                {/* Segmented Pill Apple L | C | R */}
+                                <div className="flex items-center bg-slate-100/90 p-0.5 rounded-lg border border-slate-200/70 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePanChange(stem.id, -1)}
+                                    className={`px-1.5 py-0.5 rounded-[5px] text-[9.5px] font-semibold transition-all cursor-pointer ${
+                                      stem.pan <= -0.95
+                                        ? 'bg-white text-amber-600 shadow-2xs'
+                                        : 'text-slate-400 hover:text-slate-700'
+                                    }`}
+                                    title="Pan Izquierda (L 100%)"
+                                  >
+                                    L
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePanChange(stem.id, 0)}
+                                    className={`px-1.5 py-0.5 rounded-[5px] text-[9.5px] font-semibold transition-all cursor-pointer ${
+                                      Math.abs(stem.pan) < 0.05
+                                        ? 'bg-white text-slate-800 shadow-2xs'
+                                        : 'text-slate-400 hover:text-slate-700'
+                                    }`}
+                                    title="Centrar Audio (C 0% - Balanceado para In-Ears)"
+                                  >
+                                    C
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePanChange(stem.id, 1)}
+                                    className={`px-1.5 py-0.5 rounded-[5px] text-[9.5px] font-semibold transition-all cursor-pointer ${
+                                      stem.pan >= 0.95
+                                        ? 'bg-white text-emerald-600 shadow-2xs'
+                                        : 'text-slate-400 hover:text-slate-700'
+                                    }`}
+                                    title="Pan Derecha (R 100%)"
+                                  >
+                                    R
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })()}
         </aside>
 
         {/* PROMPTER VISUAL AREA */}
