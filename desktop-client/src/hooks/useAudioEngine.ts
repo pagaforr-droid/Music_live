@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { generateClickBuffer, scheduleSectionVoiceCues } from '../utils/cueEngine';
+import { generateClickBuffer, resolveCueBufferName, scheduleSectionVoiceCues } from '../utils/cueEngine';
 
 export type StemType = 'Click' | 'Cues' | 'Instrument';
 export type RoutingMode = 'StereoInEar' | 'StereoSplit' | 'MultiChannel';
@@ -582,7 +582,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     
     const preRollDuration = preRollDurationRef.current;
     // Permitir buscar desde -preRollDuration hasta totalDuration
-    const globalTime = Math.max(0, Math.min(newVisualTime + preRollDuration, totalDuration + preRollDuration));
+    const globalTime = Math.max(0, Math.min(newVisualTime + preRollDuration, (totalDuration > 0 ? totalDuration : 600) + preRollDuration));
     pauseTime.current = globalTime;
     setCurrentTime(newVisualTime);
     
@@ -932,6 +932,198 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
   const getBuffer = (stemId: string) => {
     return buffers.current.get(stemId);
+  };
+
+  // Extraer envolvente de onda combinada desde los buffers en RAM para visualización tipo CapCut
+  const getCompositePeaks = useCallback((bucketCount: number = 900): number[] => {
+    if (buffers.current.size === 0) return [];
+    let preferredBuffer: AudioBuffer | undefined;
+
+    for (const stem of stems) {
+      const n = (stem.name || '').toLowerCase();
+      if (n.includes('master') || n.includes('mezcla') || n.includes('full') || n.includes('drum') || n.includes('bater')) {
+        const b = buffers.current.get(stem.id);
+        if (b) {
+          preferredBuffer = b;
+          break;
+        }
+      }
+    }
+
+    const activeBuffers: AudioBuffer[] = preferredBuffer
+      ? [preferredBuffer]
+      : Array.from(buffers.current.values());
+
+    if (activeBuffers.length === 0) return [];
+
+    const maxSamples = Math.max(...activeBuffers.map((b) => b.length));
+    if (maxSamples <= 0) return [];
+
+    const samplesPerBucket = Math.max(1, Math.floor(maxSamples / bucketCount));
+    const peaks = new Array<number>(bucketCount).fill(0);
+    let globalMax = 0.01;
+
+    for (let i = 0; i < bucketCount; i++) {
+      const start = i * samplesPerBucket;
+      const end = Math.min(maxSamples, start + samplesPerBucket);
+      const step = Math.max(1, Math.floor((end - start) / 48));
+      let maxInBucket = 0;
+
+      for (const buf of activeBuffers) {
+        const ch0 = buf.getChannelData(0);
+        const limit = Math.min(end, ch0.length);
+        for (let j = start; j < limit; j += step) {
+          const v = Math.abs(ch0[j]);
+          if (v > maxInBucket) maxInBucket = v;
+        }
+      }
+
+      peaks[i] = maxInBucket;
+      if (maxInBucket > globalMax) globalMax = maxInBucket;
+    }
+
+    return peaks.map((p) => Math.max(0.04, Math.min(1, p / globalMax)));
+  }, [stems]);
+
+  // Asegurar que los audios de voz guía estén cargados en RAM incluso antes de Cargar Stems
+  const ensureCueBuffersLoaded = useCallback(async () => {
+    if (!audioContext.current) return;
+    if (audioContext.current.state === 'suspended') {
+      try { await audioContext.current.resume(); } catch {}
+    }
+    const cueNames = ['intro', 'verso', 'pre-coro', 'coro', 'puente', 'solo', 'final', '1', '2', '3', '4'];
+    const missing = cueNames.filter((n) => !cueBuffersRef.current[n]);
+    if (missing.length === 0) return;
+
+    await Promise.all(
+      missing.map(async (name) => {
+        try {
+          const res = await fetch(`/cues/${name}.mp3`);
+          if (res.ok && audioContext.current) {
+            const arrayBuffer = await res.arrayBuffer();
+            const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer);
+            cueBuffersRef.current[name] = audioBuffer;
+            const data = audioBuffer.getChannelData(0);
+            let startSample = 0;
+            for (let i = 0; i < data.length; i++) {
+              if (Math.abs(data[i]) > 0.05) {
+                startSample = i;
+                break;
+              }
+            }
+            cueOffsetsRef.current[name] = startSample / audioBuffer.sampleRate;
+          }
+        } catch {}
+      })
+    );
+  }, []);
+
+  // Pre-escucha inmediata de una etiqueta de Voz Guía (al soltar o hacer clic en 🔊)
+  const previewVoiceCue = useCallback(async (sectionName: string) => {
+    if (!audioContext.current) return;
+    await ensureCueBuffersLoaded();
+    const resolved = resolveCueBufferName(sectionName, cueBuffersRef.current);
+    const buf = resolved ? cueBuffersRef.current[resolved] : undefined;
+    if (!buf || !audioContext.current) return;
+
+    const cueOffset = cueOffsetsRef.current[resolved] || 0;
+    const source = audioContext.current.createBufferSource();
+    const gain = audioContext.current.createGain();
+    const cueStem = stems.find((s) => s.id === 'synthetic-cues');
+    gain.gain.value = cueStem ? Math.max(0.35, cueStem.volume) : 0.85;
+    source.buffer = buf;
+    source.connect(gain);
+
+    const masterGain = gainNodes.current.get('synthetic-cues');
+    if (masterGain && cueStem && !cueStem.muted) {
+      gain.connect(masterGain);
+    } else if (globalMasterGainNode.current) {
+      gain.connect(globalMasterGainNode.current);
+    } else {
+      gain.connect(audioContext.current.destination);
+    }
+
+    source.start(0, cueOffset);
+  }, [ensureCueBuffersLoaded, stems]);
+
+  // Sincronización en caliente de prompterData en RAM (reprograma Voz Guía al vuelo sin cortar la música)
+  const syncPrompterData = useCallback((nextPrompterData: any) => {
+    prompterDataRef.current = nextPrompterData;
+    if (!isPlayingRef.current || !audioContext.current) return;
+
+    cueSources.current.forEach((src) => {
+      try { src.stop(); } catch {}
+    });
+    cueSources.current = [];
+
+    const cueStem = stems.find((s) => s.id === 'synthetic-cues');
+    const isCueMuted = cueStem ? cueStem.muted || (stems.some((s) => s.solo) && !cueStem.solo) : false;
+    if (!nextPrompterData || !nextPrompterData.sections || isCueMuted || !nextPrompterData.bpm) return;
+
+    const now = audioContext.current.currentTime;
+    const globalOffset = now - startTime.current;
+    const preRollDuration = preRollDurationRef.current;
+    const manualGridOffset = manualGridOffsetRef.current;
+    const beatInterval = 60 / nextPrompterData.bpm;
+    let bTimes: number[] = [];
+
+    if (nextPrompterData.beatTimes && nextPrompterData.beatTimes.length > 0) {
+      bTimes = [...nextPrompterData.beatTimes.map((t: number) => t + preRollDuration)];
+      let firstBeat = bTimes[0];
+      while (firstBeat - beatInterval >= 0) {
+        firstBeat -= beatInterval;
+        bTimes.unshift(firstBeat);
+      }
+      let lastBeat = bTimes[bTimes.length - 1];
+      const maxTime = preRollDuration + (totalDuration > 0 ? totalDuration : 600);
+      while (lastBeat + beatInterval <= maxTime + 5) {
+        lastBeat += beatInterval;
+        bTimes.push(lastBeat);
+      }
+    } else {
+      const maxTime = preRollDuration + (totalDuration > 0 ? totalDuration : 600);
+      const startOffset = (nextPrompterData.firstBeatOffset || 0) + manualGridOffset;
+      for (let t = preRollDuration; t <= maxTime; t += beatInterval) {
+        const adjusted = t + startOffset;
+        if (adjusted >= 0) bTimes.push(adjusted);
+      }
+    }
+
+    const manualOffset = nextPrompterData.beatTimes && nextPrompterData.beatTimes.length > 0 ? manualGridOffset : 0;
+    const schedule = (bufName: string, bIdx: number) => {
+      const buf = cueBuffersRef.current[bufName];
+      const cueOffset = cueOffsetsRef.current[bufName] || 0;
+      if (buf && bIdx >= 0 && bIdx < bTimes.length && audioContext.current) {
+        const absoluteTime = bTimes[bIdx] + manualOffset;
+        if (absoluteTime >= globalOffset) {
+          const source = audioContext.current.createBufferSource();
+          const gain = audioContext.current.createGain();
+          source.buffer = buf;
+          gain.gain.value = 1.0;
+          source.connect(gain);
+
+          const masterGain = gainNodes.current.get('synthetic-cues');
+          if (masterGain) gain.connect(masterGain);
+          else gain.connect(globalMasterGainNode.current!);
+
+          source.start(now + (absoluteTime - globalOffset), cueOffset);
+          cueSources.current.push(source);
+        }
+      }
+    };
+
+    const beatsPerMeasure = parseInt(nextPrompterData.timeSignature?.split('/')[0]) || 4;
+    scheduleSectionVoiceCues(
+      nextPrompterData.sections,
+      bTimes,
+      beatsPerMeasure,
+      preRollDuration,
+      cueBuffersRef.current,
+      schedule
+    );
+  }, [stems, totalDuration]);
+
+  if (false) {
   };
 
   const exportGhostBounce = async (onProgress: (msg: string) => void): Promise<Blob> => {
@@ -1426,7 +1618,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     exportGhostBounce,
     exportMultitrackToZip,
     exportFullMixToMp3,
-    getBuffer
+    getBuffer,
+    getCompositePeaks,
+    previewVoiceCue,
+    syncPrompterData
   };
 };
 

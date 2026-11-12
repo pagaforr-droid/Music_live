@@ -105,14 +105,32 @@ export const scheduleSectionVoiceCues = (
       }
     }
 
-    if (minDiff > 1.2 || nearestBeatIdx < beatsPerMeasure) return;
+    if (minDiff > 1.2 || nearestBeatIdx < 0) return;
+
+    if (Math.abs(nearestBeatIdx - songStartBeatIdx) <= 1) {
+      hasHandledSongStart = true;
+    }
+
+    // Si el usuario silenció explícitamente la voz guía de esta sección, no programar audio
+    if (section.cueEnabled === false) return;
+
+    const resolvedName = resolveCueBufferName(section.name || section.section || '', cueBuffers);
+    const beat1Cue = resolvedName || '1';
+
+    // Si estamos en pre-escucha sin pre-roll (preRollDuration === 0) y la sección está en el compás 1 (< beatsPerMeasure),
+    // anunciar el nombre de la sección en su downbeat para dar feedback auditivo en Studio Prompter
+    if (nearestBeatIdx < beatsPerMeasure) {
+      if (preRollDuration === 0 && resolvedName && !scheduledBeats.has(nearestBeatIdx)) {
+        schedule(resolvedName, nearestBeatIdx);
+        scheduledBeats.add(nearestBeatIdx);
+      }
+      return;
+    }
 
     // El compás de conteo previo inicia exactamente 1 compás antes del downbeat de la sección
     const leadInStartIdx = nearestBeatIdx - beatsPerMeasure;
-    const resolvedName = resolveCueBufferName(section.name || section.section || '', cueBuffers);
 
     // Pulso 1 del compás de conteo: Nombre de sección (e.g. "Intro", "Coro") o '1' si no existe audio específico
-    const beat1Cue = resolvedName || '1';
     if (!scheduledBeats.has(leadInStartIdx)) {
       schedule(beat1Cue, leadInStartIdx);
       scheduledBeats.add(leadInStartIdx);
@@ -126,10 +144,6 @@ export const scheduleSectionVoiceCues = (
         schedule(cueNum, bIdx);
         scheduledBeats.add(bIdx);
       }
-    }
-
-    if (Math.abs(nearestBeatIdx - songStartBeatIdx) <= 1) {
-      hasHandledSongStart = true;
     }
   });
 

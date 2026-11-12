@@ -1,9 +1,9 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAudioEngine, StemTrack } from '../hooks/useAudioEngine';
-import { Prompter } from '../components/Prompter';
-import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight } from 'lucide-react';
+import { Prompter, SectionEvent } from '../components/Prompter';
+import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight, Check } from 'lucide-react';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -47,6 +47,9 @@ export default function LivePrompter() {
     exportLiveMix,
     exportMultitrackToZip,
     exportFullMixToMp3,
+    getCompositePeaks,
+    previewVoiceCue,
+    syncPrompterData,
   } = useAudioEngine([]);
   
   const [prompterData, setPrompterData] = useState<{
@@ -92,6 +95,19 @@ export default function LivePrompter() {
   // Grid Nudge State
   const [manualGridOffset, setManualGridOffset] = useState<number>(0);
   const [audioLoaded, setAudioLoaded] = useState(false);
+
+  // CapCut Sections History, Waveform & Unsaved Indicator
+  const [sectionsHistoryPast, setSectionsHistoryPast] = useState<SectionEvent[][]>([]);
+  const [sectionsHistoryFuture, setSectionsHistoryFuture] = useState<SectionEvent[][]>([]);
+  const [hasUnsavedSections, setHasUnsavedSections] = useState<boolean>(false);
+  const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
+  const [saveToastMsg, setSaveToastMsg] = useState<string | null>(null);
+
+  const prompterDataRef = useRef(prompterData);
+  useEffect(() => {
+    prompterDataRef.current = prompterData;
+    syncPrompterData(prompterData);
+  }, [prompterData, syncPrompterData]);
 
   /**
    * Deep-Merge seguro para guardar en songs.prompter_data sin sobrescribir jamás
@@ -143,6 +159,11 @@ export default function LivePrompter() {
       setAudioLoaded(false);
       setLoadError(null);
       setIsVamping(false);
+      setSectionsHistoryPast([]);
+      setSectionsHistoryFuture([]);
+      setHasUnsavedSections(false);
+      setWaveformPeaks([]);
+      setSaveToastMsg(null);
       setLoop(0, 0, false);
       pause(); // Stop any current playback
       
@@ -246,6 +267,7 @@ export default function LivePrompter() {
         ? prompterData.firstBeatOffset 
         : (prompterData.chords && prompterData.chords.length > 0 ? prompterData.chords[0].time : 0);
       await loadStems(prompterData.bpm || 120, baseOffset + manualGridOffset, prompterData.timeSignature, prompterData.beatTimes, prompterData, stems);
+      setWaveformPeaks(getCompositePeaks(900));
       setAudioLoaded(true);
     } catch (error: any) {
       setLoadError("Error descargando las pistas. Asegúrate de tener conexión y permisos CORS habilitados en el Bucket.");
@@ -578,7 +600,9 @@ export default function LivePrompter() {
       data.sections.forEach((s: any) => {
         const mins = Math.floor(s.time / 60).toString().padStart(2, '0');
         const secs = (s.time % 60).toFixed(2).padStart(5, '0');
-        text += `${mins}:${secs} ${s.section || s.name}\n`;
+        const durTag = typeof s.duration === 'number' && s.duration > 0 ? ` [${s.duration.toFixed(2)}s]` : '';
+        const muteTag = s.cueEnabled === false ? ' [MUTE]' : '';
+        text += `${mins}:${secs} ${s.section || s.name}${durTag}${muteTag}\n`;
       });
     }
     text += '\n# ACORDES\n';
@@ -610,12 +634,28 @@ export default function LivePrompter() {
         const minutes = parseInt(match[1], 10);
         const seconds = parseFloat(match[2]);
         const time = minutes * 60 + seconds;
-        const content = match[3].trim();
+        let content = match[3].trim();
 
         if (currentBlock === 'chords') {
           result.chords.push({ time, chord: content });
         } else {
-          result.sections.push({ time, name: content });
+          let cueEnabled = true;
+          if (/\[MUTE\]/i.test(content)) {
+            cueEnabled = false;
+            content = content.replace(/\[MUTE\]/ig, '').trim();
+          }
+          let duration: number | undefined = undefined;
+          const durMatch = content.match(/\[(\d+(?:\.\d+)?)s\]/i);
+          if (durMatch) {
+            duration = parseFloat(durMatch[1]);
+            content = content.replace(durMatch[0], '').trim();
+          }
+          result.sections.push({
+            time,
+            name: content,
+            ...(duration !== undefined ? { duration } : {}),
+            ...(cueEnabled === false ? { cueEnabled: false } : {})
+          });
         }
       }
     }
@@ -628,23 +668,77 @@ export default function LivePrompter() {
     const newData = { ...prompterData, chords: parsedData.chords, sections: parsedData.sections };
     setPrompterData(newData);
     setIsEditingPrompter(false);
+    setHasUnsavedSections(false);
     
     await persistPrompterDataSafe(selectedSongId, newData);
+    setSaveToastMsg('¡Texto de Acordes y Secciones guardado!');
+    setTimeout(() => setSaveToastMsg(null), 3000);
   };
 
   // ==========================================
-  // LÓGICA DE EDITOR DE SECCIONES (LIVE TAPPING)
+  // LÓGICA CAPCUT DE SECCIONES Y VOZ GUÍA (CON HISTORIAL UNDO/REDO)
   // ==========================================
+  const handleUpdateSections = useCallback((nextSections: SectionEvent[], recordUndo = true) => {
+    setPrompterData((prev: any) => {
+      if (recordUndo) {
+        const currentCopy = (prev.sections || []).map((s: any) => ({ ...s }));
+        setSectionsHistoryPast((h) => [...h.slice(-39), currentCopy]);
+        setSectionsHistoryFuture([]);
+      }
+      return { ...prev, sections: nextSections };
+    });
+    setHasUnsavedSections(true);
+  }, []);
+
+  const handleUndoSections = useCallback(() => {
+    setSectionsHistoryPast((past) => {
+      if (past.length === 0) return past;
+      const previous = past[past.length - 1];
+      setPrompterData((prev: any) => {
+        const currentCopy = (prev.sections || []).map((s: any) => ({ ...s }));
+        setSectionsHistoryFuture((f) => [currentCopy, ...f.slice(0, 39)]);
+        return { ...prev, sections: previous };
+      });
+      setHasUnsavedSections(true);
+      return past.slice(0, -1);
+    });
+  }, []);
+
+  const handleRedoSections = useCallback(() => {
+    setSectionsHistoryFuture((future) => {
+      if (future.length === 0) return future;
+      const next = future[0];
+      setPrompterData((prev: any) => {
+        const currentCopy = (prev.sections || []).map((s: any) => ({ ...s }));
+        setSectionsHistoryPast((p) => [...p.slice(-39), currentCopy]);
+        return { ...prev, sections: next };
+      });
+      setHasUnsavedSections(true);
+      return future.slice(1);
+    });
+  }, []);
+
+  // Atajos de teclado en vivo (Espacio = Play/Pause, I/V/P/C/B/S/F = Insertar Sección CapCut al Playhead, Ctrl+S = Guardar)
   useEffect(() => {
-    if (!isEditingSections) return;
+    if (!selectedSongId || isEditingPrompter) return;
     
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+      const targetTag = (e.target as HTMLElement)?.tagName;
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        savePrompterData();
+        return;
+      }
+
+      if (e.code === 'Space') {
         e.preventDefault();
         isPlaying ? pause() : play();
+        return;
       }
-      
-      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       const keyMap: Record<string, string> = {
         'i': 'INTRO',
@@ -656,52 +750,91 @@ export default function LivePrompter() {
         'f': 'FINAL'
       };
       
+      // En modo CapCut, 's' sin selección o cuando se está en modo Live Tapping inserta SOLO
+      // (Prompter maneja 's' para Dividir cuando hay un bloque seleccionado con stopPropagation)
       const sectionName = keyMap[e.key.toLowerCase()];
       if (sectionName) {
         let exactTime = Math.max(0, currentTimeRef.current);
         
         if (prompterData.beatTimes && prompterData.beatTimes.length > 0) {
-          let closest = prompterData.beatTimes[0];
+          let closest = prompterData.beatTimes[0] + manualGridOffset;
           let minDiff = Math.abs(closest - exactTime);
           for (let i = 1; i < prompterData.beatTimes.length; i++) {
-            const diff = Math.abs(prompterData.beatTimes[i] - exactTime);
+            const candidate = prompterData.beatTimes[i] + manualGridOffset;
+            const diff = Math.abs(candidate - exactTime);
             if (diff < minDiff) {
               minDiff = diff;
-              closest = prompterData.beatTimes[i];
+              closest = candidate;
             }
           }
-          if (minDiff < 0.5) {
-            exactTime = closest;
+          if (minDiff < 0.45) {
+            exactTime = Math.max(0, closest);
+          }
+        } else if ((prompterData.bpm || 0) > 0) {
+          const beatDur = 60 / (prompterData.bpm || 120);
+          const anchor = (prompterData.firstBeatOffset || 0) + manualGridOffset;
+          const nearestBeat = anchor + Math.round((exactTime - anchor) / beatDur) * beatDur;
+          if (Math.abs(nearestBeat - exactTime) < 0.35) {
+            exactTime = Math.max(0, nearestBeat);
           }
         }
-        
-        setPrompterData(prev => {
-          const newSections = [...(prev.sections || [])];
-          const filtered = newSections.filter(s => Math.abs(s.time - exactTime) > 0.3);
-          filtered.push({ name: sectionName, time: exactTime });
-          filtered.sort((a, b) => a.time - b.time);
+        exactTime = Number(exactTime.toFixed(3));
+
+        const beatDur = (prompterData.bpm || 0) > 0 ? 60 / (prompterData.bpm || 120) : 0.5;
+        const beatsPerBar = parseInt((prompterData.timeSignature || '4/4').split('/')[0], 10) || 4;
+        const defaultBarDur = beatDur * beatsPerBar * 4; // 4 compases por defecto
+
+        setPrompterData((prev: any) => {
+          const currentSections = [...(prev.sections || [])];
+          setSectionsHistoryPast((h) => [...h.slice(-39), currentSections.map((s: any) => ({ ...s }))]);
+          setSectionsHistoryFuture([]);
+
+          const filtered = currentSections.filter((s: any) => Math.abs(s.time - exactTime) > 0.25);
+          const nextSec = filtered.find((s: any) => s.time > exactTime + 0.25);
+          const duration = nextSec
+            ? Number(Math.max(beatDur, Math.min(defaultBarDur, nextSec.time - exactTime)).toFixed(3))
+            : Number(defaultBarDur.toFixed(3));
+
+          filtered.push({
+            id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            name: sectionName,
+            section: sectionName,
+            time: exactTime,
+            duration,
+            cueEnabled: true,
+          });
+          filtered.sort((a: any, b: any) => a.time - b.time);
           return { ...prev, sections: filtered };
         });
+        setHasUnsavedSections(true);
+        if (!isPlaying) {
+          previewVoiceCue(sectionName);
+        }
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isEditingSections, prompterData.beatTimes]);
+  }, [selectedSongId, isEditingPrompter, isPlaying, prompterData.beatTimes, prompterData.bpm, prompterData.firstBeatOffset, prompterData.timeSignature, manualGridOffset, previewVoiceCue]);
 
   const savePrompterData = async () => {
     if (!selectedSongId) return;
     try {
       const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
-      alert('¡Estructura y Voz Guía guardadas exitosamente!');
+      syncPrompterData(merged);
+      setHasUnsavedSections(false);
       setIsEditingSections(false);
-      
-      if (selectedSongId && dbStems.length > 0) {
-         const baseOffset = merged.firstBeatOffset !== undefined 
-            ? merged.firstBeatOffset 
-            : (merged.chords && merged.chords.length > 0 ? merged.chords[0].time : 0);
-         loadStems(merged.bpm || 120, baseOffset + manualGridOffset, merged.timeSignature, merged.beatTimes, merged);
-      }
+
+      const channel = new BroadcastChannel('tandu_stage_sync');
+      channel.postMessage({
+        type: 'PROMPTER_UPDATED',
+        songId: selectedSongId,
+        prompterData: merged
+      });
+      channel.close();
+
+      setSaveToastMsg('¡Voz Guía y Secciones sincronizadas!');
+      setTimeout(() => setSaveToastMsg(null), 3200);
     } catch (e: any) {
       console.error(e);
       alert('Error guardando: ' + e.message);
@@ -1148,17 +1281,37 @@ export default function LivePrompter() {
                         ? 'bg-[#ef4444]/20 text-red-300 border border-[#ef4444]/40 shadow-[0_0_12px_rgba(239,68,68,0.2)]'
                         : 'stage-tactile-btn text-zinc-300 hover:text-white'
                     }`}
-                    title="Marcar secciones (Intro, Verso, Coro, Puente) con el teclado para generar la Voz Guía"
+                    title="El Timeline CapCut siempre está activo. Activa este modo para resaltar la grabación rápida con teclado (I, V, P, C, B, S, F)"
                   >
-                    {isEditingSections ? 'Salir de Grabación de Voz Guía' : '🎙️ Marcar Secciones (Voz Guía)'}
+                    {isEditingSections ? 'Modo Tapping Activo' : '🎙️ Tapping Teclado'}
                     {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] animate-pulse ml-1"></span>}
                   </button>
-                  {isEditingSections && (
-                    <>
-                      <button onClick={() => { if (confirm('¿Borrar todas las secciones de Voz Guía?')) setPrompterData(prev => ({ ...prev, sections: [] })); }} className="px-2 py-1 text-[9px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold">Limpiar</button>
-                      <button onClick={savePrompterData} className="px-3 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 rounded-full uppercase tracking-wider font-black hover:bg-emerald-500/25">Guardar Voz Guía</button>
-                    </>
+                  {(prompterData.sections?.length > 0) && (
+                    <button
+                      onClick={() => {
+                        if (confirm('¿Borrar todas las secciones de Voz Guía? (Puedes deshacer con Ctrl+Z)')) {
+                          handleUpdateSections([]);
+                        }
+                      }}
+                      className="px-2 py-1 text-[9px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold"
+                      title="Vaciar todos los bloques de sección"
+                    >
+                      Limpiar
+                    </button>
                   )}
+                  <button
+                    onClick={savePrompterData}
+                    disabled={!selectedSongId}
+                    className={`px-3 py-1 text-[10px] rounded-full uppercase tracking-wider font-black transition-all flex items-center gap-1.5 ${
+                      hasUnsavedSections
+                        ? 'text-black bg-emerald-400 border border-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.5)] animate-pulse'
+                        : 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 hover:bg-emerald-500/25'
+                    }`}
+                    title="Guardar configuración de Voz Guía y Secciones en la nube (Ctrl+S)"
+                  >
+                    <Save size={11} />
+                    {hasUnsavedSections ? 'Guardar Voz Guía *' : 'Guardar Voz Guía'}
+                  </button>
                   
                   {!isEditingSections && (
                     isEditingPrompter ? (
@@ -1170,6 +1323,12 @@ export default function LivePrompter() {
                         <Edit3 size={11} /> Editor Texto Acordes
                       </button>
                     )
+                  )}
+
+                  {saveToastMsg && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold flex items-center gap-1">
+                      <Check size={11} /> {saveToastMsg}
+                    </span>
                   )}
                </div>
              </div>
@@ -1241,6 +1400,7 @@ export default function LivePrompter() {
                 
                 <Prompter 
                   currentTime={currentTime}
+                  totalDuration={totalDuration}
                   bpm={prompterData.bpm || 0}
                   timeSignature={prompterData.timeSignature}
                   baseOffset={prompterData.firstBeatOffset}
@@ -1248,19 +1408,26 @@ export default function LivePrompter() {
                   chords={prompterData.chords || []}
                   sections={prompterData.sections || []}
                   lyrics={prompterData.lyrics || []}
+                  waveformPeaks={waveformPeaks}
                   isVamping={isVamping}
                   onVampTrigger={handleVampTrigger}
                   isEditing={isEditingSections}
                   onRemoveSection={(index) => {
-                     setPrompterData(prev => {
-                        const s = [...(prev.sections || [])];
-                        s.splice(index, 1);
-                        return { ...prev, sections: s };
-                     });
+                     const next = [...(prompterData.sections || [])];
+                     next.splice(index, 1);
+                     handleUpdateSections(next);
                   }}
+                  onUpdateSections={handleUpdateSections}
+                  onPreviewVoiceCue={previewVoiceCue}
+                  onSaveSections={savePrompterData}
+                  hasUnsavedChanges={hasUnsavedSections}
+                  canUndo={sectionsHistoryPast.length > 0}
+                  canRedo={sectionsHistoryFuture.length > 0}
+                  onUndo={handleUndoSections}
+                  onRedo={handleRedoSections}
                   onEditChord={handleEditSingleChord}
                   onRemoveChord={handleRemoveSingleChord}
-                  onSeek={(t) => audioLoaded && seekTo(t)}
+                  onSeek={(t) => seekTo(t)}
                   gridOffset={manualGridOffset}
                 />
               </div>

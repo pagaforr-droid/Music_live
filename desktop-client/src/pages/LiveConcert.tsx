@@ -1433,7 +1433,7 @@ export default function LiveConcert() {
               ) : (
                 songSections.map((sec: any, sIdx: number) => {
                   const nextSec = songSections[sIdx + 1];
-                  const secEnd = nextSec ? nextSec.time : totalDuration;
+                  const secEnd = (typeof sec.duration === 'number' && sec.duration > 0) ? sec.time + sec.duration : (nextSec ? nextSec.time : totalDuration);
                   const isSecActive = currentTime >= sec.time && currentTime < secEnd;
                   const secStyle = getSectionSolidStyle(sec.name || sec.section || '');
                   return (
