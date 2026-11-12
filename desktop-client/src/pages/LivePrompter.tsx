@@ -1143,7 +1143,7 @@ export default function LivePrompter() {
         {/* MIXER SIDEBAR (Apple Design Collapsible Soft Surface Console) */}
         <aside
           className={`apple-console-font shrink-0 flex flex-col bg-[#F5F6F8] border-r border-slate-200/85 z-20 select-none transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] shadow-[4px_0_24px_rgba(15,23,42,0.04)] ${
-            isConsoleCollapsed ? 'w-[64px]' : 'w-[356px] xl:w-[388px]'
+            isConsoleCollapsed ? 'w-[76px]' : 'w-[368px] xl:w-[396px]'
           }`}
         >
           {/* Console Header (Sin truncamiento de título) */}
@@ -1244,7 +1244,7 @@ export default function LivePrompter() {
 
             if (isConsoleCollapsed) {
               return (
-                <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col items-center gap-2 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col items-center gap-2.5 custom-scrollbar">
                   {stems.map((stem, sIdx) => {
                     const info = resolveTrackInfo(stem);
                     return (
@@ -1256,20 +1256,20 @@ export default function LivePrompter() {
                           e.preventDefault();
                           toggleMute(stem.id);
                         }}
-                        className={`w-11 h-11 rounded-xl border flex flex-col items-center justify-center relative transition-all cursor-pointer ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:brightness-95 ${
+                        className={`w-14 h-14 rounded-2xl border flex items-center justify-center relative transition-all cursor-pointer ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:scale-[1.03] hover:brightness-95 shadow-2xs ${
                           stem.muted ? 'opacity-40 grayscale' : ''
                         } ${stem.solo ? 'ring-2 ring-amber-400' : ''}`}
                         title={`${String(sIdx + 1).padStart(2, '0')} · ${info.displayName} (${info.preset.label}) • Vol ${Math.round(stem.volume * 100)}%\nClic para desplegar · Clic derecho para Mute`}
                       >
-                        <InstrumentSvgIcon category={info.category} size={17} />
-                        <span className="text-[8.5px] font-semibold tabular-nums leading-none mt-0.5 opacity-75">
+                        <InstrumentSvgIcon category={info.category} size={28} />
+                        <span className="absolute top-1 left-1.5 text-[9px] font-semibold tabular-nums leading-none opacity-65">
                           {String(sIdx + 1).padStart(2, '0')}
                         </span>
                         {stem.muted && (
-                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border-2 border-[#F5F6F8]" />
+                          <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-rose-500 border-2 border-[#F5F6F8]" />
                         )}
                         {stem.solo && !stem.muted && (
-                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#F5F6F8]" />
+                          <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-amber-400 border-2 border-[#F5F6F8]" />
                         )}
                       </button>
                     );
@@ -1320,10 +1320,10 @@ export default function LivePrompter() {
                           stem.muted ? 'opacity-60' : 'opacity-100'
                         } ${stem.solo ? 'ring-2 ring-amber-400/90 border-amber-300' : ''}`}
                       >
-                        {/* Cabecera Apple de 2 zonas: [Icono Configurable + Nombre Limpio + Metadata] | [M] [S] [⌄] */}
+                        {/* Cabecera Apple de 2 zonas: [Icono Grande Configurable + Nombre Limpio + Metadata] | [M] [S] [⌄] */}
                         <div className="flex items-center justify-between gap-2.5">
-                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                            {/* Botón de Icono Instrumental Configurable */}
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            {/* Botón de Icono Instrumental Grande */}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1335,12 +1335,14 @@ export default function LivePrompter() {
                                   setEditingTrackPopoverId(stem.id);
                                 }
                               }}
-                              className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 transition-all cursor-pointer relative group ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:scale-[1.04] active:scale-[0.97]`}
+                              className={`${
+                                isTrackFolded ? 'w-[44px] h-[44px] rounded-xl' : 'w-[50px] h-[50px] rounded-2xl'
+                              } border flex items-center justify-center shrink-0 transition-all cursor-pointer relative group ${info.preset.badgeBg} ${info.preset.badgeText} ${info.preset.badgeBorder} hover:scale-[1.04] active:scale-[0.97] shadow-2xs`}
                               title={`Icono: ${info.preset.label} (Clic para cambiar icono o etiqueta)`}
                             >
-                              <InstrumentSvgIcon category={info.category} size={18} />
+                              <InstrumentSvgIcon category={info.category} size={isTrackFolded ? 27 : 32} />
                               <span
-                                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
+                                className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
                                   info.savedIcon ? 'bg-slate-700' : 'bg-slate-300 group-hover:bg-slate-500'
                                 }`}
                               />
@@ -1455,7 +1457,7 @@ export default function LivePrompter() {
                               </div>
                             </div>
 
-                            {/* Grid de Instrumentos */}
+                            {/* Grid Visual de Instrumentos con Iconos Grandes */}
                             <div className="grid grid-cols-3 gap-1.5">
                               {SELECTABLE_INSTRUMENT_PRESETS.map((presetOpt) => {
                                 const isActive = info.category === presetOpt.id;
@@ -1467,14 +1469,14 @@ export default function LivePrompter() {
                                     onClick={() =>
                                       handleUpdateTrackMeta(stem.id, { instrument_icon: presetOpt.id })
                                     }
-                                    className={`px-2 py-1.5 rounded-lg border text-left flex items-center gap-1.5 transition-all cursor-pointer ${
+                                    className={`px-1.5 py-2 rounded-xl border text-center flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
                                       isActive
-                                        ? `${presetOpt.badgeBg} ${presetOpt.badgeText} ${presetOpt.badgeBorder} ring-1 ring-slate-300 font-semibold`
-                                        : 'bg-white hover:bg-slate-100/80 text-slate-600 border-slate-200/75 font-medium'
+                                        ? `${presetOpt.badgeBg} ${presetOpt.badgeText} ${presetOpt.badgeBorder} ring-1 ring-slate-300 font-semibold shadow-2xs`
+                                        : 'bg-white hover:bg-slate-100/80 text-slate-700 border-slate-200/75 font-medium'
                                     }`}
                                   >
-                                    <InstrumentSvgIcon category={presetOpt.id} size={13.5} className="shrink-0" />
-                                    <span className="text-[10px] truncate">{presetOpt.label}</span>
+                                    <InstrumentSvgIcon category={presetOpt.id} size={23} className="shrink-0" />
+                                    <span className="text-[10px] leading-tight truncate w-full">{presetOpt.label}</span>
                                   </button>
                                 );
                               })}
