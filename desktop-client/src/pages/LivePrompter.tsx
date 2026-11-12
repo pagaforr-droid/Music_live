@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAudioEngine, StemTrack } from '../hooks/useAudioEngine';
 import { Prompter, SectionEvent } from '../components/Prompter';
-import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight, Check } from 'lucide-react';
+import { Play, Pause, Square, Mic, Edit3, Save, AlertCircle, Activity, Sparkles, Loader2, Disc3, ArrowRight, Check, PanelLeftClose, PanelLeftOpen, Sliders, ChevronDown, ChevronUp, Minimize2, Maximize2 } from 'lucide-react';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -102,6 +102,11 @@ export default function LivePrompter() {
   const [hasUnsavedSections, setHasUnsavedSections] = useState<boolean>(false);
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
   const [saveToastMsg, setSaveToastMsg] = useState<string | null>(null);
+
+  // Apple Design Collapsible Track Console State
+  const [isConsoleCollapsed, setIsConsoleCollapsed] = useState<boolean>(false);
+  const [isCompactChannels, setIsCompactChannels] = useState<boolean>(false);
+  const [collapsedTrackIds, setCollapsedTrackIds] = useState<Record<string, boolean>>({});
 
   const prompterDataRef = useRef(prompterData);
   useEffect(() => {
@@ -1055,211 +1060,349 @@ export default function LivePrompter() {
           </div>
         )}
 
-        {/* MIXER SIDEBAR (Neumorphic Channel Rack) */}
-        <div className="w-[380px] xl:w-[410px] shrink-0 flex flex-col bg-[#111111] border-r border-white/[0.06] z-10 shadow-[10px_0_30px_rgba(0,0,0,0.6)] select-none">
-          <div className="h-12 border-b border-white/[0.06] flex items-center justify-between px-5 bg-[#161616]">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-              <span className="text-[11px] font-black uppercase tracking-[0.18em] text-white">Consola de Pistas</span>
-            </div>
-            <span className="text-[10px] text-zinc-300 font-mono font-bold bg-[#191919] border border-white/10 px-2.5 py-0.5 rounded-full tabular-nums shadow-[inset_2px_2px_4px_#050505]">
-              {stems.length} Pistas
-            </span>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-            {stems.length === 0 ? (
-              <div className="text-zinc-500 text-xs p-8 text-center rounded-2xl border border-dashed border-white/10 bg-[#161616]">
-                No hay canales de audio cargados para esta canción.
-              </div>
+        {/* MIXER SIDEBAR (Apple Design Collapsible Soft Surface Console) */}
+        <aside
+          className={`apple-console-font shrink-0 flex flex-col bg-[#F3F5F8] border-r border-slate-200/90 z-20 select-none transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] shadow-[4px_0_24px_rgba(15,23,42,0.05)] ${
+            isConsoleCollapsed ? 'w-[60px]' : 'w-[348px] xl:w-[376px]'
+          }`}
+        >
+          {/* Console Header */}
+          <div className="h-12 border-b border-slate-200/80 flex items-center justify-between px-3.5 bg-white/85 backdrop-blur-md shrink-0">
+            {isConsoleCollapsed ? (
+              <button
+                type="button"
+                onClick={() => setIsConsoleCollapsed(false)}
+                className="w-9 h-9 mx-auto rounded-xl bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 text-slate-700 flex items-center justify-center transition-all cursor-pointer shadow-2xs"
+                title="Desplegar Consola de Pistas"
+              >
+                <PanelLeftOpen size={16} />
+              </button>
             ) : (
-              stems.map((stem, sIdx) => {
+              <>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-7 h-7 rounded-lg bg-slate-100 border border-slate-200/80 flex items-center justify-center text-slate-700 shrink-0 shadow-2xs">
+                    <Sliders size={13.5} />
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[13px] font-semibold tracking-[-0.018em] text-slate-800 truncate">
+                      Consola de Pistas
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-medium bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-full tabular-nums shrink-0">
+                      {stems.length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {stems.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setIsCompactChannels((prev) => !prev)}
+                      className={`h-7 px-2 rounded-lg text-[11px] font-medium flex items-center gap-1 border transition-all cursor-pointer ${
+                        isCompactChannels
+                          ? 'bg-slate-800 text-white border-slate-800 shadow-2xs'
+                          : 'bg-slate-100/90 hover:bg-slate-200/75 text-slate-600 border-slate-200/80'
+                      }`}
+                      title={isCompactChannels ? 'Mostrar faders completos' : 'Vista compacta de pistas'}
+                    >
+                      {isCompactChannels ? <Maximize2 size={11.5} /> : <Minimize2 size={11.5} />}
+                      <span>{isCompactChannels ? 'Expandir' : 'Compactar'}</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setIsConsoleCollapsed(true)}
+                    className="h-7 px-2 rounded-lg bg-slate-100/90 hover:bg-slate-200/80 border border-slate-200/80 text-slate-600 hover:text-slate-900 flex items-center gap-1 text-[11px] font-medium transition-all cursor-pointer"
+                    title="Plegar Consola de Pistas para ampliar el Studio Prompter"
+                  >
+                    <PanelLeftClose size={13.5} />
+                    <span>Plegar</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Console Body */}
+          {isConsoleCollapsed ? (
+            <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col items-center gap-2 custom-scrollbar">
+              {stems.map((stem, sIdx) => {
                 const dbMatch = dbStems.find((d: any) => d.id === stem.id);
                 const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
                 const nameLower = stem.name.toLowerCase();
-
                 const isClick = stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr');
                 const isCue = stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz');
-                const panDisplay = stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`;
 
-                let routeBadge = `FOH (${panDisplay})`;
-                let badgeClass = 'text-zinc-300 border-white/10';
-
-                if (isMasterRef) {
-                  routeBadge = `★ FOH MASTER (${panDisplay})`;
-                  badgeClass = 'text-amber-300 border-amber-500/40 bg-amber-500/10';
-                } else if (isClick) {
-                  routeBadge = `CUE CLIC (${panDisplay})`;
-                  badgeClass = 'text-cyan-300 border-cyan-500/40 bg-cyan-500/10';
-                } else if (isCue) {
-                  routeBadge = `CUE GUÍA (${panDisplay})`;
-                  badgeClass = 'text-rose-400 border-rose-500/40 bg-rose-500/10';
-                } else if (nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc')) {
-                  badgeClass = 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10';
-                } else {
-                  badgeClass = 'text-indigo-300 border-indigo-500/40 bg-indigo-500/10';
-                }
+                let pillStyle = 'bg-white border-slate-200/90 text-slate-700 hover:border-slate-300';
+                if (isMasterRef) pillStyle = 'bg-amber-50/90 border-amber-200 text-amber-800';
+                else if (isClick) pillStyle = 'bg-sky-50/90 border-sky-200 text-sky-800';
+                else if (isCue) pillStyle = 'bg-rose-50/90 border-rose-200 text-rose-800';
 
                 return (
-                  <div
+                  <button
                     key={stem.id}
-                    className={`w-full rounded-[24px] bg-[#191919] p-4 flex flex-col transition-all duration-300 relative select-none shadow-[6px_6px_24px_#040404,-4px_-4px_20px_#2a2a2a] hover:shadow-[8px_8px_30px_#020202,-5px_-5px_25px_#333333] border border-white/[0.04] ${
-                      stem.muted ? 'opacity-65 grayscale-[30%]' : 'opacity-100'
-                    } ${
-                      stem.solo ? 'ring-2 ring-amber-400 shadow-[0_0_24px_rgba(245,158,11,0.4)]' : ''
-                    }`}
+                    type="button"
+                    onClick={() => setIsConsoleCollapsed(false)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      toggleMute(stem.id);
+                    }}
+                    className={`w-10 h-10 rounded-xl border flex flex-col items-center justify-center relative transition-all cursor-pointer shadow-2xs ${pillStyle} ${
+                      stem.muted ? 'opacity-45' : ''
+                    } ${stem.solo ? 'ring-2 ring-amber-400' : ''}`}
+                    title={`${stem.name} • Vol ${Math.round(stem.volume * 100)}% (Clic para abrir consola, Clic derecho para Mute)`}
                   >
-                    {/* Nombre Completo de la Pista (Title arriba, tal como en la captura) */}
-                    <div className="px-1 pt-0.5 pb-2.5">
-                      <h3
-                        className="text-white text-[15px] font-extrabold tracking-tight leading-snug break-words"
-                        title={stem.name}
-                      >
-                        {stem.name}
-                      </h3>
-                    </div>
+                    <span className="text-[10px] font-semibold tabular-nums leading-none">
+                      {String(sIdx + 1).padStart(2, '0')}
+                    </span>
+                    <span className="text-[8.5px] font-medium text-slate-400 truncate max-w-[30px] mt-0.5">
+                      {stem.name.slice(0, 3)}
+                    </span>
+                    {stem.muted && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border-2 border-[#F3F5F8]" />
+                    )}
+                    {stem.solo && !stem.muted && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#F3F5F8]" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5 custom-scrollbar">
+              {stems.length === 0 ? (
+                <div className="text-slate-500 text-[12.5px] font-medium p-8 text-center rounded-2xl border border-dashed border-slate-300/80 bg-white/70">
+                  No hay canales de audio cargados para esta canción.
+                </div>
+              ) : (
+                stems.map((stem, sIdx) => {
+                  const dbMatch = dbStems.find((d: any) => d.id === stem.id);
+                  const isMasterRef = Boolean(dbMatch?.metadata?.is_master);
+                  const nameLower = stem.name.toLowerCase();
 
-                    {/* Dock Inferior Hundido Neumórfico (Exacto a la captura enviada) */}
-                    <div className="w-full bg-[#131313] rounded-[20px] p-3.5 flex flex-col gap-3 shadow-[inset_3px_3px_10px_#060606,inset_-2px_-2px_8px_#262626] border border-white/[0.02]">
-                      
-                      {/* Fila 1: CANAL 01 (Left) | ★ FOH MASTER (R) (Center) | [M] [S] (Right) */}
+                  const isClick = stem.type === 'Click' || nameLower.includes('click') || nameLower.includes('metr');
+                  const isCue = stem.type === 'Cues' || nameLower.includes('guia') || nameLower.includes('guía') || nameLower.includes('voz');
+                  const isRhythm = nameLower.includes('drum') || nameLower.includes('bater') || nameLower.includes('perc') || nameLower.includes('bass') || nameLower.includes('bajo');
+                  const panDisplay = stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`;
+
+                  let routeBadge = `FOH · ${panDisplay}`;
+                  let badgeClass = 'bg-slate-100 text-slate-600 border-slate-200/80';
+                  let cardSurfaceClass = 'bg-white border-slate-200/85 hover:border-slate-300/90';
+                  let accentFillColor = '#3b82f6';
+
+                  if (isMasterRef) {
+                    routeBadge = `★ Master · ${panDisplay}`;
+                    badgeClass = 'bg-amber-100/80 text-amber-800 border-amber-200/90';
+                    cardSurfaceClass = 'bg-[#FFFDF8] border-amber-200/75 hover:border-amber-300/90';
+                    accentFillColor = '#f59e0b';
+                  } else if (isClick) {
+                    routeBadge = `Cue Clic · ${panDisplay}`;
+                    badgeClass = 'bg-sky-100/80 text-sky-800 border-sky-200/90';
+                    cardSurfaceClass = 'bg-[#F7FBFF] border-sky-200/75 hover:border-sky-300/90';
+                    accentFillColor = '#0284c7';
+                  } else if (isCue) {
+                    routeBadge = `Cue Guía · ${panDisplay}`;
+                    badgeClass = 'bg-rose-100/80 text-rose-800 border-rose-200/90';
+                    cardSurfaceClass = 'bg-[#FFF8F9] border-rose-200/75 hover:border-rose-300/90';
+                    accentFillColor = '#e11d48';
+                  } else if (isRhythm) {
+                    badgeClass = 'bg-emerald-100/75 text-emerald-800 border-emerald-200/90';
+                    cardSurfaceClass = 'bg-[#F8FCF9] border-emerald-200/70 hover:border-emerald-300/85';
+                    accentFillColor = '#10b981';
+                  } else {
+                    badgeClass = 'bg-indigo-50 text-indigo-700 border-indigo-200/75';
+                    cardSurfaceClass = 'bg-white border-slate-200/85 hover:border-indigo-200/90';
+                    accentFillColor = '#6366f1';
+                  }
+
+                  const isTrackFolded = isCompactChannels || Boolean(collapsedTrackIds[stem.id]);
+                  const volPercent = Math.round(stem.volume * 100);
+
+                  return (
+                    <div
+                      key={stem.id}
+                      className={`w-full rounded-2xl p-3.5 flex flex-col transition-all duration-200 relative select-none border shadow-[0_2px_8px_rgba(15,23,42,0.03)] hover:shadow-[0_6px_16px_rgba(15,23,42,0.06)] ${cardSurfaceClass} ${
+                        stem.muted ? 'opacity-60' : 'opacity-100'
+                      } ${
+                        stem.solo ? 'ring-2 ring-amber-400 shadow-[0_4px_16px_rgba(245,158,11,0.18)]' : ''
+                      }`}
+                    >
+                      {/* Fila Superior: Índice + Nombre de Pista Apple Typography + Ruta + M / S + Plegar */}
                       <div className="flex items-center justify-between gap-2">
-                        {/* Left: CANAL 01 */}
-                        <span className="text-[11px] font-mono text-zinc-400 font-bold tracking-wider shrink-0">
-                          CANAL {String(sIdx + 1).padStart(2, '0')}
-                        </span>
-
-                        {/* Center: Badge de Salida / Ruteo */}
-                        <div className="flex-1 flex justify-center">
-                          <span className={`text-[10px] font-mono font-bold px-3 py-0.5 rounded-full border uppercase tracking-wider shadow-inner ${badgeClass}`}>
-                            {routeBadge}
+                        <div
+                          className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
+                          onClick={() =>
+                            setCollapsedTrackIds((prev) => ({
+                              ...prev,
+                              [stem.id]: !isTrackFolded,
+                            }))
+                          }
+                          title="Clic para plegar o desplegar controles de esta pista"
+                        >
+                          <span className="text-[10.5px] font-semibold text-slate-400 bg-slate-100/90 border border-slate-200/70 px-1.5 py-0.5 rounded-md tabular-nums shrink-0">
+                            {String(sIdx + 1).padStart(2, '0')}
                           </span>
+                          <h3
+                            className="text-slate-800 text-[13.5px] font-semibold tracking-[-0.015em] leading-snug truncate"
+                            title={stem.name}
+                          >
+                            {stem.name}
+                          </h3>
                         </div>
 
-                        {/* Right: Botones táctiles Mute / Solo */}
                         <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border tracking-[-0.01em] ${badgeClass}`}>
+                            {routeBadge}
+                          </span>
+
+                          {/* Botón Mute */}
                           <button
                             type="button"
                             onClick={() => toggleMute(stem.id)}
-                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold transition-all cursor-pointer ${
+                            className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
                               stem.muted
-                                ? 'bg-[#ef4444] text-white shadow-[0_0_12px_rgba(239,68,68,0.7)]'
-                                : 'bg-[#1c1c1c] text-zinc-300 hover:text-white shadow-[2px_2px_6px_#060606,-1px_-1px_4px_#2c2c2c] active:shadow-[inset_2px_2px_4px_#050505]'
+                                ? 'bg-rose-500 text-white border-rose-600 shadow-[0_2px_6px_rgba(244,63,94,0.35)]'
+                                : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/80'
                             }`}
-                            title={stem.muted ? "Canal Silenciado" : "Silenciar Canal (Mute)"}
+                            title={stem.muted ? 'Canal Silenciado' : 'Silenciar Canal (Mute)'}
                           >
                             M
                           </button>
+
+                          {/* Botón Solo */}
                           <button
                             type="button"
                             onClick={() => toggleSolo(stem.id)}
-                            className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold transition-all cursor-pointer ${
+                            className={`w-6.5 h-6.5 rounded-lg flex items-center justify-center text-[10.5px] font-semibold transition-all cursor-pointer border ${
                               stem.solo
-                                ? 'bg-amber-400 text-black shadow-[0_0_14px_rgba(245,158,11,0.8)] font-black'
-                                : 'bg-[#1c1c1c] text-zinc-300 hover:text-white shadow-[2px_2px_6px_#060606,-1px_-1px_4px_#2c2c2c] active:shadow-[inset_2px_2px_4px_#050505]'
+                                ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-[0_2px_6px_rgba(245,158,11,0.35)] font-bold'
+                                : 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border-slate-200/80'
                             }`}
                             title="Escuchar en Solo"
                           >
                             S
                           </button>
-                        </div>
-                      </div>
 
-                      {/* Fila 2: VOL 41% + Slider */}
-                      <div className="flex items-center gap-3">
-                        <div className="w-18 shrink-0 flex items-center gap-1.5 font-mono text-[11px] font-black text-zinc-300">
-                          <span className="tracking-widest">VOL</span>
-                          <span className="text-white">{Math.round(stem.volume * 100)}%</span>
-                        </div>
-                        <div className="flex-1 flex items-center">
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            value={stem.volume}
-                            onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
-                            className="neumorphic-prompter-slider cursor-pointer"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Fila 3: PAN + Slider + Botones Rápidos L / C / R */}
-                      <div className="flex items-center gap-2">
-                        <div className="w-18 shrink-0 flex items-center gap-1 font-mono text-[11px] font-black text-zinc-300">
-                          <span className="tracking-widest">PAN</span>
-                          <span className={`text-[10px] font-bold ${
-                            stem.pan === 0 
-                              ? 'text-cyan-400' 
-                              : stem.pan < 0 
-                              ? 'text-amber-400' 
-                              : 'text-emerald-400'
-                          }`}>
-                            {stem.pan === 0 ? 'C' : stem.pan < 0 ? `L${Math.abs(Math.round(stem.pan * 100))}` : `R${Math.round(stem.pan * 100)}`}
-                          </span>
-                        </div>
-                        <div className="flex-1 flex items-center gap-1.5">
-                          {/* Botón Rápido L (-100%) */}
+                          {/* Botón Plegar Individual */}
                           <button
                             type="button"
-                            onClick={() => handlePanChange(stem.id, -1)}
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
-                              stem.pan <= -0.95
-                                ? 'bg-amber-500 text-black shadow-[0_0_8px_rgba(245,158,11,0.6)] font-black'
-                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
-                            }`}
-                            title="Pan Izquierda (L 100%)"
+                            onClick={() =>
+                              setCollapsedTrackIds((prev) => ({
+                                ...prev,
+                                [stem.id]: !isTrackFolded,
+                              }))
+                            }
+                            className="w-6 h-6 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
+                            title={isTrackFolded ? 'Mostrar faders de canal' : 'Ocultar faders de canal'}
                           >
-                            L
-                          </button>
-
-                          <input
-                            type="range"
-                            min="-1"
-                            max="1"
-                            step="0.01"
-                            value={stem.pan}
-                            onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
-                            className="neumorphic-prompter-slider cursor-pointer flex-1"
-                          />
-
-                          {/* Botón Rápido C (0% Centro - Protección Auditiva) */}
-                          <button
-                            type="button"
-                            onClick={() => handlePanChange(stem.id, 0)}
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
-                              Math.abs(stem.pan) < 0.05
-                                ? 'bg-cyan-400 text-black shadow-[0_0_8px_rgba(34,211,238,0.6)] font-black'
-                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
-                            }`}
-                            title="Centrar Audio (C 0% - Balanceado para In-Ears)"
-                          >
-                            C
-                          </button>
-
-                          {/* Botón Rápido R (+100%) */}
-                          <button
-                            type="button"
-                            onClick={() => handlePanChange(stem.id, 1)}
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
-                              stem.pan >= 0.95
-                                ? 'bg-emerald-500 text-black shadow-[0_0_8px_rgba(16,185,129,0.6)] font-black'
-                                : 'bg-[#1e1e1e] text-zinc-400 hover:text-white border border-white/[0.05]'
-                            }`}
-                            title="Pan Derecha (R 100%)"
-                          >
-                            R
+                            {isTrackFolded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
                           </button>
                         </div>
                       </div>
 
+                      {/* Controles Desplegables (Volumen y Paneo L / C / R con acabado Apple) */}
+                      {!isTrackFolded && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-2.5">
+                          {/* Fila Volumen */}
+                          <div className="flex items-center gap-3">
+                            <div className="w-16 shrink-0 flex items-center justify-between text-[11px]">
+                              <span className="font-medium text-slate-400">Vol</span>
+                              <span className="font-semibold text-slate-700 tabular-nums">{volPercent}%</span>
+                            </div>
+                            <div className="flex-1 flex items-center">
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={stem.volume}
+                                onChange={(e) => handleVolumeChange(stem.id, parseFloat(e.target.value))}
+                                className="apple-studio-slider cursor-pointer"
+                                style={{
+                                  background: `linear-gradient(to right, ${accentFillColor} 0%, ${accentFillColor} ${volPercent}%, #e2e8f0 ${volPercent}%, #e2e8f0 100%)`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Fila Paneo + Botones Segmented Apple L / C / R */}
+                          <div className="flex items-center gap-3">
+                            <div className="w-16 shrink-0 flex items-center justify-between text-[11px]">
+                              <span className="font-medium text-slate-400">Pan</span>
+                              <span
+                                className={`font-semibold tabular-nums text-[10.5px] ${
+                                  stem.pan === 0
+                                    ? 'text-sky-600'
+                                    : stem.pan < 0
+                                    ? 'text-amber-600'
+                                    : 'text-emerald-600'
+                                }`}
+                              >
+                                {panDisplay}
+                              </span>
+                            </div>
+
+                            <div className="flex-1 flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handlePanChange(stem.id, -1)}
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
+                                  stem.pan <= -0.95
+                                    ? 'bg-amber-500 text-white border-amber-600 shadow-2xs'
+                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
+                                }`}
+                                title="Pan Izquierda (L 100%)"
+                              >
+                                L
+                              </button>
+
+                              <input
+                                type="range"
+                                min="-1"
+                                max="1"
+                                step="0.01"
+                                value={stem.pan}
+                                onChange={(e) => handlePanChange(stem.id, parseFloat(e.target.value))}
+                                className="apple-studio-slider cursor-pointer flex-1"
+                              />
+
+                              <button
+                                type="button"
+                                onClick={() => handlePanChange(stem.id, 0)}
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
+                                  Math.abs(stem.pan) < 0.05
+                                    ? 'bg-sky-500 text-white border-sky-600 shadow-2xs'
+                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
+                                }`}
+                                title="Centrar Audio (C 0% - Balanceado para In-Ears)"
+                              >
+                                C
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handlePanChange(stem.id, 1)}
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border ${
+                                  stem.pan >= 0.95
+                                    ? 'bg-emerald-500 text-white border-emerald-600 shadow-2xs'
+                                    : 'bg-slate-100/90 text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 border-slate-200/80'
+                                }`}
+                                title="Pan Derecha (R 100%)"
+                              >
+                                R
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </aside>
 
         {/* PROMPTER VISUAL AREA */}
         <div className="flex-1 bg-[#08090c] flex flex-col relative overflow-hidden">
