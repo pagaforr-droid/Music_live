@@ -15,6 +15,7 @@ import {
   findMasterAndDrumStems,
   decodeAudioUrlToBuffer,
   repairAndRelockBeatGrid,
+  mixProjectStemsToMasterBlob,
 } from '../utils/beatGridDSP';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -47,6 +48,7 @@ export default function StemStudio() {
   // AI Generator & Grid Metadata state
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [isRelockingLocal, setIsRelockingLocal] = useState(false);
+  const [isCreatingMaster, setIsCreatingMaster] = useState(false);
   const [isSavingMeta, setIsSavingMeta] = useState(false);
   const [aiSuccessMessage, setAiSuccessMessage] = useState<string | null>(null);
   const [manualKey, setManualKey] = useState<string>('');
@@ -1048,6 +1050,90 @@ export default function StemStudio() {
     }
   };
 
+  /**
+   * Crea automáticamente una pista "Master" mezclando todos los tracks musicales cargados
+   * en el proyecto actual (100% tiempo y tono original) y la agrega a la carpeta como ★ Master.
+   */
+  const handleCreateMasterFromStems = async () => {
+    if (!selectedSongId || stems.length === 0 || isCreatingMaster) return;
+    setIsCreatingMaster(true);
+    setAiSuccessMessage(null);
+
+    const targetSongId = selectedSongId;
+    const activeSong = songs.find(s => s.id === targetSongId);
+    const baseTitle = (activeSong?.title || 'Proyecto').trim();
+    const masterTrackName = `${baseTitle} - Master`;
+
+    try {
+      const mixResult = await mixProjectStemsToMasterBlob(stems, (msg) => {
+        if (mountedRef.current) setAiSuccessMessage(msg);
+      });
+
+      if (mountedRef.current) {
+        setAiSuccessMessage(`Subiendo "${masterTrackName}" a la carpeta del proyecto...`);
+      }
+
+      const ts = Date.now();
+      const safeFileName = `${ts}_${sanitizeFileName(baseTitle)}_Master.${mixResult.extension}`;
+      const storagePath = `${FAKE_BAND_ID}/${targetSongId}/${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('audios')
+        .upload(storagePath, mixResult.blob, {
+          contentType: mixResult.mimeType,
+          upsert: true
+        });
+
+      if (uploadError) {
+        throw new Error(`Error subiendo archivo Master al Storage: ${uploadError.message}`);
+      }
+
+      const { data: publicUrlData } = supabase.storage.from('audios').getPublicUrl(storagePath);
+
+      // Desmarcar cualquier otro stem que tuviera is_master = true para dejar este nuevo como el Master principal
+      for (const s of stems) {
+        if (s.metadata?.is_master === true) {
+          const nextMeta = { ...(s.metadata || {}), is_master: false };
+          await supabase.from('stems').update({ metadata: nextMeta }).eq('id', s.id);
+        }
+      }
+
+      const { error: dbError } = await supabase.from('stems').insert({
+        song_id: targetSongId,
+        name: masterTrackName,
+        file_url: publicUrlData.publicUrl,
+        type: 'Audio',
+        metadata: {
+          duration_seconds: mixResult.durationSeconds,
+          format: mixResult.mimeType,
+          original_name: `${masterTrackName}.${mixResult.extension}`,
+          is_master: true,
+          is_generated_master: true,
+          tracks_mixed: mixResult.tracksMixed
+        }
+      });
+
+      if (dbError) {
+        throw new Error(`Error registrando pista Master en la carpeta: ${dbError.message}`);
+      }
+
+      await fetchStems(targetSongId);
+      setAiSuccessMessage(
+        `¡Archivo "${masterTrackName}" creado de ${mixResult.tracksMixed} pistas y asignado como ★ Master de referencia!`
+      );
+      setTimeout(() => {
+        if (mountedRef.current) setAiSuccessMessage(null);
+      }, 6500);
+    } catch (err: any) {
+      console.error('Error creando Master desde stems:', err);
+      alert(`No se pudo crear el archivo Master: ${err.message}`);
+    } finally {
+      if (mountedRef.current) {
+        setIsCreatingMaster(false);
+      }
+    }
+  };
+
   const deleteStem = async (stemId: string) => {
     if (!confirm('¿Estás seguro de que quieres eliminar esta pista?')) return;
     
@@ -1265,7 +1351,7 @@ export default function StemStudio() {
   };
 
   const activeSongObj = songs.find(s => s.id === selectedSongId);
-  const { masterStem: currentMasterStem } = findMasterAndDrumStems(stems);
+  const { trueMasterStem: currentMasterStem } = findMasterAndDrumStems(stems);
 
   return (
     <div className="h-full flex flex-col bg-[#f8f9fa] overflow-hidden text-zinc-900 select-none relative">
@@ -1791,16 +1877,35 @@ export default function StemStudio() {
                         Paso 2: Grilla Global, Compás y Tempo
                       </h3>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
                       {currentMasterStem ? (
-                        <span className="flex items-center gap-1.5 text-[10px] font-bold px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 shadow-xs whitespace-nowrap">
-                          <Star size={11} className="fill-amber-500 text-amber-500 shrink-0" />
-                          <span>Fuente IA: <strong className="font-black text-amber-950">{currentMasterStem.name}</strong></span>
-                        </span>
+                        <>
+                          <span className="flex items-center gap-1.5 text-[10px] font-bold px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 shadow-xs whitespace-nowrap">
+                            <Star size={11} className="fill-amber-500 text-amber-500 shrink-0" />
+                            <span>Fuente IA: <strong className="font-black text-amber-950">{currentMasterStem.name}</strong></span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleCreateMasterFromStems}
+                            disabled={isCreatingMaster || isGeneratingAI || stems.length === 0}
+                            className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full bg-zinc-100 hover:bg-amber-50 text-zinc-700 hover:text-amber-900 border border-zinc-300 hover:border-amber-300 transition-all cursor-pointer shadow-xs whitespace-nowrap disabled:opacity-40"
+                            title="Volver a mezclar todos los tracks cargados para crear un nuevo archivo Master"
+                          >
+                            {isCreatingMaster ? <RefreshCw size={11} className="animate-spin text-amber-600 shrink-0" /> : <Layers size={11} className="text-amber-600 shrink-0" />}
+                            <span>{isCreatingMaster ? "Creando Master..." : "Re-Crear Master"}</span>
+                          </button>
+                        </>
                       ) : stems.length > 0 ? (
-                        <span className="text-[10px] font-bold px-3 py-1 rounded-full bg-zinc-100 text-zinc-600 border border-zinc-200 whitespace-nowrap" title="Haz clic en la estrella ★ de una pista abajo para designarla como Master">
-                          Sin ★ Master explícito
-                        </span>
+                        <button
+                          type="button"
+                          onClick={handleCreateMasterFromStems}
+                          disabled={isCreatingMaster || isGeneratingAI}
+                          className="flex items-center gap-1.5 text-[10.5px] font-black px-3.5 py-1.5 rounded-full bg-amber-500 hover:bg-amber-600 text-white border border-amber-600 transition-all cursor-pointer shadow-xs whitespace-nowrap disabled:opacity-50"
+                          title="Este proyecto no tiene pista Master. Haz clic para mezclar todos los tracks cargados y agregar automáticamente el archivo Master a la carpeta."
+                        >
+                          {isCreatingMaster ? <RefreshCw size={12} className="animate-spin shrink-0" /> : <Layers size={12} className="shrink-0" />}
+                          <span>{isCreatingMaster ? "Mezclando Stems..." : "★ Crear Archivo Master (Mezclar Tracks)"}</span>
+                        </button>
                       ) : null}
                     </div>
                   </div>
@@ -1880,8 +1985,22 @@ export default function StemStudio() {
               <div className="bg-white border border-zinc-200 flex flex-col rounded-2xl overflow-hidden shadow-xs shrink-0">
                 {/* Tracks Header */}
                 <div className="flex items-center px-6 py-3.5 bg-zinc-50 border-b border-zinc-200">
-                  <div className="w-[360px] text-[10.5px] font-black text-zinc-600 uppercase tracking-[0.14em] shrink-0">
-                    Pista / Stem ({stems.length})
+                  <div className="w-[360px] flex items-center justify-between pr-3 shrink-0">
+                    <span className="text-[10.5px] font-black text-zinc-600 uppercase tracking-[0.14em]">
+                      Pista / Stem ({stems.length})
+                    </span>
+                    {stems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleCreateMasterFromStems}
+                        disabled={isCreatingMaster || isGeneratingAI}
+                        className="h-7 px-3 rounded-full bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-xs whitespace-nowrap disabled:opacity-40"
+                        title="Mezcla todos los tracks cargados de este proyecto para crear un archivo Master de referencia y lo agrega automáticamente a esta carpeta"
+                      >
+                        {isCreatingMaster ? <RefreshCw size={11} className="animate-spin text-amber-700 shrink-0" /> : <Layers size={11} className="text-amber-600 shrink-0" />}
+                        <span>{isCreatingMaster ? "Mezclando..." : "+ Crear Master"}</span>
+                      </button>
+                    )}
                   </div>
                   <div className="flex-1 text-[10.5px] font-black text-zinc-600 uppercase tracking-[0.14em] pl-6">
                     Forma de Onda Real (Clic para adelantar/retroceder al reproducir)

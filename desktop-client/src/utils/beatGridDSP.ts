@@ -86,10 +86,11 @@ export function isMasterTrackByName(rawName: string): boolean {
  */
 export function findMasterAndDrumStems(stems: any[]): {
   masterStem: any | null;
+  trueMasterStem: any | null;
   drumStem: any | null;
 } {
   if (!stems || stems.length === 0) {
-    return { masterStem: null, drumStem: null };
+    return { masterStem: null, trueMasterStem: null, drumStem: null };
   }
 
   // Filtrar copias con marca de agua si existen originales disponibles
@@ -111,6 +112,8 @@ export function findMasterAndDrumStems(stems: any[]): {
       return n.includes('master') || n.includes('mezcla') || n.includes('full mix');
     }) || null;
   }
+
+  const trueMasterStem = masterStem;
 
   // Buscar pista de Batería / Drums aislada (distinta del Master) para asistir en transitorios
   const drumStem = pool.find(s => {
@@ -134,7 +137,7 @@ export function findMasterAndDrumStems(stems: any[]): {
     masterStem = drumStem || pool[0] || null;
   }
 
-  return { masterStem, drumStem };
+  return { masterStem, trueMasterStem, drumStem };
 }
 
 /**
@@ -930,5 +933,224 @@ export function repairAndRelockBeatGrid(params: {
     referenceTrackName,
     usedDrumAssist: profile.hasDrumAssist,
     telemetrySummary
+  };
+}
+
+/**
+ * Codifica dos canales estéreo Float32Array en un archivo WAV PCM de 16 bits.
+ */
+function encodeWav16Stereo(chL: Float32Array, chR: Float32Array, sr: number): Blob {
+  const numSamples = chL.length;
+  const numChannels = 2;
+  const bytesPerSample = 2;
+  const dataSize = numSamples * numChannels * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * numChannels * bytesPerSample, true);
+  view.setUint16(32, numChannels * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  const int16View = new Int16Array(buffer, 44);
+  for (let i = 0; i < numSamples; i++) {
+    const l = Math.max(-1, Math.min(1, chL[i]));
+    const r = Math.max(-1, Math.min(1, chR[i]));
+    int16View[i * 2] = l < 0 ? l * 0x8000 : l * 0x7fff;
+    int16View[i * 2 + 1] = r < 0 ? r * 0x8000 : r * 0x7fff;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/**
+ * Codifica dos canales estéreo Float32Array en MP3 320 kbps usando lamejs (con fallback a WAV si falla).
+ */
+async function encodeMasterMp3OrWav(
+  chL: Float32Array,
+  chR: Float32Array,
+  sr: number
+): Promise<{ blob: Blob; mimeType: string; extension: 'mp3' | 'wav' }> {
+  try {
+    if (!(window as any).lamejs) {
+      const lamejsSrc = await import('lamejs/lame.all.js?raw');
+      const script = document.createElement('script');
+      script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
+      document.head.appendChild(script);
+    }
+    const lamejs = (window as any).lamejs;
+    if (lamejs && lamejs.Mp3Encoder) {
+      const encoder = new lamejs.Mp3Encoder(2, sr, 320);
+      const sampleBlockSize = 1152;
+      const mp3Data: BlobPart[] = [];
+      const leftChunk16 = new Int16Array(sampleBlockSize);
+      const rightChunk16 = new Int16Array(sampleBlockSize);
+
+      let sampleOffset = 0;
+      while (sampleOffset < chL.length) {
+        const length = Math.min(sampleBlockSize, chL.length - sampleOffset);
+        const lSub = length === sampleBlockSize ? leftChunk16 : new Int16Array(length);
+        const rSub = length === sampleBlockSize ? rightChunk16 : new Int16Array(length);
+
+        for (let i = 0; i < length; i++) {
+          const sL = Math.max(-1, Math.min(1, chL[sampleOffset + i]));
+          const sR = Math.max(-1, Math.min(1, chR[sampleOffset + i]));
+          lSub[i] = sL < 0 ? sL * 0x8000 : sL * 0x7fff;
+          rSub[i] = sR < 0 ? sR * 0x8000 : sR * 0x7fff;
+        }
+
+        const mp3buf = encoder.encodeBuffer(lSub, rSub);
+        if (mp3buf.length > 0) mp3Data.push(new Int8Array(mp3buf));
+        sampleOffset += sampleBlockSize;
+      }
+
+      const flushBuf = encoder.flush();
+      if (flushBuf.length > 0) mp3Data.push(new Int8Array(flushBuf));
+
+      return {
+        blob: new Blob(mp3Data, { type: 'audio/mpeg' }),
+        mimeType: 'audio/mpeg',
+        extension: 'mp3'
+      };
+    }
+  } catch (err) {
+    console.warn('[beatGridDSP] Fallback a WAV en generación de Master:', err);
+  }
+
+  return {
+    blob: encodeWav16Stereo(chL, chR, sr),
+    mimeType: 'audio/wav',
+    extension: 'wav'
+  };
+}
+
+/**
+ * Mezcla todos los tracks musicales del proyecto actual en un archivo Master 100% fiel
+ * (mismo tempo, mismo tono, alineación exacta al sample 0 y normalización limpia a -0.5 dBFS)
+ * ideal para proyectos que no cuentan con pista Master para el cálculo de Tempo, Grilla y Acordes IA.
+ */
+export async function mixProjectStemsToMasterBlob(
+  stems: any[],
+  onProgress?: (msg: string) => void
+): Promise<{
+  blob: Blob;
+  mimeType: string;
+  extension: 'mp3' | 'wav';
+  durationSeconds: number;
+  tracksMixed: number;
+}> {
+  // 1. Filtrar pistas válidas: excluir masters previos, copias DSP y pistas de clic/guía hablada
+  const validStems = (stems || []).filter(s => s && (s.file_url || s.url) && !s.metadata?.dsp_watermark);
+  const nonMasterStems = validStems.filter(
+    s => !s.metadata?.is_master && !isMasterTrackByName(s.name || '')
+  );
+  const pool = nonMasterStems.length > 0 ? nonMasterStems : validStems;
+
+  const musicalStems = pool.filter(s => {
+    const n = (s.name || '').toLowerCase();
+    const icon = (s.metadata?.instrument_icon || '').toLowerCase();
+    if (icon === 'click' || icon === 'guide') return false;
+    return !/\b(click|metronomo|metrónomo|guia|guía|cue|cues)\b/i.test(n);
+  });
+
+  const tracksToMix = musicalStems.length > 0 ? musicalStems : pool;
+  if (tracksToMix.length === 0) {
+    throw new Error('No hay pistas de audio válidas en el proyecto para mezclar.');
+  }
+
+  const targetSr = 44100;
+  const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+  const audioCtx: AudioContext = new AudioCtx({ sampleRate: targetSr });
+
+  let maxLen = 0;
+  const decodedBuffers: AudioBuffer[] = [];
+
+  try {
+    for (let i = 0; i < tracksToMix.length; i++) {
+      const st = tracksToMix[i];
+      const url = st.file_url || st.url;
+      onProgress?.(
+        `Creando Master (1/3): Decodificando pista ${i + 1}/${tracksToMix.length} ("${st.name}")...`
+      );
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`No se pudo descargar la pista "${st.name}" (${res.status})`);
+      }
+      const ab = await res.arrayBuffer();
+      const decoded = await audioCtx.decodeAudioData(ab.slice(0));
+      if (decoded.length > maxLen) maxLen = decoded.length;
+      decodedBuffers.push(decoded);
+    }
+  } finally {
+    try {
+      if (audioCtx.state !== 'closed') await audioCtx.close();
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  if (maxLen === 0 || decodedBuffers.length === 0) {
+    throw new Error('Las pistas decodificadas están vacías.');
+  }
+
+  onProgress?.(`Creando Master (2/3): Mezclando y balanceando ${decodedBuffers.length} pistas en estéreo...`);
+  await new Promise(r => setTimeout(r, 15));
+
+  const mixL = new Float32Array(maxLen);
+  const mixR = new Float32Array(maxLen);
+
+  for (const buf of decodedBuffers) {
+    const bL = buf.getChannelData(0);
+    const bR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : bL;
+    const len = bL.length;
+    for (let i = 0; i < len; i++) {
+      mixL[i] += bL[i];
+      mixR[i] += bR[i];
+    }
+  }
+
+  // Normalización transparente de estudio a -0.5 dBFS (0.944) para evitar saturación al sumar múltiples pistas
+  let maxPeak = 0;
+  for (let i = 0; i < maxLen; i++) {
+    const absL = Math.abs(mixL[i]);
+    const absR = Math.abs(mixR[i]);
+    if (absL > maxPeak) maxPeak = absL;
+    if (absR > maxPeak) maxPeak = absR;
+  }
+
+  if (maxPeak > 1e-5) {
+    const targetCeiling = 0.944; // -0.5 dBFS
+    const normGain = targetCeiling / maxPeak;
+    for (let i = 0; i < maxLen; i++) {
+      mixL[i] *= normGain;
+      mixR[i] *= normGain;
+    }
+  }
+
+  onProgress?.(`Creando Master (3/3): Codificando archivo Master de referencia...`);
+  await new Promise(r => setTimeout(r, 15));
+
+  const encoded = await encodeMasterMp3OrWav(mixL, mixR, targetSr);
+  const durationSeconds = Math.round(maxLen / targetSr);
+
+  return {
+    blob: encoded.blob,
+    mimeType: encoded.mimeType,
+    extension: encoded.extension,
+    durationSeconds,
+    tracksMixed: decodedBuffers.length
   };
 }
