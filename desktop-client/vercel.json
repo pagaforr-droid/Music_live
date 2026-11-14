@@ -1,4 +1,6 @@
 {
+  "installCommand": "unset npm_config_cache_dir NPM_CONFIG_CACHE_DIR; npm install --no-fund --no-audit",
+  "buildCommand": "unset npm_config_cache_dir NPM_CONFIG_CACHE_DIR; npm run build",
   "rewrites": [
     {
       "source": "/api/(.*)",
