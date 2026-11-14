@@ -2177,6 +2177,24 @@ export default function StemStudio() {
                               {isThisDecorrelating ? <Loader2 size={13} className="animate-spin" /> : <Shield size={13} />}
                             </button>
                             <button
+                              onClick={() =>
+                                navigate(
+                                  `/mastering?audioUrl=${encodeURIComponent(
+                                    stem.file_url || ''
+                                  )}&title=${encodeURIComponent(
+                                    stem.name || 'Track'
+                                  )}&songId=${encodeURIComponent(
+                                    selectedSongId || ''
+                                  )}`
+                                )
+                              }
+                              className="px-2.5 h-8 flex items-center gap-1 rounded-full bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 text-[10px] font-bold transition-all cursor-pointer shadow-xs shrink-0"
+                              title={`Enviar "${stem.name}" a Studio Mastering Pro`}
+                            >
+                              <Sparkles size={12} />
+                              <span>Master Pro</span>
+                            </button>
+                            <button
                               onClick={() => deleteStem(stem.id)}
                               className="w-8 h-8 flex items-center justify-center bg-zinc-100 hover:bg-rose-50 text-zinc-500 hover:text-rose-600 border border-zinc-200 rounded-full transition-all cursor-pointer shadow-xs shrink-0"
                               title="Eliminar pista"

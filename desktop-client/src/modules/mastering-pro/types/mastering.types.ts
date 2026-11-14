@@ -1,0 +1,200 @@
+export type PresetCategory =
+  | 'Rock'
+  | 'Pop'
+  | 'Acoustic'
+  | 'Funk'
+  | 'AI-Restore'
+  | 'Worship';
+
+export type SaturationType = 'tape' | 'tube' | 'transformer' | 'softclip';
+
+export type EQBandChannel = 'stereo' | 'mid' | 'side';
+
+export interface EQBandConfig {
+  id: string;
+  label: string;
+  freq: number;
+  gainDb: number;
+  q: number;
+  type: BiquadFilterType;
+  channel: EQBandChannel;
+  enabled?: boolean;
+}
+
+export interface CompressorConfig {
+  thresholdDb: number;
+  ratio: number;
+  attackSec: number;
+  releaseSec: number;
+  kneeDb: number;
+  makeupGainDb: number;
+  /** 0.0 to 1.0 (0% to 100% Parallel Bus Glue Mix) */
+  parallelMix: number;
+}
+
+export interface SaturationConfig {
+  type: SaturationType;
+  /** 0.0 to 1.0 Analog Drive intensity */
+  drive: number;
+  /** Harmonic warmth tilt in dB (-3 to +3) */
+  warmthTiltDb: number;
+}
+
+export interface StereoWidthConfig {
+  /** Gain applied to the Side (L-R) channel in dB (-6 to +6 dB) */
+  sideGainDb: number;
+  /** Normalized width percentage (0% = Mono, 100% = Unity, 150% = Ultra Wide) */
+  widthPct: number;
+}
+
+export interface LimiterConfig {
+  /** Target Integrated Loudness (-14, -11, -9, -8.5 LUFS) */
+  targetLufs: number;
+  /** True Peak Brickwall Ceiling in dBTP (typically -1.0 dBTP for streaming) */
+  ceilingDbTp: number;
+  /** Lookahead window in ms (default 2.0ms) */
+  lookaheadMs: number;
+  /** Adaptive release base in ms (default 65ms) */
+  releaseMs: number;
+  /** Percentage of transient shaved by soft-clipper before brickwall limiter (0..1) */
+  softClipPrePct: number;
+}
+
+export interface SpectralProfile {
+  /** 20Hz - 160Hz energy in dBFS (normalized relative to full spectrum) */
+  sub: number;
+  /** 160Hz - 800Hz energy in dBFS */
+  lowMid: number;
+  /** 800Hz - 5500Hz energy in dBFS */
+  presence: number;
+  /** 5500Hz - 20000Hz energy in dBFS */
+  air: number;
+}
+
+export interface MasteringDspChain {
+  /** Stage 2: Subsonic High-Pass cutoff (20Hz - 45Hz) */
+  highPassFreq: number;
+  /** Stage 3: Side-channel High-Pass cutoff forcing bass to 100% Mono (60Hz - 200Hz) */
+  monoMakerFreq: number;
+  /** Surgical Mid/Side & Stereo EQ bands */
+  eqBands: EQBandConfig[];
+  /** Stage 4A: Bus Glue Compressor */
+  compressor: CompressorConfig;
+  /** Stage 4B: 4x Oversampled Analog Saturator + DC Blocker */
+  saturation: SaturationConfig;
+  /** Stage 3B: Stereo Width & Side Gain */
+  stereoWidth: StereoWidthConfig;
+  /** Stage 5: Dual-Stage Maximizer & True Peak Brickwall Limiter */
+  limiter: LimiterConfig;
+}
+
+export interface MasteringPreset {
+  id: string;
+  name: string;
+  subtitle: string;
+  referenceArtists: string;
+  category: PresetCategory;
+  accentHex: string;
+  tags: string[];
+  description: string;
+  targetSpectralProfile: SpectralProfile;
+  dspChain: MasteringDspChain;
+}
+
+export interface AudioMetrics {
+  inputLufs: number;
+  outputLufs: number;
+  shortTermLufs: number;
+  truePeakDb: number;
+  inputPeakDb: number;
+  gainReductionDb: number;
+  limiterReductionDb: number;
+  /** -1.0 (out of phase) to +1.0 (pure mono) */
+  phaseCorrelation: number;
+  crestFactorDb: number;
+  spectralBalance: SpectralProfile;
+  postSpectralBalance: SpectralProfile;
+}
+
+export interface SpectralAdaptationReport {
+  analyzedDurationSec: number;
+  sampleRate: number;
+  detectedInputLufs: number;
+  detectedTruePeakDb: number;
+  detectedCrestFactorDb: number;
+  detectedPhaseCorrelation: number;
+  inputSpectralProfile: SpectralProfile;
+  recommendedPresetId: string;
+  recommendationReason: string;
+  /** 0 to 100 score estimating metallic/high-frequency AI synthesis artifacts */
+  aiArtifactScore: number;
+  deltaAdjustments: {
+    subDeltaDb: number;
+    lowMidDeltaDb: number;
+    presenceDeltaDb: number;
+    airDeltaDb: number;
+    autoMakeupGainDb: number;
+  };
+}
+
+export interface SurgicalOverrides {
+  monoMakerFreq: number;
+  midLowPunchDb: number;
+  stereoMudCutDb: number;
+  midPresenceDb: number;
+  deHarshnessCutDb: number;
+  sibilanceCutDb: number;
+  sideAirBoostDb: number;
+  saturationType: SaturationType;
+  tapeDrivePct: number;
+  compressorThresholdDb: number;
+  compressorRatio: number;
+  compressorGlueMixPct: number;
+  stereoWidthPct: number;
+  targetLufs: number;
+  ceilingDbTp: number;
+}
+
+export type StemBusRole = 'drums' | 'bass' | 'vocals' | 'other';
+
+export interface StemTrackState {
+  role: StemBusRole;
+  label: string;
+  fileName: string | null;
+  audioBuffer: AudioBuffer | null;
+  gainDb: number;
+  pan: number;
+  muted: boolean;
+  solo: boolean;
+}
+
+export interface MasteringSessionRecord {
+  id?: string;
+  user_id?: string | null;
+  song_id?: string | null;
+  track_title: string;
+  preset_id: string;
+  preset_name: string;
+  intensity_pct: number;
+  target_lufs: number;
+  input_lufs: number;
+  output_lufs: number;
+  true_peak_dbtp: number;
+  phase_correlation: number;
+  master_wav_url: string;
+  file_size_bytes: number;
+  duration_seconds: number;
+  sample_rate: number;
+  bit_depth: number;
+  dsp_snapshot: MasteringDspChain;
+  surgical_overrides: SurgicalOverrides;
+  created_at?: string;
+}
+
+export interface StudioMasteringModuleProps {
+  initialAudioUrl?: string;
+  initialTitle?: string;
+  songId?: string;
+  onMasterSaved?: (record: MasteringSessionRecord) => void;
+  onClose?: () => void;
+}
