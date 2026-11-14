@@ -16,6 +16,8 @@ import {
   Gauge,
   Crosshair,
   Radio,
+  Headphones,
+  Scissors,
 } from 'lucide-react';
 import type { SpectralResonanceNode } from '../types/mastering.types';
 
@@ -46,6 +48,12 @@ export interface SpectrogramHeatmapProps {
   resonanceNotches?: SpectralResonanceNode[];
   /** Callback al hacer clic sobre una línea horizontal en el espectrograma para agregar/quitar un Notch Q=12 */
   onToggleResonanceNotchAtFreq?: (freqHz: number) => void;
+  /** Inicia la audición quirúrgica Band-Pass Solo (24dB/oct) en la frecuencia indicada */
+  onStartBandPassSolo?: (freqHz: number, qFactor: number) => void;
+  /** Actualiza en vivo la frecuencia y el Q del Band-Pass Solo al arrastrar o girar la rueda */
+  onUpdateBandPassSolo?: (freqHz: number, qFactor: number) => void;
+  /** Detiene la audición Band-Pass Solo y restaura el monitoreo normal */
+  onStopBandPassSolo?: () => void;
   /** Altura del visualizador en píxeles */
   height?: number;
 }
@@ -179,6 +187,9 @@ export const SpectrogramHeatmapVisualizer: React.FC<
   aiFixMarkers = [],
   resonanceNotches = [],
   onToggleResonanceNotchAtFreq,
+  onStartBandPassSolo,
+  onUpdateBandPassSolo,
+  onStopBandPassSolo,
   height = 310,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -197,6 +208,11 @@ export const SpectrogramHeatmapVisualizer: React.FC<
   const [isFrozen, setIsFrozen] = useState<boolean>(false);
   const [demoSignalWhenIdle, setDemoSignalWhenIdle] = useState<boolean>(false);
   const [canvasCssWidth, setCanvasCssWidth] = useState<number>(1100);
+
+  // Estado de Audición Quirúrgica Band-Pass Solo (Shift + Clic o Modo Escucha Solo)
+  const [soloModeArmed, setSoloModeArmed] = useState<boolean>(false);
+  const [isSoloAuditioning, setIsSoloAuditioning] = useState<boolean>(false);
+  const [soloQ, setSoloQ] = useState<number>(8.0);
 
   // Estado del cursor inspector (Crosshair quirúrgico en coordenadas CSS)
   const [hoverInfo, setHoverInfo] = useState<{
@@ -610,12 +626,59 @@ export const SpectrogramHeatmapVisualizer: React.FC<
       });
     }
 
-    // 4. Cursor Quirúrgico Interactivo (Crosshair al pasar el mouse)
+    // 4. Franja Quirúrgica Iluminada cuando Band-Pass Solo (24dB/oct) está activo
+    if (hoverInfo && (isSoloAuditioning || soloModeArmed)) {
+      const f0 = hoverInfo.freq;
+      const halfBw = Math.max(25, f0 / (2 * soloQ));
+      const fHigh = Math.min(MAX_FREQ, f0 + halfBw);
+      const fLow = Math.max(MIN_FREQ, f0 - halfBw);
+      const yTop = freqToY(fHigh, cHeight);
+      const yBottom = freqToY(fLow, cHeight);
+      const bandHeight = Math.max(6, yBottom - yTop);
+
+      const bandGrad = ctx.createLinearGradient(0, yTop, 0, yBottom);
+      bandGrad.addColorStop(0, 'rgba(0, 229, 255, 0.05)');
+      bandGrad.addColorStop(
+        0.5,
+        isSoloAuditioning
+          ? 'rgba(255, 107, 0, 0.28)'
+          : 'rgba(0, 229, 255, 0.18)'
+      );
+      bandGrad.addColorStop(1, 'rgba(0, 229, 255, 0.05)');
+      ctx.fillStyle = bandGrad;
+      ctx.fillRect(0, yTop, width, bandHeight);
+
+      ctx.strokeStyle = isSoloAuditioning ? '#FF6B00' : '#00E5FF';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(0, yTop);
+      ctx.lineTo(width, yTop);
+      ctx.moveTo(0, yBottom);
+      ctx.lineTo(width, yBottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const soloBadge = `🎧 ESCUCHA SOLO 24dB/oct: ${f0} Hz · Q=${soloQ.toFixed(1)} (Rueda=Q · Tecla X=Cortar Notch)`;
+      const sbW = ctx.measureText(soloBadge).width;
+      const sbX = Math.max(180, Math.min(width - sbW - 24, hoverInfo.x - sbW / 2));
+      const sbY = Math.max(18, yTop - 6);
+      ctx.fillStyle = 'rgba(2, 6, 23, 0.94)';
+      ctx.fillRect(sbX - 6, sbY - 12, sbW + 12, 16);
+      ctx.strokeStyle = isSoloAuditioning ? '#FF6B00' : '#00E5FF';
+      ctx.strokeRect(sbX - 6, sbY - 12, sbW + 12, 16);
+      ctx.fillStyle = isSoloAuditioning ? '#FF6B00' : '#00E5FF';
+      ctx.fillText(soloBadge, sbX, sbY - 1);
+    }
+
+    // 5. Cursor Quirúrgico Interactivo (Crosshair al pasar el mouse)
     if (hoverInfo) {
-      ctx.strokeStyle = hoverInfo.nearNotch
+      ctx.strokeStyle = isSoloAuditioning
+        ? '#FF6B00'
+        : hoverInfo.nearNotch
         ? 'rgba(244, 63, 94, 0.85)'
         : 'rgba(255, 255, 255, 0.55)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = isSoloAuditioning ? 1.4 : 1;
       ctx.beginPath();
       ctx.moveTo(0, hoverInfo.y);
       ctx.lineTo(width, hoverInfo.y);
@@ -631,11 +694,29 @@ export const SpectrogramHeatmapVisualizer: React.FC<
     combinedMarkers,
     showAIOverlay,
     hoverInfo,
+    isSoloAuditioning,
+    soloModeArmed,
+    soloQ,
     canvasCssWidth,
     height,
   ]);
 
-  // Manejador del Mouse para inspeccionar frecuencias con precisión de Hz
+  // Atajo de Tecla 'X' para insertar un filtro Notch Q=12 mientras el ingeniero audiciona el espectrograma
+  useEffect(() => {
+    if (!hoverInfo || !onToggleResonanceNotchAtFreq) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'x' || e.key === 'X') {
+        e.preventDefault();
+        onToggleResonanceNotchAtFreq(hoverInfo.freq);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hoverInfo, onToggleResonanceNotchAtFreq]);
+
+  // Manejador del Mouse para inspeccionar frecuencias y barrer el Band-Pass Solo en tiempo real
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -654,9 +735,48 @@ export const SpectrogramHeatmapVisualizer: React.FC<
       zoneLabel: getAcousticZoneLabel(freq),
       nearNotch,
     });
+
+    if (isSoloAuditioning) {
+      onUpdateBandPassSolo?.(freq, soloQ);
+    }
   };
 
-  const handleCanvasClick = () => {
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const freq = Math.round(yToFreq(y, rect.height));
+
+    // Shift + Clic (o Clic derecho, o Modo Escucha Solo armado) inicia la audición aislada Band-Pass Solo
+    if (e.shiftKey || e.button === 2 || soloModeArmed) {
+      e.preventDefault();
+      setIsSoloAuditioning(true);
+      onStartBandPassSolo?.(freq, soloQ);
+    }
+  };
+
+  const handleMouseUpOrLeave = (clearHover = false) => {
+    if (isSoloAuditioning) {
+      setIsSoloAuditioning(false);
+      onStopBandPassSolo?.();
+    }
+    if (clearHover) {
+      setHoverInfo(null);
+    }
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    if (!isSoloAuditioning && !soloModeArmed && !e.shiftKey) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1.2 : -1.2;
+    const nextQ = Number(Math.max(2.0, Math.min(18.0, soloQ + delta)).toFixed(1));
+    setSoloQ(nextQ);
+    if (hoverInfo && isSoloAuditioning) {
+      onUpdateBandPassSolo?.(hoverInfo.freq, nextQ);
+    }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.shiftKey || soloModeArmed) return;
     if (!hoverInfo || !onToggleResonanceNotchAtFreq) return;
     onToggleResonanceNotchAtFreq(hoverInfo.freq);
   };
@@ -768,6 +888,31 @@ export const SpectrogramHeatmapVisualizer: React.FC<
 
           <button
             type="button"
+            onClick={() => {
+              const next = !soloModeArmed;
+              setSoloModeArmed(next);
+              if (!next && isSoloAuditioning) {
+                setIsSoloAuditioning(false);
+                onStopBandPassSolo?.();
+              }
+            }}
+            className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+              soloModeArmed || isSoloAuditioning
+                ? 'bg-[#00E5FF]/20 border-[#00E5FF] text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.3)]'
+                : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
+            }`}
+            title="Modo Audición Quirúrgica Band-Pass Solo (También puedes mantener Shift + Clic y arrastrar)"
+          >
+            <Headphones className="w-3.5 h-3.5" />
+            <span>
+              {isSoloAuditioning
+                ? `Solo Activo (Q:${soloQ.toFixed(0)})`
+                : 'Escucha Solo'}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowAIOverlay(!showAIOverlay)}
             className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
               showAIOverlay
@@ -831,10 +976,30 @@ export const SpectrogramHeatmapVisualizer: React.FC<
         <canvas
           ref={overlayCanvasRef}
           onMouseMove={handleMouseMove}
-          onMouseLeave={() => setHoverInfo(null)}
+          onMouseDown={handleMouseDown}
+          onMouseUp={() => handleMouseUpOrLeave(false)}
+          onMouseLeave={() => handleMouseUpOrLeave(true)}
+          onWheel={handleWheel}
+          onContextMenu={(e) => e.preventDefault()}
           onClick={handleCanvasClick}
           className="absolute inset-0 w-full h-full cursor-crosshair"
         />
+
+        {/* Botón Quirúrgico Flotante de Corte Directo cuando está en Modo Escucha Solo */}
+        {hoverInfo && (isSoloAuditioning || soloModeArmed) && onToggleResonanceNotchAtFreq && (
+          <div className="absolute top-3 right-14 z-30 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onToggleResonanceNotchAtFreq(hoverInfo.freq)}
+              className="px-3 py-1.5 rounded-xl bg-rose-500 hover:bg-rose-400 text-slate-950 font-mono font-extrabold text-xs flex items-center gap-1.5 shadow-[0_0_20px_rgba(244,63,94,0.5)] cursor-pointer"
+            >
+              <Scissors className="w-3.5 h-3.5" />
+              <span>
+                + Cortar esta Resonancia ({hoverInfo.freq}Hz | -4.5 dB Notch) [Tecla X]
+              </span>
+            </button>
+          </div>
+        )}
 
         {/* Inspector Quirúrgico Flotante al mover el mouse */}
         {hoverInfo && (

@@ -1,8 +1,11 @@
 import type {
+  DrumKitStyle,
   MasteringDspChain,
   MasteringPreset,
   SurgicalOverrides,
 } from '../types/mastering.types';
+import { DEFAULT_DRUM_LAYERING_CONFIG } from '../engine/DrumTransientReplacerDSP';
+import { DEFAULT_FORENSIC_HUMANIZER_CONFIG } from '../engine/ForensicHumanizerDSP';
 
 export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
   {
@@ -693,6 +696,22 @@ export function extractSurgicalOverridesFromPreset(
     customEqBands: dspChain.eqBands.map((b) => ({ ...b })),
     resonanceNotches: [],
     resonanceKillerPct: 100,
+    forensicHumanizer: {
+      ...DEFAULT_FORENSIC_HUMANIZER_CONFIG,
+      enabled: preset.id === 'de-ai-studio-rescue' || true,
+      bassConcentrationCap: preset.id === 'de-ai-studio-rescue' ? 0.82 : 0.72,
+      highFreqExciterAmount: preset.id === 'de-ai-studio-rescue' ? 0.55 : 0.42,
+    },
+    drumLayering: {
+      ...DEFAULT_DRUM_LAYERING_CONFIG,
+      drumStyle: (preset.id === 'nu-disco-funk'
+        ? 'tight-pop-funk'
+        : preset.id === '90s-acoustic-country'
+        ? 'warm-acoustic'
+        : preset.id === 'modern-worship-arena'
+        ? 'arena-worship'
+        : 'stadium-rock') as DrumKitStyle,
+    },
   };
 }
 
@@ -828,5 +847,11 @@ export function buildEffectiveDspChain(
       targetLufs: overrides.targetLufs,
       ceilingDbTp: overrides.ceilingDbTp,
     },
+    forensicHumanizer: overrides.forensicHumanizer
+      ? { ...overrides.forensicHumanizer }
+      : { ...DEFAULT_FORENSIC_HUMANIZER_CONFIG },
+    drumLayering: overrides.drumLayering
+      ? { ...overrides.drumLayering }
+      : { ...DEFAULT_DRUM_LAYERING_CONFIG },
   };
 }

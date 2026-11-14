@@ -1,10 +1,17 @@
 import type {
   AudioMetrics,
+  DrumHitEvent,
+  DrumLayeringConfig,
   MasteringDspChain,
   SpectralAdaptationReport,
   SpectralProfile,
   StemTrackState,
 } from '../types/mastering.types';
+import { BandPassSoloController } from './BandPassSoloNode';
+import {
+  DEFAULT_DRUM_LAYERING_CONFIG,
+  DrumTransientReplacerDSP,
+} from './DrumTransientReplacerDSP';
 import {
   buildMasteringDspGraph,
   type MasteringGraphHandles,
@@ -40,6 +47,11 @@ export class WebAudioMasteringEngine {
   private bypassGainNode: GainNode | null = null;
   private masterGainNode: GainNode | null = null;
   private masterVolumeNode: GainNode | null = null;
+  private bandPassSoloController: BandPassSoloController | null = null;
+  private drumReplacer = new DrumTransientReplacerDSP();
+  private detectedDrumHits: DrumHitEvent[] = [];
+  private lastDrumConfigSig = '';
+  private lastSensitivitySig = '';
 
   private activeChain: MasteringDspChain;
   private adaptationReport: SpectralAdaptationReport | null = null;
@@ -124,7 +136,10 @@ export class WebAudioMasteringEngine {
 
     this.masterGainNode.connect(this.masterVolumeNode);
     this.bypassGainNode.connect(this.masterVolumeNode);
-    this.masterVolumeNode.connect(ctx.destination);
+
+    this.bandPassSoloController = new BandPassSoloController(ctx);
+    this.masterVolumeNode.connect(this.bandPassSoloController.inputNode);
+    this.bandPassSoloController.outputNode.connect(ctx.destination);
 
     this.preFreqBins = new Uint8Array(this.preAnalyser.frequencyBinCount);
     this.postFreqBins = new Uint8Array(this.postAnalyser.frequencyBinCount);
@@ -182,6 +197,7 @@ export class WebAudioMasteringEngine {
     this.computeWaveformOverview(decoded);
     const report = analyzeTrackAndComputeAdaptation(decoded);
     this.adaptationReport = report;
+    this.detectedDrumHits = report.detectedDrumHits;
     this.smoothedInputLufs = report.detectedInputLufs;
     this.smoothedOutputLufs = this.activeChain.limiter.targetLufs;
 
@@ -291,6 +307,7 @@ export class WebAudioMasteringEngine {
 
     const report = analyzeTrackAndComputeAdaptation(mixedBuffer);
     this.adaptationReport = report;
+    this.detectedDrumHits = report.detectedDrumHits;
     this.applyDspChain(this.activeChain);
 
     return { buffer: mixedBuffer, report };
@@ -413,6 +430,7 @@ export class WebAudioMasteringEngine {
 
     const report = analyzeTrackAndComputeAdaptation(buffer);
     this.adaptationReport = report;
+    this.detectedDrumHits = report.detectedDrumHits;
     this.applyDspChain(this.activeChain);
 
     return { buffer, report };
@@ -454,6 +472,35 @@ export class WebAudioMasteringEngine {
     const makeupDb = this.computeTargetMakeupGainDb();
     this.graphHandles.applyDspChain(chain, makeupDb, this.ctx.currentTime);
     this.updateAbCrossfadeGains();
+
+    // Check if drum layering sensitivity or playback config changed
+    const drumCfg = chain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    const sensSig = `${drumCfg.kickSensitivity.toFixed(2)}:${drumCfg.snareSensitivity.toFixed(2)}`;
+    if (this.audioBuffer && sensSig !== this.lastSensitivitySig) {
+      this.lastSensitivitySig = sensSig;
+      this.detectedDrumHits = this.drumReplacer.detectDrumTransients(
+        this.audioBuffer,
+        drumCfg
+      );
+    }
+
+    const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${sensSig}`;
+    if (drumSig !== this.lastDrumConfigSig) {
+      this.lastDrumConfigSig = drumSig;
+      if (this.isPlaying && this.audioBuffer) {
+        const currentOffset = this.getCurrentTimeSec();
+        this.drumReplacer.scheduleDrumLayers(
+          this.ctx,
+          this.graphHandles.drumLayerBusInput,
+          this.detectedDrumHits,
+          drumCfg,
+          this.ctx.currentTime,
+          currentOffset,
+          this.audioBuffer.duration,
+          this.loopEnabled ? 4 : 1
+        );
+      }
+    }
   }
 
   public setBypassAndGainMatch(
@@ -528,10 +575,26 @@ export class WebAudioMasteringEngine {
       0,
       Math.min(this.audioBuffer.duration - 0.05, this.pauseOffsetSec)
     );
-    source.start(0, offset);
+    const startCtxTime = ctx.currentTime;
+    source.start(startCtxTime, offset);
     this.sourceNode = source;
-    this.startTimestamp = ctx.currentTime - offset;
+    this.startTimestamp = startCtxTime - offset;
     this.isPlaying = true;
+
+    if (this.graphHandles) {
+      const drumCfg =
+        this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+      this.drumReplacer.scheduleDrumLayers(
+        ctx,
+        this.graphHandles.drumLayerBusInput,
+        this.detectedDrumHits,
+        drumCfg,
+        startCtxTime,
+        offset,
+        this.audioBuffer.duration,
+        this.loopEnabled ? 4 : 1
+      );
+    }
   }
 
   public pause(): void {
@@ -560,6 +623,7 @@ export class WebAudioMasteringEngine {
   }
 
   private stopSourceNodeOnly(): void {
+    this.drumReplacer.stopScheduledLayers();
     if (this.sourceNode) {
       try {
         this.sourceNode.onended = null;
@@ -570,6 +634,69 @@ export class WebAudioMasteringEngine {
       }
       this.sourceNode = null;
     }
+  }
+
+  public startBandPassSolo(freqHz: number, qFactor = 8.0): void {
+    this.ensureContext();
+    this.bandPassSoloController?.startSoloListen(freqHz, qFactor);
+  }
+
+  public updateBandPassSolo(freqHz: number, qFactor?: number): void {
+    this.bandPassSoloController?.updateSoloFrequency(freqHz, qFactor);
+  }
+
+  public stopBandPassSolo(): void {
+    this.bandPassSoloController?.stopSoloListen();
+  }
+
+  public isBandPassSoloActive(): boolean {
+    return this.bandPassSoloController?.isSoloActive() ?? false;
+  }
+
+  public getDetectedDrumHits(): DrumHitEvent[] {
+    return this.detectedDrumHits;
+  }
+
+  public recalculateDrumHits(config: DrumLayeringConfig): DrumHitEvent[] {
+    if (!this.audioBuffer) return [];
+    this.detectedDrumHits = this.drumReplacer.detectDrumTransients(
+      this.audioBuffer,
+      config
+    );
+    return this.detectedDrumHits;
+  }
+
+  public async loadCustomDrumSample(
+    type: 'kick' | 'snare',
+    file: File
+  ): Promise<string> {
+    const ctx = this.ensureContext();
+    const name = await this.drumReplacer.loadCustomSample(type, file, ctx);
+    if (this.isPlaying && this.audioBuffer && this.graphHandles) {
+      const currentOffset = this.getCurrentTimeSec();
+      this.drumReplacer.scheduleDrumLayers(
+        ctx,
+        this.graphHandles.drumLayerBusInput,
+        this.detectedDrumHits,
+        this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG,
+        ctx.currentTime,
+        currentOffset,
+        this.audioBuffer.duration,
+        this.loopEnabled ? 4 : 1
+      );
+    }
+    return name;
+  }
+
+  public clearCustomDrumSample(type: 'kick' | 'snare'): void {
+    this.drumReplacer.clearCustomSample(type);
+  }
+
+  public getCustomDrumSampleNames(): {
+    kickName: string | null;
+    snareName: string | null;
+  } {
+    return this.drumReplacer.getCustomSampleNames();
   }
 
   public getCurrentTimeSec(): number {
@@ -828,6 +955,22 @@ export class WebAudioMasteringEngine {
     source.connect(offlineGraph.inputNode);
     offlineGraph.outputNode.connect(offlineCtx.destination);
     source.start(0);
+
+    // Schedule Sample-Accurate Acoustic Drum Layers inside OfflineAudioContext
+    const drumCfg =
+      this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    if (drumCfg.enabled && this.detectedDrumHits.length > 0) {
+      this.drumReplacer.scheduleDrumLayers(
+        offlineCtx,
+        offlineGraph.drumLayerBusInput,
+        this.detectedDrumHits,
+        drumCfg,
+        0,
+        0,
+        durationSec,
+        1
+      );
+    }
 
     onProgress?.(
       'Procesando Matriz Mid/Side, Saturación 4x y Compresión Bus Glue...',

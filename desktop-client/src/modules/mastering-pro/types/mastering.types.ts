@@ -31,6 +31,60 @@ export interface SpectralResonanceNode {
   source: 'ai-detected' | 'user-clicked';
 }
 
+export interface ForensicHumanizerConfig {
+  enabled: boolean;
+  /** Controla el exceso de energía sub-grave para bajar el Bass Concentration del ~60% al ~36% (0.0 a 1.0) */
+  bassConcentrationCap: number;
+  /** Reconstruye armónicos reales entre 14kHz y 22kHz para borrar el corte de ladrillo de IA (0.0 a 1.0) */
+  highFreqExciterAmount: number;
+  /** Desplaza micro-fases con filtros All-Pass asimétricos y micro-modulación de cinta (0.0 a 1.0) */
+  analogPhaseAndDrift: number;
+  /** Inyecta ruido térmico real de consola (Pink/Tape Floor) + Dither TPDF (-85 a -62 dBFS) */
+  analogConsoleNoiseDb: number;
+  /** Micro-reflexión acústica de estudio para dar coherencia física entre canal L y R (0.0 a 0.15) */
+  studioRoomCoherence: number;
+  /** Reconstruye el ataque físico de micro-transientes borroneadas (0.0 a 1.0) */
+  transientMicroExpand: number;
+}
+
+export interface ForensicSignatureReport {
+  /** 0% (100% Humano/Analógico) a 100% (Alta firma IA en mezcla original) */
+  estimatedAiSignatureScore: number;
+  /** Firma IA proyectada después de aplicar Forensic Humanizer + Drum Layering */
+  projectedPostAiSignatureScore: number;
+  /** Concentración de energía en graves (<140Hz); alerta forense si supera 45% */
+  bassEnergyConcentrationPct: number;
+  /** Concentración de graves proyectada tras el Re-Balanceador Sub-Grave */
+  projectedPostBassConcentrationPct: number;
+  /** Frecuencia de corte superior detectada (Hz); <16,500 Hz delata vocoder IA */
+  highFreqCutoffDetectedHz: number;
+  /** Índice de rigidez de fase del vocoder (0 a 1) */
+  phaseRigidityIndex: number;
+}
+
+export type DrumKitStyle =
+  | 'stadium-rock'
+  | 'tight-pop-funk'
+  | 'warm-acoustic'
+  | 'arena-worship';
+
+export interface DrumHitEvent {
+  timeSec: number;
+  type: 'kick' | 'snare';
+  velocity: number; // 0.1 a 1.0
+}
+
+export interface DrumLayeringConfig {
+  enabled: boolean;
+  kickMix: number; // 0.0 a 1.0
+  snareMix: number; // 0.0 a 1.0
+  kickSensitivity: number; // 0.1 a 1.0
+  snareSensitivity: number; // 0.1 a 1.0
+  drumStyle: DrumKitStyle;
+  suppressOriginalMud: boolean;
+  humanizeRoundRobin: boolean;
+}
+
 export interface CompressorConfig {
   thresholdDb: number;
   ratio: number;
@@ -98,6 +152,10 @@ export interface MasteringDspChain {
   stereoWidth: StereoWidthConfig;
   /** Stage 5: Dual-Stage Maximizer & True Peak Brickwall Limiter */
   limiter: LimiterConfig;
+  /** Stage 4C: Forensic De-Fingerprinting & Analog Humanizer */
+  forensicHumanizer?: ForensicHumanizerConfig;
+  /** Stage 1B: Sample-Accurate Acoustic Drum Re-Synthesis & Layering */
+  drumLayering?: DrumLayeringConfig;
 }
 
 export interface MasteringPreset {
@@ -152,6 +210,8 @@ export interface SurgicalOverrides {
   customEqBands: EQBandConfig[];
   resonanceNotches: SpectralResonanceNode[];
   resonanceKillerPct: number;
+  forensicHumanizer: ForensicHumanizerConfig;
+  drumLayering: DrumLayeringConfig;
 }
 
 export interface AiCriticalEqPoint {
@@ -233,6 +293,8 @@ export interface SpectralAdaptationReport {
   compressionSuggestion: AiCompressionSuggestion;
   stereoWidthSuggestion: AiStereoWidthSuggestion;
   detectedResonanceLines: SpectralResonanceNode[];
+  forensicSignature: ForensicSignatureReport;
+  detectedDrumHits: DrumHitEvent[];
 }
 
 export type StemBusRole = 'drums' | 'bass' | 'vocals' | 'other';

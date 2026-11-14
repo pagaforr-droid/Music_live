@@ -4,6 +4,10 @@ import {
   generateAnalogSaturationCurve,
 } from './AnalogSaturationCurves';
 import {
+  DEFAULT_FORENSIC_HUMANIZER_CONFIG,
+  ForensicHumanizerDSP,
+} from './ForensicHumanizerDSP';
+import {
   createMidSideMatrix,
   type MidSideMatrixHandles,
 } from './MidSideMatrix';
@@ -11,6 +15,8 @@ import { createBrickwallMaximizerCurve } from './TruePeakLimiter';
 
 export interface MasteringGraphHandles {
   inputNode: GainNode;
+  /** Bus de inyección para las capas acústicas de Kick/Snare (antes del Compresor Bus Glue) */
+  drumLayerBusInput: GainNode;
   outputNode: GainNode;
   busCompressor: DynamicsCompressorNode;
   maximizerSafetyLimiter: DynamicsCompressorNode;
@@ -76,6 +82,19 @@ export function buildMasteringDspGraph(
     resonanceNotchFilters.push(notchNode);
   }
 
+  // Stage 2C: Sub-Mud Suppressor when Drum Layering is active ("Suppress AI Sub-Mud")
+  const drumMudSuppressFilter = ctx.createBiquadFilter();
+  drumMudSuppressFilter.type = 'peaking';
+  drumMudSuppressFilter.frequency.value = 78;
+  drumMudSuppressFilter.Q.value = 1.65;
+  drumMudSuppressFilter.gain.value =
+    initialChain.drumLayering?.enabled &&
+    initialChain.drumLayering?.suppressOriginalMud
+      ? -3.2 * Math.max(0.35, initialChain.drumLayering.kickMix)
+      : 0;
+  lastStage2Node.connect(drumMudSuppressFilter);
+  lastStage2Node = drumMudSuppressFilter;
+
   // =========================================================================
   // STAGE 3: True Mid/Side Matrix + Mono Maker + Mid/Side EQ + Stereo Width
   // =========================================================================
@@ -87,6 +106,16 @@ export function buildMasteringDspGraph(
   );
 
   lastStage2Node.connect(midSideMatrix.inputNode);
+
+  // Bus where Sample-Accurate Acoustic Drum Layers (Kick/Snare) are injected
+  // so they glue together with the mix inside Stage 4A Bus Compressor & Stage 4B Tape Saturator
+  const drumLayerBusInput = ctx.createGain();
+  drumLayerBusInput.gain.value = 1.0;
+  const preGlueSumBus = ctx.createGain();
+  preGlueSumBus.gain.value = 1.0;
+
+  midSideMatrix.outputNode.connect(preGlueSumBus);
+  drumLayerBusInput.connect(preGlueSumBus);
 
   // =========================================================================
   // STAGE 4A: SSL-Style Bus Glue Compressor with Parallel Dry/Wet Blend
@@ -111,12 +140,12 @@ export function buildMasteringDspGraph(
   compWetMix.gain.value = initialWet;
   compDryMix.gain.value = 1 - initialWet;
 
-  midSideMatrix.outputNode.connect(busCompressor);
+  preGlueSumBus.connect(busCompressor);
   busCompressor.connect(compMakeupGain);
   compMakeupGain.connect(compWetMix);
   compWetMix.connect(stage4ASum);
 
-  midSideMatrix.outputNode.connect(compDryMix);
+  preGlueSumBus.connect(compDryMix);
   compDryMix.connect(stage4ASum);
 
   // =========================================================================
@@ -225,7 +254,17 @@ export function buildMasteringDspGraph(
     ctx.currentTime
   );
 
-  satOutputTrim.connect(maximizerDriveGain);
+  // =========================================================================
+  // STAGE 4C: Forensic Anti-AI Humanizer (Sub-Energy Rebalancer, All-Pass Phase
+  // Disperser, Studer Micro-Drift, 14-22kHz Harmonic Exciter, Early Reflections & Thermal Floor)
+  // =========================================================================
+  const humanizerStage = ForensicHumanizerDSP.createControllableHumanizerStage(
+    ctx,
+    initialChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG
+  );
+
+  satOutputTrim.connect(humanizerStage.inputNode);
+  humanizerStage.outputNode.connect(maximizerDriveGain);
   maximizerDriveGain.connect(maximizerSafetyLimiter);
   maximizerSafetyLimiter.connect(brickwallShaper);
   brickwallShaper.connect(outputNode);
@@ -279,6 +318,13 @@ export function buildMasteringDspGraph(
       }
     }
 
+    // Stage 2C: Sub-Mud Suppressor for Drum Layering
+    const mudSuppressDb =
+      chain.drumLayering?.enabled && chain.drumLayering?.suppressOriginalMud
+        ? -3.2 * Math.max(0.35, chain.drumLayering.kickMix)
+        : 0;
+    drumMudSuppressFilter.gain.setTargetAtTime(mudSuppressDb, now, 0.015);
+
     // Stage 3: Mono Maker & Side Width
     midSideMatrix.updateMonoMakerFreq(chain.monoMakerFreq, now);
     midSideMatrix.updateSideGainDb(chain.stereoWidth.sideGainDb, now);
@@ -319,6 +365,11 @@ export function buildMasteringDspGraph(
       now
     );
 
+    // Stage 4C: Forensic Anti-AI Humanizer
+    if (chain.forensicHumanizer) {
+      humanizerStage.updateConfig(chain.forensicHumanizer, now);
+    }
+
     // Stage 5: Maximizer & Brickwall Limiter
     updateLimiterState(
       chain.limiter.ceilingDbTp,
@@ -331,6 +382,7 @@ export function buildMasteringDspGraph(
 
   return {
     inputNode,
+    drumLayerBusInput,
     outputNode,
     busCompressor,
     maximizerSafetyLimiter,

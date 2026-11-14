@@ -12,6 +12,14 @@ import type {
   SpectralProfile,
   SpectralResonanceNode,
 } from '../types/mastering.types';
+import {
+  DEFAULT_DRUM_LAYERING_CONFIG,
+  DrumTransientReplacerDSP,
+} from './DrumTransientReplacerDSP';
+import {
+  DEFAULT_FORENSIC_HUMANIZER_CONFIG,
+  calculateForensicSignature,
+} from './ForensicHumanizerDSP';
 import { linearToDb, measureTruePeakLinearBlock } from './TruePeakLimiter';
 
 interface BiquadCoeffs {
@@ -862,6 +870,19 @@ export function analyzeTrackAndComputeAdaptation(
     detectedPhaseCorrelation
   );
 
+  const forensicSignature = calculateForensicSignature(
+    profile,
+    detectedPhaseCorrelation,
+    DEFAULT_FORENSIC_HUMANIZER_CONFIG,
+    DEFAULT_DRUM_LAYERING_CONFIG
+  );
+
+  const drumScanner = new DrumTransientReplacerDSP();
+  const detectedDrumHits = drumScanner.detectDrumTransients(
+    buffer,
+    DEFAULT_DRUM_LAYERING_CONFIG
+  );
+
   return {
     analyzedDurationSec: Number(buffer.duration.toFixed(2)),
     sampleRate: buffer.sampleRate,
@@ -875,6 +896,8 @@ export function analyzeTrackAndComputeAdaptation(
     aiArtifactScore,
     sibilanceScore,
     detectedResonanceLines: scan.detectedResonanceLines,
+    forensicSignature,
+    detectedDrumHits,
     deltaAdjustments: {
       subDeltaDb,
       lowMidDeltaDb,

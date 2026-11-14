@@ -31,6 +31,8 @@ import type {
   AiCriticalEqPoint,
   AiFilterSuggestion,
   AudioMetrics,
+  DrumHitEvent,
+  DrumLayeringConfig,
   EQBandConfig,
   MasteringSessionRecord,
   SpectralAdaptationReport,
@@ -41,6 +43,7 @@ import type {
 } from '../types/mastering.types';
 import { ABComparisonBar } from './ABComparisonBar';
 import { AiMasteringAssistantPanel } from './AiMasteringAssistantPanel';
+import { DrumLayeringRackPanel } from './DrumLayeringRackPanel';
 import { DualSpectrumVisualizer } from './DualSpectrumVisualizer';
 import { LoudnessMeterPanel } from './LoudnessMeterPanel';
 import { MidSideSurgicalControls } from './MidSideSurgicalControls';
@@ -143,6 +146,13 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const [kickBassSidechain, setKickBassSidechain] = useState<boolean>(true);
   const [isMixingStems, setIsMixingStems] = useState<boolean>(false);
 
+  // Drum Layering & Custom Sample state
+  const [detectedDrumHits, setDetectedDrumHits] = useState<DrumHitEvent[]>([]);
+  const [customDrumSampleNames, setCustomDrumSampleNames] = useState<{
+    kickName: string | null;
+    snareName: string | null;
+  }>({ kickName: null, snareName: null });
+
   // Project tracks & Sessions history
   const [projectTracks, setProjectTracks] = useState<ProjectAudioTrackItem[]>(
     []
@@ -185,8 +195,11 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
   // Sync DSP chain changes into live WebAudio graph
   useEffect(() => {
-    engineRef.current?.applyDspChain(effectiveDspChain);
-    setLiveMetrics(engineRef.current!.getLiveMetrics());
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.applyDspChain(effectiveDspChain);
+    setLiveMetrics(engine.getLiveMetrics());
+    setDetectedDrumHits(engine.getDetectedDrumHits());
   }, [effectiveDspChain]);
 
   // Sync Bypass & Gain-Match into live WebAudio graph
@@ -297,6 +310,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setDetectedDrumHits(report.detectedDrumHits);
       setOverrides((prev) => ({
         ...prev,
         resonanceNotches: report.detectedResonanceLines,
@@ -334,6 +348,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setDetectedDrumHits(report.detectedDrumHits);
       setOverrides((prev) => ({
         ...prev,
         resonanceNotches: report.detectedResonanceLines,
@@ -367,6 +382,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setDetectedDrumHits(report.detectedDrumHits);
       setOverrides((prev) => ({
         ...prev,
         resonanceNotches: report.detectedResonanceLines,
@@ -566,6 +582,63 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       [key]: value,
     }));
   };
+
+  const handleStartBandPassSolo = useCallback(
+    (freqHz: number, qFactor: number) => {
+      engineRef.current?.startBandPassSolo(freqHz, qFactor);
+    },
+    []
+  );
+
+  const handleUpdateBandPassSolo = useCallback(
+    (freqHz: number, qFactor: number) => {
+      engineRef.current?.updateBandPassSolo(freqHz, qFactor);
+    },
+    []
+  );
+
+  const handleStopBandPassSolo = useCallback(() => {
+    engineRef.current?.stopBandPassSolo();
+  }, []);
+
+  const handleChangeDrumConfig = useCallback((nextDrum: DrumLayeringConfig) => {
+    setOverrides((prev) => ({
+      ...prev,
+      drumLayering: nextDrum,
+    }));
+  }, []);
+
+  const handleLoadCustomDrumSample = useCallback(
+    async (type: 'kick' | 'snare', file: File) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      try {
+        const name = await engine.loadCustomDrumSample(type, file);
+        setCustomDrumSampleNames(engine.getCustomDrumSampleNames());
+        setStatusBanner({
+          type: 'success',
+          message: `Sample acústico 24-bit "${name}" cargado en canal ${type.toUpperCase()}.`,
+        });
+      } catch {
+        setStatusBanner({
+          type: 'error',
+          message: `No se pudo decodificar el sample "${file.name}".`,
+        });
+      }
+    },
+    []
+  );
+
+  const handleClearCustomDrumSample = useCallback((type: 'kick' | 'snare') => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.clearCustomDrumSample(type);
+    setCustomDrumSampleNames(engine.getCustomDrumSampleNames());
+    setStatusBanner({
+      type: 'info',
+      message: `Sample de ${type.toUpperCase()} restaurado al sintetizador físico de estudio.`,
+    });
+  }, []);
 
   const handleToggleResonanceNotchAtFreq = useCallback((freqHz: number) => {
     const clampedFreq = Math.max(80, Math.min(18000, Math.round(freqHz)));
@@ -1025,6 +1098,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 aiFixMarkers={aiFixMarkers}
                 resonanceNotches={effectiveDspChain.resonanceNotches}
                 onToggleResonanceNotchAtFreq={handleToggleResonanceNotchAtFreq}
+                onStartBandPassSolo={handleStartBandPassSolo}
+                onUpdateBandPassSolo={handleUpdateBandPassSolo}
+                onStopBandPassSolo={handleStopBandPassSolo}
                 height={visualizerView === 'heatmap' ? 370 : 290}
               />
             )}
@@ -1052,6 +1128,30 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           onApplyAiStereoWidth={handleApplyAiStereoWidth}
           onChangeOverride={handleChangeOverride}
           onUpdateCustomEqBand={handleUpdateCustomEqBand}
+        />
+
+        {/* 2.75. Acoustic Drum Re-Synthesis & Forensic Anti-AI De-Fingerprinting Rack */}
+        <DrumLayeringRackPanel
+          drumConfig={overrides.drumLayering}
+          forensicConfig={overrides.forensicHumanizer}
+          detectedHits={detectedDrumHits}
+          currentTimeSec={currentTimeSec}
+          durationSec={durationSec}
+          isPlaying={isPlaying}
+          inputSpectralProfile={liveMetrics.spectralBalance}
+          detectedPhaseCorrelation={
+            adaptationReport?.detectedPhaseCorrelation ??
+            liveMetrics.phaseCorrelation
+          }
+          customSampleNames={customDrumSampleNames}
+          onChangeDrumConfig={handleChangeDrumConfig}
+          onChangeForensicConfig={(nextForensic) =>
+            handleChangeOverride('forensicHumanizer', nextForensic)
+          }
+          onLoadCustomSample={(type, file) =>
+            void handleLoadCustomDrumSample(type, file)
+          }
+          onClearCustomSample={handleClearCustomDrumSample}
         />
 
         {/* 3. 6 Pro Presets Grid + Macro Intensity Slider (0% - 150%) */}
