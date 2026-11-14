@@ -665,25 +665,32 @@ export function extractSurgicalOverridesFromPreset(
   preset: MasteringPreset
 ): SurgicalOverrides {
   const { dspChain } = preset;
+  const findBand = (id: string) => dspChain.eqBands.find((b) => b.id === id);
   const findGain = (id: string, fallback: number): number =>
-    dspChain.eqBands.find((b) => b.id === id)?.gainDb ?? fallback;
+    findBand(id)?.gainDb ?? fallback;
 
   return {
+    highPassFreq: dspChain.highPassFreq,
     monoMakerFreq: dspChain.monoMakerFreq,
     midLowPunchDb: findGain('mid-sub-punch', 1.8),
     stereoMudCutDb: findGain('stereo-mud-cut', -1.8),
     midPresenceDb: findGain('mid-vocal-bite', 1.2),
     deHarshnessCutDb: findGain('stereo-de-harsh', -1.0),
     sibilanceCutDb: findGain('stereo-sibilance', -0.8),
+    sibilanceFreqHz: findBand('stereo-sibilance')?.freq ?? 6200,
     sideAirBoostDb: findGain('side-air-shelf', 2.0),
     saturationType: dspChain.saturation.type,
     tapeDrivePct: Math.round(dspChain.saturation.drive * 100),
     compressorThresholdDb: dspChain.compressor.thresholdDb,
     compressorRatio: dspChain.compressor.ratio,
+    compressorAttackMs: Math.round(dspChain.compressor.attackSec * 1000),
+    compressorReleaseMs: Math.round(dspChain.compressor.releaseSec * 1000),
+    compressorKneeDb: dspChain.compressor.kneeDb,
     compressorGlueMixPct: Math.round(dspChain.compressor.parallelMix * 100),
     stereoWidthPct: dspChain.stereoWidth.widthPct,
     targetLufs: dspChain.limiter.targetLufs,
     ceilingDbTp: dspChain.limiter.ceilingDbTp,
+    customEqBands: dspChain.eqBands.map((b) => ({ ...b })),
   };
 }
 
@@ -715,8 +722,15 @@ export function buildEffectiveDspChain(
   const clampGain = (val: number, min = -9, max = 9) =>
     Math.max(min, Math.min(max, Number(val.toFixed(2))));
 
-  const eqBands = basePreset.dspChain.eqBands.map((band) => {
+  const sourceBands =
+    overrides.customEqBands && overrides.customEqBands.length > 0
+      ? overrides.customEqBands
+      : basePreset.dspChain.eqBands;
+
+  const eqBands = sourceBands.map((band) => {
     let rawGain = band.gainDb;
+    let freq = band.freq;
+
     if (band.id === 'mid-sub-punch') {
       rawGain = overrides.midLowPunchDb * scale + subDelta;
     } else if (band.id === 'stereo-mud-cut') {
@@ -727,6 +741,7 @@ export function buildEffectiveDspChain(
       rawGain = overrides.deHarshnessCutDb * scale + presenceDelta * 0.4;
     } else if (band.id === 'stereo-sibilance') {
       rawGain = overrides.sibilanceCutDb * scale;
+      freq = overrides.sibilanceFreqHz || band.freq;
     } else if (band.id === 'side-air-shelf') {
       rawGain = overrides.sideAirBoostDb * scale + airDelta;
     } else {
@@ -735,6 +750,7 @@ export function buildEffectiveDspChain(
 
     return {
       ...band,
+      freq: Math.max(20, Math.min(20000, freq)),
       gainDb: clampGain(rawGain),
     };
   });
@@ -758,16 +774,31 @@ export function buildEffectiveDspChain(
   );
 
   return {
-    highPassFreq: basePreset.dspChain.highPassFreq,
+    highPassFreq: Math.max(
+      18,
+      Math.min(60, overrides.highPassFreq || basePreset.dspChain.highPassFreq)
+    ),
     monoMakerFreq: Math.max(40, Math.min(220, overrides.monoMakerFreq)),
     eqBands,
     compressor: {
       ...basePreset.dspChain.compressor,
       thresholdDb: overrides.compressorThresholdDb,
       ratio: Number(effectiveRatio.toFixed(2)),
+      attackSec: Math.max(
+        0.001,
+        Math.min(0.25, (overrides.compressorAttackMs || 25) / 1000)
+      ),
+      releaseSec: Math.max(
+        0.015,
+        Math.min(1.0, (overrides.compressorReleaseMs || 120) / 1000)
+      ),
+      kneeDb: Math.max(0, Math.min(24, overrides.compressorKneeDb ?? 6)),
       parallelMix: Math.max(
         0,
-        Math.min(1, (overrides.compressorGlueMixPct / 100) * Math.min(1.1, scale || 0.01))
+        Math.min(
+          1,
+          (overrides.compressorGlueMixPct / 100) * Math.min(1.1, scale || 0.01)
+        )
       ),
     },
     saturation: {

@@ -4,6 +4,7 @@ export {
   default,
 } from './components/MasteringRack';
 export { ABComparisonBar } from './components/ABComparisonBar';
+export { AiMasteringAssistantPanel } from './components/AiMasteringAssistantPanel';
 export { DualSpectrumVisualizer } from './components/DualSpectrumVisualizer';
 export { LoudnessMeterPanel } from './components/LoudnessMeterPanel';
 export { MidSideSurgicalControls } from './components/MidSideSurgicalControls';

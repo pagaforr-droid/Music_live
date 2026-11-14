@@ -178,6 +178,9 @@ export function createMidSideMatrix(
         band.channel === 'mid' ? midBandFilters : sideBandFilters;
       const node = targetMap.get(band.id);
       if (!node) return;
+      if (node.type !== band.type) {
+        node.type = band.type;
+      }
       node.frequency.setTargetAtTime(band.freq, now, 0.015);
       node.Q.setTargetAtTime(band.q, now, 0.015);
       node.gain.setTargetAtTime(

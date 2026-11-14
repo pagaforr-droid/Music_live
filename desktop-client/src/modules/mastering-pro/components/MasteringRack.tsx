@@ -15,7 +15,10 @@ import {
   extractSurgicalOverridesFromPreset,
   getPresetById,
 } from '../presets/proPresetsCatalog';
-import { recomputeDeltasForPreset } from '../engine/SpectralDeltaAnalyzer';
+import {
+  analyzeTrackAndComputeAdaptation,
+  recomputeDeltasForPreset,
+} from '../engine/SpectralDeltaAnalyzer';
 import { WebAudioMasteringEngine } from '../engine/WebAudioMasteringEngine';
 import {
   MASTERING_SESSIONS_MIGRATION_SQL,
@@ -25,7 +28,10 @@ import {
   type ProjectAudioTrackItem,
 } from '../services/supabaseMasteringService';
 import type {
+  AiCriticalEqPoint,
+  AiFilterSuggestion,
   AudioMetrics,
+  EQBandConfig,
   MasteringSessionRecord,
   SpectralAdaptationReport,
   StemBusRole,
@@ -34,6 +40,7 @@ import type {
   SurgicalOverrides,
 } from '../types/mastering.types';
 import { ABComparisonBar } from './ABComparisonBar';
+import { AiMasteringAssistantPanel } from './AiMasteringAssistantPanel';
 import { DualSpectrumVisualizer } from './DualSpectrumVisualizer';
 import { LoudnessMeterPanel } from './LoudnessMeterPanel';
 import { MidSideSurgicalControls } from './MidSideSurgicalControls';
@@ -394,21 +401,148 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   };
 
   const handleRunAiAnalysis = () => {
-    if (!adaptationReport) return;
+    const engine = engineRef.current;
+    const buffer = engine?.getAudioBuffer();
+    if (!buffer && !adaptationReport) return;
+
     setIsAnalyzing(true);
     setTimeout(() => {
-      applyPresetSelection(
-        adaptationReport.recommendedPresetId,
-        adaptationReport
-      );
+      const freshReport = buffer
+        ? analyzeTrackAndComputeAdaptation(buffer, selectedPresetId)
+        : adaptationReport!;
+      setAdaptationReport(freshReport);
+
+      const recPreset = getPresetById(freshReport.recommendedPresetId);
+      setSelectedPresetId(recPreset.id);
+
+      const baseOverrides = extractSurgicalOverridesFromPreset(recPreset);
+      const comp = freshReport.compressionSuggestion;
+      const stereo = freshReport.stereoWidthSuggestion;
+
+      // Apply full intelligent optimization from the AI scan
+      const nextOverrides: SurgicalOverrides = {
+        ...baseOverrides,
+        compressorThresholdDb: comp.thresholdDb,
+        compressorRatio: comp.ratio,
+        compressorAttackMs: comp.attackMs,
+        compressorReleaseMs: comp.releaseMs,
+        compressorKneeDb: comp.kneeDb,
+        compressorGlueMixPct: comp.parallelMixPct,
+        stereoWidthPct: stereo.recommendedWidthPct,
+        monoMakerFreq: stereo.recommendedMonoMakerHz,
+        sideAirBoostDb: stereo.recommendedSideAirDb,
+      };
+
+      for (const filter of freshReport.filterSuggestions) {
+        if (filter.isRecommended) {
+          Object.assign(nextOverrides, filter.patchOverrides);
+        }
+      }
+
+      setOverrides(nextOverrides);
       setAutoAdaptEnabled(true);
       setIsAnalyzing(false);
-      const recPreset = getPresetById(adaptationReport.recommendedPresetId);
       setStatusBanner({
         type: 'success',
-        message: `IA Auto-Master aplicó "${recPreset.name}" con adaptación espectral Delta EQ activa.`,
+        message: `Diagnóstico IA completado: Preset "${recPreset.name}", ${freshReport.criticalEqPoints.length} puntos críticos de EQ, De-Esser (${freshReport.sibilanceScore}%), Compresión (${comp.ratio}:1) y Amplitud Estéreo (${stereo.recommendedWidthPct}%) calibrados.`,
       });
-    }, 240);
+    }, 220);
+  };
+
+  const handleApplyCriticalPoint = (point: AiCriticalEqPoint) => {
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (point.bandId === 'mid-sub-punch') {
+        next.midLowPunchDb = point.recommendedGainDb;
+      } else if (point.bandId === 'stereo-mud-cut') {
+        next.stereoMudCutDb = point.recommendedGainDb;
+      } else if (point.bandId === 'mid-vocal-bite') {
+        next.midPresenceDb = point.recommendedGainDb;
+      } else if (point.bandId === 'stereo-de-harsh') {
+        next.deHarshnessCutDb = point.recommendedGainDb;
+      } else if (point.bandId === 'stereo-sibilance') {
+        next.sibilanceCutDb = point.recommendedGainDb;
+        next.sibilanceFreqHz = point.freqHz;
+      } else if (point.bandId === 'side-air-shelf') {
+        next.sideAirBoostDb = point.recommendedGainDb;
+      }
+
+      next.customEqBands = prev.customEqBands.map((b) =>
+        b.id === point.bandId
+          ? {
+              ...b,
+              freq: point.freqHz,
+              gainDb: point.recommendedGainDb,
+              q: point.recommendedQ,
+              enabled: true,
+            }
+          : b
+      );
+      return next;
+    });
+
+    setStatusBanner({
+      type: 'success',
+      message: `Punto crítico aplicado: ${point.title} (${
+        point.recommendedGainDb > 0 ? '+' : ''
+      }${point.recommendedGainDb} dB @ ${point.freqHz} Hz).`,
+    });
+  };
+
+  const handleApplyFilterSuggestion = (suggestion: AiFilterSuggestion) => {
+    setOverrides((prev) => ({
+      ...prev,
+      ...suggestion.patchOverrides,
+    }));
+    setStatusBanner({
+      type: 'success',
+      message: `Filtro activado: ${suggestion.name}.`,
+    });
+  };
+
+  const handleApplyAiCompression = () => {
+    if (!adaptationReport) return;
+    const c = adaptationReport.compressionSuggestion;
+    setOverrides((prev) => ({
+      ...prev,
+      compressorThresholdDb: c.thresholdDb,
+      compressorRatio: c.ratio,
+      compressorAttackMs: c.attackMs,
+      compressorReleaseMs: c.releaseMs,
+      compressorKneeDb: c.kneeDb,
+      compressorGlueMixPct: c.parallelMixPct,
+    }));
+    setStatusBanner({
+      type: 'success',
+      message: `Compresión IA "${c.profileName}" aplicada (${c.ratio}:1, Attack ${c.attackMs}ms, Release ${c.releaseMs}ms).`,
+    });
+  };
+
+  const handleApplyAiStereoWidth = () => {
+    if (!adaptationReport) return;
+    const s = adaptationReport.stereoWidthSuggestion;
+    setOverrides((prev) => ({
+      ...prev,
+      stereoWidthPct: s.recommendedWidthPct,
+      monoMakerFreq: s.recommendedMonoMakerHz,
+      sideAirBoostDb: s.recommendedSideAirDb,
+    }));
+    setStatusBanner({
+      type: 'success',
+      message: `Amplitud Estéreo IA aplicada (${s.recommendedWidthPct}% Width, Mono Maker @ ${s.recommendedMonoMakerHz} Hz).`,
+    });
+  };
+
+  const handleUpdateCustomEqBand = (
+    bandId: string,
+    patch: Partial<EQBandConfig>
+  ) => {
+    setOverrides((prev) => ({
+      ...prev,
+      customEqBands: prev.customEqBands.map((b) =>
+        b.id === bandId ? { ...b, ...patch } : b
+      ),
+    }));
   };
 
   const handleChangeOverride = <K extends keyof SurgicalOverrides>(
@@ -844,6 +978,20 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             />
           </div>
         </div>
+
+        {/* 2.5. AI Master Assistant & Customizer Panel (Critical EQ Boost/Cut Points, De-Esser/Notch Filters, Custom EQ/Comp/Stereo) */}
+        <AiMasteringAssistantPanel
+          report={adaptationReport}
+          overrides={overrides}
+          isAnalyzing={isAnalyzing}
+          onRunFullAiOptimization={handleRunAiAnalysis}
+          onApplyCriticalPoint={handleApplyCriticalPoint}
+          onApplyFilterSuggestion={handleApplyFilterSuggestion}
+          onApplyAiCompression={handleApplyAiCompression}
+          onApplyAiStereoWidth={handleApplyAiStereoWidth}
+          onChangeOverride={handleChangeOverride}
+          onUpdateCustomEqBand={handleUpdateCustomEqBand}
+        />
 
         {/* 3. 6 Pro Presets Grid + Macro Intensity Slider (0% - 150%) */}
         <PresetSelectorGrid

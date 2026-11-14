@@ -225,6 +225,9 @@ export function buildMasteringDspGraph(
       if (band.channel === 'stereo') {
         const node = stereoBandFilters.get(band.id);
         if (node) {
+          if (node.type !== band.type) {
+            node.type = band.type;
+          }
           node.frequency.setTargetAtTime(band.freq, now, 0.015);
           node.Q.setTargetAtTime(band.q, now, 0.015);
           node.gain.setTargetAtTime(

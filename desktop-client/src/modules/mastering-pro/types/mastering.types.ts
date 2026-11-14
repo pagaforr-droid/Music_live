@@ -116,6 +116,82 @@ export interface AudioMetrics {
   postSpectralBalance: SpectralProfile;
 }
 
+export interface SurgicalOverrides {
+  highPassFreq: number;
+  monoMakerFreq: number;
+  midLowPunchDb: number;
+  stereoMudCutDb: number;
+  midPresenceDb: number;
+  deHarshnessCutDb: number;
+  sibilanceCutDb: number;
+  sibilanceFreqHz: number;
+  sideAirBoostDb: number;
+  saturationType: SaturationType;
+  tapeDrivePct: number;
+  compressorThresholdDb: number;
+  compressorRatio: number;
+  compressorAttackMs: number;
+  compressorReleaseMs: number;
+  compressorKneeDb: number;
+  compressorGlueMixPct: number;
+  stereoWidthPct: number;
+  targetLufs: number;
+  ceilingDbTp: number;
+  customEqBands: EQBandConfig[];
+}
+
+export interface AiCriticalEqPoint {
+  id: string;
+  action: 'boost' | 'cut';
+  title: string;
+  zoneName: string;
+  reason: string;
+  freqHz: number;
+  recommendedGainDb: number;
+  recommendedQ: number;
+  channel: EQBandChannel;
+  filterType: BiquadFilterType;
+  bandId: string;
+  priority: 'critical' | 'recommended' | 'opportunity';
+}
+
+export interface AiFilterSuggestion {
+  id:
+    | 'de-esser'
+    | 'de-harsh-notch'
+    | 'anti-mud-filter'
+    | 'mono-maker-lock'
+    | 'subsonic-rumble'
+    | 'harmonic-exciter';
+  name: string;
+  badge: string;
+  detectedIssue: string;
+  suggestionDetail: string;
+  confidencePct: number;
+  isRecommended: boolean;
+  patchOverrides: Partial<SurgicalOverrides>;
+}
+
+export interface AiCompressionSuggestion {
+  profileName: string;
+  diagnosis: string;
+  thresholdDb: number;
+  ratio: number;
+  attackMs: number;
+  releaseMs: number;
+  kneeDb: number;
+  parallelMixPct: number;
+}
+
+export interface AiStereoWidthSuggestion {
+  detectedStereoEnergyPct: number;
+  detectedBassPhaseCorrelation: number;
+  diagnosis: string;
+  recommendedWidthPct: number;
+  recommendedMonoMakerHz: number;
+  recommendedSideAirDb: number;
+}
+
 export interface SpectralAdaptationReport {
   analyzedDurationSec: number;
   sampleRate: number;
@@ -128,6 +204,8 @@ export interface SpectralAdaptationReport {
   recommendationReason: string;
   /** 0 to 100 score estimating metallic/high-frequency AI synthesis artifacts */
   aiArtifactScore: number;
+  /** 0 to 100 score estimating vocal sibilance & high-frequency harshness (5.5kHz - 8.5kHz) */
+  sibilanceScore: number;
   deltaAdjustments: {
     subDeltaDb: number;
     lowMidDeltaDb: number;
@@ -135,24 +213,10 @@ export interface SpectralAdaptationReport {
     airDeltaDb: number;
     autoMakeupGainDb: number;
   };
-}
-
-export interface SurgicalOverrides {
-  monoMakerFreq: number;
-  midLowPunchDb: number;
-  stereoMudCutDb: number;
-  midPresenceDb: number;
-  deHarshnessCutDb: number;
-  sibilanceCutDb: number;
-  sideAirBoostDb: number;
-  saturationType: SaturationType;
-  tapeDrivePct: number;
-  compressorThresholdDb: number;
-  compressorRatio: number;
-  compressorGlueMixPct: number;
-  stereoWidthPct: number;
-  targetLufs: number;
-  ceilingDbTp: number;
+  criticalEqPoints: AiCriticalEqPoint[];
+  filterSuggestions: AiFilterSuggestion[];
+  compressionSuggestion: AiCompressionSuggestion;
+  stereoWidthSuggestion: AiStereoWidthSuggestion;
 }
 
 export type StemBusRole = 'drums' | 'bass' | 'vocals' | 'other';
