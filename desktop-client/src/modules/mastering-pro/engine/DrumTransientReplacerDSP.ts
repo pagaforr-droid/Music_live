@@ -15,7 +15,13 @@ export const DEFAULT_DRUM_LAYERING_CONFIG: DrumLayeringConfig = {
   drumStyle: 'stadium-rock',
   suppressOriginalMud: true,
   humanizeRoundRobin: true,
+  duckOriginalTransients: true,
 };
+
+export interface TransientDuckHandles {
+  kickDuckFilter: BiquadFilterNode;
+  snareDuckFilter: BiquadFilterNode;
+}
 
 export class DrumTransientReplacerDSP {
   private customKickBuffer: AudioBuffer | null = null;
@@ -181,6 +187,8 @@ export class DrumTransientReplacerDSP {
   /**
    * Programa todos los golpes de batería detectados en sincronía sample-accurate
    * con el AudioContext (tiempo real) o el OfflineAudioContext (exportación WAV 24-bit).
+   * Cuando duckOriginalTransients está activo, atenúa quirúrgicamente (-8.5dB por 20ms)
+   * la transiente sintética original de Suno en el instante exacto del impacto acústico.
    */
   public scheduleDrumLayers(
     ctx: BaseAudioContext,
@@ -190,9 +198,20 @@ export class DrumTransientReplacerDSP {
     audioStartContextTime: number,
     playbackOffsetSec = 0,
     trackDurationSec = 0,
-    loopCycles = 1
+    loopCycles = 1,
+    transientDuckHandles?: TransientDuckHandles
   ): void {
     this.stopScheduledLayers();
+    if (transientDuckHandles) {
+      try {
+        transientDuckHandles.kickDuckFilter.gain.cancelScheduledValues(0);
+        transientDuckHandles.kickDuckFilter.gain.setValueAtTime(0, 0);
+        transientDuckHandles.snareDuckFilter.gain.cancelScheduledValues(0);
+        transientDuckHandles.snareDuckFilter.gain.setValueAtTime(0, 0);
+      } catch {
+        // Ignore if context is at 0
+      }
+    }
     if (!config.enabled || events.length === 0) return;
 
     const kickBuffer =
@@ -218,6 +237,26 @@ export class DrumTransientReplacerDSP {
         let triggerTime =
           audioStartContextTime +
           (hit.timeSec + cycleTimeOffset - playbackOffsetSec);
+
+        // Ducking quirúrgico de la transiente sintética original (18-22ms)
+        if (
+          transientDuckHandles &&
+          config.duckOriginalTransients !== false &&
+          triggerTime >= 0.003
+        ) {
+          const duckParam = isKick
+            ? transientDuckHandles.kickDuckFilter.gain
+            : transientDuckHandles.snareDuckFilter.gain;
+          const maxDuckDb =
+            -8.8 * Math.min(1, mixAmount * 1.35) * Math.max(0.45, hit.velocity);
+          const preTime = Math.max(0, triggerTime - 0.002);
+          const peakTime = triggerTime + 0.0025;
+          const releaseTime = triggerTime + (isKick ? 0.024 : 0.019);
+
+          duckParam.setValueAtTime(0, preTime);
+          duckParam.linearRampToValueAtTime(maxDuckDb, peakTime);
+          duckParam.linearRampToValueAtTime(0, releaseTime);
+        }
 
         const source = ctx.createBufferSource();
         source.buffer = isKick ? kickBuffer : snareBuffer;

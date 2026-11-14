@@ -12,6 +12,7 @@ import {
   Waves,
 } from 'lucide-react';
 import type {
+  AntiSunoCqtMode,
   DrumHitEvent,
   DrumKitStyle,
   DrumLayeringConfig,
@@ -145,12 +146,17 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
       analogConsoleNoiseDb: -71,
       studioRoomCoherence: 0.04,
       transientMicroExpand: 0.5,
+      sunoUltrasonicPurge: true,
+      cqtDeQuantizeMode: forensicConfig.cqtDeQuantizeMode ?? 'a432_detune',
+      rvqFormantDeQuantizer: true,
+      monoDownmixCanceller: true,
     });
     onChangeDrumConfig({
       ...drumConfig,
       enabled: true,
       suppressOriginalMud: true,
       humanizeRoundRobin: true,
+      duckOriginalTransients: true,
       kickMix: Math.max(0.45, drumConfig.kickMix),
       snareMix: Math.max(0.4, drumConfig.snareMix),
     });
@@ -313,10 +319,17 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
           {/* Columna Controles Kick */}
           <div className="rounded-xl bg-slate-950 border border-slate-800 p-3 flex flex-col gap-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold text-[#FF6B00]">
-                1. CANAL BOMBO (KICK LAYER)
-              </span>
+            <div className="flex items-center justify-between gap-1">
+              <div>
+                <span className="text-xs font-mono font-bold text-[#FF6B00] block">
+                  1. CANAL BOMBO (KICK LAYER)
+                </span>
+                <span className="text-[10px] font-mono text-emerald-400">
+                  {customSampleNames.kickName
+                    ? '● Sample Custom .WAV Activo'
+                    : '● Motor Acústico Interno 24-Bit Activo'}
+                </span>
+              </div>
               <input
                 ref={kickInputRef}
                 type="file"
@@ -333,12 +346,13 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                   type="button"
                   onClick={() => kickInputRef.current?.click()}
                   className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-200 flex items-center gap-1 cursor-pointer"
+                  title="Opcional: El motor ya incluye Bombos de estudio de 24-bits. Sube un .WAV solo si deseas usar tu propio sample."
                 >
                   <Upload size={11} className="text-[#FF6B00]" />
                   <span>
                     {customSampleNames.kickName
                       ? customSampleNames.kickName.slice(0, 14)
-                      : 'Subir Kick .WAV'}
+                      : 'Opcional: Kick .WAV'}
                   </span>
                 </button>
                 {customSampleNames.kickName && (
@@ -395,10 +409,17 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
 
           {/* Columna Controles Snare */}
           <div className="rounded-xl bg-slate-950 border border-slate-800 p-3 flex flex-col gap-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-bold text-[#00E5FF]">
-                2. CANAL CAJA (SNARE LAYER)
-              </span>
+            <div className="flex items-center justify-between gap-1">
+              <div>
+                <span className="text-xs font-mono font-bold text-[#00E5FF] block">
+                  2. CANAL CAJA (SNARE LAYER)
+                </span>
+                <span className="text-[10px] font-mono text-emerald-400">
+                  {customSampleNames.snareName
+                    ? '● Sample Custom .WAV Activo'
+                    : '● Motor Acústico Interno 24-Bit Activo'}
+                </span>
+              </div>
               <input
                 ref={snareInputRef}
                 type="file"
@@ -415,12 +436,13 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                   type="button"
                   onClick={() => snareInputRef.current?.click()}
                   className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-200 flex items-center gap-1 cursor-pointer"
+                  title="Opcional: El motor ya incluye Cajas acústicas de 24-bits. Sube un .WAV solo si deseas usar tu propio sample."
                 >
                   <Upload size={11} className="text-[#00E5FF]" />
                   <span>
                     {customSampleNames.snareName
                       ? customSampleNames.snareName.slice(0, 14)
-                      : 'Subir Snare .WAV'}
+                      : 'Opcional: Snare .WAV'}
                   </span>
                 </button>
                 {customSampleNames.snareName && (
@@ -477,34 +499,55 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
         </div>
 
         {/* Toggles Quirúrgicos Anti-Huella en Batería */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-          <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={drumConfig.suppressOriginalMud}
-              onChange={(e) =>
-                updateDrum('suppressOriginalMud', e.target.checked)
-              }
-              className="accent-[#FF6B00] cursor-pointer"
-            />
-            <span>
-              <strong>Suppress AI Sub-Mud (50–105Hz):</strong> Atenúa el grave difuso original al inyectar el Kick real
-            </span>
-          </label>
+        <div className="flex flex-col gap-2 pt-2 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={drumConfig.duckOriginalTransients !== false}
+                onChange={(e) =>
+                  updateDrum('duckOriginalTransients', e.target.checked)
+                }
+                className="accent-emerald-400 cursor-pointer"
+              />
+              <span>
+                <strong className="text-emerald-300">
+                  Surgical Transient Ducking (-8.8dB / 20ms):
+                </strong>{' '}
+                Atenúa el golpe sintético de Suno en el instante exacto del impacto acústico
+              </span>
+            </label>
+          </div>
 
-          <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={drumConfig.humanizeRoundRobin}
-              onChange={(e) =>
-                updateDrum('humanizeRoundRobin', e.target.checked)
-              }
-              className="accent-[#00E5FF] cursor-pointer"
-            />
-            <span>
-              <strong>Forensic Round-Robin Humanizer:</strong> Micro-variación (±0.8% Pitch/Fase/Timbre) en cada golpe
-            </span>
-          </label>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={drumConfig.suppressOriginalMud}
+                onChange={(e) =>
+                  updateDrum('suppressOriginalMud', e.target.checked)
+                }
+                className="accent-[#FF6B00] cursor-pointer"
+              />
+              <span>
+                <strong>Suppress AI Sub-Mud (50–105Hz):</strong> Atenúa el grave difuso original
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={drumConfig.humanizeRoundRobin}
+                onChange={(e) =>
+                  updateDrum('humanizeRoundRobin', e.target.checked)
+                }
+                className="accent-[#00E5FF] cursor-pointer"
+              />
+              <span>
+                <strong>Forensic Round-Robin Humanizer:</strong> Micro-variación (±0.8% Pitch/Fase) por golpe
+              </span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -721,6 +764,106 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                 className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Motor Profundo Anti-Suno Deep Cloak (Sample-Level WAV 24-Bit) */}
+        <div className="rounded-xl bg-slate-950 border border-emerald-500/30 p-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-mono font-extrabold text-emerald-300 uppercase tracking-wider">
+              Cloak Profundo Anti-Suno v3.5/v4 (CQT + RVQ + Mono-Downmix)
+            </span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              Sample-Level 48kHz
+            </span>
+          </div>
+
+          {/* Selector de Modo CQT / Time-Warp */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            {(
+              [
+                {
+                  id: 'a432_detune',
+                  label: 'A=432Hz (-31.8c)',
+                  desc: 'Master Tape Shift',
+                },
+                {
+                  id: 'detune_down',
+                  label: 'Quarter (-50c)',
+                  desc: 'Mitad Celda CQT',
+                },
+                {
+                  id: 'drop_semitone',
+                  label: 'Drop Eb (-100c)',
+                  desc: 'Afinación Estudio',
+                },
+                {
+                  id: 'macro_rubato_440',
+                  label: '440Hz Rubato',
+                  desc: 'Pitch Original',
+                },
+              ] as Array<{ id: AntiSunoCqtMode; label: string; desc: string }>
+            ).map((mode) => {
+              const active =
+                (forensicConfig.cqtDeQuantizeMode ?? 'a432_detune') === mode.id;
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => updateForensic('cqtDeQuantizeMode', mode.id)}
+                  className={`px-2 py-1.5 rounded-lg border text-left transition-all cursor-pointer ${
+                    active
+                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-[0_0_10px_rgba(16,185,129,0.25)]'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="text-[10px] font-mono font-bold leading-tight">
+                    {mode.label}
+                  </div>
+                  <div className="text-[9px] text-slate-400 leading-tight">
+                    {mode.desc}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono">
+            <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={forensicConfig.sunoUltrasonicPurge !== false}
+                onChange={(e) =>
+                  updateForensic('sunoUltrasonicPurge', e.target.checked)
+                }
+                className="accent-emerald-400 cursor-pointer"
+              />
+              <span>Purga &gt;17.4kHz + 5 Notches</span>
+            </label>
+
+            <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={forensicConfig.rvqFormantDeQuantizer !== false}
+                onChange={(e) =>
+                  updateForensic('rvqFormantDeQuantizer', e.target.checked)
+                }
+                className="accent-emerald-400 cursor-pointer"
+              />
+              <span>De-Cuantizador RVQ Zero-Sum</span>
+            </label>
+
+            <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={forensicConfig.monoDownmixCanceller !== false}
+                onChange={(e) =>
+                  updateForensic('monoDownmixCanceller', e.target.checked)
+                }
+                className="accent-emerald-400 cursor-pointer"
+              />
+              <span>Escudo Mono-Downmix &gt;380Hz</span>
+            </label>
           </div>
         </div>
 

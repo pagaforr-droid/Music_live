@@ -31,6 +31,12 @@ export interface SpectralResonanceNode {
   source: 'ai-detected' | 'user-clicked';
 }
 
+export type AntiSunoCqtMode =
+  | 'a432_detune'
+  | 'detune_down'
+  | 'drop_semitone'
+  | 'macro_rubato_440';
+
 export interface ForensicHumanizerConfig {
   enabled: boolean;
   /** Controla el exceso de energía sub-grave para bajar el Bass Concentration del ~60% al ~36% (0.0 a 1.0) */
@@ -45,6 +51,14 @@ export interface ForensicHumanizerConfig {
   studioRoomCoherence: number;
   /** Reconstruye el ataque físico de micro-transientes borroneadas (0.0 a 1.0) */
   transientMicroExpand: number;
+  /** Purga ultrasónica 8º orden (>17.4kHz) + 5 notches Bark/EnCodec ANTES de reconstruir armónicos */
+  sunoUltrasonicPurge?: boolean;
+  /** Modo de desplazamiento CQT + Time-Warp cúbico Catmull-Rom para romper la rejilla de 20ms (50Hz) de Suno */
+  cqtDeQuantizeMode?: AntiSunoCqtMode;
+  /** De-Cuantizador Zero-Sum de formantes RVQ (700-1350Hz / 2400-4100Hz) + Swapper de constelación de 6 bandas */
+  rvqFormantDeQuantizer?: boolean;
+  /** Escudo de cancelación en Downmix Mono (12-stage All-Pass + Micro-Warp opuesto >380Hz para 0.5*(L+R)) */
+  monoDownmixCanceller?: boolean;
 }
 
 export interface ForensicSignatureReport {
@@ -83,6 +97,8 @@ export interface DrumLayeringConfig {
   drumStyle: DrumKitStyle;
   suppressOriginalMud: boolean;
   humanizeRoundRobin: boolean;
+  /** Reemplazo real de transientes: atenúa (-8.5dB por 18-22ms) el golpe sintético original al disparar el sample acústico */
+  duckOriginalTransients?: boolean;
 }
 
 export interface CompressorConfig {

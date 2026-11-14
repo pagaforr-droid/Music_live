@@ -13,6 +13,10 @@ import {
   DrumTransientReplacerDSP,
 } from './DrumTransientReplacerDSP';
 import {
+  DEFAULT_FORENSIC_HUMANIZER_CONFIG,
+  ForensicHumanizerDSP,
+} from './ForensicHumanizerDSP';
+import {
   buildMasteringDspGraph,
   type MasteringGraphHandles,
 } from './MasteringGraphBuilder';
@@ -484,7 +488,7 @@ export class WebAudioMasteringEngine {
       );
     }
 
-    const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${sensSig}`;
+    const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${drumCfg.duckOriginalTransients !== false}:${sensSig}`;
     if (drumSig !== this.lastDrumConfigSig) {
       this.lastDrumConfigSig = drumSig;
       if (this.isPlaying && this.audioBuffer) {
@@ -497,7 +501,8 @@ export class WebAudioMasteringEngine {
           this.ctx.currentTime,
           currentOffset,
           this.audioBuffer.duration,
-          this.loopEnabled ? 4 : 1
+          this.loopEnabled ? 4 : 1,
+          this.graphHandles.transientDuckHandles
         );
       }
     }
@@ -592,7 +597,8 @@ export class WebAudioMasteringEngine {
         startCtxTime,
         offset,
         this.audioBuffer.duration,
-        this.loopEnabled ? 4 : 1
+        this.loopEnabled ? 4 : 1,
+        this.graphHandles.transientDuckHandles
       );
     }
   }
@@ -956,7 +962,7 @@ export class WebAudioMasteringEngine {
     offlineGraph.outputNode.connect(offlineCtx.destination);
     source.start(0);
 
-    // Schedule Sample-Accurate Acoustic Drum Layers inside OfflineAudioContext
+    // Schedule Sample-Accurate Acoustic Drum Layers + Surgical Transient Ducking inside OfflineAudioContext
     const drumCfg =
       this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
     if (drumCfg.enabled && this.detectedDrumHits.length > 0) {
@@ -968,7 +974,8 @@ export class WebAudioMasteringEngine {
         0,
         0,
         durationSec,
-        1
+        1,
+        offlineGraph.transientDuckHandles
       );
     }
 
@@ -977,11 +984,20 @@ export class WebAudioMasteringEngine {
       42
     );
 
-    const renderedBuffer = await offlineCtx.startRendering();
+    const rawRenderedBuffer = await offlineCtx.startRendering();
+
+    const forensicCfg =
+      this.activeChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG;
+    const renderedBuffer =
+      await ForensicHumanizerDSP.applyDeepAntiSunoOfflineCloak(
+        rawRenderedBuffer,
+        forensicCfg,
+        onProgress
+      );
 
     onProgress?.(
       `Aplicando Limitador Lookahead Brickwall (${this.activeChain.limiter.ceilingDbTp.toFixed(1)} dBTP)...`,
-      74
+      78
     );
 
     const limiterStats = applyLookaheadBrickwallLimiterOffline(

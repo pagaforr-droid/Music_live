@@ -7,6 +7,7 @@ import {
   DEFAULT_FORENSIC_HUMANIZER_CONFIG,
   ForensicHumanizerDSP,
 } from './ForensicHumanizerDSP';
+import type { TransientDuckHandles } from './DrumTransientReplacerDSP';
 import {
   createMidSideMatrix,
   type MidSideMatrixHandles,
@@ -17,6 +18,8 @@ export interface MasteringGraphHandles {
   inputNode: GainNode;
   /** Bus de inyección para las capas acústicas de Kick/Snare (antes del Compresor Bus Glue) */
   drumLayerBusInput: GainNode;
+  /** Filtros de Ducking Quirúrgico para atenuar la transiente sintética original en cada golpe */
+  transientDuckHandles: TransientDuckHandles;
   outputNode: GainNode;
   busCompressor: DynamicsCompressorNode;
   maximizerSafetyLimiter: DynamicsCompressorNode;
@@ -107,6 +110,19 @@ export function buildMasteringDspGraph(
 
   lastStage2Node.connect(midSideMatrix.inputNode);
 
+  // Filtros de Ducking Quirúrgico para Reemplazo Real de Transientes (Kick 72Hz / Snare 245Hz)
+  const kickDuckFilter = ctx.createBiquadFilter();
+  kickDuckFilter.type = 'peaking';
+  kickDuckFilter.frequency.value = 72;
+  kickDuckFilter.Q.value = 1.35;
+  kickDuckFilter.gain.value = 0;
+
+  const snareDuckFilter = ctx.createBiquadFilter();
+  snareDuckFilter.type = 'peaking';
+  snareDuckFilter.frequency.value = 245;
+  snareDuckFilter.Q.value = 1.15;
+  snareDuckFilter.gain.value = 0;
+
   // Bus where Sample-Accurate Acoustic Drum Layers (Kick/Snare) are injected
   // so they glue together with the mix inside Stage 4A Bus Compressor & Stage 4B Tape Saturator
   const drumLayerBusInput = ctx.createGain();
@@ -114,7 +130,9 @@ export function buildMasteringDspGraph(
   const preGlueSumBus = ctx.createGain();
   preGlueSumBus.gain.value = 1.0;
 
-  midSideMatrix.outputNode.connect(preGlueSumBus);
+  midSideMatrix.outputNode.connect(kickDuckFilter);
+  kickDuckFilter.connect(snareDuckFilter);
+  snareDuckFilter.connect(preGlueSumBus);
   drumLayerBusInput.connect(preGlueSumBus);
 
   // =========================================================================
@@ -383,6 +401,7 @@ export function buildMasteringDspGraph(
   return {
     inputNode,
     drumLayerBusInput,
+    transientDuckHandles: { kickDuckFilter, snareDuckFilter },
     outputNode,
     busCompressor,
     maximizerSafetyLimiter,
