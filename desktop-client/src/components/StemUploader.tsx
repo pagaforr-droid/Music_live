@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UploadCloud, CheckCircle, AlertTriangle, FileAudio, Archive } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { isMasterTrackByName } from '../utils/beatGridDSP';
 import JSZip from 'jszip';
 
 interface StemUploaderProps {
@@ -80,17 +81,17 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
     const { data: publicUrlData } = supabase.storage.from('audios').getPublicUrl(storagePath);
 
     // Identificar si es un Master Track (Fuente #1 para Tempo, Grilla y Acordes IA)
-    // Es master si el nombre termina o contiene claramente "master", "full", "mezcla" o "mix" SIN un instrumento entre paréntesis al final
+    // Es master si el nombre contiene la palabra "Master" (sin ser un stem aislado de instrumento) o termina en full/mezcla/mix
     const nameWithoutExt = baseName.toLowerCase().trim();
     const hasInstrumentSuffix = /\(([^)]+)\)\s*$/.test(baseName);
-    const isMaster = !hasInstrumentSuffix && (
+    const isMaster = isMasterTrackByName(baseName) || (!hasInstrumentSuffix && (
       nameWithoutExt.endsWith('master') ||
       nameWithoutExt.endsWith('full') ||
       nameWithoutExt.endsWith('mezcla') ||
       nameWithoutExt.endsWith('mix') ||
       nameWithoutExt === 'master' ||
       nameWithoutExt.includes('mezcla master')
-    );
+    ));
 
     // 4. Insertar en la tabla stems
     const { error: dbError } = await supabase.from('stems').insert({

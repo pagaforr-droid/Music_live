@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { generateClickBuffer, resolveCueBufferName, scheduleSectionVoiceCues } from '../utils/cueEngine';
+import { findMasterAndDrumStems, repairAndRelockBeatGrid } from '../utils/beatGridDSP';
 
 export type StemType = 'Click' | 'Cues' | 'Instrument';
 export type RoutingMode = 'StereoInEar' | 'StereoSplit' | 'MultiChannel';
@@ -169,63 +170,44 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       }
     }
     
-    // --- AUTO-ADAPTACIÓN RÍTMICA (COMPENSACIÓN DE LATENCIA EN NAVEGADOR) ---
-    const drumStem = activeStemsArray.find(s => s.name.toLowerCase().includes('drum') || s.name.toLowerCase().includes('bater') || s.name.toLowerCase().includes('perc'));
-    if (drumStem && buffers.current.has(drumStem.id) && prompterData && prompterData.beatTimes && prompterData.beatTimes.length > 0) {
+    // --- AUTO-ADAPTACIÓN RÍTMICA Y RE-SINCRONIZACIÓN MULTI-ISLA (MASTER + DRUMS) ---
+    if (prompterData && prompterData.beatTimes && prompterData.beatTimes.length > 0) {
+      const hasAlreadyRepairedGrid = Array.isArray(prompterData.downbeats) && prompterData.downbeats.length > 0;
+      if (!hasAlreadyRepairedGrid) {
         try {
-            setLoadProgress({ loaded: activeStemsArray.length, total: activeStemsArray.length, currentFile: `Sincronizando transitorios...` });
-            const drumBuffer = buffers.current.get(drumStem.id)!;
-            const data = drumBuffer.getChannelData(0);
-            const sr = drumBuffer.sampleRate;
-            const windowSamples = Math.floor(0.1 * sr); // Ventana de ±100ms
-            
-            let offsets: number[] = [];
-            // Analizamos los primeros 16 golpes para calcular el offset global (padding del MP3 en Chrome)
-            const beatsToAnalyze = Math.min(16, prompterData.beatTimes.length);
-            
-            for (let i = 0; i < beatsToAnalyze; i++) {
-                const originalTime = prompterData.beatTimes[i];
-                const centerSample = Math.floor(originalTime * sr);
-                const startSample = Math.max(0, centerSample - windowSamples);
-                const endSample = Math.min(data.length, centerSample + windowSamples);
-                
-                let maxEnergy = 0;
-                let peakSample = centerSample;
-                
-                // Encontrar el pico exacto de energía (ataque del transitorio)
-                for (let j = startSample; j < endSample; j++) {
-                    const energy = Math.abs(data[j]);
-                    if (energy > maxEnergy) {
-                        maxEnergy = energy;
-                        peakSample = j;
-                    }
-                }
-                
-                // Si el pico es lo suficientemente fuerte como para ser considerado un golpe
-                if (maxEnergy > 0.1) {
-                    offsets.push((peakSample - centerSample) / sr);
-                }
+          const { masterStem, drumStem } = findMasterAndDrumStems(activeStemsArray);
+          const masterBuffer = masterStem ? buffers.current.get(masterStem.id) : null;
+          const drumBuffer = drumStem ? buffers.current.get(drumStem.id) : null;
+          const primaryBuffer = masterBuffer || drumBuffer;
+
+          if (primaryBuffer) {
+            setLoadProgress({
+              loaded: activeStemsArray.length,
+              total: activeStemsArray.length,
+              currentFile: `Re-sincronizando silencios y transitorios con ${masterStem?.name || drumStem?.name || 'Master'}...`
+            });
+            const repaired = repairAndRelockBeatGrid({
+              rawBeats: prompterData.beatTimes,
+              rawDownbeats: prompterData.firstBeatOffset !== undefined ? [Number(prompterData.firstBeatOffset)] : [],
+              rawBpm: Number(prompterData.bpm) || _bpm || 120,
+              timeSignature: prompterData.timeSignature || _timeSignature || '4/4',
+              masterBuffer: primaryBuffer,
+              drumBuffer: masterBuffer && drumBuffer && drumStem?.id !== masterStem?.id ? drumBuffer : null,
+              referenceTrackName: masterStem?.name || drumStem?.name || 'Master'
+            });
+
+            prompterData.beatTimes = repaired.beatTimes;
+            prompterData.downbeats = repaired.downbeats;
+            prompterData.firstBeatOffset = repaired.firstBeatOffset;
+            if (repaired.bpm > 0) {
+              prompterData.bpm = repaired.bpm;
             }
-            
-            if (offsets.length > 0) {
-                // Tomar la mediana de los offsets para ignorar anomalías (fills) y obtener el padding exacto
-                offsets.sort((a, b) => a - b);
-                const medianOffset = offsets[Math.floor(offsets.length / 2)];
-                
-                console.log(`[Auto-Sync] Compensación de latencia de decodificación aplicada: ${medianOffset * 1000}ms`);
-                
-                // Aplicar compensación a toda la grilla de la canción
-                prompterData.beatTimes = prompterData.beatTimes.map((t: number) => t + medianOffset);
-                if (prompterData.firstBeatOffset !== undefined) {
-                    prompterData.firstBeatOffset += medianOffset;
-                }
-                if (prompterData.sections) {
-                    prompterData.sections = prompterData.sections.map((s: any) => ({...s, time: s.time + medianOffset}));
-                }
-            }
+            console.log(`[Auto-Sync DSP] ${repaired.telemetrySummary}`);
+          }
         } catch (e) {
-            console.error("[Auto-Sync] Error en compensación rítmica:", e);
+          console.error('[Auto-Sync DSP] Error en re-sincronización rítmica:', e);
         }
+      }
     }
     // ------------------------------------------------------------------------
 

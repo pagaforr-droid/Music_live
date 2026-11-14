@@ -11,6 +11,11 @@ import {
   type PitchMode,
 } from '../lib/dspDecorrelator';
 import { Music, FolderPlus, Disc3, FileAudio, Loader2, Trash2, Sparkles, CheckCircle, RefreshCw, Play, Pause, Plus, Shield, Zap, Cloud, Star, ArrowRight, Edit3, Save, Search, ChevronRight, Layers } from 'lucide-react';
+import {
+  findMasterAndDrumStems,
+  decodeAudioUrlToBuffer,
+  repairAndRelockBeatGrid,
+} from '../utils/beatGridDSP';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -41,6 +46,7 @@ export default function StemStudio() {
 
   // AI Generator & Grid Metadata state
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [isRelockingLocal, setIsRelockingLocal] = useState(false);
   const [isSavingMeta, setIsSavingMeta] = useState(false);
   const [aiSuccessMessage, setAiSuccessMessage] = useState<string | null>(null);
   const [manualKey, setManualKey] = useState<string>('');
@@ -812,7 +818,7 @@ export default function StemStudio() {
     setAiSuccessMessage(null);
     
     try {
-      const masterStem = stems.find(s => s.metadata?.is_master === true);
+      const { masterStem, drumStem } = findMasterAndDrumStems(stems);
       const refName = masterStem ? `★ ${masterStem.name} (Master)` : (stems[0]?.name || 'Stems');
       setAiSuccessMessage(`Paso 1/2: Analizando Tempo y Compás desde ${refName}...`);
 
@@ -826,7 +832,7 @@ export default function StemStudio() {
       
       const beatsPredictionId = beatsData.predictionId;
       let isBeatsDone = false;
-      let beatsPrompterData = null;
+      let beatsPrompterData: any = null;
       let pollCount = 1;
 
       while (!isBeatsDone && pollCount < 300) {
@@ -855,31 +861,68 @@ export default function StemStudio() {
              });
            }
 
-           let beatTimes: number[] = rawOutput.beats || [];
-           const downbeats: number[] = rawOutput.downbeats || [];
-           const firstDownbeatTime = downbeats.length > 0 ? downbeats[0] : (beatTimes.length > 0 ? beatTimes[0] : 0);
+           const rawBeats: number[] = rawOutput.beats || [];
+           const rawDownbeats: number[] = rawOutput.downbeats || [];
+           const rawBpm: number = Number(rawOutput.bpm) || 120;
 
-           if (beatTimes.length > 0 && rawOutput.bpm > 0) {
-               const beatInterval = 60 / rawOutput.bpm;
+           // Paso 2/2: Motor DSP "Smart Re-Lock & Silence Bridge" sobre el archivo Master (+ Drums si existe)
+           setAiSuccessMessage(
+             `Paso 2/2: Verificando silencios prolongados y re-sincronizando grilla con ${masterStem?.name || 'Master'}...`
+           );
+
+           const masterUrl = masterStem?.file_url || masterStem?.url;
+           const drumUrl = drumStem && drumStem.id !== masterStem?.id ? (drumStem.file_url || drumStem.url) : null;
+           const [masterBuffer, drumBuffer] = await Promise.all([
+             masterUrl ? decodeAudioUrlToBuffer(masterUrl) : Promise.resolve(null),
+             drumUrl ? decodeAudioUrlToBuffer(drumUrl) : Promise.resolve(null)
+           ]);
+
+           if (masterBuffer) {
+             const repaired = repairAndRelockBeatGrid({
+               rawBeats,
+               rawDownbeats,
+               rawBpm,
+               timeSignature: timeSignature || '4/4',
+               masterBuffer,
+               drumBuffer,
+               referenceTrackName: masterStem?.name || 'Master'
+             });
+
+             beatsPrompterData = {
+               bpm: repaired.bpm,
+               beatTimes: repaired.beatTimes,
+               downbeats: repaired.downbeats,
+               firstBeatOffset: repaired.firstBeatOffset,
+               sections: newSections,
+               telemetrySummary: repaired.telemetrySummary
+             };
+           } else {
+             let beatTimes: number[] = [...rawBeats];
+             const firstDownbeatTime = rawDownbeats.length > 0 ? rawDownbeats[0] : (beatTimes.length > 0 ? beatTimes[0] : 0);
+
+             if (beatTimes.length > 0 && rawBpm > 0) {
+               const beatInterval = 60 / rawBpm;
                let firstBeat = beatTimes[0];
                while (firstBeat - beatInterval >= 0) {
-                   firstBeat -= beatInterval;
-                   beatTimes.unshift(firstBeat);
+                 firstBeat -= beatInterval;
+                 beatTimes.unshift(firstBeat);
                }
                let lastBeat = beatTimes[beatTimes.length - 1];
                while (lastBeat + beatInterval <= 600) {
-                   lastBeat += beatInterval;
-                   beatTimes.push(lastBeat);
+                 lastBeat += beatInterval;
+                 beatTimes.push(lastBeat);
                }
-           }
+             }
 
-           beatsPrompterData = {
-             bpm: rawOutput.bpm,
-             beatTimes: beatTimes,
-             firstBeatOffset: firstDownbeatTime,
-             sections: newSections
-           };
-           
+             beatsPrompterData = {
+               bpm: rawBpm,
+               beatTimes,
+               downbeats: rawDownbeats,
+               firstBeatOffset: firstDownbeatTime,
+               sections: newSections,
+               telemetrySummary: `¡Tempo (${Math.round(rawBpm)} BPM), Compás (${timeSignature || '4/4'}) y Grilla guardados!`
+             };
+           }
         } else {
            if (statusData.status === 'starting' && pollCount > 10) {
              setAiSuccessMessage(`Paso 1/2: IA Tempo despertando (Cold Boot, puede tardar hasta 5-10 min) (Intento ${pollCount})`);
@@ -894,7 +937,7 @@ export default function StemStudio() {
          throw new Error('Timeout esperando el análisis de Tempo');
       }
 
-      setAiSuccessMessage(`Tempo (${Math.round(beatsPrompterData.bpm)} BPM) detectado. Guardando grilla...`);
+      setAiSuccessMessage(`Tempo (${Math.round(beatsPrompterData.bpm)} BPM) procesado. Guardando grilla...`);
       
       const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
       const currentPrompterData = songData?.prompter_data || {};
@@ -905,6 +948,7 @@ export default function StemStudio() {
         timeSignature: timeSignature || currentPrompterData.timeSignature || '4/4',
         key: manualKey.trim() || currentPrompterData.key || '',
         beatTimes: beatsPrompterData.beatTimes,
+        downbeats: beatsPrompterData.downbeats,
         firstBeatOffset: beatsPrompterData.firstBeatOffset,
         sections: beatsPrompterData.sections.length > 0 ? beatsPrompterData.sections : currentPrompterData.sections,
         lastAiDetection: new Date().toLocaleString('es-PE')
@@ -914,15 +958,93 @@ export default function StemStudio() {
       if (updateError) throw new Error(updateError.message);
 
       setManualBpm(String(Math.round(Number(beatsPrompterData.bpm))));
-      setAiSuccessMessage(`¡Tempo (${Math.round(beatsPrompterData.bpm)} BPM), Compás (${finalPrompterData.timeSignature}) y Grilla guardados!`);
+      setAiSuccessMessage(beatsPrompterData.telemetrySummary || `¡Tempo (${Math.round(beatsPrompterData.bpm)} BPM), Compás (${finalPrompterData.timeSignature}) y Grilla guardados!`);
       fetchSongs();
-      setTimeout(() => setAiSuccessMessage(null), 5000);
+      setTimeout(() => setAiSuccessMessage(null), 6500);
 
     } catch (error: any) {
       console.error("Error saving AI:", error);
       alert(`Falló la detección IA: ${error.message}`);
     } finally {
       setIsGeneratingAI(false);
+    }
+  };
+
+  const handleRelockSilencesLocal = async () => {
+    if (!selectedSongId || stems.length === 0) return;
+    setIsRelockingLocal(true);
+    setAiSuccessMessage(null);
+
+    try {
+      const { masterStem, drumStem } = findMasterAndDrumStems(stems);
+      if (!masterStem) {
+        throw new Error('No se encontró una pista Master o de referencia para analizar.');
+      }
+
+      setAiSuccessMessage(`Analizando silencios prolongados en "${masterStem.name}" y re-calculando tempo/fase...`);
+
+      const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
+      const currentPrompterData = songData?.prompter_data || {};
+
+      const baseBpm = Number(manualBpm) || Number(currentPrompterData.bpm) || 120;
+      const activeTimeSig = timeSignature || currentPrompterData.timeSignature || '4/4';
+
+      const masterUrl = masterStem.file_url || masterStem.url;
+      const drumUrl = drumStem && drumStem.id !== masterStem.id ? (drumStem.file_url || drumStem.url) : null;
+
+      const [masterBuffer, drumBuffer] = await Promise.all([
+        decodeAudioUrlToBuffer(masterUrl),
+        drumUrl ? decodeAudioUrlToBuffer(drumUrl) : Promise.resolve(null)
+      ]);
+
+      if (!masterBuffer) {
+        throw new Error('No se pudo decodificar el audio del Master para el re-cálculo DSP.');
+      }
+
+      const existingBeats: number[] = Array.isArray(currentPrompterData.beatTimes) && currentPrompterData.beatTimes.length > 0
+        ? currentPrompterData.beatTimes
+        : [];
+      const existingDownbeats: number[] = Array.isArray(currentPrompterData.downbeats)
+        ? currentPrompterData.downbeats
+        : (currentPrompterData.firstBeatOffset !== undefined ? [Number(currentPrompterData.firstBeatOffset)] : []);
+
+      const repaired = repairAndRelockBeatGrid({
+        rawBeats: existingBeats,
+        rawDownbeats: existingDownbeats,
+        rawBpm: baseBpm,
+        timeSignature: activeTimeSig,
+        masterBuffer,
+        drumBuffer,
+        referenceTrackName: masterStem.name || 'Master'
+      });
+
+      const finalPrompterData = {
+        ...currentPrompterData,
+        bpm: repaired.bpm,
+        timeSignature: activeTimeSig,
+        key: manualKey.trim() || currentPrompterData.key || '',
+        beatTimes: repaired.beatTimes,
+        downbeats: repaired.downbeats,
+        firstBeatOffset: repaired.firstBeatOffset,
+        lastAiDetection: new Date().toLocaleString('es-PE')
+      };
+
+      const { error: updateError } = await supabase
+        .from('songs')
+        .update({ prompter_data: finalPrompterData })
+        .eq('id', selectedSongId);
+
+      if (updateError) throw new Error(updateError.message);
+
+      setManualBpm(String(Math.round(Number(repaired.bpm))));
+      setAiSuccessMessage(repaired.telemetrySummary);
+      fetchSongs();
+      setTimeout(() => setAiSuccessMessage(null), 6500);
+    } catch (err: any) {
+      console.error('Error en Re-Lock local de silencios:', err);
+      alert(`Error al re-sincronizar silencios: ${err.message}`);
+    } finally {
+      setIsRelockingLocal(false);
     }
   };
 
@@ -1143,7 +1265,7 @@ export default function StemStudio() {
   };
 
   const activeSongObj = songs.find(s => s.id === selectedSongId);
-  const currentMasterStem = stems.find(s => s.metadata?.is_master === true);
+  const { masterStem: currentMasterStem } = findMasterAndDrumStems(stems);
 
   return (
     <div className="h-full flex flex-col bg-[#f8f9fa] overflow-hidden text-zinc-900 select-none relative">
@@ -1714,21 +1836,31 @@ export default function StemStudio() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <button
                       type="button"
                       onClick={handleSaveGridMeta}
                       disabled={isSavingMeta}
-                      className="h-[38px] px-4.5 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-800 text-xs font-bold rounded-full flex items-center justify-center gap-2 transition-all shrink-0 cursor-pointer shadow-xs whitespace-nowrap"
+                      className="h-[38px] px-4 bg-zinc-100 hover:bg-zinc-200 border border-zinc-300 text-zinc-800 text-xs font-bold rounded-full flex items-center justify-center gap-1.5 transition-all shrink-0 cursor-pointer shadow-xs whitespace-nowrap"
                       title="Guardar Compás, BPM manual y Tonalidad"
                     >
                       <Save size={14} />
                       <span>Guardar</span>
                     </button>
                     <button
+                      type="button"
+                      onClick={handleRelockSilencesLocal}
+                      disabled={isRelockingLocal || isGeneratingAI || stems.length === 0}
+                      className="h-[38px] px-4 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-black rounded-full flex items-center justify-center gap-1.5 disabled:opacity-40 transition-all shrink-0 cursor-pointer shadow-xs whitespace-nowrap"
+                      title="Recalcula en 2s los silencios largos y re-sincroniza el tempo/compás tomando el archivo Master (sin esperar a la nube)"
+                    >
+                      {isRelockingLocal ? <RefreshCw className="animate-spin shrink-0 text-amber-700" size={13} /> : <Zap className="shrink-0 text-amber-600" size={13} />}
+                      <span>{isRelockingLocal ? "Re-Calculando..." : "Re-Sincronizar Silencios"}</span>
+                    </button>
+                    <button
                       onClick={handleGenerateChordsAI}
-                      disabled={isGeneratingAI || stems.length === 0}
-                      className="flex-1 h-[38px] px-5 ruby-pill-accent text-white text-xs font-black uppercase tracking-wider rounded-full flex items-center justify-center gap-2 disabled:opacity-40 transition-all cursor-pointer shadow-xs hover:brightness-105 active:scale-98 whitespace-nowrap min-w-0"
+                      disabled={isGeneratingAI || isRelockingLocal || stems.length === 0}
+                      className="flex-1 h-[38px] px-5 ruby-pill-accent text-white text-xs font-black uppercase tracking-wider rounded-full flex items-center justify-center gap-2 disabled:opacity-40 transition-all cursor-pointer shadow-xs hover:brightness-105 active:scale-98 whitespace-nowrap min-w-[210px]"
                     >
                       {isGeneratingAI ? <RefreshCw className="animate-spin shrink-0" size={14} /> : <Sparkles className="shrink-0" size={14} />}
                       <span className="truncate">
@@ -1778,7 +1910,7 @@ export default function StemStudio() {
                       const isThisDecorrelating = decorrelatingStemId === stem.id;
                       const isDspBusy = watermarkJobStatus === 'pending' || watermarkJobStatus === 'processing' || isUploadingWatermark;
                       const isDspTrack = Boolean(stem.metadata?.dsp_watermark);
-                      const isMasterTrack = Boolean(stem.metadata?.is_master);
+                      const isMasterTrack = Boolean(stem.metadata?.is_master) || (currentMasterStem?.id === stem.id && (stem.name || '').toLowerCase().includes('master'));
                       const isPlayingThis = playingStemId === stem.id;
                       const waveformBars = waveformsMap[stem.id];
                       const progressRatio = isPlayingThis && playProgress.duration > 0

@@ -21,11 +21,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let finalAudioUrl = ghostUrl;
 
     if (!finalAudioUrl) {
-      // 1. Preferir siempre la pista Maestra (Master) porque contiene todos los instrumentos
+      const isolatedKeywords = [
+        'drum', 'drums', 'bateria', 'batería', 'perc', 'kick', 'snare', 'bombo',
+        'bass', 'bajo', 'vocal', 'vocals', 'voz', 'voces', 'guitar', 'guitarra',
+        'piano', 'keys', 'teclado', 'synth', 'pad', 'strings', 'click', 'metronomo', 'guia', 'other'
+      ];
+      const isMasterByName = (rawName: string = '') => {
+        const lower = rawName.replace(/\.(wav|mp3|ogg|flac|m4a|aac)$/i, '').trim().toLowerCase();
+        const paren = lower.match(/\(([^)]+)\)\s*$/);
+        if (paren && isolatedKeywords.some(k => paren[1].includes(k))) return false;
+        if (!lower.includes('master') && !lower.includes('mezcla') && !lower.includes('full mix')) return false;
+        const tail = lower.split(/[\s_\-]+/).pop() || '';
+        if (tail !== 'master' && isolatedKeywords.some(k => tail === k)) return false;
+        return true;
+      };
+
+      // 1. Preferir siempre la pista Maestra (★ Master explícito o archivo con la palabra "Master")
       let selectedStem = stems.find((s: any) => s.metadata && s.metadata.is_master === true);
+      if (!selectedStem) selectedStem = stems.find((s: any) => isMasterByName(s.name || ''));
+      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('master') || (s.name || '').toLowerCase().includes('mezcla'));
       // 2. Fallback a batería o metrónomo si no hay master
-      if (!selectedStem) selectedStem = stems.find((s: any) => s.name.toLowerCase().includes('drum') || s.name.toLowerCase().includes('bateria'));
-      if (!selectedStem) selectedStem = stems.find((s: any) => s.name.toLowerCase().includes('click') || s.name.toLowerCase().includes('metronomo'));
+      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('drum') || (s.name || '').toLowerCase().includes('bateria') || (s.name || '').toLowerCase().includes('batería'));
+      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('click') || (s.name || '').toLowerCase().includes('metronomo'));
       // 3. Último recurso, cualquier pista
       if (!selectedStem) selectedStem = stems[0];
       finalAudioUrl = selectedStem.file_url || selectedStem.url;
