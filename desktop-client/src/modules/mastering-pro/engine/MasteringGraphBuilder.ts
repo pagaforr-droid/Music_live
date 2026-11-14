@@ -60,6 +60,22 @@ export function buildMasteringDspGraph(
     stereoBandFilters.set(band.id, filter);
   }
 
+  // Stage 2B: Bank of 4 Ultra-Narrow Surgical Resonance Notches ("Spectral Line Killer", Q=10..16)
+  const MAX_RESONANCE_NOTCHES = 4;
+  const resonanceNotchFilters: BiquadFilterNode[] = [];
+  const initialNotches = initialChain.resonanceNotches || [];
+  for (let i = 0; i < MAX_RESONANCE_NOTCHES; i++) {
+    const notchNode = ctx.createBiquadFilter();
+    notchNode.type = 'peaking';
+    const spec = initialNotches[i];
+    notchNode.frequency.value = spec ? spec.freqHz : 3800 + i * 900;
+    notchNode.Q.value = spec ? spec.q : 12.0;
+    notchNode.gain.value = spec && spec.enabled ? spec.gainCutDb : 0;
+    lastStage2Node.connect(notchNode);
+    lastStage2Node = notchNode;
+    resonanceNotchFilters.push(notchNode);
+  }
+
   // =========================================================================
   // STAGE 3: True Mid/Side Matrix + Mono Maker + Mid/Side EQ + Stereo Width
   // =========================================================================
@@ -238,6 +254,28 @@ export function buildMasteringDspGraph(
         }
       } else {
         midSideMatrix.updateBand(band, now);
+      }
+    }
+
+    // Stage 2B: Update Ultra-Narrow Surgical Resonance Notches
+    const activeNotches = chain.resonanceNotches || [];
+    for (let i = 0; i < MAX_RESONANCE_NOTCHES; i++) {
+      const node = resonanceNotchFilters[i];
+      const spec = activeNotches[i];
+      if (spec && spec.enabled && Math.abs(spec.gainCutDb) > 0.05) {
+        node.frequency.setTargetAtTime(
+          Math.max(120, Math.min(18000, spec.freqHz)),
+          now,
+          0.015
+        );
+        node.Q.setTargetAtTime(Math.max(4, Math.min(24, spec.q)), now, 0.015);
+        node.gain.setTargetAtTime(
+          Math.max(-14, Math.min(0, spec.gainCutDb)),
+          now,
+          0.015
+        );
+      } else {
+        node.gain.setTargetAtTime(0, now, 0.015);
       }
     }
 

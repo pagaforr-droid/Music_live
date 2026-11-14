@@ -691,6 +691,8 @@ export function extractSurgicalOverridesFromPreset(
     targetLufs: dspChain.limiter.targetLufs,
     ceilingDbTp: dspChain.limiter.ceilingDbTp,
     customEqBands: dspChain.eqBands.map((b) => ({ ...b })),
+    resonanceNotches: [],
+    resonanceKillerPct: 100,
   };
 }
 
@@ -773,6 +775,14 @@ export function buildEffectiveDspChain(
     1 + (overrides.compressorRatio - 1) * Math.max(0.35, Math.min(1.25, scale))
   );
 
+  const killerScale =
+    Math.max(0, Math.min(1.5, (overrides.resonanceKillerPct ?? 100) / 100)) *
+    Math.max(0.4, scale);
+  const resonanceNotches = (overrides.resonanceNotches || []).map((n) => ({
+    ...n,
+    gainCutDb: clampGain(n.gainCutDb * killerScale, -12, 0),
+  }));
+
   return {
     highPassFreq: Math.max(
       18,
@@ -780,6 +790,7 @@ export function buildEffectiveDspChain(
     ),
     monoMakerFreq: Math.max(40, Math.min(220, overrides.monoMakerFreq)),
     eqBands,
+    resonanceNotches,
     compressor: {
       ...basePreset.dspChain.compressor,
       thresholdDb: overrides.compressorThresholdDb,

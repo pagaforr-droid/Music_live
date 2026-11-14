@@ -10,6 +10,7 @@ import type {
   MasteringPreset,
   SpectralAdaptationReport,
   SpectralProfile,
+  SpectralResonanceNode,
 } from '../types/mastering.types';
 import { linearToDb, measureTruePeakLinearBlock } from './TruePeakLimiter';
 
@@ -216,6 +217,109 @@ interface DeepDiagnosticScan {
   detectedSibilancePeakHz: number;
   stereoSideEnergyPct: number;
   bassPhaseCorrelation: number;
+  detectedResonanceLines: SpectralResonanceNode[];
+}
+
+function detectStationaryResonanceLines(
+  left: Float32Array,
+  right: Float32Array,
+  start: number,
+  end: number,
+  stride: number,
+  effSr: number,
+  broadPresenceRawDb: number
+): SpectralResonanceNode[] {
+  const candidateFreqs = [
+    2150, 2650, 3150, 3550, 3850, 4250, 4750, 5350, 5900, 6250, 6950, 7850,
+  ];
+  const span = Math.max(1, end - start);
+  const numSlices = 5;
+  const sliceLen = Math.max(1, Math.floor(span / numSlices));
+
+  const scoredCandidates: Array<{
+    freqHz: number;
+    prominenceDb: number;
+    persistenceScore: number;
+  }> = [];
+
+  for (const freqHz of candidateFreqs) {
+    if (freqHz >= effSr * 0.44) continue;
+    const bp = designBandPass(freqHz, 10.5, effSr);
+    const sliceDbs: number[] = [];
+
+    for (let s = 0; s < numSlices; s++) {
+      const sStart = start + s * sliceLen;
+      const sEnd = Math.min(end, sStart + sliceLen);
+      let x1 = 0,
+        x2 = 0,
+        y1 = 0,
+        y2 = 0;
+      let sumSq = 0;
+      let count = 0;
+
+      for (let i = sStart; i < sEnd; i += stride) {
+        const mono = 0.5 * (left[i] + right[i]);
+        const y =
+          bp.b0 * mono + bp.b1 * x1 + bp.b2 * x2 - bp.a1 * y1 - bp.a2 * y2;
+        x2 = x1;
+        x1 = mono;
+        y2 = y1;
+        y1 = y;
+        sumSq += y * y;
+        count++;
+      }
+
+      const rms = Math.sqrt(sumSq / Math.max(1, count));
+      sliceDbs.push(linearToDb(rms, -72));
+    }
+
+    const meanDb =
+      sliceDbs.reduce((acc, val) => acc + val, 0) / Math.max(1, sliceDbs.length);
+    const variance =
+      sliceDbs.reduce((acc, val) => acc + (val - meanDb) * (val - meanDb), 0) /
+      Math.max(1, sliceDbs.length);
+    const stdDevDb = Math.sqrt(variance);
+
+    // High Q=10.5 bandpass naturally has ~7.5dB less total broadband energy than Q=0.8;
+    // compensate by +7.5dB to measure narrow-band spectral peak prominence
+    const prominenceDb = meanDb + 7.5 - broadPresenceRawDb;
+    // Lower stdDev across slices = more continuous horizontal line in spectrogram
+    const persistenceScore = prominenceDb - stdDevDb * 0.45;
+
+    scoredCandidates.push({
+      freqHz,
+      prominenceDb,
+      persistenceScore,
+    });
+  }
+
+  scoredCandidates.sort((a, b) => b.persistenceScore - a.persistenceScore);
+
+  const selected: SpectralResonanceNode[] = [];
+  for (const cand of scoredCandidates) {
+    if (selected.length >= 3) break;
+    // Keep notches separated by at least 750 Hz so filters don't stack on the same bin
+    if (selected.some((s) => Math.abs(s.freqHz - cand.freqHz) < 750)) continue;
+
+    const cutDb = Number(
+      Math.max(
+        -5.8,
+        Math.min(-3.0, -3.2 - Math.max(0, cand.prominenceDb) * 0.45)
+      ).toFixed(1)
+    );
+
+    selected.push({
+      id: `line-killer-${cand.freqHz}`,
+      freqHz: cand.freqHz,
+      gainCutDb: cutDb,
+      q: 12.0,
+      label: `Line Killer ${cand.freqHz}Hz`,
+      enabled: true,
+      source: 'ai-detected',
+    });
+  }
+
+  return selected.sort((a, b) => a.freqHz - b.freqHz);
 }
 
 export function analyzeSpectralProfileAndAiScore(
@@ -332,6 +436,16 @@ export function analyzeSpectralProfileAndAiScore(
     Math.max(0, Math.min(100, 38 + sibExcess * 10.5))
   );
 
+  const detectedResonanceLines = detectStationaryResonanceLines(
+    left,
+    right,
+    start,
+    end,
+    stride,
+    effSr,
+    presRaw
+  );
+
   return {
     profile,
     aiArtifactScore,
@@ -343,6 +457,7 @@ export function analyzeSpectralProfileAndAiScore(
     detectedSibilancePeakHz,
     stereoSideEnergyPct,
     bassPhaseCorrelation,
+    detectedResonanceLines,
   };
 }
 
@@ -579,6 +694,25 @@ function buildDiagnosticSuggestions(
         tapeDrivePct: Math.round(targetPreset.dspChain.saturation.drive * 100),
       },
     },
+    ...(scan.detectedResonanceLines.length > 0
+      ? [
+          {
+            id: 'spectral-line-killer' as const,
+            name: `Spectral Line Killer (${scan.detectedResonanceLines
+              .map((n) => `${n.freqHz}Hz`)
+              .join(' · ')})`,
+            badge: 'CAZADOR DE LÍNEAS Q=12',
+            detectedIssue: `Detectadas ${scan.detectedResonanceLines.length} líneas horizontales estacionarias en el espectrograma RX.`,
+            suggestionDetail: `Insertar ${scan.detectedResonanceLines.length} filtros Notch ultra-estrechos (Q=12) para disolver silbidos constantes sin afectar el tono musical.`,
+            confidencePct: 95,
+            isRecommended: true,
+            patchOverrides: {
+              resonanceNotches: scan.detectedResonanceLines,
+              resonanceKillerPct: 100,
+            },
+          },
+        ]
+      : []),
   ];
 
   // 3. Sugerencia Inteligente de Compresión según el Crest Factor real de la canción
@@ -740,6 +874,7 @@ export function analyzeTrackAndComputeAdaptation(
     recommendationReason,
     aiArtifactScore,
     sibilanceScore,
+    detectedResonanceLines: scan.detectedResonanceLines,
     deltaAdjustments: {
       subDeltaDb,
       lowMidDeltaDb,

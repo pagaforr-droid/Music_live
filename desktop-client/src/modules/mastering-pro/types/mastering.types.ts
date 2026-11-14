@@ -21,6 +21,16 @@ export interface EQBandConfig {
   enabled?: boolean;
 }
 
+export interface SpectralResonanceNode {
+  id: string;
+  freqHz: number;
+  gainCutDb: number;
+  q: number;
+  label: string;
+  enabled: boolean;
+  source: 'ai-detected' | 'user-clicked';
+}
+
 export interface CompressorConfig {
   thresholdDb: number;
   ratio: number;
@@ -78,6 +88,8 @@ export interface MasteringDspChain {
   monoMakerFreq: number;
   /** Surgical Mid/Side & Stereo EQ bands */
   eqBands: EQBandConfig[];
+  /** Stage 2B: Ultra-Narrow Surgical Resonance Notches (Q=10..16 Line Killer) */
+  resonanceNotches?: SpectralResonanceNode[];
   /** Stage 4A: Bus Glue Compressor */
   compressor: CompressorConfig;
   /** Stage 4B: 4x Oversampled Analog Saturator + DC Blocker */
@@ -138,6 +150,8 @@ export interface SurgicalOverrides {
   targetLufs: number;
   ceilingDbTp: number;
   customEqBands: EQBandConfig[];
+  resonanceNotches: SpectralResonanceNode[];
+  resonanceKillerPct: number;
 }
 
 export interface AiCriticalEqPoint {
@@ -162,7 +176,8 @@ export interface AiFilterSuggestion {
     | 'anti-mud-filter'
     | 'mono-maker-lock'
     | 'subsonic-rumble'
-    | 'harmonic-exciter';
+    | 'harmonic-exciter'
+    | 'spectral-line-killer';
   name: string;
   badge: string;
   detectedIssue: string;
@@ -217,6 +232,7 @@ export interface SpectralAdaptationReport {
   filterSuggestions: AiFilterSuggestion[];
   compressionSuggestion: AiCompressionSuggestion;
   stereoWidthSuggestion: AiStereoWidthSuggestion;
+  detectedResonanceLines: SpectralResonanceNode[];
 }
 
 export type StemBusRole = 'drums' | 'bass' | 'vocals' | 'other';

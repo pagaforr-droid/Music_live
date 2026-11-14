@@ -291,68 +291,185 @@ export const AiMasteringAssistantPanel: React.FC<
         </div>
       )}
 
-      {/* TAB 2: SUGERENCIAS DE FILTROS INTELIGENTES (DE-ESSER, NOTCH IA, MONO MAKER, HPF) */}
+      {/* TAB 2: SUGERENCIAS DE FILTROS INTELIGENTES (DE-ESSER, NOTCH IA, MONO MAKER, HPF, LINE KILLER Q=12) */}
       {activeTab === 'filters' && (
-        <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {report.filterSuggestions.map((filter) => {
-            const isDone = appliedIds[filter.id];
-            return (
-              <div
-                key={filter.id}
-                className={`rounded-xl p-3.5 border flex flex-col justify-between gap-3 transition-all ${
-                  filter.isRecommended
-                    ? 'bg-slate-950 border-[#00E5FF]/40'
-                    : 'bg-slate-950/70 border-slate-800'
-                }`}
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-[#FF6B00]/15 border border-[#FF6B00]/40 text-[#FF6B00]">
-                      {filter.badge}
-                    </span>
-                    <span className="text-[10px] font-mono text-emerald-400 font-semibold">
-                      Confianza IA: {filter.confidencePct}%
-                    </span>
-                  </div>
+        <div className="p-4 flex flex-col gap-4">
+          {/* Sub-panel: Spectral Line Killer Q=12 (Cazador de Líneas Horizontales RX) */}
+          <div className="rounded-xl bg-slate-950 border border-rose-500/40 p-3.5 flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300">
+                    SPECTRAL LINE KILLER · BANCO NOTCH Q=12
+                  </span>
+                  <span className="text-xs font-bold text-white">
+                    Supresor Quirúrgico de Líneas Horizontales & Silbidos Estacionarios
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Elimina líneas horizontales continuas del espectrograma con hasta 4 filtros Notch ultra-estrechos (Q=12). También puedes hacer clic directo sobre cualquier línea en el espectrograma RX.
+                </p>
+              </div>
 
-                  <h4 className="text-xs font-bold text-white">
-                    {filter.name}
-                  </h4>
-                  <p className="text-[11px] text-amber-300/90 font-mono mt-1">
-                    Diagnóstico: {filter.detectedIssue}
-                  </p>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                    {filter.suggestionDetail}
-                  </p>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <span className="text-slate-400">Intensidad Line Killer:</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={150}
+                    step={5}
+                    value={overrides.resonanceKillerPct}
+                    onChange={(e) =>
+                      onChangeOverride(
+                        'resonanceKillerPct',
+                        Number(e.target.value)
+                      )
+                    }
+                    className="w-24 accent-rose-500 cursor-pointer"
+                  />
+                  <span className="text-rose-400 font-bold w-10">
+                    {overrides.resonanceKillerPct}%
+                  </span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    onApplyFilterSuggestion(filter);
-                    markApplied(filter.id);
-                  }}
-                  className={`w-full py-2 rounded-lg text-xs font-mono font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    isDone
-                      ? 'bg-emerald-500/20 border border-emerald-500/50 text-emerald-300'
-                      : 'bg-slate-800 hover:bg-[#00E5FF] text-slate-100 hover:text-slate-950 border border-slate-700'
+                {report.detectedResonanceLines.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeOverride(
+                        'resonanceNotches',
+                        report.detectedResonanceLines
+                      );
+                      onChangeOverride('resonanceKillerPct', 100);
+                      markApplied('spectral-line-killer');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-slate-950 border border-rose-500/50 text-xs font-mono font-bold transition-all cursor-pointer"
+                  >
+                    Cazar {report.detectedResonanceLines.length} Líneas IA
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {overrides.resonanceNotches.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-800/80">
+                {overrides.resonanceNotches.map((notch) => (
+                  <div
+                    key={notch.id}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-2 ${
+                      notch.enabled
+                        ? 'bg-rose-500/10 border-rose-500/40 text-rose-200'
+                        : 'bg-slate-900 border-slate-800 text-slate-500'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={notch.enabled}
+                      onChange={(e) =>
+                        onChangeOverride(
+                          'resonanceNotches',
+                          overrides.resonanceNotches.map((n) =>
+                            n.id === notch.id
+                              ? { ...n, enabled: e.target.checked }
+                              : n
+                          )
+                        )
+                      }
+                      className="accent-rose-500 cursor-pointer"
+                    />
+                    <span className="font-bold text-white">
+                      {notch.freqHz} Hz
+                    </span>
+                    <span className="text-rose-400">
+                      {notch.gainCutDb.toFixed(1)} dB · Q:{notch.q}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChangeOverride(
+                          'resonanceNotches',
+                          overrides.resonanceNotches.filter(
+                            (n) => n.id !== notch.id
+                          )
+                        )
+                      }
+                      className="text-slate-400 hover:text-rose-400 ml-1 cursor-pointer"
+                      title="Quitar este filtro Notch"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] font-mono text-slate-500">
+                No hay filtros Notch Q=12 activos. Pulsa "Cazar Líneas IA" o haz clic sobre una línea horizontal en el espectrograma RX.
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {report.filterSuggestions.map((filter) => {
+              const isDone = appliedIds[filter.id];
+              return (
+                <div
+                  key={filter.id}
+                  className={`rounded-xl p-3.5 border flex flex-col justify-between gap-3 transition-all ${
+                    filter.isRecommended
+                      ? 'bg-slate-950 border-[#00E5FF]/40'
+                      : 'bg-slate-950/70 border-slate-800'
                   }`}
                 >
-                  {isDone ? (
-                    <>
-                      <CheckCircle2 size={13} />
-                      <span>Filtro Aplicado al Grafo DSP</span>
-                    </>
-                  ) : (
-                    <>
-                      <Zap size={13} />
-                      <span>Activar / Ajustar Filtro Sugerido</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            );
-          })}
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-[#FF6B00]/15 border border-[#FF6B00]/40 text-[#FF6B00]">
+                        {filter.badge}
+                      </span>
+                      <span className="text-[10px] font-mono text-emerald-400 font-semibold">
+                        Confianza IA: {filter.confidencePct}%
+                      </span>
+                    </div>
+
+                    <h4 className="text-xs font-bold text-white">
+                      {filter.name}
+                    </h4>
+                    <p className="text-[11px] text-amber-300/90 font-mono mt-1">
+                      Diagnóstico: {filter.detectedIssue}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                      {filter.suggestionDetail}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApplyFilterSuggestion(filter);
+                      markApplied(filter.id);
+                    }}
+                    className={`w-full py-2 rounded-lg text-xs font-mono font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      isDone
+                        ? 'bg-emerald-500/20 border border-emerald-500/50 text-emerald-300'
+                        : 'bg-slate-800 hover:bg-[#00E5FF] text-slate-100 hover:text-slate-950 border border-slate-700'
+                    }`}
+                  >
+                    {isDone ? (
+                      <>
+                        <CheckCircle2 size={13} />
+                        <span>Filtro Aplicado al Grafo DSP</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap size={13} />
+                        <span>Activar / Ajustar Filtro Sugerido</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

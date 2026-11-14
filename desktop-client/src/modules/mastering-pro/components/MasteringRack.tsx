@@ -297,6 +297,10 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setOverrides((prev) => ({
+        ...prev,
+        resonanceNotches: report.detectedResonanceLines,
+      }));
       setLiveMetrics(engine.getLiveMetrics());
       setStatusBanner({
         type: 'success',
@@ -330,6 +334,10 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setOverrides((prev) => ({
+        ...prev,
+        resonanceNotches: report.detectedResonanceLines,
+      }));
       setLiveMetrics(engine.getLiveMetrics());
       setStatusBanner({
         type: 'success',
@@ -359,6 +367,10 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setOverrides((prev) => ({
+        ...prev,
+        resonanceNotches: report.detectedResonanceLines,
+      }));
       setLiveMetrics(engine.getLiveMetrics());
       if (!silent) {
         setStatusBanner({
@@ -554,6 +566,52 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       [key]: value,
     }));
   };
+
+  const handleToggleResonanceNotchAtFreq = useCallback((freqHz: number) => {
+    const clampedFreq = Math.max(80, Math.min(18000, Math.round(freqHz)));
+    setOverrides((prev) => {
+      const existingIdx = prev.resonanceNotches.findIndex(
+        (n) => Math.abs(n.freqHz - clampedFreq) / Math.max(20, n.freqHz) < 0.045
+      );
+      if (existingIdx >= 0) {
+        const removed = prev.resonanceNotches[existingIdx];
+        setStatusBanner({
+          type: 'info',
+          message: `Filtro Line Killer Q=12 eliminado en ${removed.freqHz} Hz.`,
+        });
+        return {
+          ...prev,
+          resonanceNotches: prev.resonanceNotches.filter(
+            (_, idx) => idx !== existingIdx
+          ),
+        };
+      }
+
+      const newNode = {
+        id: `manual-notch-${clampedFreq}-${Date.now()}`,
+        freqHz: clampedFreq,
+        gainCutDb: -4.5,
+        q: 12.0,
+        label: `Manual Line Killer ${clampedFreq}Hz`,
+        enabled: true,
+        source: 'user-clicked' as const,
+      };
+
+      const nextList = [...prev.resonanceNotches, newNode]
+        .slice(-4)
+        .sort((a, b) => a.freqHz - b.freqHz);
+
+      setStatusBanner({
+        type: 'success',
+        message: `Filtro Quirúrgico Line Killer (Q=12, -4.5 dB) insertado en ${clampedFreq} Hz para disolver línea horizontal.`,
+      });
+
+      return {
+        ...prev,
+        resonanceNotches: nextList,
+      };
+    });
+  }, []);
 
   const handleLoadStemFile = async (role: StemBusRole, file: File) => {
     try {
@@ -962,8 +1020,11 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 preAnalyserNode={analyserNodes.preAnalyser}
                 postAnalyserNode={analyserNodes.postAnalyser}
                 isPlaying={isPlaying}
+                hasAudioLoaded={hasAudio}
                 monoMakerFreqHz={effectiveDspChain.monoMakerFreq}
                 aiFixMarkers={aiFixMarkers}
+                resonanceNotches={effectiveDspChain.resonanceNotches}
+                onToggleResonanceNotchAtFreq={handleToggleResonanceNotchAtFreq}
                 height={visualizerView === 'heatmap' ? 370 : 290}
               />
             )}
