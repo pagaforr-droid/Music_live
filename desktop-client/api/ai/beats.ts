@@ -36,15 +36,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return true;
       };
 
+      // Filtrar pistas con varispeed/DSP watermark para no alterar nunca el BPM real de la canción
+      const cleanPool = stems.filter(
+        (s: any) => !s.metadata?.dsp_watermark && !(s.name || '').includes('Master Remezclado')
+      );
+      const pool = cleanPool.length > 0 ? cleanPool : stems;
+
       // 1. Preferir siempre la pista Maestra (★ Master explícito o archivo con la palabra "Master")
-      let selectedStem = stems.find((s: any) => s.metadata && s.metadata.is_master === true);
-      if (!selectedStem) selectedStem = stems.find((s: any) => isMasterByName(s.name || ''));
-      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('master') || (s.name || '').toLowerCase().includes('mezcla'));
+      let selectedStem = pool.find((s: any) => s.metadata && s.metadata.is_master === true);
+      if (!selectedStem) selectedStem = pool.find((s: any) => isMasterByName(s.name || ''));
+      if (!selectedStem) selectedStem = pool.find((s: any) => (s.name || '').toLowerCase().includes('master') || (s.name || '').toLowerCase().includes('mezcla'));
       // 2. Fallback a batería o metrónomo si no hay master
-      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('drum') || (s.name || '').toLowerCase().includes('bateria') || (s.name || '').toLowerCase().includes('batería'));
-      if (!selectedStem) selectedStem = stems.find((s: any) => (s.name || '').toLowerCase().includes('click') || (s.name || '').toLowerCase().includes('metronomo'));
+      if (!selectedStem) selectedStem = pool.find((s: any) => (s.name || '').toLowerCase().includes('drum') || (s.name || '').toLowerCase().includes('bateria') || (s.name || '').toLowerCase().includes('batería'));
+      if (!selectedStem) selectedStem = pool.find((s: any) => (s.name || '').toLowerCase().includes('click') || (s.name || '').toLowerCase().includes('metronomo'));
       // 3. Último recurso, cualquier pista
-      if (!selectedStem) selectedStem = stems[0];
+      if (!selectedStem) selectedStem = pool[0];
       finalAudioUrl = selectedStem.file_url || selectedStem.url;
       console.log(`[IA-Beats] Iniciando Replicate Async... Stem: ${selectedStem.name}`);
     } else {

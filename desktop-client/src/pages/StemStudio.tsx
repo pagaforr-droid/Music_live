@@ -63,7 +63,7 @@ export default function StemStudio() {
   const [dspFormat, setDspFormat] = useState<DspFormat>('wav');
   const [dspPreset, setDspPreset] = useState<DspPreset>('stealth');
   const [dspEngine, setDspEngine] = useState<'local' | 'cloud'>('local');
-  const [pitchMode, setPitchMode] = useState<PitchMode>('drop_semitone');
+  const [pitchMode, setPitchMode] = useState<PitchMode>('lock_440');
   const [useSmartRemix, setUseSmartRemix] = useState(true);
   const [useAntiSuno, setUseAntiSuno] = useState(true);
   const [useTransientPunch, setUseTransientPunch] = useState(true);
@@ -626,7 +626,7 @@ export default function StemStudio() {
         metadata: {
           original_name: `${baseName}_Remixed_${pitchLabel}.${format}`,
           format: mime,
-          is_master: true,
+          is_master: false,
           dsp_watermark: true,
           dsp_preset: preset,
           dsp_engine: 'local',

@@ -93,8 +93,10 @@ export function findMasterAndDrumStems(stems: any[]): {
     return { masterStem: null, trueMasterStem: null, drumStem: null };
   }
 
-  // Filtrar copias con marca de agua si existen originales disponibles
-  const nonWatermarked = stems.filter(s => !s.name?.toUpperCase().includes('(WM)'));
+  // Filtrar copias con marca de agua DSP para que NUNCA una pista con varispeed/drop_semitone sea tomada como Master de tempo
+  const nonWatermarked = stems.filter(
+    s => !s.metadata?.dsp_watermark && !s.name?.toUpperCase().includes('(WM)') && !s.name?.includes('Master Remezclado')
+  );
   const pool = nonWatermarked.length > 0 ? nonWatermarked : stems;
 
   // 1. Explícitamente marcado con ★ Master en metadata
@@ -552,53 +554,50 @@ export function repairAndRelockBeatGrid(params: {
   const profile = extractRhythmicProfile(masterBuffer, drumBuffer, 100);
   const islands = detectSilenceAndRhythmicIslands(profile, approxBeatInterval);
 
-  // 2. Calcular el BPM real de estudio filtrando únicamente intervalos dentro de Islas Rítmicas Activas
+  // 2. Mantener el BPM real intacto (evitando que intervalos de silencios o síncopas reduzcan el BPM real, ej. de 105 a 99)
   const sortedRawBeats = [...(rawBeats || [])].filter(t => Number.isFinite(t) && t >= 0).sort((a, b) => a - b);
-  const validIntervals: number[] = [];
-
-  for (let i = 1; i < sortedRawBeats.length; i++) {
-    const t0 = sortedRawBeats[i - 1];
-    const t1 = sortedRawBeats[i];
-    const dt = t1 - t0;
-
-    // Verificar que ambos beats pertenezcan a la misma Isla Rítmica Activa
-    const inSameActiveIsland = islands.some(
-      isl => t0 >= isl.startSec - 0.1 && t1 <= isl.endSec + 0.1
-    );
-
-    if (inSameActiveIsland && dt >= approxBeatInterval * 0.72 && dt <= approxBeatInterval * 1.32) {
-      validIntervals.push(dt);
-    }
-  }
-
-  let globalBeatInterval = approxBeatInterval;
-  if (validIntervals.length >= 4) {
-    validIntervals.sort((a, b) => a - b);
-    // Media recortada intercuartil (25% - 75%) para máxima precisión de reloj
-    const q1 = Math.floor(validIntervals.length * 0.25);
-    const q3 = Math.ceil(validIntervals.length * 0.75);
-    let sum = 0;
-    let cnt = 0;
-    for (let k = q1; k < q3; k++) {
-      sum += validIntervals[k];
-      cnt++;
-    }
-    if (cnt > 0) {
-      globalBeatInterval = sum / cnt;
-    }
-  }
-
-  // Si el BPM calculado está a menos de ±0.15 BPM de un entero o medio entero (ej. 119.94 -> 120.0), ajustarlo a reloj de estudio
-  let trueBpm = 60 / globalBeatInterval;
-  const nearestHalfBpm = Math.round(trueBpm * 2) / 2;
-  if (Math.abs(trueBpm - nearestHalfBpm) <= 0.16) {
-    trueBpm = nearestHalfBpm;
-    globalBeatInterval = 60 / trueBpm;
+  let trueBpm = fallbackBpm;
+  const nearestIntBpm = Math.round(trueBpm);
+  if (Math.abs(trueBpm - nearestIntBpm) <= 0.25) {
+    trueBpm = nearestIntBpm;
   } else {
-    trueBpm = Math.round(trueBpm * 100) / 100;
+    trueBpm = Math.round(trueBpm * 10) / 10;
+  }
+  const globalBeatInterval = 60 / trueBpm;
+
+  const sortedRawDownbeats = [...rawDownbeats].filter(t => Number.isFinite(t) && t >= 0).sort((a, b) => a - b);
+
+  // Si la canción NO tiene silencios prolongados (1 sola isla) y ya cuenta con beats de la IA,
+  // preservar al 100% los beats originales de la IA (solo extrapolando inicio y final) sin alterar su fase ni su tempo.
+  if (islands.length <= 1 && sortedRawBeats.length > 0) {
+    const beatTimes = [...sortedRawBeats];
+    let firstBeat = beatTimes[0];
+    while (firstBeat - globalBeatInterval >= 0) {
+      firstBeat -= globalBeatInterval;
+      beatTimes.unshift(firstBeat);
+    }
+    let lastBeat = beatTimes[beatTimes.length - 1];
+    const maxTargetSec = Math.max(duration + 10, 600);
+    while (lastBeat + globalBeatInterval <= maxTargetSec) {
+      lastBeat += globalBeatInterval;
+      beatTimes.push(lastBeat);
+    }
+    const firstDownbeatTime = sortedRawDownbeats.length > 0 ? sortedRawDownbeats[0] : beatTimes[0];
+    return {
+      bpm: trueBpm,
+      beatTimes,
+      downbeats: sortedRawDownbeats,
+      firstBeatOffset: firstDownbeatTime,
+      islandsDetected: 1,
+      silencesRepaired: 0,
+      referenceTrackName,
+      usedDrumAssist: profile.hasDrumAssist,
+      telemetrySummary: `¡Tempo (${trueBpm} BPM) y Grilla IA guardados desde ${referenceTrackName}!`
+    };
   }
 
-  // 3. Re-calcular y Re-sincronizar CADA Isla Rítmica de forma independiente (Post-Silence Re-Lock)
+  // 3. Cuando SÍ existen silencios prolongados (islands.length > 1):
+  // Preservar los beats precisos de la IA en cada isla activa y re-enganchar la fase únicamente después de cada silencio largo.
   interface ProcessedIsland {
     island: RhythmicIsland;
     beats: number[];
@@ -607,104 +606,93 @@ export function repairAndRelockBeatGrid(params: {
   }
 
   const processedIslands: ProcessedIsland[] = [];
-  const sortedRawDownbeats = [...rawDownbeats].filter(t => Number.isFinite(t) && t >= 0).sort((a, b) => a - b);
 
   for (let idx = 0; idx < islands.length; idx++) {
     const isl = islands[idx];
     const islRawBeats = sortedRawBeats.filter(
-      t => t >= isl.startSec - 0.18 && t <= isl.endSec + 0.18
+      t => t >= isl.startSec - 0.15 && t <= isl.endSec + 0.15
     );
+    const islBeatInterval = globalBeatInterval;
+    let islBeats: number[] = [];
 
-    // 3A. Calcular el intervalo de beat local de esta isla (por si hubo cambio de tempo tras el silencio)
-    let islBeatInterval = globalBeatInterval;
-    if (islRawBeats.length >= 6) {
-      const localDts: number[] = [];
-      for (let i = 1; i < islRawBeats.length; i++) {
-        const dt = islRawBeats[i] - islRawBeats[i - 1];
-        if (dt >= globalBeatInterval * 0.75 && dt <= globalBeatInterval * 1.28) {
-          localDts.push(dt);
+    if (islRawBeats.length >= 2) {
+      // Si es la primera isla (antes del silencio), mantener los beats originales de la IA intactos.
+      // Si es una isla POST-SILENCIO (idx >= 1), medir si la IA quedó desfasada respecto a los golpes reales al volver a entrar.
+      let islandShiftSec = 0;
+      if (isl.isPostSilence) {
+        const offsets: number[] = [];
+        const checkCount = Math.min(16, islRawBeats.length);
+        for (let k = 0; k < checkCount; k++) {
+          const probeSec = islRawBeats[k];
+          const { peakSec, confidence } = findExactTransientPeakSec(
+            probeSec,
+            Math.min(0.12, islBeatInterval * 0.28),
+            masterBuffer,
+            drumBuffer
+          );
+          if (confidence > 0.25) {
+            offsets.push(peakSec - probeSec);
+          }
+        }
+        if (offsets.length >= 2) {
+          offsets.sort((a, b) => a - b);
+          islandShiftSec = offsets[Math.floor(offsets.length / 2)];
+        } else {
+          // Afinar con fase circular si los golpes fueron desplazados casi medio pulso tras el silencio
+          const { phaseOffsetSec, strength } = computeCircularPhaseOffsetForIsland(
+            profile,
+            isl,
+            islRawBeats[0],
+            islBeatInterval
+          );
+          if (strength > 0.18) {
+            islandShiftSec = phaseOffsetSec;
+          }
         }
       }
-      if (localDts.length >= 4) {
-        localDts.sort((a, b) => a - b);
-        const mid = localDts[Math.floor(localDts.length / 2)];
-        // Si difiere menos de 2.2% del tempo global de estudio, mantener el reloj maestro; si cambió de verdad, usar el nuevo tempo
-        if (Math.abs(mid - globalBeatInterval) / globalBeatInterval > 0.022) {
-          islBeatInterval = mid;
+
+      // Aplicar el re-enganche de fase post-silencio y rellenar únicamente si hay huecos internos rotos (> 1.65 pulsos)
+      const shiftedRaw = islRawBeats.map(t => t + islandShiftSec);
+      // Si tras el silencio el primer beat de la IA empezó tarde respecto al ataque de re-entrada, extrapolar hacia atrás hasta la re-entrada
+      let firstIslBeat = shiftedRaw[0];
+      while (isl.isPostSilence && firstIslBeat - islBeatInterval >= isl.reEntryTransientSec - islBeatInterval * 0.35) {
+        firstIslBeat -= islBeatInterval;
+        shiftedRaw.unshift(firstIslBeat);
+      }
+
+      islBeats.push(shiftedRaw[0]);
+      for (let i = 1; i < shiftedRaw.length; i++) {
+        const prev = islBeats[islBeats.length - 1];
+        const curr = shiftedRaw[i];
+        const dt = curr - prev;
+        if (dt > islBeatInterval * 1.65) {
+          const missingSteps = Math.round(dt / islBeatInterval);
+          for (let s = 1; s < missingSteps; s++) {
+            islBeats.push(prev + (s * dt) / missingSteps);
+          }
+        }
+        if (curr - islBeats[islBeats.length - 1] >= islBeatInterval * 0.45) {
+          islBeats.push(curr);
         }
       }
-    }
-
-    // 3B. Determinar el ancla de fase real dentro de la isla usando los transitorios físicos del Master/Drums
-    let baseAnchor = islRawBeats.length > 0 ? islRawBeats[0] : isl.reEntryTransientSec;
-    const { phaseOffsetSec, strength } = computeCircularPhaseOffsetForIsland(
-      profile,
-      isl,
-      baseAnchor,
-      islBeatInterval
-    );
-
-    if (strength > 0.12) {
-      baseAnchor += phaseOffsetSec;
-    }
-
-    // Si es una isla post-silencio, verificar que el primer pulso cubra desde el transitorio exacto de re-entrada
-    while (baseAnchor - islBeatInterval >= isl.reEntryTransientSec - islBeatInterval * 0.35) {
-      baseAnchor -= islBeatInterval;
-    }
-    while (baseAnchor < isl.startSec - islBeatInterval * 0.35) {
-      baseAnchor += islBeatInterval;
-    }
-
-    // Ajuste fino con los primeros 16 golpes físicos de la isla (ventana ±85ms)
-    const fineOffsets: number[] = [];
-    for (let k = 0; k < 16; k++) {
-      const probeSec = baseAnchor + k * islBeatInterval;
-      if (probeSec > isl.endSec) break;
-      const { peakSec, confidence } = findExactTransientPeakSec(
-        probeSec,
-        Math.min(0.085, islBeatInterval * 0.22),
-        masterBuffer,
-        drumBuffer
-      );
-      if (confidence > 0.25) {
-        fineOffsets.push(peakSec - probeSec);
-      }
-    }
-
-    if (fineOffsets.length >= 2) {
-      fineOffsets.sort((a, b) => a - b);
-      const medianFineOffset = fineOffsets[Math.floor(fineOffsets.length / 2)];
-      baseAnchor += medianFineOffset;
-    } else if (isl.isPostSilence) {
-      // Si la isla post-silencio empieza con un golpe claro, afinar sobre ese ataque inicial
+    } else {
+      // Si la IA no generó ningún beat en esta isla (o en modo re-cálculo manual), construir con el BPM exacto anclado al ataque de re-entrada
+      let baseAnchor = isl.reEntryTransientSec;
       const { peakSec, confidence } = findExactTransientPeakSec(
         baseAnchor,
-        Math.min(0.11, islBeatInterval * 0.28),
+        Math.min(0.10, islBeatInterval * 0.25),
         masterBuffer,
         drumBuffer
       );
-      if (confidence > 0.2) {
-        baseAnchor = peakSec;
-      }
-    }
+      if (confidence > 0.2) baseAnchor = peakSec;
 
-    // 3C. Construir los beats limpios y re-sincronizados de esta isla
-    const islBeats: number[] = [];
-    let tCursor = baseAnchor;
-    while (tCursor <= isl.endSec + islBeatInterval * 0.15) {
-      if (tCursor >= Math.max(0, isl.startSec - islBeatInterval * 0.25)) {
-        // Micro-tracking híbrido: 75% reloj de estudio + 25% ataque físico local si hay alta confianza (±28ms)
-        const { peakSec, confidence } = findExactTransientPeakSec(
-          tCursor,
-          0.028,
-          masterBuffer,
-          drumBuffer
-        );
-        const snapped = confidence > 0.45 ? tCursor * 0.75 + peakSec * 0.25 : tCursor;
-        islBeats.push(snapped);
+      let tCursor = baseAnchor;
+      while (tCursor <= isl.endSec + islBeatInterval * 0.15) {
+        if (tCursor >= Math.max(0, isl.startSec - islBeatInterval * 0.25)) {
+          islBeats.push(tCursor);
+        }
+        tCursor += islBeatInterval;
       }
-      tCursor += islBeatInterval;
     }
 
     if (islBeats.length === 0) continue;
@@ -977,70 +965,9 @@ function encodeWav16Stereo(chL: Float32Array, chR: Float32Array, sr: number): Bl
 }
 
 /**
- * Codifica dos canales estéreo Float32Array en MP3 320 kbps usando lamejs (con fallback a WAV si falla).
- */
-async function encodeMasterMp3OrWav(
-  chL: Float32Array,
-  chR: Float32Array,
-  sr: number
-): Promise<{ blob: Blob; mimeType: string; extension: 'mp3' | 'wav' }> {
-  try {
-    if (!(window as any).lamejs) {
-      const lamejsSrc = await import('lamejs/lame.all.js?raw');
-      const script = document.createElement('script');
-      script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
-      document.head.appendChild(script);
-    }
-    const lamejs = (window as any).lamejs;
-    if (lamejs && lamejs.Mp3Encoder) {
-      const encoder = new lamejs.Mp3Encoder(2, sr, 320);
-      const sampleBlockSize = 1152;
-      const mp3Data: BlobPart[] = [];
-      const leftChunk16 = new Int16Array(sampleBlockSize);
-      const rightChunk16 = new Int16Array(sampleBlockSize);
-
-      let sampleOffset = 0;
-      while (sampleOffset < chL.length) {
-        const length = Math.min(sampleBlockSize, chL.length - sampleOffset);
-        const lSub = length === sampleBlockSize ? leftChunk16 : new Int16Array(length);
-        const rSub = length === sampleBlockSize ? rightChunk16 : new Int16Array(length);
-
-        for (let i = 0; i < length; i++) {
-          const sL = Math.max(-1, Math.min(1, chL[sampleOffset + i]));
-          const sR = Math.max(-1, Math.min(1, chR[sampleOffset + i]));
-          lSub[i] = sL < 0 ? sL * 0x8000 : sL * 0x7fff;
-          rSub[i] = sR < 0 ? sR * 0x8000 : sR * 0x7fff;
-        }
-
-        const mp3buf = encoder.encodeBuffer(lSub, rSub);
-        if (mp3buf.length > 0) mp3Data.push(new Int8Array(mp3buf));
-        sampleOffset += sampleBlockSize;
-      }
-
-      const flushBuf = encoder.flush();
-      if (flushBuf.length > 0) mp3Data.push(new Int8Array(flushBuf));
-
-      return {
-        blob: new Blob(mp3Data, { type: 'audio/mpeg' }),
-        mimeType: 'audio/mpeg',
-        extension: 'mp3'
-      };
-    }
-  } catch (err) {
-    console.warn('[beatGridDSP] Fallback a WAV en generación de Master:', err);
-  }
-
-  return {
-    blob: encodeWav16Stereo(chL, chR, sr),
-    mimeType: 'audio/wav',
-    extension: 'wav'
-  };
-}
-
-/**
- * Mezcla todos los tracks musicales del proyecto actual en un archivo Master 100% fiel
- * (mismo tempo, mismo tono, alineación exacta al sample 0 y normalización limpia a -0.5 dBFS)
- * ideal para proyectos que no cuentan con pista Master para el cálculo de Tempo, Grilla y Acordes IA.
+ * Mezcla todos los tracks musicales del proyecto actual en un archivo Master WAV 100% fiel
+ * usando OfflineAudioContext nativo (mismo tempo exacto, mismo tono, 0.00ms de desfase con todos los tracks
+ * y normalización transparente a -0.5 dBFS).
  */
 export async function mixProjectStemsToMasterBlob(
   stems: any[],
@@ -1071,11 +998,10 @@ export async function mixProjectStemsToMasterBlob(
     throw new Error('No hay pistas de audio válidas en el proyecto para mezclar.');
   }
 
-  const targetSr = 44100;
   const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-  const audioCtx: AudioContext = new AudioCtx({ sampleRate: targetSr });
+  const audioCtx: AudioContext = new AudioCtx();
 
-  let maxLen = 0;
+  let maxDurationSec = 0;
   const decodedBuffers: AudioBuffer[] = [];
 
   try {
@@ -1091,7 +1017,7 @@ export async function mixProjectStemsToMasterBlob(
       }
       const ab = await res.arrayBuffer();
       const decoded = await audioCtx.decodeAudioData(ab.slice(0));
-      if (decoded.length > maxLen) maxLen = decoded.length;
+      if (decoded.duration > maxDurationSec) maxDurationSec = decoded.duration;
       decodedBuffers.push(decoded);
     }
   } finally {
@@ -1102,54 +1028,73 @@ export async function mixProjectStemsToMasterBlob(
     }
   }
 
-  if (maxLen === 0 || decodedBuffers.length === 0) {
+  if (maxDurationSec <= 0 || decodedBuffers.length === 0) {
     throw new Error('Las pistas decodificadas están vacías.');
   }
 
-  onProgress?.(`Creando Master (2/3): Mezclando y balanceando ${decodedBuffers.length} pistas en estéreo...`);
+  onProgress?.(`Creando Master (2/3): Sincronizando y sumando ${decodedBuffers.length} pistas con precisión de sample...`);
   await new Promise(r => setTimeout(r, 15));
 
-  const mixL = new Float32Array(maxLen);
-  const mixR = new Float32Array(maxLen);
+  // Elegir sample rate para WAV PCM de 16 bits sin superar el límite de 48 MB de Supabase Storage
+  // (0.00ms de latencia de codificación, 100% en fase y al mismo BPM exacto que todos los stems)
+  const nativeSr = decodedBuffers[0].sampleRate || 44100;
+  const estWavBytesAt44k = 44 + Math.ceil(maxDurationSec * 44100) * 4;
+  const renderSr = estWavBytesAt44k <= 47 * 1024 * 1024
+    ? (nativeSr <= 44100 ? nativeSr : 44100)
+    : 32000;
+
+  const totalFrames = Math.max(1, Math.ceil(maxDurationSec * renderSr));
+  const OfflineCtx = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+  const offlineCtx: OfflineAudioContext = new OfflineCtx(2, totalFrames, renderSr);
 
   for (const buf of decodedBuffers) {
-    const bL = buf.getChannelData(0);
-    const bR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : bL;
-    const len = bL.length;
-    for (let i = 0; i < len; i++) {
-      mixL[i] += bL[i];
-      mixR[i] += bR[i];
-    }
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buf;
+    source.connect(offlineCtx.destination);
+    source.start(0);
   }
 
-  // Normalización transparente de estudio a -0.5 dBFS (0.944) para evitar saturación al sumar múltiples pistas
+  const renderedBuffer = await offlineCtx.startRendering();
+  const actualSr = renderedBuffer.sampleRate;
+  const ch0 = renderedBuffer.getChannelData(0);
+  const ch1 = renderedBuffer.numberOfChannels > 1 ? renderedBuffer.getChannelData(1) : ch0;
+  const len = ch0.length;
+
+  const mixL = new Float32Array(len);
+  const mixR = new Float32Array(len);
+
   let maxPeak = 0;
-  for (let i = 0; i < maxLen; i++) {
-    const absL = Math.abs(mixL[i]);
-    const absR = Math.abs(mixR[i]);
+  for (let i = 0; i < len; i++) {
+    const l = ch0[i];
+    const r = ch1[i];
+    mixL[i] = l;
+    mixR[i] = r;
+    const absL = Math.abs(l);
+    const absR = Math.abs(r);
     if (absL > maxPeak) maxPeak = absL;
     if (absR > maxPeak) maxPeak = absR;
   }
 
+  // Normalización transparente de estudio a -0.5 dBFS (0.944) para evitar saturación al sumar múltiples pistas
   if (maxPeak > 1e-5) {
     const targetCeiling = 0.944; // -0.5 dBFS
     const normGain = targetCeiling / maxPeak;
-    for (let i = 0; i < maxLen; i++) {
+    for (let i = 0; i < len; i++) {
       mixL[i] *= normGain;
       mixR[i] *= normGain;
     }
   }
 
-  onProgress?.(`Creando Master (3/3): Codificando archivo Master de referencia...`);
+  onProgress?.(`Creando Master (3/3): Empaquetando Master WAV sin compresión (0ms desfase)...`);
   await new Promise(r => setTimeout(r, 15));
 
-  const encoded = await encodeMasterMp3OrWav(mixL, mixR, targetSr);
-  const durationSeconds = Math.round(maxLen / targetSr);
+  const wavBlob = encodeWav16Stereo(mixL, mixR, actualSr);
+  const durationSeconds = Math.round(renderedBuffer.duration);
 
   return {
-    blob: encoded.blob,
-    mimeType: encoded.mimeType,
-    extension: encoded.extension,
+    blob: wavBlob,
+    mimeType: 'audio/wav',
+    extension: 'wav',
     durationSeconds,
     tracksMixed: decodedBuffers.length
   };
