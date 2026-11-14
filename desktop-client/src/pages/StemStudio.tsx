@@ -17,6 +17,7 @@ import {
   repairAndRelockBeatGrid,
   mixProjectStemsToMasterBlob,
 } from '../utils/beatGridDSP';
+import { loadLameJs } from '../utils/loadLameJs';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -1153,13 +1154,7 @@ export default function StemStudio() {
 
   const convertToMp3 = async (blob: Blob, onProgress: (msg: string) => void): Promise<Blob> => {
     onProgress('Preparando conversor MP3...');
-    if (!(window as any).lamejs) {
-        const lamejsSrc = await import('lamejs/lame.all.js?raw');
-        const script = document.createElement('script');
-        script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
-        document.head.appendChild(script);
-    }
-    const lamejs = (window as any).lamejs;
+    const lamejs = await loadLameJs();
 
     onProgress('Decodificando WAV...');
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();

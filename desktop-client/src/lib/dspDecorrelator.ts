@@ -17,6 +17,8 @@
  *   5. Full-Range Studio Clarity (22 Hz - 18.8 kHz), RMS Loudness Match & True-Peak Limiter (-0.3 dBTP).
  */
 
+import { loadLameJs } from '../utils/loadLameJs';
+
 export type DspPreset = 'transparent' | 'stealth' | 'cloak';
 export type DspFormat = 'wav' | 'flac' | 'mp3';
 export type PitchMode = 'drop_semitone' | 'a432_detune' | 'detune_down' | 'lock_440' | 'varispeed_up';
@@ -1332,13 +1334,7 @@ function encodeFlac24BitStereo(chL: Float32Array, chR: Float32Array, sr: number)
 }
 
 async function encodeMp3Stereo320(chL: Float32Array, chR: Float32Array, sr: number): Promise<Blob> {
-  if (!(window as any).lamejs) {
-    const lamejsSrc = await import('lamejs/lame.all.js?raw');
-    const script = document.createElement('script');
-    script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
-    document.head.appendChild(script);
-  }
-  const lamejs = (window as any).lamejs;
+  const lamejs = await loadLameJs();
   const encoder = new lamejs.Mp3Encoder(2, sr, 320);
 
   const sampleBlockSize = 1152;

@@ -1,6 +1,8 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
+import { supabase } from '../lib/supabase';
 import { generateClickBuffer, resolveCueBufferName, scheduleSectionVoiceCues } from '../utils/cueEngine';
 import { findMasterAndDrumStems, repairAndRelockBeatGrid } from '../utils/beatGridDSP';
+import { loadLameJs } from '../utils/loadLameJs';
 
 export type StemType = 'Click' | 'Cues' | 'Instrument';
 export type RoutingMode = 'StereoInEar' | 'StereoSplit' | 'MultiChannel';
@@ -823,40 +825,40 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       const cueBlob = cueResult.blob;
 
       const fohPath = `${bandId}/${songId}/mixes/foh_${Date.now()}.wav`;
-      const { error: fohError } = await import('../lib/supabase').then(m => m.supabase.storage
+      const { error: fohError } = await supabase.storage
         .from('audios')
-        .upload(fohPath, fohBlob, { contentType: 'audio/wav', upsert: true }));
+        .upload(fohPath, fohBlob, { contentType: 'audio/wav', upsert: true });
       if (fohError) throw fohError;
-      const fohUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(fohPath).data.publicUrl);
+      const fohUrl = supabase.storage.from('audios').getPublicUrl(fohPath).data.publicUrl;
       
       onProgress('Subiendo CUE a la nube...');
       const cuePath = `${bandId}/${songId}/mixes/cue_${Date.now()}.wav`;
-      const { error: cueError } = await import('../lib/supabase').then(m => m.supabase.storage
+      const { error: cueError } = await supabase.storage
         .from('audios')
-        .upload(cuePath, cueBlob, { contentType: 'audio/wav', upsert: true }));
+        .upload(cuePath, cueBlob, { contentType: 'audio/wav', upsert: true });
       if (cueError) throw cueError;
-      const cueUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(cuePath).data.publicUrl);
+      const cueUrl = supabase.storage.from('audios').getPublicUrl(cuePath).data.publicUrl;
 
       // MP3 Uploads (Versión Ligera Móvil)
       onProgress('Codificando MP3 FOH Ligero (Modo Ensayo)...');
       const fohMp3Blob = await audioBufferToMp3Blob(fohResult.buffer, 192);
       const fohMp3Path = `${bandId}/${songId}/mixes/foh_mobile_${Date.now()}.mp3`;
-      await import('../lib/supabase').then(m => m.supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, { contentType: 'audio/mpeg', upsert: true }));
-      const fohMobileUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl);
+      await supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, { contentType: 'audio/mpeg', upsert: true });
+      const fohMobileUrl = supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl;
 
       onProgress('Codificando MP3 CUE Ligero (Modo Ensayo)...');
       const cueMp3Blob = await audioBufferToMp3Blob(cueResult.buffer, 192);
       const cueMp3Path = `${bandId}/${songId}/mixes/cue_mobile_${Date.now()}.mp3`;
-      await import('../lib/supabase').then(m => m.supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, { contentType: 'audio/mpeg', upsert: true }));
-      const cueMobileUrl = await import('../lib/supabase').then(m => m.supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl);
+      await supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, { contentType: 'audio/mpeg', upsert: true });
+      const cueMobileUrl = supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl;
 
       onProgress('Guardando URLs en la base de datos...');
-      await import('../lib/supabase').then(m => m.supabase.from('songs').update({
+      await supabase.from('songs').update({
         foh_mix_url: fohUrl,
         cue_mix_url: cueUrl,
         foh_mobile_url: fohMobileUrl,
         cue_mobile_url: cueMobileUrl
-      }).eq('id', songId));
+      }).eq('id', songId);
 
       onProgress('¡Exportación completada exitosamente!');
     } catch (err: any) {
@@ -1520,14 +1522,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
     onProgress('Codificando a MP3 Alta Calidad (320kbps)...');
     
-    // Inject lame.all.js globally to bypass Vite strict mode and missing CommonJS requirements
-    if (!(window as any).lamejs) {
-        const lamejsSrc = await import('lamejs/lame.all.js?raw');
-        const script = document.createElement('script');
-        script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
-        document.head.appendChild(script);
-    }
-    const lamejs = (window as any).lamejs;
+    const lamejs = await loadLameJs();
     const { saveAs } = await import('file-saver');
 
     const channels = renderedBuffer.numberOfChannels;
@@ -1608,13 +1603,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 };
 
 export const audioBufferToMp3Blob = async (renderedBuffer: AudioBuffer, bitrate: number = 192): Promise<Blob> => {
-    if (!(window as any).lamejs) {
-        const lamejsSrc = await import('lamejs/lame.all.js?raw');
-        const script = document.createElement('script');
-        script.innerHTML = lamejsSrc.default + '\nwindow.lamejs = lamejs;';
-        document.head.appendChild(script);
-    }
-    const lamejs = (window as any).lamejs;
+    const lamejs = await loadLameJs();
 
     const channels = renderedBuffer.numberOfChannels;
     const sampleRateMp3 = renderedBuffer.sampleRate;

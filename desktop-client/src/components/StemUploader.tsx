@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { UploadCloud, CheckCircle, AlertTriangle, FileAudio, Archive } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { isMasterTrackByName } from '../utils/beatGridDSP';
-import JSZip from 'jszip';
 
 interface StemUploaderProps {
   songId?: string | null;
@@ -155,6 +154,7 @@ export default function StemUploader({ songId, bandId, onUploadComplete, compact
         }
 
         setProgressInfo('Descomprimiendo paquete de Stems (.ZIP)...');
+        const JSZip = (await import('jszip')).default;
         const zip = new JSZip();
         const loadedZip = await zip.loadAsync(firstFile);
         

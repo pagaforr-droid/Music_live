@@ -1,19 +1,34 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
-import Login from './pages/Login';
-import LivePrompter from './pages/LivePrompter';
-import StemStudio from './pages/StemStudio';
-import SetlistBuilder from './pages/SetlistBuilder';
-import LiveConcert from './pages/LiveConcert';
-import MobileInEar from './pages/MobileInEar';
-import MusicHub from './pages/MusicHub';
-import AdminCMS from './pages/AdminCMS';
-import DesignTools from './pages/DesignTools';
-import LyricStudio from './pages/LyricStudio';
-import { StudioMasteringModule } from './modules/mastering-pro';
 import './App.css';
+
+// Route-level code splitting to keep initial bundle compact and Vercel-friendly
+const Login = lazy(() => import('./pages/Login'));
+const LivePrompter = lazy(() => import('./pages/LivePrompter'));
+const StemStudio = lazy(() => import('./pages/StemStudio'));
+const SetlistBuilder = lazy(() => import('./pages/SetlistBuilder'));
+const LiveConcert = lazy(() => import('./pages/LiveConcert'));
+const MobileInEar = lazy(() => import('./pages/MobileInEar'));
+const MusicHub = lazy(() => import('./pages/MusicHub'));
+const AdminCMS = lazy(() => import('./pages/AdminCMS'));
+const DesignTools = lazy(() => import('./pages/DesignTools'));
+const LyricStudio = lazy(() => import('./pages/LyricStudio'));
+const StudioMasteringModule = lazy(() =>
+  import('./modules/mastering-pro').then((m) => ({ default: m.StudioMasteringModule }))
+);
+
+const RouteSuspenseFallback = () => (
+  <div className="flex h-full min-h-[60vh] w-full items-center justify-center bg-[#0b0d13] text-zinc-400">
+    <div className="flex flex-col items-center gap-3">
+      <div className="h-7 w-7 animate-spin rounded-full border-2 border-zinc-700 border-t-[#e11d48]" />
+      <span className="text-[11px] font-medium uppercase tracking-[0.2em] text-zinc-500">
+        Cargando módulo...
+      </span>
+    </div>
+  </div>
+);
 
 // Protected Route Wrapper
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -35,41 +50,43 @@ const AuthRoute = ({ children }: { children: React.ReactNode }) => {
 
 function AppRoutes() {
   return (
-    <Routes>
-      <Route path="/login" element={
-        <AuthRoute>
-          <Login />
-        </AuthRoute>
-      } />
-      
-      <Route element={
-        <ProtectedRoute>
-          <Layout />
-        </ProtectedRoute>
-      }>
-        <Route path="/" element={<LiveConcert />} />
-        <Route path="/concert" element={<LiveConcert />} />
-        <Route path="/editor" element={<LivePrompter />} />
-        <Route path="/studio" element={<StemStudio />} />
-        <Route path="/mastering" element={<StudioMasteringModule />} />
-        <Route path="/setlists" element={<SetlistBuilder />} />
-        <Route path="/admin/cms" element={<AdminCMS />} />
-        <Route path="/design" element={<DesignTools />} />
-        <Route path="/lyrics" element={<LyricStudio />} />
-      </Route>
-      
-      {/* Public Landing Page */}
-      <Route path="/hub" element={<MusicHub />} />
+    <Suspense fallback={<RouteSuspenseFallback />}>
+      <Routes>
+        <Route path="/login" element={
+          <AuthRoute>
+            <Login />
+          </AuthRoute>
+        } />
+        
+        <Route element={
+          <ProtectedRoute>
+            <Layout />
+          </ProtectedRoute>
+        }>
+          <Route path="/" element={<LiveConcert />} />
+          <Route path="/concert" element={<LiveConcert />} />
+          <Route path="/editor" element={<LivePrompter />} />
+          <Route path="/studio" element={<StemStudio />} />
+          <Route path="/mastering" element={<StudioMasteringModule />} />
+          <Route path="/setlists" element={<SetlistBuilder />} />
+          <Route path="/admin/cms" element={<AdminCMS />} />
+          <Route path="/design" element={<DesignTools />} />
+          <Route path="/lyrics" element={<LyricStudio />} />
+        </Route>
+        
+        {/* Public Landing Page */}
+        <Route path="/hub" element={<MusicHub />} />
 
-      {/* Standalone Mobile Route */}
-      <Route path="/mobile" element={
-        <ProtectedRoute>
-          <MobileInEar />
-        </ProtectedRoute>
-      } />
-      
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        {/* Standalone Mobile Route */}
+        <Route path="/mobile" element={
+          <ProtectedRoute>
+            <MobileInEar />
+          </ProtectedRoute>
+        } />
+        
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
 

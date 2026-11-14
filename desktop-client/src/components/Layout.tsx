@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type, Headphones, Sliders } from 'lucide-react';
-import { TanduMusicosLogo } from './SplashScreen';
+import { TanduMusicosLogo } from './TanduMusicosLogo';
 
 export default function Layout() {
   const { user, signOut } = useAuth();
