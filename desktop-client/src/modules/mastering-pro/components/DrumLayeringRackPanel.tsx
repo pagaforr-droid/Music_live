@@ -147,7 +147,7 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
       studioRoomCoherence: 0.04,
       transientMicroExpand: 0.5,
       sunoUltrasonicPurge: true,
-      cqtDeQuantizeMode: forensicConfig.cqtDeQuantizeMode ?? 'a432_detune',
+      cqtDeQuantizeMode: forensicConfig.cqtDeQuantizeMode ?? 'macro_rubato_440',
       rvqFormantDeQuantizer: true,
       monoDownmixCanceller: true,
     });
@@ -778,10 +778,15 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
             </span>
           </div>
 
-          {/* Selector de Modo CQT / Time-Warp */}
+          {/* Selector de Modo CQT / Time-Warp (Sincronizado en Vivo y Exportación) */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             {(
               [
+                {
+                  id: 'macro_rubato_440',
+                  label: '440Hz Original',
+                  desc: 'Tono 1:1 Exacto',
+                },
                 {
                   id: 'a432_detune',
                   label: 'A=432Hz (-31.8c)',
@@ -797,15 +802,11 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                   label: 'Drop Eb (-100c)',
                   desc: 'Afinación Estudio',
                 },
-                {
-                  id: 'macro_rubato_440',
-                  label: '440Hz Rubato',
-                  desc: 'Pitch Original',
-                },
               ] as Array<{ id: AntiSunoCqtMode; label: string; desc: string }>
             ).map((mode) => {
               const active =
-                (forensicConfig.cqtDeQuantizeMode ?? 'a432_detune') === mode.id;
+                (forensicConfig.cqtDeQuantizeMode ?? 'macro_rubato_440') ===
+                mode.id;
               return (
                 <button
                   key={mode.id}

@@ -6,18 +6,22 @@ import type {
   SpectralProfile,
 } from '../types/mastering.types';
 
-export type { AntiSunoCqtMode, ForensicHumanizerConfig, ForensicSignatureReport };
+export type {
+  AntiSunoCqtMode,
+  ForensicHumanizerConfig,
+  ForensicSignatureReport,
+};
 
 export const DEFAULT_FORENSIC_HUMANIZER_CONFIG: ForensicHumanizerConfig = {
   enabled: true,
-  bassConcentrationCap: 0.75,
-  highFreqExciterAmount: 0.45,
-  analogPhaseAndDrift: 0.5,
-  analogConsoleNoiseDb: -72,
-  studioRoomCoherence: 0.035,
-  transientMicroExpand: 0.45,
+  bassConcentrationCap: 0.72,
+  highFreqExciterAmount: 0.42,
+  analogPhaseAndDrift: 0.45,
+  analogConsoleNoiseDb: -74,
+  studioRoomCoherence: 0.03,
+  transientMicroExpand: 0.42,
   sunoUltrasonicPurge: true,
-  cqtDeQuantizeMode: 'a432_detune',
+  cqtDeQuantizeMode: 'macro_rubato_440',
   rvqFormantDeQuantizer: true,
   monoDownmixCanceller: true,
 };
@@ -53,88 +57,6 @@ function applyBiquadInPlace(samples: Float32Array, coeffs: BiquadCoeffs): void {
   }
 }
 
-function applyBiquadZeroPhase(
-  samples: Float32Array,
-  coeffs: BiquadCoeffs
-): void {
-  applyBiquadInPlace(samples, coeffs);
-  samples.reverse();
-  applyBiquadInPlace(samples, coeffs);
-  samples.reverse();
-}
-
-function designLowpassBiquad(
-  fc: number,
-  sampleRate: number,
-  Q = 0.7071
-): BiquadCoeffs {
-  const w0 = (2 * Math.PI * Math.min(fc, sampleRate * 0.47)) / sampleRate;
-  const cosw0 = Math.cos(w0);
-  const sinw0 = Math.sin(w0);
-  const alpha = sinw0 / (2 * Q);
-  const b0 = (1 - cosw0) / 2;
-  const b1 = 1 - cosw0;
-  const b2 = (1 - cosw0) / 2;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cosw0;
-  const a2 = 1 - alpha;
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
-}
-
-function designHighpassBiquad(
-  fc: number,
-  sampleRate: number,
-  Q = 0.7071
-): BiquadCoeffs {
-  const w0 = (2 * Math.PI * Math.min(fc, sampleRate * 0.47)) / sampleRate;
-  const cosw0 = Math.cos(w0);
-  const sinw0 = Math.sin(w0);
-  const alpha = sinw0 / (2 * Q);
-  const b0 = (1 + cosw0) / 2;
-  const b1 = -(1 + cosw0);
-  const b2 = (1 + cosw0) / 2;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cosw0;
-  const a2 = 1 - alpha;
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
-}
-
-function designBandpassBiquad(
-  fc: number,
-  sampleRate: number,
-  Q = 0.9
-): BiquadCoeffs {
-  const w0 = (2 * Math.PI * Math.min(fc, sampleRate * 0.47)) / sampleRate;
-  const cosw0 = Math.cos(w0);
-  const sinw0 = Math.sin(w0);
-  const alpha = sinw0 / (2 * Q);
-  const b0 = alpha;
-  const b1 = 0;
-  const b2 = -alpha;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cosw0;
-  const a2 = 1 - alpha;
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
-}
-
-function designNotchBiquad(
-  fc: number,
-  sampleRate: number,
-  Q = 12.0
-): BiquadCoeffs {
-  const w0 = (2 * Math.PI * Math.min(fc, sampleRate * 0.47)) / sampleRate;
-  const cosw0 = Math.cos(w0);
-  const sinw0 = Math.sin(w0);
-  const alpha = sinw0 / (2 * Q);
-  const b0 = 1;
-  const b1 = -2 * cosw0;
-  const b2 = 1;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cosw0;
-  const a2 = 1 - alpha;
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
-}
-
 function designAllpassBiquad(
   fc: number,
   sampleRate: number,
@@ -153,66 +75,62 @@ function designAllpassBiquad(
   return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
 }
 
-/**
- * 4-point Catmull-Rom Cubic Spline Interpolation for high-precision non-linear time/pitch warping
- */
-function cubicCatmullRomResample(
-  input: Float32Array,
-  readPos: number
-): number {
-  const len = input.length;
-  const idx = Math.floor(readPos);
-  const frac = readPos - idx;
-
-  const i0 = Math.max(0, Math.min(len - 1, idx - 1));
-  const i1 = Math.max(0, Math.min(len - 1, idx));
-  const i2 = Math.max(0, Math.min(len - 1, idx + 1));
-  const i3 = Math.max(0, Math.min(len - 1, idx + 2));
-
-  const y0 = input[i0];
-  const y1 = input[i1];
-  const y2 = input[i2];
-  const y3 = input[i3];
-
-  const c0 = y1;
-  const c1 = 0.5 * (y2 - y0);
-  const c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-  const c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-
-  return ((c3 * frac + c2) * frac + c1) * frac + c0;
+function designNotchBiquad(
+  fc: number,
+  sampleRate: number,
+  Q = 18.0
+): BiquadCoeffs {
+  const w0 = (2 * Math.PI * Math.min(fc, sampleRate * 0.47)) / sampleRate;
+  const cosw0 = Math.cos(w0);
+  const sinw0 = Math.sin(w0);
+  const alpha = sinw0 / (2 * Q);
+  const b0 = 1;
+  const b1 = -2 * cosw0;
+  const b2 = 1;
+  const a0 = 1 + alpha;
+  const a1 = -2 * cosw0;
+  const a2 = 1 - alpha;
+  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
 }
 
+/**
+ * MOTOR DE NEUTRALIZACIÓN FORENSE DE HUELLA IA & HUMANIZACIÓN ANALÓGICA (STAGE 4C)
+ *
+ * Totalmente Fase-Coherente (Stereo-Linked L/R):
+ * - Cero desplazamiento de imagen estéreo (0.0 ms de diferencia inter-canal L/R).
+ * - Paridad acústica 1:1 entre el monitoreo en tiempo real en el aplicativo y la exportación WAV 24-Bit.
+ */
 export class ForensicHumanizerDSP {
   /**
-   * Construye e inserta la cadena completa de "De-Fingerprinting / Humanización Analógica"
-   * entre la etapa de limpieza/EQ y el Limitador Final.
+   * Devuelve el factor de reproducción (playbackRate) correspondiente al modo CQT activo,
+   * garantizando que la reproducción en vivo y la exportación offline suenen exactamente al mismo tono y tempo.
    */
-  public static buildHumanizerGraph(
-    ctx: BaseAudioContext,
-    inputNode: AudioNode,
-    durationSeconds: number,
-    config: ForensicHumanizerConfig
-  ): AudioNode {
-    if (!config.enabled) {
-      return inputNode;
+  public static getPlaybackRateForMode(
+    mode: AntiSunoCqtMode | undefined,
+    enabled = true
+  ): number {
+    if (!enabled) return 1.0;
+    const activeMode = mode ?? 'macro_rubato_440';
+    if (activeMode === 'a432_detune') {
+      return 432 / 440; // 0.981818 (-31.77 cents)
     }
-
-    const stage = this.createControllableHumanizerStage(
-      ctx,
-      config,
-      durationSeconds
-    );
-    inputNode.connect(stage.inputNode);
-    return stage.outputNode;
+    if (activeMode === 'detune_down') {
+      return Math.pow(2, -0.5 / 12); // 0.971532 (-50 cents)
+    }
+    if (activeMode === 'drop_semitone') {
+      return Math.pow(2, -1.0 / 12); // 0.943874 (-100 cents / Drop Eb)
+    }
+    return 1.0; // 'macro_rubato_440': Pitch y velocidad 100% originales
   }
 
   /**
-   * Versión controlable en tiempo real (60 FPS) y compatible con OfflineAudioContext (WAV 24-Bit).
-   * Incluye purga ultrasónica en cascada (>17.4kHz) + notches Bark/EnCodec ANTES del excitador armónico.
+   * Construye la etapa de Humanización Forense controlable en tiempo real y en OfflineAudioContext.
+   * Todos los parámetros de fase y micro-drift están bloqueados en estéreo (Stereo-Linked)
+   * para evitar cualquier movimiento o paneo entre Izquierda y Derecha.
    */
   public static createControllableHumanizerStage(
     ctx: BaseAudioContext,
-    initialConfig: ForensicHumanizerConfig,
+    initialConfig: ForensicHumanizerConfig = DEFAULT_FORENSIC_HUMANIZER_CONFIG,
     durationSeconds = 300
   ): ControllableHumanizerHandles {
     const inputNode = ctx.createGain();
@@ -221,35 +139,37 @@ export class ForensicHumanizerDSP {
     const dryBypassGain = ctx.createGain();
     const wetActiveGain = ctx.createGain();
 
+    dryBypassGain.gain.value = initialConfig.enabled ? 0 : 1;
+    wetActiveGain.gain.value = initialConfig.enabled ? 1 : 0;
+
     inputNode.connect(dryBypassGain);
     dryBypassGain.connect(outputNode);
 
     // =========================================================================
-    // 1. RE-BALANCEADOR DE CONCENTRACIÓN DE GRAVES (Target < 38% Bass Ratio)
+    // 1. RE-BALANCEADOR DE ENERGÍA SUB-GRAVE & MICRO-TRANSIENTES
     // =========================================================================
     const subInfrasonicCut = ctx.createBiquadFilter();
     subInfrasonicCut.type = 'highpass';
-    subInfrasonicCut.frequency.value = 31;
-    subInfrasonicCut.Q.value = 0.85;
+    subInfrasonicCut.frequency.value = 30;
+    subInfrasonicCut.Q.value = Math.SQRT1_2;
 
     const bassDensityTamer = ctx.createBiquadFilter();
     bassDensityTamer.type = 'lowshelf';
     bassDensityTamer.frequency.value = 115;
-    bassDensityTamer.gain.value = -3.8 * initialConfig.bassConcentrationCap;
+    bassDensityTamer.gain.value = -2.4 * initialConfig.bassConcentrationCap;
 
     const kickPunchRestore = ctx.createBiquadFilter();
     kickPunchRestore.type = 'peaking';
     kickPunchRestore.frequency.value = 62;
-    kickPunchRestore.Q.value = 2.8;
-    kickPunchRestore.gain.value = 1.8 * initialConfig.bassConcentrationCap;
+    kickPunchRestore.Q.value = 2.2;
+    kickPunchRestore.gain.value = 1.4 * initialConfig.bassConcentrationCap;
 
-    // 1B. Micro-Transientes Físicas (Restaura el impacto de baqueta/púa de primeros 8ms)
     const transientSnapFilter = ctx.createBiquadFilter();
     transientSnapFilter.type = 'peaking';
     transientSnapFilter.frequency.value = 2950;
-    transientSnapFilter.Q.value = 1.8;
+    transientSnapFilter.Q.value = 1.6;
     transientSnapFilter.gain.value =
-      1.6 * (initialConfig.transientMicroExpand ?? 0.45);
+      1.2 * (initialConfig.transientMicroExpand ?? 0.42);
 
     inputNode.connect(subInfrasonicCut);
     subInfrasonicCut.connect(bassDensityTamer);
@@ -257,52 +177,47 @@ export class ForensicHumanizerDSP {
     kickPunchRestore.connect(transientSnapFilter);
 
     // =========================================================================
-    // 2. DISPERSOR DE FASE ASIMÉTRICO DE 4 ETAPAS (ALL-PASS L/R) + MICRO TAPE DRIFT
+    // 2. DISPERSOR DE FASE ALL-PASS 100% STEREO-LINKED + MICRO TAPE DRIFT SOLIDARIO
+    //    (Idénticas frecuencias y un único LFO compartido para L y R -> CERO paneo L/R)
     // =========================================================================
     const splitter = ctx.createChannelSplitter(2);
     const merger = ctx.createChannelMerger(2);
 
-    const apFreqsL = [210, 640, 1850, 5200];
-    const apFreqsR = [245, 730, 2120, 5850];
-    const apChainL: BiquadFilterNode[] = apFreqsL.map((f, idx) => {
+    const stereoLinkedApFreqs = [680, 1850, 4200, 9600];
+    const apChainL: BiquadFilterNode[] = stereoLinkedApFreqs.map((f) => {
       const node = ctx.createBiquadFilter();
       node.type = 'allpass';
       node.frequency.value = f;
-      node.Q.value = 0.72 + idx * 0.08;
+      node.Q.value = Math.SQRT1_2;
       return node;
     });
-    const apChainR: BiquadFilterNode[] = apFreqsR.map((f, idx) => {
+    const apChainR: BiquadFilterNode[] = stereoLinkedApFreqs.map((f) => {
       const node = ctx.createBiquadFilter();
       node.type = 'allpass';
       node.frequency.value = f;
-      node.Q.value = 0.76 + idx * 0.08;
+      node.Q.value = Math.SQRT1_2;
       return node;
     });
 
     const tapeDelayL = ctx.createDelay(0.02);
     const tapeDelayR = ctx.createDelay(0.02);
-    tapeDelayL.delayTime.value = 0.0015;
-    tapeDelayR.delayTime.value = 0.0018;
+    // Retardo base exactamente idéntico en L y R (cero desplazamiento Haas)
+    tapeDelayL.delayTime.value = 0.0012;
+    tapeDelayR.delayTime.value = 0.0012;
 
-    const lfoL = ctx.createOscillator();
-    const lfoR = ctx.createOscillator();
-    const lfoGainL = ctx.createGain();
-    const lfoGainR = ctx.createGain();
+    // Único LFO compartido que alimenta L y R exactamente en la misma fase
+    const sharedTapeLfo = ctx.createOscillator();
+    const sharedLfoGain = ctx.createGain();
+    sharedTapeLfo.type = 'sine';
+    sharedTapeLfo.frequency.value = 0.25;
 
-    lfoL.frequency.value = 0.31;
-    lfoR.frequency.value = 0.43;
+    const initialDepth = 0.000014 * initialConfig.analogPhaseAndDrift;
+    sharedLfoGain.gain.value = initialDepth;
 
-    const initialDepth = 0.00016 * initialConfig.analogPhaseAndDrift;
-    lfoGainL.gain.value = initialDepth;
-    lfoGainR.gain.value = initialDepth;
-
-    lfoL.connect(lfoGainL);
-    lfoR.connect(lfoGainR);
-    lfoGainL.connect(tapeDelayL.delayTime);
-    lfoGainR.connect(tapeDelayR.delayTime);
-
-    lfoL.start(0);
-    lfoR.start(0);
+    sharedTapeLfo.connect(sharedLfoGain);
+    sharedLfoGain.connect(tapeDelayL.delayTime);
+    sharedLfoGain.connect(tapeDelayR.delayTime);
+    sharedTapeLfo.start(0);
 
     transientSnapFilter.connect(splitter);
 
@@ -321,29 +236,33 @@ export class ForensicHumanizerDSP {
     tapeDelayR.connect(merger, 0, 1);
 
     // =========================================================================
-    // 3A. PURGA ULTRASÓNICA DE DIFUSIÓN SUNO (>17.4 kHz + Notches Bark/EnCodec)
+    // 3A. PURGA DE ALIASING ULTRASÓNICO (Sin apagar el brillo de 12kHz-16kHz)
     // =========================================================================
     const barkNotch1 = ctx.createBiquadFilter();
-    barkNotch1.type = 'notch';
+    barkNotch1.type = 'peaking';
     barkNotch1.frequency.value = 11025;
-    barkNotch1.Q.value = 14.0;
+    barkNotch1.Q.value = 16.0;
+    barkNotch1.gain.value =
+      initialConfig.sunoUltrasonicPurge !== false ? -3.0 : 0;
 
     const barkNotch2 = ctx.createBiquadFilter();
-    barkNotch2.type = 'notch';
-    barkNotch2.frequency.value = 15500;
-    barkNotch2.Q.value = 14.0;
+    barkNotch2.type = 'peaking';
+    barkNotch2.frequency.value = 15950;
+    barkNotch2.Q.value = 16.0;
+    barkNotch2.gain.value =
+      initialConfig.sunoUltrasonicPurge !== false ? -3.0 : 0;
 
     const ultrasonicPurgeLpf1 = ctx.createBiquadFilter();
     ultrasonicPurgeLpf1.type = 'lowpass';
     ultrasonicPurgeLpf1.frequency.value =
-      initialConfig.sunoUltrasonicPurge !== false ? 17400 : 22000;
-    ultrasonicPurgeLpf1.Q.value = 0.7071;
+      initialConfig.sunoUltrasonicPurge !== false ? 19600 : 22000;
+    ultrasonicPurgeLpf1.Q.value = Math.SQRT1_2;
 
     const ultrasonicPurgeLpf2 = ctx.createBiquadFilter();
     ultrasonicPurgeLpf2.type = 'lowpass';
     ultrasonicPurgeLpf2.frequency.value =
-      initialConfig.sunoUltrasonicPurge !== false ? 17400 : 22000;
-    ultrasonicPurgeLpf2.Q.value = 0.7071;
+      initialConfig.sunoUltrasonicPurge !== false ? 19600 : 22000;
+    ultrasonicPurgeLpf2.Q.value = Math.SQRT1_2;
 
     merger.connect(barkNotch1);
     barkNotch1.connect(barkNotch2);
@@ -352,7 +271,6 @@ export class ForensicHumanizerDSP {
 
     // =========================================================================
     // 3B. RECONSTRUCTOR DE ARMÓNICOS SUPERIORES LIMPIOS (14 kHz – 22 kHz)
-    //     Toma exclusivamente la banda limpia 6kHz-10kHz y resintetiza aire real
     // =========================================================================
     const exciterBandpass = ctx.createBiquadFilter();
     exciterBandpass.type = 'bandpass';
@@ -369,7 +287,7 @@ export class ForensicHumanizerDSP {
     postExciterHighpass.Q.value = 0.75;
 
     const exciterMixGain = ctx.createGain();
-    exciterMixGain.gain.value = 0.21 * initialConfig.highFreqExciterAmount;
+    exciterMixGain.gain.value = 0.18 * initialConfig.highFreqExciterAmount;
 
     merger.connect(exciterBandpass);
     exciterBandpass.connect(harmonicGenerator);
@@ -377,10 +295,10 @@ export class ForensicHumanizerDSP {
     postExciterHighpass.connect(exciterMixGain);
 
     // =========================================================================
-    // 4. MICRO-ACÚSTICA FÍSICA DE ESTUDIO (EARLY REFLECTIONS COHERENCE)
+    // 4. MICRO-ACÚSTICA DE SALA DE ESTUDIO 100% BALANCEADA L/R
     // =========================================================================
     const roomConvolver = ctx.createConvolver();
-    roomConvolver.buffer = this.generateStudioEarlyReflectionsIR(ctx, 0.085);
+    roomConvolver.buffer = this.generateStudioEarlyReflectionsIR(ctx, 0.075);
     const roomWetGain = ctx.createGain();
     roomWetGain.gain.value = initialConfig.studioRoomCoherence;
 
@@ -406,7 +324,7 @@ export class ForensicHumanizerDSP {
 
     const noiseGain = ctx.createGain();
     noiseGain.gain.value =
-      initialConfig.analogConsoleNoiseDb > -85
+      initialConfig.enabled && initialConfig.analogConsoleNoiseDb > -85
         ? Math.pow(10, initialConfig.analogConsoleNoiseDb / 20)
         : 0;
 
@@ -418,36 +336,52 @@ export class ForensicHumanizerDSP {
     wetActiveGain.connect(outputNode);
 
     const applyRoutingState = (cfg: ForensicHumanizerConfig, now: number) => {
-      if (cfg.enabled) {
-        dryBypassGain.gain.setTargetAtTime(0, now, 0.015);
-        wetActiveGain.gain.setTargetAtTime(1, now, 0.015);
-      } else {
-        dryBypassGain.gain.setTargetAtTime(1, now, 0.015);
-        wetActiveGain.gain.setTargetAtTime(0, now, 0.015);
-      }
+      const dryVal = cfg.enabled ? 0 : 1;
+      const wetVal = cfg.enabled ? 1 : 0;
+      dryBypassGain.gain.value = dryVal;
+      wetActiveGain.gain.value = wetVal;
+      dryBypassGain.gain.setTargetAtTime(dryVal, now, 0.012);
+      wetActiveGain.gain.setTargetAtTime(wetVal, now, 0.012);
 
       const cap = Math.max(0, Math.min(1, cfg.bassConcentrationCap));
-      bassDensityTamer.gain.setTargetAtTime(-3.8 * cap, now, 0.015);
-      kickPunchRestore.gain.setTargetAtTime(1.8 * cap, now, 0.015);
+      const bassTamerDb = -2.4 * cap;
+      const kickRestoreDb = 1.4 * cap;
+      bassDensityTamer.gain.value = bassTamerDb;
+      kickPunchRestore.gain.value = kickRestoreDb;
+      bassDensityTamer.gain.setTargetAtTime(bassTamerDb, now, 0.012);
+      kickPunchRestore.gain.setTargetAtTime(kickRestoreDb, now, 0.012);
 
-      const trans = Math.max(0, Math.min(1, cfg.transientMicroExpand ?? 0.45));
-      transientSnapFilter.gain.setTargetAtTime(1.6 * trans, now, 0.015);
+      const trans = Math.max(0, Math.min(1, cfg.transientMicroExpand ?? 0.42));
+      const snapDb = 1.2 * trans;
+      transientSnapFilter.gain.value = snapDb;
+      transientSnapFilter.gain.setTargetAtTime(snapDb, now, 0.012);
 
       const drift = Math.max(0, Math.min(1, cfg.analogPhaseAndDrift));
-      const depth = 0.00016 * drift;
-      lfoGainL.gain.setTargetAtTime(depth, now, 0.015);
-      lfoGainR.gain.setTargetAtTime(depth, now, 0.015);
+      const depth = 0.000014 * drift;
+      sharedLfoGain.gain.value = depth;
+      sharedLfoGain.gain.setTargetAtTime(depth, now, 0.012);
 
-      const purgeCutoff =
-        cfg.sunoUltrasonicPurge !== false ? 17400 : 22000;
-      ultrasonicPurgeLpf1.frequency.setTargetAtTime(purgeCutoff, now, 0.015);
-      ultrasonicPurgeLpf2.frequency.setTargetAtTime(purgeCutoff, now, 0.015);
+      const purgeActive = cfg.sunoUltrasonicPurge !== false;
+      const notchGain = purgeActive ? -3.0 : 0;
+      const purgeCutoff = purgeActive ? 19600 : 22000;
+      barkNotch1.gain.value = notchGain;
+      barkNotch2.gain.value = notchGain;
+      ultrasonicPurgeLpf1.frequency.value = purgeCutoff;
+      ultrasonicPurgeLpf2.frequency.value = purgeCutoff;
+
+      barkNotch1.gain.setTargetAtTime(notchGain, now, 0.012);
+      barkNotch2.gain.setTargetAtTime(notchGain, now, 0.012);
+      ultrasonicPurgeLpf1.frequency.setTargetAtTime(purgeCutoff, now, 0.012);
+      ultrasonicPurgeLpf2.frequency.setTargetAtTime(purgeCutoff, now, 0.012);
 
       const exciter = Math.max(0, Math.min(1, cfg.highFreqExciterAmount));
-      exciterMixGain.gain.setTargetAtTime(0.21 * exciter, now, 0.015);
+      const exciterGain = 0.18 * exciter;
+      exciterMixGain.gain.value = exciterGain;
+      exciterMixGain.gain.setTargetAtTime(exciterGain, now, 0.012);
 
       const room = Math.max(0, Math.min(0.18, cfg.studioRoomCoherence));
-      roomWetGain.gain.setTargetAtTime(room, now, 0.015);
+      roomWetGain.gain.value = room;
+      roomWetGain.gain.setTargetAtTime(room, now, 0.012);
 
       const noiseLinear =
         cfg.enabled && cfg.analogConsoleNoiseDb > -85
@@ -456,7 +390,8 @@ export class ForensicHumanizerDSP {
               Math.max(-85, Math.min(-60, cfg.analogConsoleNoiseDb)) / 20
             )
           : 0;
-      noiseGain.gain.setTargetAtTime(noiseLinear, now, 0.015);
+      noiseGain.gain.value = noiseLinear;
+      noiseGain.gain.setTargetAtTime(noiseLinear, now, 0.012);
     };
 
     applyRoutingState(initialConfig, ctx.currentTime);
@@ -464,307 +399,64 @@ export class ForensicHumanizerDSP {
     return {
       inputNode,
       outputNode,
-      updateConfig: (cfg, now = ctx.currentTime) =>
-        applyRoutingState(cfg, now),
+      updateConfig: (nextConfig: ForensicHumanizerConfig, now?: number) => {
+        applyRoutingState(nextConfig, now ?? ctx.currentTime);
+      },
     };
   }
 
   /**
-   * MOTOR PROFUNDO ANTI-SUNO (Sample-Level Offline Cloak para Exportación WAV 24-Bit).
-   * Neutraliza los 4 vectores que los clasificadores neuronales de Suno v3.5/v4 evalúan:
-   * 1) Purga Ultrasónica Zero-Phase de 8º orden (>17.4kHz) + 5 Notches Bark/EnCodec (8.8k-17.1kHz) + Resíntesis Armónica
-   * 2) De-Cuantizador Zero-Sum de Formantes RVQ (700-1350Hz / 2400-4100Hz) + Swapper de Constelación de 6 Bandas
-   * 3) Disruptor de Rejilla de 20ms (50Hz) mediante Time-Warping Cúbico Catmull-Rom + Desplazamiento CQT (A=432Hz / -50c / -100c)
-   * 4) Escudo de Cancelación en Downmix Mono (12-Stage All-Pass + Micro-Warp Estéreo Opuesto >380Hz para 0.5*(L+R))
+   * Procesamiento sample-level para exportación WAV 24-Bit:
+   * - 100% transparente en respuesta de frecuencia y balance estéreo L/R (para que el archivo
+   *   exportado suene exactamente igual a lo que se escucha en el aplicativo).
+   * - CERO modulación asimétrica entre L y R (elimina por completo la sensación de sonido
+   *   moviéndose de izquierda a derecha).
+   * - El cambio de afinación CQT (si el usuario eligió 432Hz, -50c o Drop Eb) ya se aplica
+   *   nativamente en el sourceNode tanto en reproducción en vivo como en el OfflineAudioContext.
    */
   public static async applyDeepAntiSunoOfflineCloak(
-    sourceBuffer: AudioBuffer,
+    buffer: AudioBuffer,
     config: ForensicHumanizerConfig,
     onProgress?: (stage: string, pct: number) => void
   ): Promise<AudioBuffer> {
-    if (!config.enabled) {
-      return sourceBuffer;
-    }
+    if (!config.enabled) return buffer;
 
-    const sampleRate = sourceBuffer.sampleRate;
-    const origLen = sourceBuffer.length;
-    const inL = new Float32Array(sourceBuffer.getChannelData(0));
-    const inR =
-      sourceBuffer.numberOfChannels > 1
-        ? new Float32Array(sourceBuffer.getChannelData(1))
-        : new Float32Array(inL);
+    const sampleRate = buffer.sampleRate;
+    const left = buffer.getChannelData(0);
+    const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
 
-    // =========================================================================
-    // PASO 1: PURGA ULTRASÓNICA 8º ORDEN (>17.4kHz) + 5 NOTCHES BARK/ENCODEC
-    //         Y RESÍNTESIS ARMÓNICA DE 2DO Y 3ER ORDEN (14.2kHz - 21.5kHz)
-    // =========================================================================
+    // 1. Purga de residuos ultrasónicos de cuantización estrictamente por encima del rango audible
+    //    para no alterar el timbre ni el brillo que el usuario configuró en el módulo.
     if (config.sunoUltrasonicPurge !== false) {
       onProgress?.(
-        'Anti-Suno Cloak 1/4: Purgando tablero de difusión >17.4kHz y reconstruyendo aire analógico...',
-        54
+        'Anti-Suno Cloak (1/2): Limpiando residuos ultrasónicos de vocoder...',
+        58
       );
-      await new Promise((r) => setTimeout(r, 0));
-
-      // Extraer banda conductora limpia (6.2kHz - 9.8kHz) ANTES de filtrar
-      const bpDriver = designBandpassBiquad(7800, sampleRate, 0.85);
-      const driverL = new Float32Array(inL);
-      const driverR = new Float32Array(inR);
-      applyBiquadZeroPhase(driverL, bpDriver);
-      applyBiquadZeroPhase(driverR, bpDriver);
-
-      // 5 Notches quirúrgicos en frecuencias de tokens Bark/EnCodec de Suno
-      const sunoTokenNotches = [8820, 11025, 13500, 15500, 17100];
-      for (const freq of sunoTokenNotches) {
-        if (freq < sampleRate * 0.47) {
-          const notch = designNotchBiquad(freq, sampleRate, 13.5);
-          applyBiquadZeroPhase(inL, notch);
-          applyBiquadZeroPhase(inR, notch);
-        }
-      }
-
-      // Purga Brickwall Zero-Phase de 8º orden a 17,400 Hz (>48 dB/octava)
-      const purgeLpf = designLowpassBiquad(17400, sampleRate, 0.7071);
-      for (let stage = 0; stage < 4; stage++) {
-        applyBiquadZeroPhase(inL, purgeLpf);
-        applyBiquadZeroPhase(inR, purgeLpf);
-      }
-
-      // Generar armónicos orgánicos de 2do y 3er orden para poblar 14.2kHz - 21.5kHz
-      const harmL = new Float32Array(origLen);
-      const harmR = new Float32Array(origLen);
-      for (let i = 0; i < origLen; i++) {
-        const xL = driverL[i] * 3.1;
-        const xR = driverR[i] * 3.1;
-        harmL[i] = Math.tanh(xL) + 0.34 * xL * xL - 0.16 * xL * xL * xL;
-        harmR[i] = Math.tanh(xR) + 0.34 * xR * xR - 0.16 * xR * xR * xR;
-      }
-
-      const hpHarm = designHighpassBiquad(14200, sampleRate, 0.7071);
-      const lpHarm = designLowpassBiquad(
-        Math.min(21500, sampleRate * 0.46),
-        sampleRate,
-        0.7071
-      );
-      applyBiquadZeroPhase(harmL, hpHarm);
-      applyBiquadZeroPhase(harmR, hpHarm);
-      applyBiquadZeroPhase(harmL, lpHarm);
-      applyBiquadZeroPhase(harmR, lpHarm);
-
-      const exciterGain = 0.24 * Math.max(0.25, config.highFreqExciterAmount);
-      const decorrOffset = 21; // ~0.44ms a 48kHz para descorrelacionar el aire estéreo
-      for (let i = 0; i < origLen; i++) {
-        const rIdx = i >= decorrOffset ? i - decorrOffset : i;
-        inL[i] += harmL[i] * exciterGain;
-        inR[i] += harmR[rIdx] * exciterGain;
+      const ultraNotch = designNotchBiquad(19850, sampleRate, 20.0);
+      applyBiquadInPlace(left, ultraNotch);
+      if (right !== left) {
+        applyBiquadInPlace(right, ultraNotch);
       }
     }
 
-    // =========================================================================
-    // PASO 2: DE-CUANTIZADOR ZERO-SUM DE FORMANTES RVQ + CONSTELACIÓN 6 BANDAS
-    // =========================================================================
-    if (config.rvqFormantDeQuantizer !== false) {
+    // 2. Dispersión de fase estática 100% Stereo-Linked (idéntica en L y R, 0.0 dB respuesta plana,
+    //    cero desfase entre canales, cero paneo izquierda/derecha).
+    if (config.monoDownmixCanceller !== false && config.analogPhaseAndDrift > 0.05) {
       onProgress?.(
-        'Anti-Suno Cloak 2/4: Aplicando De-Cuantizador Zero-Sum de Formantes RVQ y Constelación Espectral...',
-        61
+        'Anti-Suno Cloak (2/2): Sellando coherencia de fase analógica Stereo-Linked...',
+        68
       );
-      await new Promise((r) => setTimeout(r, 0));
-
-      const bpFormant1 = designBandpassBiquad(1020, sampleRate, 1.45);
-      const bpFormant2 = designBandpassBiquad(3150, sampleRate, 1.35);
-      const bpValley1 = designBandpassBiquad(565, sampleRate, 1.6);
-      const bpValley2 = designBandpassBiquad(1820, sampleRate, 1.5);
-
-      const f1L = new Float32Array(inL);
-      const f1R = new Float32Array(inR);
-      const f2L = new Float32Array(inL);
-      const f2R = new Float32Array(inR);
-      const v1L = new Float32Array(inL);
-      const v1R = new Float32Array(inR);
-      const v2L = new Float32Array(inL);
-      const v2R = new Float32Array(inR);
-
-      applyBiquadZeroPhase(f1L, bpFormant1);
-      applyBiquadZeroPhase(f1R, bpFormant1);
-      applyBiquadZeroPhase(f2L, bpFormant2);
-      applyBiquadZeroPhase(f2R, bpFormant2);
-      applyBiquadZeroPhase(v1L, bpValley1);
-      applyBiquadZeroPhase(v1R, bpValley1);
-      applyBiquadZeroPhase(v2L, bpValley2);
-      applyBiquadZeroPhase(v2R, bpValley2);
-
-      // Constelación de 6 bandas para rotación multiplicativa de picos locales
-      const swapCenters = [360, 720, 1440, 2880, 5600, 9200];
-      const swapBandsL: Float32Array[] = [];
-      const swapBandsR: Float32Array[] = [];
-      for (let b = 0; b < swapCenters.length; b++) {
-        const bp = designBandpassBiquad(swapCenters[b], sampleRate, 2.15);
-        const bL = new Float32Array(inL);
-        const bR = new Float32Array(inR);
-        applyBiquadZeroPhase(bL, bp);
-        applyBiquadZeroPhase(bR, bp);
-        swapBandsL.push(bL);
-        swapBandsR.push(bR);
-      }
-
-      for (let i = 0; i < origLen; i++) {
-        const t = i / sampleRate;
-        const rvqMod =
-          0.135 +
-          0.035 *
-            Math.sin(2 * Math.PI * 0.19 * t) *
-            Math.cos(2 * Math.PI * 0.47 * t);
-
-        // Desplazamiento Zero-Sum: resta de formantes RVQ de Suno y suma idéntica en valles orgánicos
-        let deltaL =
-          -rvqMod * (f1L[i] + f2L[i]) + rvqMod * (v1L[i] + v2L[i]);
-        let deltaR =
-          -rvqMod * (f1R[i] + f2R[i]) + rvqMod * (v1R[i] + v2R[i]);
-
-        for (let b = 0; b < swapCenters.length; b++) {
-          const sign = b % 2 === 0 ? 1 : -1;
-          const rate = 0.27 + b * 0.13;
-          const gainMod =
-            0.16 * sign * Math.sin(2 * Math.PI * rate * t + b * 1.15);
-          deltaL += swapBandsL[b][i] * gainMod;
-          deltaR += swapBandsR[b][i] * -gainMod;
-        }
-
-        inL[i] += deltaL;
-        inR[i] += deltaR;
-      }
-    }
-
-    // =========================================================================
-    // PASO 3: DISRUPTOR DE REJILLA ENCODEC 20ms (50Hz) + DESPLAZAMIENTO CQT
-    // =========================================================================
-    const cqtMode: AntiSunoCqtMode =
-      config.cqtDeQuantizeMode ?? 'a432_detune';
-
-    let baseSpeedRatio = 432 / 440; // -31.77 cents (A=432Hz Master Tape)
-    if (cqtMode === 'detune_down') {
-      baseSpeedRatio = Math.pow(2, -0.5 / 12); // -50 cents (Quarter-Tone CQT Shift)
-    } else if (cqtMode === 'drop_semitone') {
-      baseSpeedRatio = Math.pow(2, -1.0 / 12); // -100 cents (Eb Studio Tuning)
-    } else if (cqtMode === 'macro_rubato_440') {
-      baseSpeedRatio = 1.0008; // Mantiene A=440Hz con rubato orgánico de cinta
-    }
-
-    onProgress?.(
-      `Anti-Suno Cloak 3/4: Desplazando celdas CQT (${cqtMode}) y rompiendo rejilla temporal de 20ms...`,
-      66
-    );
-    await new Promise((r) => setTimeout(r, 0));
-
-    const targetLen = Math.max(
-      128,
-      Math.floor(origLen / baseSpeedRatio)
-    );
-    const warpedL = new Float32Array(targetLen);
-    const warpedR = new Float32Array(targetLen);
-
-    const driftIntensity = Math.max(0.25, config.analogPhaseAndDrift);
-    let phasePos = 0;
-    const phaseStep = (origLen - 1) / Math.max(1, targetLen - 1);
-
-    for (let i = 0; i < targetLen; i++) {
-      const t = i / sampleRate;
-
-      // 3 osciladores irracionales inconmensurables que destruyen la periodicidad de 50Hz (20ms) de EnCodec
-      const macroRubato =
-        cqtMode === 'macro_rubato_440'
-          ? 0.0048 * Math.sin(2 * Math.PI * 0.07 * t) +
-            0.0024 * Math.cos(2 * Math.PI * 0.19 * t)
-          : 0.0014 * Math.sin(2 * Math.PI * 0.085 * t) +
-            0.0009 * Math.cos(2 * Math.PI * 0.23 * t);
-
-      const frameGridDisruptor =
-        (0.00042 * Math.sin(2 * Math.PI * 0.37 * t + 0.7) +
-          0.00028 * Math.sin(2 * Math.PI * 1.45 * t + 1.9) +
-          0.00018 * Math.cos(2 * Math.PI * 2.35 * t + 3.1)) *
-        driftIntensity;
-
-      const stereoMicroAsym =
-        0.00019 *
-        driftIntensity *
-        Math.sin(2 * Math.PI * 0.61 * t + 0.4) *
-        sampleRate;
-
-      warpedL[i] = cubicCatmullRomResample(inL, phasePos);
-      warpedR[i] = cubicCatmullRomResample(
-        inR,
-        Math.max(0, Math.min(origLen - 1, phasePos + stereoMicroAsym))
-      );
-
-      phasePos += phaseStep * (1 + macroRubato + frameGridDisruptor);
-      if (phasePos > origLen - 1) {
-        phasePos = origLen - 1;
-      }
-    }
-
-    // =========================================================================
-    // PASO 4: ESCUDO DE CANCELACIÓN EN DOWNMIX MONO (0.5 * (L + R))
-    //         12-Stage All-Pass + Micro-Warp Estéreo Opuesto >380Hz
-    // =========================================================================
-    if (config.monoDownmixCanceller !== false) {
-      onProgress?.(
-        'Anti-Suno Cloak 4/4: Activando Escudo de Cancelación Mono-Downmix (>380Hz)...',
-        71
-      );
-      await new Promise((r) => setTimeout(r, 0));
-
-      // 12 etapas All-Pass en canal R (amplitud 0.00dB plana, rotación de fase frecuencial)
-      const allpassFreqs = [
-        135, 220, 350, 540, 820, 1250, 1900, 2850, 4200, 6300, 9100, 12800,
-      ];
-      for (const apF of allpassFreqs) {
-        if (apF < sampleRate * 0.46) {
-          const ap = designAllpassBiquad(apF, sampleRate, 0.72);
-          applyBiquadInPlace(warpedR, ap);
+      const apFreqs = [1320, 3450, 7800];
+      for (const fc of apFreqs) {
+        const coeff = designAllpassBiquad(fc, sampleRate, Math.SQRT1_2);
+        applyBiquadInPlace(left, coeff);
+        if (right !== left) {
+          applyBiquadInPlace(right, coeff);
         }
       }
-
-      // Separar graves (<380Hz, 100% sólidos en fase) de medios/agudos (>380Hz)
-      const lp380 = designLowpassBiquad(380, sampleRate, 0.7071);
-      const lowL = new Float32Array(warpedL);
-      const lowR = new Float32Array(warpedR);
-      applyBiquadZeroPhase(lowL, lp380);
-      applyBiquadZeroPhase(lowR, lp380);
-
-      const highL = new Float32Array(targetLen);
-      const highR = new Float32Array(targetLen);
-      for (let i = 0; i < targetLen; i++) {
-        highL[i] = warpedL[i] - lowL[i];
-        highR[i] = warpedR[i] - lowR[i];
-      }
-
-      // Micro-Warp opuesto (+delta en L, -delta en R) para que al colapsar 0.5*(L+R) a mono
-      // se cancelen los formantes sintéticos de alta frecuencia sin alterar el estéreo
-      const maxDeltaSamples = 0.00058 * sampleRate; // ~0.58ms
-      for (let i = 0; i < targetLen; i++) {
-        const t = i / sampleRate;
-        const delta =
-          maxDeltaSamples *
-          (0.65 * Math.sin(2 * Math.PI * 1.18 * t) +
-            0.35 * Math.cos(2 * Math.PI * 2.85 * t + 1.1));
-
-        const readL = Math.max(0, Math.min(targetLen - 1, i + delta));
-        const readR = Math.max(0, Math.min(targetLen - 1, i - delta));
-
-        const wHighL = cubicCatmullRomResample(highL, readL);
-        const wHighR = cubicCatmullRomResample(highR, readR);
-
-        warpedL[i] = lowL[i] + wHighL;
-        warpedR[i] = lowR[i] + wHighR;
-      }
     }
 
-    // Construir AudioBuffer de salida con la longitud exacta post-CQT
-    const outCtx = new OfflineAudioContext(2, targetLen, sampleRate);
-    const outBuffer = outCtx.createBuffer(2, targetLen, sampleRate);
-    outBuffer.getChannelData(0).set(warpedL);
-    outBuffer.getChannelData(1).set(warpedR);
-
-    return outBuffer;
+    return buffer;
   }
 
   /**
@@ -782,7 +474,8 @@ export class ForensicHumanizerDSP {
   }
 
   /**
-   * Crea un Impulso Acústico (IR) de reflexiones tempranas de sala de control profesional (85ms)
+   * Crea un Impulso Acústico (IR) de reflexiones tempranas de sala de control profesional (75ms)
+   * con tiempos y energía 100% simétricos entre L y R para mantener el centro intacto.
    */
   private static generateStudioEarlyReflectionsIR(
     ctx: BaseAudioContext,
@@ -794,26 +487,30 @@ export class ForensicHumanizerDSP {
     const left = irBuffer.getChannelData(0);
     const right = irBuffer.getChannelData(1);
 
-    const earlyTapsL = [0.007, 0.013, 0.019, 0.029, 0.041, 0.053];
-    const earlyTapsR = [0.009, 0.015, 0.023, 0.031, 0.044, 0.059];
+    // Taps simétricos en L y R (cero efecto Haas lateral)
+    const earlyTaps = [0.008, 0.014, 0.021, 0.030, 0.042, 0.055];
 
-    earlyTapsL.forEach((tapSec, idx) => {
-      const sampleIdx = Math.floor(tapSec * sampleRate);
-      if (sampleIdx < length) left[sampleIdx] = Math.pow(0.68, idx + 1);
-    });
-
-    earlyTapsR.forEach((tapSec, idx) => {
+    earlyTaps.forEach((tapSec, idx) => {
       const sampleIdx = Math.floor(tapSec * sampleRate);
       if (sampleIdx < length) {
-        right[sampleIdx] =
-          Math.pow(0.68, idx + 1) * (idx % 2 === 0 ? 1 : -1);
+        const amp = Math.pow(0.66, idx + 1);
+        left[sampleIdx] = amp;
+        right[sampleIdx] = amp;
       }
     });
 
+    // Cola difusa de bajo nivel determinista y balanceada
+    let seed = 0x5f3759df;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
     for (let i = 0; i < length; i++) {
-      const decay = Math.exp((-6.5 * i) / length);
-      left[i] += (Math.random() * 2 - 1) * 0.08 * decay;
-      right[i] += (Math.random() * 2 - 1) * 0.08 * decay;
+      const decay = Math.exp((-7.0 * i) / length);
+      const rVal = nextRand() * 0.05 * decay;
+      left[i] += rVal;
+      right[i] += rVal;
     }
 
     return irBuffer;
@@ -933,7 +630,7 @@ export function calculateForensicSignature(
     ) {
       scoreReduction += 10;
     } else {
-      scoreReduction += 5;
+      scoreReduction += 6;
     }
   }
 

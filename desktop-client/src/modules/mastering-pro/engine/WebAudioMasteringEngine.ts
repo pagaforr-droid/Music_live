@@ -151,12 +151,25 @@ export class WebAudioMasteringEngine {
     this.updateAbCrossfadeGains();
   }
 
-  private computeTargetMakeupGainDb(): number {
+  public computeTargetMakeupGainDb(
+    chain: MasteringDspChain = this.activeChain
+  ): number {
     const baseInputLufs = this.adaptationReport?.detectedInputLufs ?? -16.5;
-    const targetLufs = this.activeChain.limiter.targetLufs;
-    // Account for ~1.5dB added by EQ/Compressor/Saturator before Maximizer
+    const targetLufs = chain.limiter.targetLufs;
+    // Account for ~1.4dB added by EQ/Compressor/Saturator before Maximizer
     const rawDelta = targetLufs - baseInputLufs - 1.4;
     return Math.max(-8, Math.min(12, rawDelta));
+  }
+
+  public getTargetPlaybackRate(
+    chain: MasteringDspChain = this.activeChain
+  ): number {
+    const forensicCfg =
+      chain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG;
+    return ForensicHumanizerDSP.getPlaybackRateForMode(
+      forensicCfg.cqtDeQuantizeMode,
+      forensicCfg.enabled
+    );
   }
 
   public setOnPlaybackEnd(cb: () => void): void {
@@ -473,9 +486,19 @@ export class WebAudioMasteringEngine {
   public applyDspChain(chain: MasteringDspChain): void {
     this.activeChain = chain;
     if (!this.ctx || !this.graphHandles) return;
-    const makeupDb = this.computeTargetMakeupGainDb();
+    const makeupDb = this.computeTargetMakeupGainDb(chain);
     this.graphHandles.applyDspChain(chain, makeupDb, this.ctx.currentTime);
     this.updateAbCrossfadeGains();
+
+    const targetRate = this.getTargetPlaybackRate(chain);
+    if (this.sourceNode) {
+      this.sourceNode.playbackRate.value = targetRate;
+      this.sourceNode.playbackRate.setTargetAtTime(
+        targetRate,
+        this.ctx.currentTime,
+        0.015
+      );
+    }
 
     // Check if drum layering sensitivity or playback config changed
     const drumCfg = chain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
@@ -488,7 +511,7 @@ export class WebAudioMasteringEngine {
       );
     }
 
-    const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${drumCfg.duckOriginalTransients !== false}:${sensSig}`;
+    const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${drumCfg.duckOriginalTransients !== false}:${sensSig}:${targetRate.toFixed(4)}`;
     if (drumSig !== this.lastDrumConfigSig) {
       this.lastDrumConfigSig = drumSig;
       if (this.isPlaying && this.audioBuffer) {
@@ -502,7 +525,8 @@ export class WebAudioMasteringEngine {
           currentOffset,
           this.audioBuffer.duration,
           this.loopEnabled ? 4 : 1,
-          this.graphHandles.transientDuckHandles
+          this.graphHandles.transientDuckHandles,
+          targetRate
         );
       }
     }
@@ -559,9 +583,11 @@ export class WebAudioMasteringEngine {
       this.stopSourceNodeOnly();
     }
 
+    const playbackRate = this.getTargetPlaybackRate(this.activeChain);
     const source = ctx.createBufferSource();
     source.buffer = this.audioBuffer;
     source.loop = this.loopEnabled;
+    source.playbackRate.value = playbackRate;
 
     if (this.preAnalyser && this.graphHandles) {
       source.connect(this.preAnalyser);
@@ -598,7 +624,8 @@ export class WebAudioMasteringEngine {
         offset,
         this.audioBuffer.duration,
         this.loopEnabled ? 4 : 1,
-        this.graphHandles.transientDuckHandles
+        this.graphHandles.transientDuckHandles,
+        playbackRate
       );
     }
   }
@@ -926,21 +953,35 @@ export class WebAudioMasteringEngine {
 
   /**
    * STAGE 6: Ultra-Fast Offline 48,000 Hz 24-Bit WAV Render.
-   * Clones the identical DSP graph inside an OfflineAudioContext(2, length, 48000),
-   * applies the Lookahead Brickwall True-Peak Limiter (-1.0 dBTP), and encodes a 24-bit WAV with TPDF Dithering.
+   * Recibe el snapshot exacto de la configuración activa (chainOverride) guardado en el módulo,
+   * clona idénticamente el grafo DSP en OfflineAudioContext(2, length, 48000),
+   * y codifica un WAV PCM de 24-bits con Dithering TPDF que suena 100% fiel a lo escuchado en vivo.
    */
   public async exportMasterToWav24Bit(
-    onProgress?: (stage: string, pct: number) => void
+    onProgress?: (stage: string, pct: number) => void,
+    chainOverride?: MasteringDspChain,
+    makeupGainOverrideDb?: number
   ): Promise<ExportMasterResult> {
     if (!this.audioBuffer) {
       throw new Error('No hay ninguna pista cargada para exportar.');
     }
 
-    onProgress?.('Inicializando OfflineAudioContext a 48,000 Hz (32-bit float)...', 12);
+    const exportChain = chainOverride ?? this.activeChain;
+    this.applyDspChain(exportChain);
+
+    onProgress?.(
+      'Cargando configuración activa y preparando OfflineAudioContext 48kHz (32-bit float)...',
+      12
+    );
 
     const targetSampleRate = 48000;
+    const playbackRate = this.getTargetPlaybackRate(exportChain);
     const durationSec = this.audioBuffer.duration;
-    const totalFrames = Math.max(1, Math.ceil(durationSec * targetSampleRate));
+    const renderedDurationSec = durationSec / playbackRate;
+    const totalFrames = Math.max(
+      1,
+      Math.ceil(renderedDurationSec * targetSampleRate)
+    );
 
     const offlineCtx = new OfflineAudioContext(
       2,
@@ -950,44 +991,58 @@ export class WebAudioMasteringEngine {
 
     const source = offlineCtx.createBufferSource();
     source.buffer = this.audioBuffer;
+    source.playbackRate.value = playbackRate;
 
-    const makeupDb = this.computeTargetMakeupGainDb();
+    const makeupDb =
+      makeupGainOverrideDb !== undefined
+        ? makeupGainOverrideDb
+        : this.computeTargetMakeupGainDb(exportChain);
+
     const offlineGraph = buildMasteringDspGraph(
       offlineCtx,
-      this.activeChain,
+      exportChain,
       makeupDb
     );
+    // Forzar sincronización explícita en t=0 de todos los parámetros del snapshot activo
+    offlineGraph.applyDspChain(exportChain, makeupDb, 0);
 
     source.connect(offlineGraph.inputNode);
     offlineGraph.outputNode.connect(offlineCtx.destination);
     source.start(0);
 
     // Schedule Sample-Accurate Acoustic Drum Layers + Surgical Transient Ducking inside OfflineAudioContext
-    const drumCfg =
-      this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
-    if (drumCfg.enabled && this.detectedDrumHits.length > 0) {
-      this.drumReplacer.scheduleDrumLayers(
-        offlineCtx,
-        offlineGraph.drumLayerBusInput,
-        this.detectedDrumHits,
-        drumCfg,
-        0,
-        0,
-        durationSec,
-        1,
-        offlineGraph.transientDuckHandles
+    const drumCfg = exportChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    if (drumCfg.enabled) {
+      const hitsForExport = this.drumReplacer.detectDrumTransients(
+        this.audioBuffer,
+        drumCfg
       );
+      this.detectedDrumHits = hitsForExport;
+      if (hitsForExport.length > 0) {
+        this.drumReplacer.scheduleDrumLayers(
+          offlineCtx,
+          offlineGraph.drumLayerBusInput,
+          hitsForExport,
+          drumCfg,
+          0,
+          0,
+          durationSec,
+          1,
+          offlineGraph.transientDuckHandles,
+          playbackRate
+        );
+      }
     }
 
     onProgress?.(
-      'Procesando Matriz Mid/Side, Saturación 4x y Compresión Bus Glue...',
+      'Procesando Matriz Mid/Side, EQ Quirúrgico, Saturación 4x y Compresión Bus Glue...',
       42
     );
 
     const rawRenderedBuffer = await offlineCtx.startRendering();
 
     const forensicCfg =
-      this.activeChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG;
+      exportChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG;
     const renderedBuffer =
       await ForensicHumanizerDSP.applyDeepAntiSunoOfflineCloak(
         rawRenderedBuffer,
@@ -996,15 +1051,15 @@ export class WebAudioMasteringEngine {
       );
 
     onProgress?.(
-      `Aplicando Limitador Lookahead Brickwall (${this.activeChain.limiter.ceilingDbTp.toFixed(1)} dBTP)...`,
+      `Aplicando Limitador Lookahead Brickwall (${exportChain.limiter.ceilingDbTp.toFixed(1)} dBTP)...`,
       78
     );
 
     const limiterStats = applyLookaheadBrickwallLimiterOffline(
       renderedBuffer,
-      this.activeChain.limiter.ceilingDbTp,
-      this.activeChain.limiter.lookaheadMs,
-      this.activeChain.limiter.releaseMs
+      exportChain.limiter.ceilingDbTp,
+      exportChain.limiter.lookaheadMs,
+      exportChain.limiter.releaseMs
     );
 
     onProgress?.(

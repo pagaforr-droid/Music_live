@@ -7,6 +7,8 @@ import {
   AlertCircle,
   Database,
   Download,
+  Save,
+  Upload,
   X,
 } from 'lucide-react';
 import {
@@ -14,7 +16,15 @@ import {
   buildEffectiveDspChain,
   extractSurgicalOverridesFromPreset,
   getPresetById,
+  syncSurgicalOverridesEqBands,
 } from '../presets/proPresetsCatalog';
+import {
+  downloadMasteringConfigJsonFile,
+  loadActiveMasteringConfigSnapshot,
+  parseMasteringConfigJsonFile,
+  saveActiveMasteringConfigSnapshot,
+  type MasteringConfigurationFile,
+} from '../engine/MasteringConfigStorage';
 import {
   analyzeTrackAndComputeAdaptation,
   recomputeDeltasForPreset,
@@ -165,6 +175,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const [visualizerView, setVisualizerView] = useState<
     'both' | 'fft' | 'heatmap'
   >('both');
+  const configFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedPreset = useMemo(
     () => getPresetById(selectedPresetId),
@@ -193,14 +204,47 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     engineRef.current!.getLiveMetrics()
   );
 
-  // Sync DSP chain changes into live WebAudio graph
+  const buildCurrentConfigSnapshot = useCallback((): MasteringConfigurationFile => {
+    const engine = engineRef.current;
+    const makeupDb = engine
+      ? engine.computeTargetMakeupGainDb(effectiveDspChain)
+      : 0;
+    return {
+      schemaVersion: '1.0.0',
+      savedAtIso: new Date().toISOString(),
+      trackTitle,
+      songId: activeSongId,
+      selectedPresetId: selectedPreset.id,
+      presetName: selectedPreset.name,
+      intensityPct,
+      autoAdaptEnabled,
+      kickBassSidechain,
+      autoMakeupGainDb: makeupDb,
+      detectedInputLufs: adaptationReport?.detectedInputLufs ?? -16.5,
+      surgicalOverrides: syncSurgicalOverridesEqBands(overrides),
+      effectiveDspChain,
+    };
+  }, [
+    effectiveDspChain,
+    trackTitle,
+    activeSongId,
+    selectedPreset,
+    intensityPct,
+    autoAdaptEnabled,
+    kickBassSidechain,
+    adaptationReport,
+    overrides,
+  ]);
+
+  // Sync DSP chain changes into live WebAudio graph + Auto-persist active configuration snapshot
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
     engine.applyDspChain(effectiveDspChain);
     setLiveMetrics(engine.getLiveMetrics());
     setDetectedDrumHits(engine.getDetectedDrumHits());
-  }, [effectiveDspChain]);
+    saveActiveMasteringConfigSnapshot(buildCurrentConfigSnapshot());
+  }, [effectiveDspChain, buildCurrentConfigSnapshot]);
 
   // Sync Bypass & Gain-Match into live WebAudio graph
   useEffect(() => {
@@ -467,7 +511,8 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         }
       }
 
-      setOverrides(nextOverrides);
+      setOverrides(syncSurgicalOverridesEqBands(nextOverrides));
+      setIsBypassed(false);
       setAutoAdaptEnabled(true);
       setIsAnalyzing(false);
       setStatusBanner({
@@ -478,6 +523,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   };
 
   const handleApplyCriticalPoint = (point: AiCriticalEqPoint) => {
+    setIsBypassed(false);
     setOverrides((prev) => {
       const next = { ...prev };
       if (point.bandId === 'mid-sub-punch') {
@@ -506,7 +552,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             }
           : b
       );
-      return next;
+      return syncSurgicalOverridesEqBands(next);
     });
 
     setStatusBanner({
@@ -518,10 +564,13 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   };
 
   const handleApplyFilterSuggestion = (suggestion: AiFilterSuggestion) => {
-    setOverrides((prev) => ({
-      ...prev,
-      ...suggestion.patchOverrides,
-    }));
+    setIsBypassed(false);
+    setOverrides((prev) =>
+      syncSurgicalOverridesEqBands({
+        ...prev,
+        ...suggestion.patchOverrides,
+      })
+    );
     setStatusBanner({
       type: 'success',
       message: `Filtro activado: ${suggestion.name}.`,
@@ -530,6 +579,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
   const handleApplyAiCompression = () => {
     if (!adaptationReport) return;
+    setIsBypassed(false);
     const c = adaptationReport.compressionSuggestion;
     setOverrides((prev) => ({
       ...prev,
@@ -548,13 +598,16 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
   const handleApplyAiStereoWidth = () => {
     if (!adaptationReport) return;
+    setIsBypassed(false);
     const s = adaptationReport.stereoWidthSuggestion;
-    setOverrides((prev) => ({
-      ...prev,
-      stereoWidthPct: s.recommendedWidthPct,
-      monoMakerFreq: s.recommendedMonoMakerHz,
-      sideAirBoostDb: s.recommendedSideAirDb,
-    }));
+    setOverrides((prev) =>
+      syncSurgicalOverridesEqBands({
+        ...prev,
+        stereoWidthPct: s.recommendedWidthPct,
+        monoMakerFreq: s.recommendedMonoMakerHz,
+        sideAirBoostDb: s.recommendedSideAirDb,
+      })
+    );
     setStatusBanner({
       type: 'success',
       message: `Amplitud Estéreo IA aplicada (${s.recommendedWidthPct}% Width, Mono Maker @ ${s.recommendedMonoMakerHz} Hz).`,
@@ -565,22 +618,43 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     bandId: string,
     patch: Partial<EQBandConfig>
   ) => {
-    setOverrides((prev) => ({
-      ...prev,
-      customEqBands: prev.customEqBands.map((b) =>
-        b.id === bandId ? { ...b, ...patch } : b
-      ),
-    }));
+    setIsBypassed(false);
+    setOverrides((prev) => {
+      const next: SurgicalOverrides = {
+        ...prev,
+        customEqBands: prev.customEqBands.map((b) =>
+          b.id === bandId ? { ...b, ...patch } : b
+        ),
+      };
+      if (patch.gainDb !== undefined) {
+        if (bandId === 'mid-sub-punch') next.midLowPunchDb = patch.gainDb;
+        else if (bandId === 'stereo-mud-cut') next.stereoMudCutDb = patch.gainDb;
+        else if (bandId === 'mid-vocal-bite') next.midPresenceDb = patch.gainDb;
+        else if (bandId === 'stereo-de-harsh')
+          next.deHarshnessCutDb = patch.gainDb;
+        else if (bandId === 'stereo-sibilance')
+          next.sibilanceCutDb = patch.gainDb;
+        else if (bandId === 'side-air-shelf') next.sideAirBoostDb = patch.gainDb;
+      }
+      if (patch.freq !== undefined && bandId === 'stereo-sibilance') {
+        next.sibilanceFreqHz = patch.freq;
+      }
+      return syncSurgicalOverridesEqBands(next);
+    });
   };
 
   const handleChangeOverride = <K extends keyof SurgicalOverrides>(
     key: K,
     value: SurgicalOverrides[K]
   ) => {
-    setOverrides((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
+    setIsBypassed(false);
+    setOverrides((prev) => {
+      const next: SurgicalOverrides = {
+        ...prev,
+        [key]: value,
+      };
+      return syncSurgicalOverridesEqBands(next);
+    });
   };
 
   const handleStartBandPassSolo = useCallback(
@@ -757,14 +831,63 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     }
   };
 
+  const handleExportConfigFile = () => {
+    const snapshot = saveActiveMasteringConfigSnapshot(
+      buildCurrentConfigSnapshot()
+    );
+    downloadMasteringConfigJsonFile(snapshot);
+    setStatusBanner({
+      type: 'success',
+      message: `Configuración activa de Mastering Pro guardada en archivo "${snapshot.selectedPresetId}.mastering.json".`,
+    });
+  };
+
+  const handleImportConfigFile = async (file: File) => {
+    try {
+      const parsed = await parseMasteringConfigJsonFile(file);
+      setSelectedPresetId(parsed.selectedPresetId);
+      setIntensityPct(parsed.intensityPct ?? 100);
+      setAutoAdaptEnabled(parsed.autoAdaptEnabled ?? true);
+      setKickBassSidechain(parsed.kickBassSidechain ?? true);
+      setOverrides(syncSurgicalOverridesEqBands(parsed.surgicalOverrides));
+      setIsBypassed(false);
+      saveActiveMasteringConfigSnapshot(parsed);
+      setStatusBanner({
+        type: 'success',
+        message: `Configuración "${parsed.presetName}" cargada y aplicada al motor DSP y al exportador.`,
+      });
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo leer el archivo de configuración.',
+      });
+    }
+  };
+
   const handleExportWav24 = async () => {
     const engine = engineRef.current;
     if (!engine || !hasAudio) return;
     try {
       setIsExporting(true);
-      const result = await engine.exportMasterToWav24Bit((stage, pct) => {
-        setExportProgress({ stage, pct });
-      });
+      setIsBypassed(false);
+
+      // 1. Persistir y recuperar el snapshot exacto de todas las configuraciones del módulo
+      const savedSnapshot = saveActiveMasteringConfigSnapshot(
+        buildCurrentConfigSnapshot()
+      );
+      const verifiedSnapshot =
+        loadActiveMasteringConfigSnapshot(activeSongId) ?? savedSnapshot;
+
+      const result = await engine.exportMasterToWav24Bit(
+        (stage, pct) => {
+          setExportProgress({ stage, pct });
+        },
+        verifiedSnapshot.effectiveDspChain,
+        verifiedSnapshot.autoMakeupGainDb
+      );
 
       const cleanName =
         trackTitle.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]+/g, '_') ||
@@ -782,7 +905,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
       setStatusBanner({
         type: 'success',
-        message: `Master WAV 24-Bit / 48kHz exportado (${(
+        message: `Master WAV 24-Bit / 48kHz exportado con 100% de tus ajustes activos (${(
           result.blob.size /
           (1024 * 1024)
         ).toFixed(1)} MB · True Peak: ${result.finalTruePeakDbTp} dBTP · Dither TPDF).`,
@@ -806,15 +929,26 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     if (!engine || !hasAudio) return;
     try {
       setIsSavingCloud(true);
+      setIsBypassed(false);
       setStatusBanner({
         type: 'info',
         message:
-          'Renderizando Master WAV de 24-bits y subiendo a Supabase Storage...',
+          'Guardando snapshot de configuración, renderizando Master WAV de 24-bits y subiendo a Supabase Storage...',
       });
 
-      const renderRes = await engine.exportMasterToWav24Bit((stage, pct) => {
-        setExportProgress({ stage, pct });
-      });
+      const savedSnapshot = saveActiveMasteringConfigSnapshot(
+        buildCurrentConfigSnapshot()
+      );
+      const verifiedSnapshot =
+        loadActiveMasteringConfigSnapshot(activeSongId) ?? savedSnapshot;
+
+      const renderRes = await engine.exportMasterToWav24Bit(
+        (stage, pct) => {
+          setExportProgress({ stage, pct });
+        },
+        verifiedSnapshot.effectiveDspChain,
+        verifiedSnapshot.autoMakeupGainDb
+      );
 
       const savedRecord = await uploadAndSaveMasterSession({
         wavBlob: renderRes.blob,
@@ -830,8 +964,8 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         phaseCorrelation: liveMetrics.phaseCorrelation,
         durationSeconds: renderRes.durationSec,
         sampleRate: renderRes.sampleRate,
-        dspSnapshot: effectiveDspChain,
-        surgicalOverrides: overrides,
+        dspSnapshot: verifiedSnapshot.effectiveDspChain,
+        surgicalOverrides: verifiedSnapshot.surgicalOverrides,
       });
 
       setSessionsHistory((prev) => [savedRecord, ...prev]);
@@ -908,6 +1042,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF]">
                   M/S MATRIX + 4X OVERSAMPLING
                 </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold">
+                  ● CONFIG SINCRONIZADA 1:1 CON EXPORTADOR
+                </span>
               </div>
               <p className="text-xs text-slate-400">
                 Suite de masterización inteligente con curva ITU-R BS.1770-4, Mono Maker Butterworth y Limitador Lookahead True Peak.
@@ -915,8 +1052,40 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             </div>
           </div>
 
-          {/* Right Quick Actions: Load from Project, History, SQL Schema */}
+          {/* Right Quick Actions: Save/Load Config, Load from Project, History, SQL Schema */}
           <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={configFileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleImportConfigFile(f);
+                e.target.value = '';
+              }}
+            />
+
+            <button
+              type="button"
+              onClick={handleExportConfigFile}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-emerald-500/40 text-xs font-mono text-emerald-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Guardar toda la configuración actual del módulo en un archivo .mastering.json"
+            >
+              <Save size={13} className="text-emerald-400" />
+              <span>Guardar Config (.json)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => configFileInputRef.current?.click()}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Cargar un archivo .mastering.json con configuraciones guardadas"
+            >
+              <Upload size={13} className="text-[#00E5FF]" />
+              <span>Cargar Config</span>
+            </button>
+
             {projectTracks.length > 0 && (
               <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
                 <FolderOpen size={13} className="text-[#00E5FF]" />

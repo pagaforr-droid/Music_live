@@ -199,9 +199,16 @@ export class DrumTransientReplacerDSP {
     playbackOffsetSec = 0,
     trackDurationSec = 0,
     loopCycles = 1,
-    transientDuckHandles?: TransientDuckHandles
+    transientDuckHandles?: TransientDuckHandles,
+    playbackRate = 1.0
   ): void {
-    this.stopScheduledLayers();
+    const isOffline =
+      typeof OfflineAudioContext !== 'undefined' &&
+      ctx instanceof OfflineAudioContext;
+    if (!isOffline) {
+      this.stopScheduledLayers();
+    }
+
     if (transientDuckHandles) {
       try {
         transientDuckHandles.kickDuckFilter.gain.cancelScheduledValues(0);
@@ -214,6 +221,7 @@ export class DrumTransientReplacerDSP {
     }
     if (!config.enabled || events.length === 0) return;
 
+    const safeRate = Math.max(0.5, Math.min(2.0, playbackRate || 1.0));
     const kickBuffer =
       this.customKickBuffer ||
       this.getOrSynthesizeKickBuffer(ctx, config.drumStyle);
@@ -236,7 +244,7 @@ export class DrumTransientReplacerDSP {
 
         let triggerTime =
           audioStartContextTime +
-          (hit.timeSec + cycleTimeOffset - playbackOffsetSec);
+          (hit.timeSec + cycleTimeOffset - playbackOffsetSec) / safeRate;
 
         // Ducking quirúrgico de la transiente sintética original (18-22ms)
         if (
@@ -264,7 +272,7 @@ export class DrumTransientReplacerDSP {
         const hitGain = ctx.createGain();
         hitGain.gain.value = hit.velocity * mixAmount * 0.92;
 
-        // Micro-Humanización Round-Robin (Rompe correlación forense entre golpes)
+        // Micro-Humanización Round-Robin (100% Centrada, CERO paneo lateral L/R)
         if (config.humanizeRoundRobin) {
           const seedIdx = index + cycle * 997;
           const pseudoRand1 = Math.sin(seedIdx * 12.9898) * 43758.5453;
@@ -272,37 +280,34 @@ export class DrumTransientReplacerDSP {
           const pseudoRand2 = Math.sin(seedIdx * 78.233) * 19341.7219;
           const frac2 = pseudoRand2 - Math.floor(pseudoRand2);
 
-          // 1. Variación orgánica de afinación (±0.8% / ±13 cents)
-          source.playbackRate.value = 0.992 + frac1 * 0.016;
+          // 1. Variación orgánica de afinación (±0.6%) sincronizada con el playbackRate global
+          source.playbackRate.value = safeRate * (0.994 + frac1 * 0.012);
 
-          // 2. Micro-desplazamiento de fase/tiempo (±0.18 ms)
-          triggerTime += (frac2 - 0.5) * 0.00036;
+          // 2. Micro-desplazamiento de tiempo (±0.15 ms) idéntico en L y R
+          triggerTime += (frac2 - 0.5) * 0.0003;
 
-          // 3. Variación sutil de timbre y micro-paneo por golpe
+          // 3. Variación sutil de timbre (sin StereoPanner para mantener bombo y caja clavados al centro)
           const timbreFilter = ctx.createBiquadFilter();
           timbreFilter.type = 'peaking';
           timbreFilter.frequency.value = isKick
-            ? 68 + frac1 * 24
-            : 2350 + frac1 * 650;
+            ? 68 + frac1 * 20
+            : 2350 + frac1 * 550;
           timbreFilter.Q.value = 1.4;
-          timbreFilter.gain.value = (frac2 - 0.5) * 1.8;
-
-          const panner = ctx.createStereoPanner();
-          panner.pan.value = isKick
-            ? (frac1 - 0.5) * 0.02
-            : (frac2 - 0.5) * 0.07;
+          timbreFilter.gain.value = (frac2 - 0.5) * 1.4;
 
           source.connect(timbreFilter);
-          timbreFilter.connect(panner);
-          panner.connect(hitGain);
+          timbreFilter.connect(hitGain);
         } else {
+          source.playbackRate.value = safeRate;
           source.connect(hitGain);
         }
 
         hitGain.connect(destinationNode);
 
         source.start(Math.max(0, triggerTime));
-        this.activeScheduledNodes.push(source);
+        if (!isOffline) {
+          this.activeScheduledNodes.push(source);
+        }
       });
     }
   }
@@ -382,6 +387,12 @@ export class DrumTransientReplacerDSP {
     let hpfState = 0;
     const hpfAlpha = (2 * Math.PI * 33) / (sr + 2 * Math.PI * 33);
 
+    let seed = 0x13579bdf;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
     for (let i = 0; i < length; i++) {
       const t = i / sr;
       const currentFreq = endFreq + (startFreq - endFreq) * Math.exp(-t * 38);
@@ -392,7 +403,7 @@ export class DrumTransientReplacerDSP {
         0.19 * Math.sin(phase * 2) * Math.exp(-t * 22);
 
       const beaterClick =
-        (Math.random() * 2 - 1) * Math.exp(-t * 280) * 0.52 +
+        nextRand() * Math.exp(-t * 280) * 0.52 +
         Math.sin(2 * Math.PI * 3150 * t) * Math.exp(-t * 240) * 0.36;
 
       const raw = Math.tanh((body + beaterClick) * 1.35);
@@ -407,7 +418,7 @@ export class DrumTransientReplacerDSP {
   }
 
   /**
-   * Genera un sample de Caja (Snare) Acústica con transiente real, cuerpo en 210Hz y bordona metálica estéreo
+   * Genera un sample de Caja (Snare) Acústica 100% centrada en fase con transiente real y cuerpo en 210Hz
    */
   private synthesizeStudioSnareBuffer(
     ctx: BaseAudioContext,
@@ -436,6 +447,12 @@ export class DrumTransientReplacerDSP {
         ? 310
         : 330;
 
+    let seed = 0x2468ace0;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
     for (let i = 0; i < length; i++) {
       const t = i / sr;
       const f1 = baseF1 + 90 * Math.exp(-t * 55);
@@ -453,14 +470,14 @@ export class DrumTransientReplacerDSP {
           : style === 'tight-pop-funk'
           ? 19.5
           : 15.5;
-      const noiseL = (Math.random() * 2 - 1) * Math.exp(-t * wireDecay) * 0.65;
-      const noiseR = (Math.random() * 2 - 1) * Math.exp(-t * wireDecay) * 0.65;
+      const wireMono = nextRand() * Math.exp(-t * wireDecay) * 0.65;
 
       const stickCrack =
         Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 310) * 0.62;
 
-      left[i] = Math.tanh((shellBody + stickCrack + noiseL) * 1.25);
-      right[i] = Math.tanh((shellBody + stickCrack + noiseR) * 1.25);
+      const sample = Math.tanh((shellBody + stickCrack + wireMono) * 1.25);
+      left[i] = sample;
+      right[i] = sample;
     }
     return buffer;
   }

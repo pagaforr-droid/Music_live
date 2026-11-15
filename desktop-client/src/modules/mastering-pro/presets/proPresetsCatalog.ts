@@ -698,7 +698,8 @@ export function extractSurgicalOverridesFromPreset(
     resonanceKillerPct: 100,
     forensicHumanizer: {
       ...DEFAULT_FORENSIC_HUMANIZER_CONFIG,
-      enabled: preset.id === 'de-ai-studio-rescue' || true,
+      enabled: true,
+      cqtDeQuantizeMode: 'macro_rubato_440',
       bassConcentrationCap: preset.id === 'de-ai-studio-rescue' ? 0.82 : 0.72,
       highFreqExciterAmount: preset.id === 'de-ai-studio-rescue' ? 0.55 : 0.42,
     },
@@ -716,8 +717,48 @@ export function extractSurgicalOverridesFromPreset(
 }
 
 /**
- * Combines base preset DSP chain + Macro Intensity (0%..150%) + Surgical Overrides + AI Spectral Deltas
- * into a final deterministic MasteringDspChain ready for the WebAudio graph.
+ * Sincroniza bidireccionalmente los valores de ganancia/frecuencia de SurgicalOverrides
+ * con el arreglo customEqBands para que cualquier ajuste en la Consola Quirúrgica,
+ * el Ecualizador Paramétrico o el Asistente IA se refleje al 100% en vivo y al exportar.
+ */
+export function syncSurgicalOverridesEqBands(
+  overrides: SurgicalOverrides
+): SurgicalOverrides {
+  const syncedBands = (overrides.customEqBands || []).map((band) => {
+    if (band.id === 'mid-sub-punch') {
+      return { ...band, gainDb: overrides.midLowPunchDb };
+    }
+    if (band.id === 'stereo-mud-cut') {
+      return { ...band, gainDb: overrides.stereoMudCutDb };
+    }
+    if (band.id === 'mid-vocal-bite') {
+      return { ...band, gainDb: overrides.midPresenceDb };
+    }
+    if (band.id === 'stereo-de-harsh') {
+      return { ...band, gainDb: overrides.deHarshnessCutDb };
+    }
+    if (band.id === 'stereo-sibilance') {
+      return {
+        ...band,
+        gainDb: overrides.sibilanceCutDb,
+        freq: overrides.sibilanceFreqHz || band.freq,
+      };
+    }
+    if (band.id === 'side-air-shelf') {
+      return { ...band, gainDb: overrides.sideAirBoostDb };
+    }
+    return band;
+  });
+
+  return {
+    ...overrides,
+    customEqBands: syncedBands,
+  };
+}
+
+/**
+ * Combines base preset DSP chain + Macro Intensity (0%..150%) + Surgical Overrides
+ * into a final deterministic MasteringDspChain ready for both live WebAudio and Offline WAV export.
  */
 export function buildEffectiveDspChain(
   basePreset: MasteringPreset,
@@ -731,16 +772,18 @@ export function buildEffectiveDspChain(
   } | null
 ): MasteringDspChain {
   const scale = Math.max(0, Math.min(1.5, intensityPct / 100));
-  const subDelta = deltaAdjustments ? deltaAdjustments.subDeltaDb * scale : 0;
+  // Subtle spectral delta assist when Auto-Adapt is active (capped to ±0.8 dB so it never fights manual sliders)
+  const clampDelta = (d: number) => Math.max(-0.8, Math.min(0.8, d * 0.25));
+  const subDelta = deltaAdjustments ? clampDelta(deltaAdjustments.subDeltaDb) * scale : 0;
   const lowMidDelta = deltaAdjustments
-    ? deltaAdjustments.lowMidDeltaDb * scale
+    ? clampDelta(deltaAdjustments.lowMidDeltaDb) * scale
     : 0;
   const presenceDelta = deltaAdjustments
-    ? deltaAdjustments.presenceDeltaDb * scale
+    ? clampDelta(deltaAdjustments.presenceDeltaDb) * scale
     : 0;
-  const airDelta = deltaAdjustments ? deltaAdjustments.airDeltaDb * scale : 0;
+  const airDelta = deltaAdjustments ? clampDelta(deltaAdjustments.airDeltaDb) * scale : 0;
 
-  const clampGain = (val: number, min = -9, max = 9) =>
+  const clampGain = (val: number, min = -12, max = 12) =>
     Math.max(min, Math.min(max, Number(val.toFixed(2))));
 
   const sourceBands =
@@ -772,7 +815,7 @@ export function buildEffectiveDspChain(
     return {
       ...band,
       freq: Math.max(20, Math.min(20000, freq)),
-      gainDb: clampGain(rawGain),
+      gainDb: band.enabled === false ? 0 : clampGain(rawGain),
     };
   });
 
@@ -799,7 +842,7 @@ export function buildEffectiveDspChain(
     Math.max(0.4, scale);
   const resonanceNotches = (overrides.resonanceNotches || []).map((n) => ({
     ...n,
-    gainCutDb: clampGain(n.gainCutDb * killerScale, -12, 0),
+    gainCutDb: clampGain(n.gainCutDb * killerScale, -14, 0),
   }));
 
   return {

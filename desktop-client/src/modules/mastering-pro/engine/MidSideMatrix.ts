@@ -18,6 +18,35 @@ function lockMonoDiscrete(node: AudioNode): void {
   node.channelInterpretation = 'discrete';
 }
 
+function configureFilterForChannel(
+  node: BiquadFilterNode,
+  band: EQBandConfig,
+  targetChannel: 'mid' | 'side',
+  now?: number
+): void {
+  const isActiveOnChannel =
+    band.channel === targetChannel && band.enabled !== false;
+  const effectiveType: BiquadFilterType = isActiveOnChannel
+    ? band.type
+    : 'peaking';
+  const clampedFreq = Math.max(20, Math.min(20000, band.freq));
+  const clampedQ = Math.max(0.2, Math.min(24, band.q));
+  const effectiveGain = isActiveOnChannel ? band.gainDb : 0;
+
+  if (node.type !== effectiveType) {
+    node.type = effectiveType;
+  }
+  node.frequency.value = clampedFreq;
+  node.Q.value = clampedQ;
+  node.gain.value = effectiveGain;
+
+  if (now !== undefined) {
+    node.frequency.setTargetAtTime(clampedFreq, now, 0.012);
+    node.Q.setTargetAtTime(clampedQ, now, 0.012);
+    node.gain.setTargetAtTime(effectiveGain, now, 0.012);
+  }
+}
+
 /**
  * Builds a true studio Mid/Side encode -> process -> decode matrix on any BaseAudioContext.
  *
@@ -80,18 +109,14 @@ export function createMidSideMatrix(
   lToSide.connect(sideSum);
   rToSideInvert.connect(sideSum);
 
-  // --- MID PROCESSING CHAIN ---
+  // --- MID PROCESSING CHAIN (All Band IDs pre-allocated so channel switching is 100% seamless) ---
   const midBandFilters = new Map<string, BiquadFilterNode>();
   let lastMidNode: AudioNode = midSum;
 
-  const midBands = eqBands.filter((b) => b.channel === 'mid');
-  for (const band of midBands) {
+  for (const band of eqBands) {
     const filter = ctx.createBiquadFilter();
     lockMonoDiscrete(filter);
-    filter.type = band.type;
-    filter.frequency.value = band.freq;
-    filter.Q.value = band.q;
-    filter.gain.value = band.enabled === false ? 0 : band.gainDb;
+    configureFilterForChannel(filter, band, 'mid');
     lastMidNode.connect(filter);
     lastMidNode = filter;
     midBandFilters.set(band.id, filter);
@@ -102,22 +127,21 @@ export function createMidSideMatrix(
   const monoMakerFilter = ctx.createBiquadFilter();
   lockMonoDiscrete(monoMakerFilter);
   monoMakerFilter.type = 'highpass';
-  monoMakerFilter.frequency.value = Math.max(30, Math.min(250, initialMonoMakerFreq));
+  monoMakerFilter.frequency.value = Math.max(
+    30,
+    Math.min(250, initialMonoMakerFreq)
+  );
   monoMakerFilter.Q.value = Math.SQRT1_2; // 0.7071 Butterworth (zero resonant bump)
 
   sideSum.connect(monoMakerFilter);
   let lastSideNode: AudioNode = monoMakerFilter;
 
-  // 2. Side EQ Bands (e.g., High-Shelf Air Boost at 10kHz-15kHz)
+  // 2. Side EQ Bands (All Band IDs pre-allocated so channel switching is 100% seamless)
   const sideBandFilters = new Map<string, BiquadFilterNode>();
-  const sideBands = eqBands.filter((b) => b.channel === 'side');
-  for (const band of sideBands) {
+  for (const band of eqBands) {
     const filter = ctx.createBiquadFilter();
     lockMonoDiscrete(filter);
-    filter.type = band.type;
-    filter.frequency.value = band.freq;
-    filter.Q.value = band.q;
-    filter.gain.value = band.enabled === false ? 0 : band.gainDb;
+    configureFilterForChannel(filter, band, 'side');
     lastSideNode.connect(filter);
     lastSideNode = filter;
     sideBandFilters.set(band.id, filter);
@@ -126,7 +150,10 @@ export function createMidSideMatrix(
   // 3. Stereo Width Side Gain
   const sideWidthGain = ctx.createGain();
   lockMonoDiscrete(sideWidthGain);
-  sideWidthGain.gain.value = Math.pow(10, initialSideGainDb / 20);
+  sideWidthGain.gain.value = Math.pow(
+    10,
+    Math.max(-24, Math.min(9, initialSideGainDb)) / 20
+  );
   lastSideNode.connect(sideWidthGain);
 
   // --- DECODE NETWORK: L = Mid + Side, R = Mid - Side ---
@@ -167,27 +194,23 @@ export function createMidSideMatrix(
     sideBandFilters,
     updateMonoMakerFreq: (freqHz: number, now: number) => {
       const clamped = Math.max(30, Math.min(250, freqHz));
-      monoMakerFilter.frequency.setTargetAtTime(clamped, now, 0.015);
+      monoMakerFilter.frequency.value = clamped;
+      monoMakerFilter.frequency.setTargetAtTime(clamped, now, 0.012);
     },
     updateSideGainDb: (sideGainDb: number, now: number) => {
       const linear = Math.pow(10, Math.max(-24, Math.min(9, sideGainDb)) / 20);
-      sideWidthGain.gain.setTargetAtTime(linear, now, 0.015);
+      sideWidthGain.gain.value = linear;
+      sideWidthGain.gain.setTargetAtTime(linear, now, 0.012);
     },
     updateBand: (band: EQBandConfig, now: number) => {
-      const targetMap =
-        band.channel === 'mid' ? midBandFilters : sideBandFilters;
-      const node = targetMap.get(band.id);
-      if (!node) return;
-      if (node.type !== band.type) {
-        node.type = band.type;
+      const midNode = midBandFilters.get(band.id);
+      if (midNode) {
+        configureFilterForChannel(midNode, band, 'mid', now);
       }
-      node.frequency.setTargetAtTime(band.freq, now, 0.015);
-      node.Q.setTargetAtTime(band.q, now, 0.015);
-      node.gain.setTargetAtTime(
-        band.enabled === false ? 0 : band.gainDb,
-        now,
-        0.015
-      );
+      const sideNode = sideBandFilters.get(band.id);
+      if (sideNode) {
+        configureFilterForChannel(sideNode, band, 'side', now);
+      }
     },
   };
 }

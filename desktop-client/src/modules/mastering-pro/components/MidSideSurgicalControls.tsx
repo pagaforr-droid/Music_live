@@ -470,6 +470,29 @@ export const MidSideSurgicalControls: React.FC<
               />
             </div>
 
+            {/* Target Loudness LUFS */}
+            <div className="pt-2 border-t border-slate-800/80">
+              <div className="flex justify-between text-xs font-mono mb-1">
+                <span className="text-slate-300">
+                  Target Loudness (Maximizer Push)
+                </span>
+                <span className="text-[#FF6B00] font-bold">
+                  {overrides.targetLufs.toFixed(1)} LUFS
+                </span>
+              </div>
+              <input
+                type="range"
+                min={-15.0}
+                max={-7.5}
+                step={0.5}
+                value={overrides.targetLufs}
+                onChange={(e) =>
+                  onChangeOverride('targetLufs', Number(e.target.value))
+                }
+                className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
+            </div>
+
             {/* True Peak Ceiling dBTP */}
             <div className="pt-2 border-t border-slate-800/80">
               <div className="flex justify-between text-xs font-mono mb-1">

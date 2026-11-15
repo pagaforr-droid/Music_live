@@ -1,4 +1,4 @@
-import type { MasteringDspChain } from '../types/mastering.types';
+import type { EQBandConfig, MasteringDspChain } from '../types/mastering.types';
 import {
   computeSaturationGainStaging,
   generateAnalogSaturationCurve,
@@ -31,6 +31,47 @@ export interface MasteringGraphHandles {
   ) => void;
 }
 
+function configureStereoFilterNode(
+  node: BiquadFilterNode,
+  band: EQBandConfig,
+  now?: number
+): void {
+  const isActiveStereo = band.channel === 'stereo' && band.enabled !== false;
+  const effectiveType: BiquadFilterType = isActiveStereo ? band.type : 'peaking';
+  const clampedFreq = Math.max(20, Math.min(20000, band.freq));
+  const clampedQ = Math.max(0.2, Math.min(24, band.q));
+  const effectiveGain = isActiveStereo ? band.gainDb : 0;
+
+  if (node.type !== effectiveType) {
+    node.type = effectiveType;
+  }
+  node.frequency.value = clampedFreq;
+  node.Q.value = clampedQ;
+  node.gain.value = effectiveGain;
+
+  if (now !== undefined) {
+    node.frequency.setTargetAtTime(clampedFreq, now, 0.012);
+    node.Q.setTargetAtTime(clampedQ, now, 0.012);
+    node.gain.setTargetAtTime(effectiveGain, now, 0.012);
+  }
+}
+
+function computeAdaptiveCompressorMakeupLinear(
+  chain: MasteringDspChain
+): number {
+  const extraCompMakeupDb = Math.max(
+    0,
+    (-16 - chain.compressor.thresholdDb) *
+      (1 - 1 / Math.max(1.1, chain.compressor.ratio)) *
+      0.35
+  );
+  const totalMakeupDb = Math.max(
+    0,
+    Math.min(9, chain.compressor.makeupGainDb + extraCompMakeupDb)
+  );
+  return Math.pow(10, totalMakeupDb / 20);
+}
+
 /**
  * Builds the complete 6-stage Studio Mastering DSP chain on any BaseAudioContext
  * (works identically for live AudioContext and 48kHz OfflineAudioContext).
@@ -48,22 +89,21 @@ export function buildMasteringDspGraph(
   // =========================================================================
   const subsonicHpf = ctx.createBiquadFilter();
   subsonicHpf.type = 'highpass';
-  subsonicHpf.frequency.value = initialChain.highPassFreq;
+  subsonicHpf.frequency.value = Math.max(
+    18,
+    Math.min(60, initialChain.highPassFreq)
+  );
   subsonicHpf.Q.value = Math.SQRT1_2; // Butterworth 0.7071
 
   inputNode.connect(subsonicHpf);
   let lastStage2Node: AudioNode = subsonicHpf;
 
+  // Pre-allocate all band IDs in stereoBandFilters so switching any band between
+  // 'stereo', 'mid', and 'side' works 100% seamlessly in live playback and export.
   const stereoBandFilters = new Map<string, BiquadFilterNode>();
-  const stereoBands = initialChain.eqBands.filter(
-    (b) => b.channel === 'stereo'
-  );
-  for (const band of stereoBands) {
+  for (const band of initialChain.eqBands) {
     const filter = ctx.createBiquadFilter();
-    filter.type = band.type;
-    filter.frequency.value = band.freq;
-    filter.Q.value = band.q;
-    filter.gain.value = band.enabled === false ? 0 : band.gainDb;
+    configureStereoFilterNode(filter, band);
     lastStage2Node.connect(filter);
     lastStage2Node = filter;
     stereoBandFilters.set(band.id, filter);
@@ -77,9 +117,15 @@ export function buildMasteringDspGraph(
     const notchNode = ctx.createBiquadFilter();
     notchNode.type = 'peaking';
     const spec = initialNotches[i];
-    notchNode.frequency.value = spec ? spec.freqHz : 3800 + i * 900;
-    notchNode.Q.value = spec ? spec.q : 12.0;
-    notchNode.gain.value = spec && spec.enabled ? spec.gainCutDb : 0;
+    const freqVal = spec ? Math.max(120, Math.min(18000, spec.freqHz)) : 3800 + i * 900;
+    const qVal = spec ? Math.max(4, Math.min(24, spec.q)) : 12.0;
+    const gainVal =
+      spec && spec.enabled && Math.abs(spec.gainCutDb) > 0.05
+        ? Math.max(-14, Math.min(0, spec.gainCutDb))
+        : 0;
+    notchNode.frequency.value = freqVal;
+    notchNode.Q.value = qVal;
+    notchNode.gain.value = gainVal;
     lastStage2Node.connect(notchNode);
     lastStage2Node = notchNode;
     resonanceNotchFilters.push(notchNode);
@@ -150,11 +196,11 @@ export function buildMasteringDspGraph(
   const compDryMix = ctx.createGain();
   const stage4ASum = ctx.createGain();
 
-  const initialWet = Math.max(0, Math.min(1, initialChain.compressor.parallelMix));
-  compMakeupGain.gain.value = Math.pow(
-    10,
-    initialChain.compressor.makeupGainDb / 20
+  const initialWet = Math.max(
+    0,
+    Math.min(1, initialChain.compressor.parallelMix)
   );
+  compMakeupGain.gain.value = computeAdaptiveCompressorMakeupLinear(initialChain);
   compWetMix.gain.value = initialWet;
   compDryMix.gain.value = 1 - initialWet;
 
@@ -200,9 +246,14 @@ export function buildMasteringDspGraph(
       type,
       drive
     );
-    satInputGain.gain.setTargetAtTime(inputGainLinear, now, 0.015);
-    satOutputTrim.gain.setTargetAtTime(outputTrimLinear, now, 0.015);
-    warmthTilt.gain.setTargetAtTime(tiltDb, now, 0.015);
+    satInputGain.gain.value = inputGainLinear;
+    satInputGain.gain.setTargetAtTime(inputGainLinear, now, 0.012);
+
+    satOutputTrim.gain.value = outputTrimLinear;
+    satOutputTrim.gain.setTargetAtTime(outputTrimLinear, now, 0.012);
+
+    warmthTilt.gain.value = tiltDb;
+    warmthTilt.gain.setTargetAtTime(tiltDb, now, 0.012);
   };
 
   updateSaturationState(
@@ -223,9 +274,12 @@ export function buildMasteringDspGraph(
   // =========================================================================
   const maximizerDriveGain = ctx.createGain();
   const maximizerSafetyLimiter = ctx.createDynamicsCompressor();
-  maximizerSafetyLimiter.threshold.value = -2.2;
-  maximizerSafetyLimiter.knee.value = 3.0;
-  maximizerSafetyLimiter.ratio.value = 14.0;
+  maximizerSafetyLimiter.threshold.value = Math.max(
+    -6.0,
+    initialChain.limiter.ceilingDbTp - 0.6
+  );
+  maximizerSafetyLimiter.knee.value = 2.5;
+  maximizerSafetyLimiter.ratio.value = 16.0;
   maximizerSafetyLimiter.attack.value = 0.001;
   maximizerSafetyLimiter.release.value = Math.max(
     0.025,
@@ -252,16 +306,18 @@ export function buildMasteringDspGraph(
       currentLimiterSig = sig;
     }
     const clampedDriveDb = Math.max(-9, Math.min(13, totalDriveDb));
-    maximizerDriveGain.gain.setTargetAtTime(
-      Math.pow(10, clampedDriveDb / 20),
-      now,
-      0.015
-    );
-    maximizerSafetyLimiter.release.setTargetAtTime(
-      Math.max(0.02, Math.min(0.4, releaseMs / 1000)),
-      now,
-      0.015
-    );
+    const driveLinear = Math.pow(10, clampedDriveDb / 20);
+    const releaseSec = Math.max(0.02, Math.min(0.4, releaseMs / 1000));
+    const safetyThreshDb = Math.max(-6.0, ceilingDbTp - 0.6);
+
+    maximizerDriveGain.gain.value = driveLinear;
+    maximizerDriveGain.gain.setTargetAtTime(driveLinear, now, 0.012);
+
+    maximizerSafetyLimiter.threshold.value = safetyThreshDb;
+    maximizerSafetyLimiter.threshold.setTargetAtTime(safetyThreshDb, now, 0.012);
+
+    maximizerSafetyLimiter.release.value = releaseSec;
+    maximizerSafetyLimiter.release.setTargetAtTime(releaseSec, now, 0.012);
   };
 
   updateLimiterState(
@@ -273,8 +329,9 @@ export function buildMasteringDspGraph(
   );
 
   // =========================================================================
-  // STAGE 4C: Forensic Anti-AI Humanizer (Sub-Energy Rebalancer, All-Pass Phase
-  // Disperser, Studer Micro-Drift, 14-22kHz Harmonic Exciter, Early Reflections & Thermal Floor)
+  // STAGE 4C: Forensic Anti-AI Humanizer (Sub-Energy Rebalancer, Stereo-Linked
+  // All-Pass Phase Disperser, Studer Micro-Drift, 14-22kHz Harmonic Exciter,
+  // Balanced Early Reflections & Thermal Floor)
   // =========================================================================
   const humanizerStage = ForensicHumanizerDSP.createControllableHumanizerStage(
     ctx,
@@ -292,26 +349,17 @@ export function buildMasteringDspGraph(
     autoMakeupGainDb: number,
     now = ctx.currentTime
   ) => {
-    // Stage 2: Subsonic HPF & Stereo Bands
-    subsonicHpf.frequency.setTargetAtTime(chain.highPassFreq, now, 0.015);
+    // Stage 2: Subsonic HPF & All EQ Bands (Stereo + Mid + Side)
+    const clampedHpf = Math.max(18, Math.min(60, chain.highPassFreq));
+    subsonicHpf.frequency.value = clampedHpf;
+    subsonicHpf.frequency.setTargetAtTime(clampedHpf, now, 0.012);
+
     for (const band of chain.eqBands) {
-      if (band.channel === 'stereo') {
-        const node = stereoBandFilters.get(band.id);
-        if (node) {
-          if (node.type !== band.type) {
-            node.type = band.type;
-          }
-          node.frequency.setTargetAtTime(band.freq, now, 0.015);
-          node.Q.setTargetAtTime(band.q, now, 0.015);
-          node.gain.setTargetAtTime(
-            band.enabled === false ? 0 : band.gainDb,
-            now,
-            0.015
-          );
-        }
-      } else {
-        midSideMatrix.updateBand(band, now);
+      const stereoNode = stereoBandFilters.get(band.id);
+      if (stereoNode) {
+        configureStereoFilterNode(stereoNode, band, now);
       }
+      midSideMatrix.updateBand(band, now);
     }
 
     // Stage 2B: Update Ultra-Narrow Surgical Resonance Notches
@@ -320,19 +368,18 @@ export function buildMasteringDspGraph(
       const node = resonanceNotchFilters[i];
       const spec = activeNotches[i];
       if (spec && spec.enabled && Math.abs(spec.gainCutDb) > 0.05) {
-        node.frequency.setTargetAtTime(
-          Math.max(120, Math.min(18000, spec.freqHz)),
-          now,
-          0.015
-        );
-        node.Q.setTargetAtTime(Math.max(4, Math.min(24, spec.q)), now, 0.015);
-        node.gain.setTargetAtTime(
-          Math.max(-14, Math.min(0, spec.gainCutDb)),
-          now,
-          0.015
-        );
+        const f = Math.max(120, Math.min(18000, spec.freqHz));
+        const q = Math.max(4, Math.min(24, spec.q));
+        const g = Math.max(-14, Math.min(0, spec.gainCutDb));
+        node.frequency.value = f;
+        node.Q.value = q;
+        node.gain.value = g;
+        node.frequency.setTargetAtTime(f, now, 0.012);
+        node.Q.setTargetAtTime(q, now, 0.012);
+        node.gain.setTargetAtTime(g, now, 0.012);
       } else {
-        node.gain.setTargetAtTime(0, now, 0.015);
+        node.gain.value = 0;
+        node.gain.setTargetAtTime(0, now, 0.012);
       }
     }
 
@@ -341,39 +388,47 @@ export function buildMasteringDspGraph(
       chain.drumLayering?.enabled && chain.drumLayering?.suppressOriginalMud
         ? -3.2 * Math.max(0.35, chain.drumLayering.kickMix)
         : 0;
-    drumMudSuppressFilter.gain.setTargetAtTime(mudSuppressDb, now, 0.015);
+    drumMudSuppressFilter.gain.value = mudSuppressDb;
+    drumMudSuppressFilter.gain.setTargetAtTime(mudSuppressDb, now, 0.012);
 
     // Stage 3: Mono Maker & Side Width
     midSideMatrix.updateMonoMakerFreq(chain.monoMakerFreq, now);
     midSideMatrix.updateSideGainDb(chain.stereoWidth.sideGainDb, now);
 
     // Stage 4A: Compressor
+    busCompressor.threshold.value = chain.compressor.thresholdDb;
+    busCompressor.ratio.value = chain.compressor.ratio;
+    busCompressor.attack.value = chain.compressor.attackSec;
+    busCompressor.release.value = chain.compressor.releaseSec;
+    busCompressor.knee.value = chain.compressor.kneeDb;
+
     busCompressor.threshold.setTargetAtTime(
       chain.compressor.thresholdDb,
       now,
-      0.015
+      0.012
     );
-    busCompressor.ratio.setTargetAtTime(chain.compressor.ratio, now, 0.015);
+    busCompressor.ratio.setTargetAtTime(chain.compressor.ratio, now, 0.012);
     busCompressor.attack.setTargetAtTime(
       chain.compressor.attackSec,
       now,
-      0.015
+      0.012
     );
     busCompressor.release.setTargetAtTime(
       chain.compressor.releaseSec,
       now,
-      0.015
+      0.012
     );
-    busCompressor.knee.setTargetAtTime(chain.compressor.kneeDb, now, 0.015);
+    busCompressor.knee.setTargetAtTime(chain.compressor.kneeDb, now, 0.012);
 
     const wet = Math.max(0, Math.min(1, chain.compressor.parallelMix));
-    compMakeupGain.gain.setTargetAtTime(
-      Math.pow(10, chain.compressor.makeupGainDb / 20),
-      now,
-      0.015
-    );
-    compWetMix.gain.setTargetAtTime(wet, now, 0.015);
-    compDryMix.gain.setTargetAtTime(1 - wet, now, 0.015);
+    const makeupLinear = computeAdaptiveCompressorMakeupLinear(chain);
+    compMakeupGain.gain.value = makeupLinear;
+    compWetMix.gain.value = wet;
+    compDryMix.gain.value = 1 - wet;
+
+    compMakeupGain.gain.setTargetAtTime(makeupLinear, now, 0.012);
+    compWetMix.gain.setTargetAtTime(wet, now, 0.012);
+    compDryMix.gain.setTargetAtTime(1 - wet, now, 0.012);
 
     // Stage 4B: Saturator
     updateSaturationState(

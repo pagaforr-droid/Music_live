@@ -553,17 +553,34 @@ export const AiMasteringAssistantPanel: React.FC<
                         {band.label}
                       </span>
                     </div>
-                    <span
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded uppercase font-bold ${
+                    <select
+                      value={band.channel}
+                      onChange={(e) =>
+                        onUpdateCustomEqBand(band.id, {
+                          channel: e.target.value as EQBandConfig['channel'],
+                        })
+                      }
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded uppercase font-bold border cursor-pointer ${
                         band.channel === 'mid'
-                          ? 'bg-[#FF6B00]/15 text-[#FF6B00]'
+                          ? 'bg-[#FF6B00]/15 text-[#FF6B00] border-[#FF6B00]/40'
                           : band.channel === 'side'
-                          ? 'bg-[#00E5FF]/15 text-[#00E5FF]'
-                          : 'bg-emerald-500/15 text-emerald-400'
+                          ? 'bg-[#00E5FF]/15 text-[#00E5FF] border-[#00E5FF]/40'
+                          : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
                       }`}
                     >
-                      {band.channel}
-                    </span>
+                      <option value="mid" className="bg-slate-900 text-white">
+                        MID
+                      </option>
+                      <option value="side" className="bg-slate-900 text-white">
+                        SIDE
+                      </option>
+                      <option
+                        value="stereo"
+                        className="bg-slate-900 text-white"
+                      >
+                        STEREO
+                      </option>
+                    </select>
                   </div>
 
                   {/* Frequency Slider */}
