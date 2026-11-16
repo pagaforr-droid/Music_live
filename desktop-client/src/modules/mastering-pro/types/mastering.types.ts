@@ -62,18 +62,24 @@ export interface ForensicHumanizerConfig {
 }
 
 export interface ForensicSignatureReport {
-  /** 0% (100% Humano/Analógico) a 100% (Alta firma IA en mezcla original) */
+  /** 0% (100% Natural/Analógico) a 100% (Alta densidad de artefactos espectrales en entrada) */
   estimatedAiSignatureScore: number;
-  /** Firma IA proyectada después de aplicar Forensic Humanizer + Drum Layering */
+  /** Índice espectral proyectado tras la restauración armónica y dinámica */
   projectedPostAiSignatureScore: number;
-  /** Concentración de energía en graves (<140Hz); alerta forense si supera 45% */
+  /** Concentración real de energía en graves (<140Hz) medida vía FFT */
   bassEnergyConcentrationPct: number;
   /** Concentración de graves proyectada tras el Re-Balanceador Sub-Grave */
   projectedPostBassConcentrationPct: number;
-  /** Frecuencia de corte superior detectada (Hz); <16,500 Hz delata vocoder IA */
+  /** Ancho de banda crudo medido en entrada (Hz) antes de excitador */
+  measuredBandwidthHz?: number;
+  /** Frecuencia de ancho de banda proyectada tras el excitador (Hz) */
   highFreqCutoffDetectedHz: number;
-  /** Índice de rigidez de fase del vocoder (0 a 1) */
+  /** Índice de rigidez de fase estéreo (0 a 1) */
   phaseRigidityIndex: number;
+  /** Índice real de aspereza/dureza en 2.9kHz-4.8kHz (0 a 100) */
+  harshnessIndex?: number;
+  /** Indica si la medición proviene de FFT completo (sin submuestreo con aliasing) */
+  isRealSpectralMeasurement?: boolean;
 }
 
 export type DrumKitStyle =
@@ -152,6 +158,8 @@ export interface SpectralProfile {
 }
 
 export interface MasteringDspChain {
+  /** Macro intensity scaling factor (0.0 = true dry bypass, 1.0 = 100% nominal, 1.5 = hot) */
+  intensityScale?: number;
   /** Stage 2: Subsonic High-Pass cutoff (20Hz - 45Hz) */
   highPassFreq: number;
   /** Stage 3: Side-channel High-Pass cutoff forcing bass to 100% Mono (60Hz - 200Hz) */
@@ -190,16 +198,40 @@ export interface MasteringPreset {
 export interface AudioMetrics {
   inputLufs: number;
   outputLufs: number;
+  momentaryLufs?: number;
   shortTermLufs: number;
+  lraLu?: number;
   truePeakDb: number;
   inputPeakDb: number;
   gainReductionDb: number;
+  compressorReductionDb?: number;
   limiterReductionDb: number;
   /** -1.0 (out of phase) to +1.0 (pure mono) */
   phaseCorrelation: number;
   crestFactorDb: number;
+  clippedSamples?: number;
+  /** False when transport is stopped/paused so UI displays '—' honestly instead of fake numbers */
+  isMeteringActive?: boolean;
   spectralBalance: SpectralProfile;
   postSpectralBalance: SpectralProfile;
+}
+
+export interface ExportQaReport {
+  inputLufs: number;
+  outputLufs: number;
+  targetLufs: number;
+  lufsErrorLu: number;
+  lraLu: number;
+  finalTruePeakDbTp: number;
+  samplePeakDb: number;
+  plrDb: number;
+  crestFactorDb: number;
+  phaseCorrelation: number;
+  maxCompressorGrDb: number;
+  maxLimiterReductionDb: number;
+  clippedSamples: number;
+  grBudgetExceeded: boolean;
+  grBudgetWarning?: string;
 }
 
 export interface SurgicalOverrides {

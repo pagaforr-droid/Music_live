@@ -1,12 +1,13 @@
 import React from 'react';
-import { Activity, ShieldCheck, AlertTriangle, Gauge } from 'lucide-react';
-import type { AudioMetrics } from '../types/mastering.types';
+import { Activity, ShieldCheck, AlertTriangle, Gauge, CheckCircle2 } from 'lucide-react';
+import type { AudioMetrics, ExportQaReport } from '../types/mastering.types';
 
 interface LoudnessMeterPanelProps {
   metrics: AudioMetrics;
   targetLufs: number;
   ceilingDbTp: number;
   monoMakerFreq: number;
+  lastExportQa?: ExportQaReport | null;
 }
 
 export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
@@ -14,24 +15,40 @@ export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
   targetLufs,
   ceilingDbTp,
   monoMakerFreq,
+  lastExportQa,
 }) => {
-  // Normalize helpers for vertical/horizontal LED bars
-  const normLufs = (lufs: number) =>
-    Math.max(0, Math.min(100, ((lufs + 36) / 36) * 100));
-  const normPeak = (db: number) =>
-    Math.max(0, Math.min(100, ((db + 36) / 36) * 100));
+  const active = Boolean(metrics.isMeteringActive);
+  const finite = (v: number | undefined): v is number =>
+    typeof v === 'number' && Number.isFinite(v);
+
+  const fmt = (v: number | undefined, digits = 1, prefixPlus = false): string => {
+    if (!finite(v)) return '—';
+    const p = prefixPlus && v > 0 ? '+' : '';
+    return `${p}${v.toFixed(digits)}`;
+  };
+
+  const normLufs = (lufs: number | undefined) =>
+    finite(lufs) ? Math.max(0, Math.min(100, ((lufs + 36) / 36) * 100)) : 0;
+  const normPeak = (db: number | undefined) =>
+    finite(db) ? Math.max(0, Math.min(100, ((db + 36) / 36) * 100)) : 0;
   const normGr = (grDb: number) =>
     Math.max(0, Math.min(100, (Math.abs(grDb) / 12) * 100));
 
-  // Phase correlation position [-1..+1] -> [0%..100%]
+  const corrVal = finite(metrics.phaseCorrelation) ? metrics.phaseCorrelation : 0;
   const phaseMarkerPct = Math.max(
     2,
-    Math.min(98, ((metrics.phaseCorrelation + 1) / 2) * 100)
+    Math.min(98, ((corrVal + 1) / 2) * 100)
   );
-  const isPhaseHealthy = metrics.phaseCorrelation >= 0.25;
+  const isPhaseHealthy = !finite(metrics.phaseCorrelation) || metrics.phaseCorrelation >= 0.25;
+  const isTpHot = active && finite(metrics.truePeakDb) && metrics.truePeakDb > ceilingDbTp + 0.05;
+
+  const deltaLu =
+    active && finite(metrics.outputLufs) && finite(metrics.inputLufs)
+      ? metrics.outputLufs - metrics.inputLufs
+      : NaN;
 
   return (
-    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col justify-between gap-4 h-full">
+    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col justify-between gap-3.5 h-full">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
         <div className="flex items-center gap-2">
@@ -40,8 +57,14 @@ export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
             ITU-R BS.1770-4 Metering Bridge
           </h3>
         </div>
-        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[#00E5FF]">
-          Target {targetLufs.toFixed(1)} LUFS
+        <span
+          className={`text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 border ${
+            active
+              ? 'border-[#00E5FF]/50 text-[#00E5FF]'
+              : 'border-slate-800 text-slate-500'
+          }`}
+        >
+          {active ? `● VIVO · Target ${targetLufs.toFixed(1)}` : `Target ${targetLufs.toFixed(1)} LUFS`}
         </span>
       </div>
 
@@ -49,110 +72,146 @@ export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
       <div className="grid grid-cols-2 gap-2.5">
         <div className="rounded-xl bg-slate-950 border border-slate-800/90 p-2.5">
           <div className="text-[10px] font-mono uppercase text-slate-400">
-            Output Loudness
+            Output Loudness (Real)
           </div>
           <div className="text-xl font-mono font-bold text-[#00E5FF] mt-0.5">
-            {metrics.outputLufs.toFixed(1)}{' '}
+            {active ? fmt(metrics.outputLufs, 1) : '—'}{' '}
             <span className="text-[11px] font-normal text-slate-400">LUFS</span>
           </div>
           <div className="text-[10px] font-mono text-slate-500 mt-0.5">
-            In: {metrics.inputLufs.toFixed(1)} LUFS · Δ{' '}
-            {(metrics.outputLufs - metrics.inputLufs >= 0 ? '+' : '') +
-              (metrics.outputLufs - metrics.inputLufs).toFixed(1)}{' '}
-            LU
+            In: {fmt(metrics.inputLufs, 1)} LUFS · Δ{' '}
+            {finite(deltaLu) ? fmt(deltaLu, 1, true) : '—'} LU
           </div>
         </div>
 
         <div className="rounded-xl bg-slate-950 border border-slate-800/90 p-2.5">
           <div className="text-[10px] font-mono uppercase text-slate-400">
-            True Peak (4x)
+            True Peak (4x FIR)
           </div>
           <div
             className={`text-xl font-mono font-bold mt-0.5 ${
-              metrics.truePeakDb > -0.3 ? 'text-rose-400' : 'text-[#FF6B00]'
+              isTpHot
+                ? 'text-rose-400'
+                : active
+                ? 'text-[#FF6B00]'
+                : 'text-slate-500'
             }`}
           >
-            {metrics.truePeakDb.toFixed(2)}{' '}
+            {active ? fmt(metrics.truePeakDb, 2) : '—'}{' '}
             <span className="text-[11px] font-normal text-slate-400">dBTP</span>
           </div>
           <div className="text-[10px] font-mono text-slate-500 mt-0.5">
-            Ceiling: {ceilingDbTp.toFixed(1)} dBTP · Crest {metrics.crestFactorDb}dB
+            Ceil: {ceilingDbTp.toFixed(1)} · Crest{' '}
+            {active ? fmt(metrics.crestFactorDb, 1) : fmt(metrics.crestFactorDb, 1)}dB
           </div>
         </div>
       </div>
 
-      {/* Vertical LED Bar Meters: IN LUFS | OUT LUFS | TRUE PEAK | GAIN REDUCTION */}
+      {/* Vertical LED Bar Meters */}
       <div className="grid grid-cols-4 gap-2.5 bg-slate-950/95 border border-slate-800/90 rounded-xl p-3">
-        {/* IN LUFS */}
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[9.5px] font-mono text-slate-400">IN LUFS</span>
-          <div className="w-5 h-32 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
+          <div className="w-5 h-28 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
             <div
               className="w-full rounded-sm bg-slate-500 transition-all duration-75"
               style={{ height: `${normLufs(metrics.inputLufs)}%` }}
             />
           </div>
           <span className="text-[10px] font-mono text-slate-300 font-semibold">
-            {metrics.inputLufs.toFixed(1)}
+            {fmt(metrics.inputLufs, 1)}
           </span>
         </div>
 
-        {/* OUT LUFS */}
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[9.5px] font-mono text-[#00E5FF] font-bold">
             MASTER
           </span>
-          <div className="w-5 h-32 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
-            {/* Target Line */}
+          <div className="w-5 h-28 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
             <div
               className="absolute left-0 right-0 h-0.5 bg-white z-10"
               style={{ bottom: `${normLufs(targetLufs)}%` }}
             />
             <div
               className="w-full rounded-sm bg-gradient-to-t from-[#00E5FF] via-cyan-300 to-[#FF6B00] transition-all duration-75"
-              style={{ height: `${normLufs(metrics.outputLufs)}%` }}
+              style={{
+                height: `${active ? normLufs(metrics.outputLufs) : 0}%`,
+              }}
             />
           </div>
           <span className="text-[10px] font-mono text-[#00E5FF] font-bold">
-            {metrics.outputLufs.toFixed(1)}
+            {active ? fmt(metrics.outputLufs, 1) : '—'}
           </span>
         </div>
 
-        {/* TRUE PEAK dBTP */}
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[9.5px] font-mono text-[#FF6B00] font-bold">
             dBTP
           </span>
-          <div className="w-5 h-32 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
+          <div className="w-5 h-28 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-end p-0.5">
             <div
-              className="w-full rounded-sm bg-gradient-to-t from-emerald-400 via-[#FF6B00] to-rose-500 transition-all duration-75"
-              style={{ height: `${normPeak(metrics.truePeakDb)}%` }}
+              className={`w-full rounded-sm transition-all duration-75 ${
+                isTpHot
+                  ? 'bg-rose-500'
+                  : 'bg-gradient-to-t from-emerald-400 via-[#FF6B00] to-rose-500'
+              }`}
+              style={{
+                height: `${active ? normPeak(metrics.truePeakDb) : 0}%`,
+              }}
             />
           </div>
-          <span className="text-[10px] font-mono text-[#FF6B00] font-bold">
-            {metrics.truePeakDb.toFixed(1)}
+          <span
+            className={`text-[10px] font-mono font-bold ${
+              isTpHot ? 'text-rose-400' : 'text-[#FF6B00]'
+            }`}
+          >
+            {active ? fmt(metrics.truePeakDb, 1) : '—'}
           </span>
         </div>
 
-        {/* GAIN REDUCTION (Attenuation Top-Down) */}
         <div className="flex flex-col items-center gap-1.5">
           <span className="text-[9.5px] font-mono text-amber-400 font-bold">
             GR dB
           </span>
-          <div className="w-5 h-32 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-start p-0.5">
+          <div className="w-5 h-28 rounded-md bg-slate-900 border border-slate-800 relative overflow-hidden flex flex-col justify-start p-0.5">
             <div
               className="w-full rounded-sm bg-gradient-to-b from-amber-400 to-[#FF6B00] transition-all duration-75"
-              style={{ height: `${normGr(metrics.gainReductionDb)}%` }}
+              style={{
+                height: `${active ? normGr(metrics.gainReductionDb) : 0}%`,
+              }}
             />
           </div>
           <span className="text-[10px] font-mono text-amber-400 font-bold">
-            -{metrics.gainReductionDb.toFixed(1)}
+            {active ? `-${metrics.gainReductionDb.toFixed(1)}` : '—'}
           </span>
         </div>
       </div>
 
-      {/* Phase Correlation Meter (-1.0 to +1.0) */}
-      <div className="rounded-xl bg-slate-950 border border-slate-800/90 p-3">
+      {/* Live Comp / Limiter / Clipped Telemetry Strip */}
+      <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] font-mono">
+        <div className="rounded-lg bg-slate-950 border border-slate-800/80 py-1 px-1.5">
+          <span className="text-slate-500 block text-[9px]">COMP GR</span>
+          <span className="text-amber-300 font-bold">
+            {active && finite(metrics.compressorReductionDb)
+              ? `-${metrics.compressorReductionDb.toFixed(1)}dB`
+              : '—'}
+          </span>
+        </div>
+        <div className="rounded-lg bg-slate-950 border border-slate-800/80 py-1 px-1.5">
+          <span className="text-slate-500 block text-[9px]">LIMIT GR</span>
+          <span className="text-[#FF6B00] font-bold">
+            {active ? `-${metrics.limiterReductionDb.toFixed(1)}dB` : '—'}
+          </span>
+        </div>
+        <div className="rounded-lg bg-slate-950 border border-slate-800/80 py-1 px-1.5">
+          <span className="text-slate-500 block text-[9px]">SHORT-TERM</span>
+          <span className="text-[#00E5FF] font-bold">
+            {active ? `${fmt(metrics.shortTermLufs, 1)}` : '—'}
+          </span>
+        </div>
+      </div>
+
+      {/* Phase Correlation Meter */}
+      <div className="rounded-xl bg-slate-950 border border-slate-800/90 p-2.5">
         <div className="flex items-center justify-between text-[11px] font-mono mb-1.5">
           <span className="text-slate-300 flex items-center gap-1.5">
             <Activity size={12} className="text-[#00E5FF]" />
@@ -168,65 +227,55 @@ export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
             ) : (
               <AlertTriangle size={12} />
             )}
-            {metrics.phaseCorrelation > 0 ? '+' : ''}
-            {metrics.phaseCorrelation.toFixed(2)}
+            {finite(metrics.phaseCorrelation)
+              ? fmt(metrics.phaseCorrelation, 2, true)
+              : '—'}
           </span>
         </div>
 
-        <div className="relative w-full h-3 rounded-full bg-gradient-to-r from-rose-500/40 via-amber-400/40 to-emerald-500/50 border border-slate-800 overflow-hidden">
-          {/* Center 0 mark */}
+        <div className="relative w-full h-2.5 rounded-full bg-gradient-to-r from-rose-500/40 via-amber-400/40 to-emerald-500/50 border border-slate-800 overflow-hidden">
           <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-slate-500" />
-          {/* Live needle */}
-          <div
-            className="absolute top-0 bottom-0 w-2.5 rounded-full bg-[#00E5FF] shadow-[0_0_10px_#00E5FF] -translate-x-1/2 transition-all duration-75"
-            style={{ left: `${phaseMarkerPct}%` }}
-          />
+          {finite(metrics.phaseCorrelation) && (
+            <div
+              className="absolute top-0 bottom-0 w-2.5 rounded-full bg-[#00E5FF] shadow-[0_0_10px_#00E5FF] -translate-x-1/2 transition-all duration-75"
+              style={{ left: `${phaseMarkerPct}%` }}
+            />
+          )}
         </div>
 
-        <div className="flex justify-between text-[9.5px] font-mono text-slate-500 mt-1">
-          <span>-1.0 Out of Phase</span>
+        <div className="flex justify-between text-[9px] font-mono text-slate-500 mt-1">
+          <span>-1.0 Phase</span>
           <span>0.0 Wide</span>
           <span className="text-emerald-400/90">
-            +1.0 Mono Safe ({monoMakerFreq}Hz)
+            +1.0 Mono ({monoMakerFreq}Hz)
           </span>
         </div>
       </div>
 
-      {/* 4-Band Spectral Distribution Summary */}
-      <div className="rounded-xl bg-slate-950 border border-slate-800/90 p-2.5 grid grid-cols-4 gap-1.5 text-center">
-        {[
-          {
-            label: 'SUB',
-            val: metrics.postSpectralBalance.sub,
-            color: 'text-[#FF6B00]',
-          },
-          {
-            label: 'LOW-MID',
-            val: metrics.postSpectralBalance.lowMid,
-            color: 'text-emerald-400',
-          },
-          {
-            label: 'PRESENCE',
-            val: metrics.postSpectralBalance.presence,
-            color: 'text-amber-300',
-          },
-          {
-            label: 'AIR 12k+',
-            val: metrics.postSpectralBalance.air,
-            color: 'text-[#00E5FF]',
-          },
-        ].map((b) => (
-          <div
-            key={b.label}
-            className="rounded-lg bg-slate-900/90 border border-slate-800/80 py-1.5 px-1"
-          >
-            <div className="text-[9px] font-mono text-slate-400">{b.label}</div>
-            <div className={`text-[11px] font-mono font-bold ${b.color}`}>
-              {b.val}dB
-            </div>
+      {/* Verified Last Export QA Badge (if available) */}
+      {lastExportQa && (
+        <div
+          className={`rounded-xl border px-3 py-2 text-[10px] font-mono ${
+            lastExportQa.grBudgetExceeded
+              ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+              : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
+          }`}
+        >
+          <div className="flex items-center justify-between font-bold mb-0.5">
+            <span className="flex items-center gap-1">
+              <CheckCircle2 size={11} />
+              QA EXPORT VERIFICADO (24-BIT)
+            </span>
+            <span>Clips: {lastExportQa.clippedSamples}</span>
           </div>
-        ))}
-      </div>
+          <div className="text-slate-300">
+            Out: <strong>{lastExportQa.outputLufs.toFixed(1)} LUFS</strong> · TP:{' '}
+            <strong>{lastExportQa.finalTruePeakDbTp.toFixed(2)} dBTP</strong> ·
+            LRA: {lastExportQa.lraLu.toFixed(1)} LU · PLR:{' '}
+            {lastExportQa.plrDb.toFixed(1)} dB
+          </div>
+        </div>
+      )}
     </div>
   );
 };

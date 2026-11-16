@@ -47,4 +47,12 @@ export {
   MASTERING_SESSIONS_MIGRATION_SQL,
 } from './services/supabaseMasteringService';
 
+export {
+  SampleLabPanel,
+  SampleLabModule,
+  SamplerEngine,
+  SampleLabHandoff,
+} from './sampler';
+
 export type * from './types/mastering.types';
+export type * from './sampler/types/sampler.types';

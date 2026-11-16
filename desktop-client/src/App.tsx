@@ -18,6 +18,9 @@ const LyricStudio = lazy(() => import('./pages/LyricStudio'));
 const StudioMasteringModule = lazy(() =>
   import('./modules/mastering-pro').then((m) => ({ default: m.StudioMasteringModule }))
 );
+const SampleLabModule = lazy(() =>
+  import('./modules/mastering-pro').then((m) => ({ default: m.SampleLabModule }))
+);
 
 const RouteSuspenseFallback = () => (
   <div className="flex h-full min-h-[60vh] w-full items-center justify-center bg-[#0b0d13] text-zinc-400">
@@ -68,6 +71,7 @@ function AppRoutes() {
           <Route path="/editor" element={<LivePrompter />} />
           <Route path="/studio" element={<StemStudio />} />
           <Route path="/mastering" element={<StudioMasteringModule />} />
+          <Route path="/sample-lab" element={<SampleLabModule />} />
           <Route path="/setlists" element={<SetlistBuilder />} />
           <Route path="/admin/cms" element={<AdminCMS />} />
           <Route path="/design" element={<DesignTools />} />

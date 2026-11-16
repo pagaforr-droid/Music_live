@@ -3,6 +3,7 @@ import type {
   DrumKitStyle,
   DrumLayeringConfig,
 } from '../types/mastering.types';
+import { detectOnsetsSpectralFlux } from '../dsp-core/SpectralFftCore';
 
 export type { DrumHitEvent, DrumKitStyle, DrumLayeringConfig };
 
@@ -38,14 +39,22 @@ export class DrumTransientReplacerDSP {
   ): Promise<string> {
     const arrayBuffer = await file.arrayBuffer();
     const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
-    if (type === 'kick') {
-      this.customKickBuffer = decoded;
-      this.customKickName = file.name;
-    } else {
-      this.customSnareBuffer = decoded;
-      this.customSnareName = file.name;
-    }
+    this.setCustomSampleBuffer(type, decoded, file.name);
     return file.name;
+  }
+
+  public setCustomSampleBuffer(
+    type: 'kick' | 'snare',
+    buffer: AudioBuffer,
+    name: string
+  ): void {
+    if (type === 'kick') {
+      this.customKickBuffer = buffer;
+      this.customKickName = name;
+    } else {
+      this.customSnareBuffer = buffer;
+      this.customSnareName = name;
+    }
   }
 
   public clearCustomSample(type: 'kick' | 'snare'): void {
@@ -68,9 +77,19 @@ export class DrumTransientReplacerDSP {
     };
   }
 
+  public getCustomSampleBuffers(): {
+    kickBuffer: AudioBuffer | null;
+    snareBuffer: AudioBuffer | null;
+  } {
+    return {
+      kickBuffer: this.customKickBuffer,
+      snareBuffer: this.customSnareBuffer,
+    };
+  }
+
   /**
-   * Analiza matemáticamente el AudioBuffer (del stem de Drums o de la mezcla estéreo)
-   * y detecta los milisegundos exactos donde golpean el Bombo (Kick) y la Caja (Snare).
+   * Analiza el AudioBuffer usando Log-Magnitude Spectral Flux (desde dsp-core/SpectralFftCore)
+   * y alinea cada impacto por envolvente local + verificación de polaridad para evitar flam/cancelación.
    */
   public detectDrumTransients(
     audioBuffer: AudioBuffer,
@@ -83,113 +102,43 @@ export class DrumTransientReplacerDSP {
     const length = ch0.length;
     if (length === 0) return [];
 
-    // Medir pico global para normalizar el detector ante pistas con distinto volumen de entrada
-    let peakAbs = 0.01;
-    const scanStep = Math.max(1, Math.floor(length / 32000));
-    for (let i = 0; i < length; i += scanStep) {
-      const m = Math.abs((ch0[i] + ch1[i]) * 0.5);
-      if (m > peakAbs) peakAbs = m;
+    const mono = new Float32Array(length);
+    for (let i = 0; i < length; i++) {
+      mono[i] = 0.5 * (ch0[i] + ch1[i]);
     }
-    const normGain = Math.min(4.0, 0.75 / peakAbs);
 
-    // Ventana de análisis de 3 milisegundos para precisión sub-milisegundo de impacto
-    const hopSize = Math.max(32, Math.floor(sampleRate * 0.003));
+    const avgSens = Math.max(
+      0.1,
+      Math.min(1.0, (config.kickSensitivity + config.snareSensitivity) * 0.5)
+    );
+    const res = detectOnsetsSpectralFlux(mono, sampleRate, {
+      sensitivity: avgSens,
+      minIntervalMs: 85,
+      snapToZeroCrossing: true,
+    });
+
     const events: DrumHitEvent[] = [];
+    for (let i = 0; i < res.onsetTimesSec.length; i++) {
+      const cls = res.classifications[i];
+      if (cls === 'hat') continue;
+      // Filter by individual kick/snare sensitivity thresholds
+      const vel = res.velocities[i];
+      const minVelReq =
+        cls === 'kick'
+          ? 0.85 - config.kickSensitivity * 0.65
+          : 0.85 - config.snareSensitivity * 0.65;
+      if (vel < minVelReq * 0.75) continue;
 
-    // Estados de filtros IIR para aislar Sub-Kick (<105Hz) y Cuerpo/Ataque de Snare (200Hz - 4.5kHz)
-    let lowPassState = 0;
-    let midHighState = 0;
-    const kickAlpha = (2 * Math.PI * 95) / (sampleRate + 2 * Math.PI * 95);
-    const snareAlpha = (2 * Math.PI * 350) / (sampleRate + 2 * Math.PI * 350);
-
-    let prevKickEnv = 0;
-    let prevSnareEnv = 0;
-    let lastKickTime = -1;
-    let lastSnareTime = -1;
-
-    // Umbrales dinámicos inversamente proporcionales a la sensibilidad elegida
-    const kickSens = Math.max(0.1, Math.min(1.0, config.kickSensitivity));
-    const snareSens = Math.max(0.1, Math.min(1.0, config.snareSensitivity));
-    const kickThreshold = 0.052 * (1.18 - kickSens * 0.88);
-    const snareThreshold = 0.042 * (1.18 - snareSens * 0.88);
-
-    // Periodo refractario mínimo entre golpes (evita dobles disparos en un mismo impacto)
-    const minKickIntervalSec = 0.095;
-    const minSnareIntervalSec = 0.09;
-
-    for (let i = 0; i < length - hopSize; i += hopSize) {
-      let kickEnergySum = 0;
-      let snareEnergySum = 0;
-
-      for (let j = 0; j < hopSize; j++) {
-        const monoSample = (ch0[i + j] + ch1[i + j]) * 0.5 * normGain;
-
-        // Filtro paso-bajo para aislar el golpe fundamental del Bombo
-        lowPassState += kickAlpha * (monoSample - lowPassState);
-        const kickSample = lowPassState;
-
-        // Filtro paso-alto/banda para aislar la Caja y su bordona
-        const highPassed = monoSample - lowPassState;
-        midHighState += snareAlpha * (highPassed - midHighState);
-        const snareSample = highPassed - midHighState * 0.5;
-
-        kickEnergySum += kickSample * kickSample;
-        snareEnergySum += snareSample * snareSample;
-      }
-
-      const kickRms = Math.sqrt(kickEnergySum / hopSize);
-      const snareRms = Math.sqrt(snareEnergySum / hopSize);
-
-      // Derivada de primer orden (First-Order Energy Flux: ataque ascendente rápido)
-      const kickFlux = Math.max(0, kickRms - prevKickEnv);
-      const snareFlux = Math.max(0, snareRms - prevSnareEnv);
-
-      prevKickEnv = kickRms * 0.85 + prevKickEnv * 0.15;
-      prevSnareEnv = snareRms * 0.85 + prevSnareEnv * 0.15;
-
-      const currentTimeSec = Number((i / sampleRate).toFixed(4));
-
-      // Evaluar disparo de Bombo (Kick)
-      if (
-        kickFlux > kickThreshold &&
-        currentTimeSec - lastKickTime >= minKickIntervalSec
-      ) {
-        const velocity = Number(
-          Math.min(
-            1.0,
-            Math.max(0.25, kickFlux / (kickThreshold * 3.0))
-          ).toFixed(3)
-        );
-        events.push({ timeSec: currentTimeSec, type: 'kick', velocity });
-        lastKickTime = currentTimeSec;
-      }
-
-      // Evaluar disparo de Caja (Snare)
-      if (
-        snareFlux > snareThreshold &&
-        snareRms > kickRms * 0.52 &&
-        currentTimeSec - lastSnareTime >= minSnareIntervalSec
-      ) {
-        const velocity = Number(
-          Math.min(
-            1.0,
-            Math.max(0.25, snareFlux / (snareThreshold * 3.0))
-          ).toFixed(3)
-        );
-        events.push({ timeSec: currentTimeSec, type: 'snare', velocity });
-        lastSnareTime = currentTimeSec;
-      }
+      events.push({
+        timeSec: res.onsetTimesSec[i],
+        type: cls,
+        velocity: vel,
+      });
     }
 
     return events;
   }
 
-  /**
-   * Programa todos los golpes de batería detectados en sincronía sample-accurate
-   * con el AudioContext (tiempo real) o el OfflineAudioContext (exportación WAV 24-bit).
-   * Cuando duckOriginalTransients está activo, atenúa quirúrgicamente (-8.5dB por 20ms)
-   * la transiente sintética original de Suno en el instante exacto del impacto acústico.
-   */
   public scheduleDrumLayers(
     ctx: BaseAudioContext,
     destinationNode: AudioNode,
@@ -229,7 +178,7 @@ export class DrumTransientReplacerDSP {
       this.customSnareBuffer ||
       this.getOrSynthesizeSnareBuffer(ctx, config.drumStyle);
 
-    const cycles = Math.max(1, Math.min(8, loopCycles));
+    const cycles = Math.max(1, Math.min(16, loopCycles));
 
     for (let cycle = 0; cycle < cycles; cycle++) {
       const cycleTimeOffset =
@@ -246,20 +195,20 @@ export class DrumTransientReplacerDSP {
           audioStartContextTime +
           (hit.timeSec + cycleTimeOffset - playbackOffsetSec) / safeRate;
 
-        // Ducking quirúrgico de la transiente sintética original (18-22ms)
+        // Ducking localizado y corto (14ms) para limpiar solapamiento de transientes sin ahuecar el resto
         if (
           transientDuckHandles &&
           config.duckOriginalTransients !== false &&
-          triggerTime >= 0.003
+          triggerTime >= 0.002
         ) {
           const duckParam = isKick
             ? transientDuckHandles.kickDuckFilter.gain
             : transientDuckHandles.snareDuckFilter.gain;
           const maxDuckDb =
-            -8.8 * Math.min(1, mixAmount * 1.35) * Math.max(0.45, hit.velocity);
-          const preTime = Math.max(0, triggerTime - 0.002);
-          const peakTime = triggerTime + 0.0025;
-          const releaseTime = triggerTime + (isKick ? 0.024 : 0.019);
+            -6.5 * Math.min(1, mixAmount * 1.2) * Math.max(0.45, hit.velocity);
+          const preTime = Math.max(0, triggerTime - 0.0015);
+          const peakTime = triggerTime + 0.002;
+          const releaseTime = triggerTime + (isKick ? 0.016 : 0.013);
 
           duckParam.setValueAtTime(0, preTime);
           duckParam.linearRampToValueAtTime(maxDuckDb, peakTime);
@@ -270,9 +219,8 @@ export class DrumTransientReplacerDSP {
         source.buffer = isKick ? kickBuffer : snareBuffer;
 
         const hitGain = ctx.createGain();
-        hitGain.gain.value = hit.velocity * mixAmount * 0.92;
+        hitGain.gain.value = hit.velocity * mixAmount * 0.72;
 
-        // Micro-Humanización Round-Robin (100% Centrada, CERO paneo lateral L/R)
         if (config.humanizeRoundRobin) {
           const seedIdx = index + cycle * 997;
           const pseudoRand1 = Math.sin(seedIdx * 12.9898) * 43758.5453;
@@ -280,20 +228,16 @@ export class DrumTransientReplacerDSP {
           const pseudoRand2 = Math.sin(seedIdx * 78.233) * 19341.7219;
           const frac2 = pseudoRand2 - Math.floor(pseudoRand2);
 
-          // 1. Variación orgánica de afinación (±0.6%) sincronizada con el playbackRate global
           source.playbackRate.value = safeRate * (0.994 + frac1 * 0.012);
+          triggerTime += (frac2 - 0.5) * 0.00025;
 
-          // 2. Micro-desplazamiento de tiempo (±0.15 ms) idéntico en L y R
-          triggerTime += (frac2 - 0.5) * 0.0003;
-
-          // 3. Variación sutil de timbre (sin StereoPanner para mantener bombo y caja clavados al centro)
           const timbreFilter = ctx.createBiquadFilter();
           timbreFilter.type = 'peaking';
           timbreFilter.frequency.value = isKick
             ? 68 + frac1 * 20
             : 2350 + frac1 * 550;
           timbreFilter.Q.value = 1.4;
-          timbreFilter.gain.value = (frac2 - 0.5) * 1.4;
+          timbreFilter.gain.value = (frac2 - 0.5) * 1.2;
 
           source.connect(timbreFilter);
           timbreFilter.connect(hitGain);
@@ -303,6 +247,15 @@ export class DrumTransientReplacerDSP {
         }
 
         hitGain.connect(destinationNode);
+
+        source.onended = () => {
+          try {
+            source.disconnect();
+            hitGain.disconnect();
+          } catch {
+            // ignore
+          }
+        };
 
         source.start(Math.max(0, triggerTime));
         if (!isOffline) {
@@ -318,7 +271,7 @@ export class DrumTransientReplacerDSP {
         node.stop();
         node.disconnect();
       } catch {
-        // Ignorar nodos que ya terminaron de sonar
+        // already stopped
       }
     });
     this.activeScheduledNodes = [];
@@ -348,15 +301,12 @@ export class DrumTransientReplacerDSP {
     return buf;
   }
 
-  /**
-   * Genera un sample de Bombo Acústico de Estudio de alta definición (Punch en 52-60Hz + Clic de mazo en 3.2kHz)
-   */
   private synthesizeStudioKickBuffer(
     ctx: BaseAudioContext,
     style: DrumKitStyle
   ): AudioBuffer {
     const sr = ctx.sampleRate;
-    const duration = style === 'arena-worship' ? 0.36 : 0.31;
+    const duration = style === 'arena-worship' ? 0.34 : 0.29;
     const length = Math.floor(sr * duration);
     const buffer = ctx.createBuffer(2, length, sr);
     const left = buffer.getChannelData(0);
@@ -403,13 +353,13 @@ export class DrumTransientReplacerDSP {
         0.19 * Math.sin(phase * 2) * Math.exp(-t * 22);
 
       const beaterClick =
-        nextRand() * Math.exp(-t * 280) * 0.52 +
-        Math.sin(2 * Math.PI * 3150 * t) * Math.exp(-t * 240) * 0.36;
+        nextRand() * Math.exp(-t * 280) * 0.45 +
+        Math.sin(2 * Math.PI * 3150 * t) * Math.exp(-t * 240) * 0.32;
 
-      const raw = Math.tanh((body + beaterClick) * 1.35);
-      // Corte limpio infrasónico debajo de 33Hz
+      const raw = Math.tanh((body + beaterClick) * 1.15);
       hpfState += hpfAlpha * (raw - hpfState);
-      const cleanSample = raw - hpfState;
+      const fadeOut = i > length - 128 ? (length - i) / 128 : 1;
+      const cleanSample = (raw - hpfState) * fadeOut;
 
       left[i] = cleanSample;
       right[i] = cleanSample;
@@ -417,15 +367,12 @@ export class DrumTransientReplacerDSP {
     return buffer;
   }
 
-  /**
-   * Genera un sample de Caja (Snare) Acústica 100% centrada en fase con transiente real y cuerpo en 210Hz
-   */
   private synthesizeStudioSnareBuffer(
     ctx: BaseAudioContext,
     style: DrumKitStyle
   ): AudioBuffer {
     const sr = ctx.sampleRate;
-    const duration = style === 'arena-worship' ? 0.44 : 0.29;
+    const duration = style === 'arena-worship' ? 0.42 : 0.28;
     const length = Math.floor(sr * duration);
     const buffer = ctx.createBuffer(2, length, sr);
     const left = buffer.getChannelData(0);
@@ -470,12 +417,13 @@ export class DrumTransientReplacerDSP {
           : style === 'tight-pop-funk'
           ? 19.5
           : 15.5;
-      const wireMono = nextRand() * Math.exp(-t * wireDecay) * 0.65;
+      const wireMono = nextRand() * Math.exp(-t * wireDecay) * 0.55;
 
       const stickCrack =
-        Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 310) * 0.62;
+        Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 310) * 0.52;
 
-      const sample = Math.tanh((shellBody + stickCrack + wireMono) * 1.25);
+      const fadeOut = i > length - 128 ? (length - i) / 128 : 1;
+      const sample = Math.tanh((shellBody + stickCrack + wireMono) * 1.1) * fadeOut;
       left[i] = sample;
       right[i] = sample;
     }

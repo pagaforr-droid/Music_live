@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type, Headphones, Sliders } from 'lucide-react';
+import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type, Headphones, Sliders, Grid } from 'lucide-react';
 import { TanduMusicosLogo } from './TanduMusicosLogo';
 
 export default function Layout() {
@@ -171,6 +171,23 @@ export default function Layout() {
                     }`}
                   />
                   {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Mastering Pro</span>}
+                  {isActive && (
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
+                  )}
+                </>
+              )}
+            </NavLink>
+
+            <NavLink to="/sample-lab" className={({ isActive }) => navLinkClass(isActive)} title="Sample Lab">
+              {({ isActive }) => (
+                <>
+                  <Grid
+                    size={19}
+                    className={`shrink-0 transition-colors ${
+                      isActive ? 'text-[#e11d48]' : 'text-[#8e96a4] group-hover:text-white'
+                    }`}
+                  />
+                  {isSidebarOpen && <span className="text-[13px] tracking-tight whitespace-nowrap">Sample Lab</span>}
                   {isActive && (
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#e11d48] rounded-l-full" />
                   )}

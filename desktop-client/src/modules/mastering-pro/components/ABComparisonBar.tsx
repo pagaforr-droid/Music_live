@@ -46,8 +46,8 @@ const TARGET_LUFS_OPTIONS: Array<{
 }> = [
   { lufs: -14, label: '-14 LUFS', sub: 'Streaming' },
   { lufs: -11, label: '-11 LUFS', sub: 'Studio Pro' },
+  { lufs: -10, label: '-10 LUFS', sub: 'Radio Punch' },
   { lufs: -9, label: '-9 LUFS', sub: 'Club / Max' },
-  { lufs: -8.5, label: '-8.5 LUFS', sub: 'Arena Loud' },
 ];
 
 export function formatTimeMmSs(sec: number): string {

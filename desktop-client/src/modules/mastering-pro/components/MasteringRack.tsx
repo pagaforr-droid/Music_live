@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Cpu,
   History,
@@ -10,6 +11,7 @@ import {
   Save,
   Upload,
   X,
+  Grid,
 } from 'lucide-react';
 import {
   PRO_PRESETS_CATALOG,
@@ -20,16 +22,16 @@ import {
 } from '../presets/proPresetsCatalog';
 import {
   downloadMasteringConfigJsonFile,
-  loadActiveMasteringConfigSnapshot,
   parseMasteringConfigJsonFile,
   saveActiveMasteringConfigSnapshot,
   type MasteringConfigurationFile,
 } from '../engine/MasteringConfigStorage';
 import {
-  analyzeTrackAndComputeAdaptation,
+  analyzeTrackAndComputeAdaptationAsync,
   recomputeDeltasForPreset,
 } from '../engine/SpectralDeltaAnalyzer';
 import { WebAudioMasteringEngine } from '../engine/WebAudioMasteringEngine';
+import { SampleLabHandoff } from '../sampler/engine/SampleLabHandoff';
 import {
   MASTERING_SESSIONS_MIGRATION_SQL,
   fetchMasteringSessionsHistory,
@@ -44,6 +46,7 @@ import type {
   DrumHitEvent,
   DrumLayeringConfig,
   EQBandConfig,
+  ExportQaReport,
   MasteringSessionRecord,
   SpectralAdaptationReport,
   StemBusRole,
@@ -112,6 +115,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   songId: propSongId,
   onMasterSaved,
 }) => {
+  const navigate = useNavigate();
   const defaultPreset = PRO_PRESETS_CATALOG[0];
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
     defaultPreset.id
@@ -145,6 +149,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     pct: number;
   } | null>(null);
   const [isSavingCloud, setIsSavingCloud] = useState<boolean>(false);
+  const [lastExportQa, setLastExportQa] = useState<ExportQaReport | null>(null);
 
   const [statusBanner, setStatusBanner] = useState<{
     type: 'success' | 'error' | 'info';
@@ -271,12 +276,59 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setActiveSongId(songIdFromQuery);
     }
 
+    // Consume pending drum samples sent from Sample Lab
+    const pendingDrums = SampleLabHandoff.consumePendingDrumSamples();
+    if (pendingDrums.kick) {
+      engine.setCustomDrumSampleFromBuffer(
+        'kick',
+        pendingDrums.kick.buffer,
+        pendingDrums.kick.name
+      );
+    }
+    if (pendingDrums.snare) {
+      engine.setCustomDrumSampleFromBuffer(
+        'snare',
+        pendingDrums.snare.buffer,
+        pendingDrums.snare.name
+      );
+    }
+    if (pendingDrums.kick || pendingDrums.snare) {
+      setCustomDrumSampleNames(engine.getCustomDrumSampleNames());
+    }
+
+    // Consume pending bounce sent from Sample Lab to master
+    const pendingBounce = SampleLabHandoff.consumeBounceForMastering();
+    if (pendingBounce) {
+      void (async () => {
+        setIsAnalyzing(true);
+        try {
+          const { buffer, report: rep } = await engine.loadAudioBuffer(
+            pendingBounce.buffer
+          );
+          setTrackTitle(pendingBounce.title);
+          if (pendingBounce.songId) setActiveSongId(pendingBounce.songId);
+          setHasAudio(true);
+          setDurationSec(buffer.duration);
+          setCurrentTimeSec(0);
+          setAdaptationReport(rep);
+          setDetectedDrumHits(rep.detectedDrumHits);
+          setLiveMetrics(engine.getLiveMetrics());
+          setStatusBanner({
+            type: 'success',
+            message: `"${pendingBounce.title}" recibido desde Sample Lab (${rep.detectedInputLufs} LUFS).`,
+          });
+        } finally {
+          setIsAnalyzing(false);
+        }
+      })();
+    }
+
     if (urlFromQuery) {
       void handleLoadAudioUrl(
         urlFromQuery,
         titleFromQuery || 'Pista del Proyecto'
       );
-    } else {
+    } else if (!pendingBounce) {
       // Auto-generate studio reference track on initial boot so user can audition immediately
       void handleGenerateDemoTrack(true);
     }
@@ -355,10 +407,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setCurrentTimeSec(0);
       setAdaptationReport(report);
       setDetectedDrumHits(report.detectedDrumHits);
-      setOverrides((prev) => ({
-        ...prev,
-        resonanceNotches: report.detectedResonanceLines,
-      }));
+      setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
       setStatusBanner({
         type: 'success',
@@ -393,10 +442,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setCurrentTimeSec(0);
       setAdaptationReport(report);
       setDetectedDrumHits(report.detectedDrumHits);
-      setOverrides((prev) => ({
-        ...prev,
-        resonanceNotches: report.detectedResonanceLines,
-      }));
+      setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
       setStatusBanner({
         type: 'success',
@@ -427,10 +473,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setCurrentTimeSec(0);
       setAdaptationReport(report);
       setDetectedDrumHits(report.detectedDrumHits);
-      setOverrides((prev) => ({
-        ...prev,
-        resonanceNotches: report.detectedResonanceLines,
-      }));
+      setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
       if (!silent) {
         setStatusBanner({
@@ -472,15 +515,15 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     setCurrentTimeSec(sec);
   };
 
-  const handleRunAiAnalysis = () => {
+  const handleRunAiAnalysis = async () => {
     const engine = engineRef.current;
     const buffer = engine?.getAudioBuffer();
     if (!buffer && !adaptationReport) return;
 
     setIsAnalyzing(true);
-    setTimeout(() => {
+    try {
       const freshReport = buffer
-        ? analyzeTrackAndComputeAdaptation(buffer, selectedPresetId)
+        ? await analyzeTrackAndComputeAdaptationAsync(buffer, selectedPresetId)
         : adaptationReport!;
       setAdaptationReport(freshReport);
 
@@ -491,7 +534,6 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       const comp = freshReport.compressionSuggestion;
       const stereo = freshReport.stereoWidthSuggestion;
 
-      // Apply full intelligent optimization from the AI scan
       const nextOverrides: SurgicalOverrides = {
         ...baseOverrides,
         compressorThresholdDb: comp.thresholdDb,
@@ -514,12 +556,13 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setOverrides(syncSurgicalOverridesEqBands(nextOverrides));
       setIsBypassed(false);
       setAutoAdaptEnabled(true);
-      setIsAnalyzing(false);
       setStatusBanner({
         type: 'success',
-        message: `Diagnóstico IA completado: Preset "${recPreset.name}", ${freshReport.criticalEqPoints.length} puntos críticos de EQ, De-Esser (${freshReport.sibilanceScore}%), Compresión (${comp.ratio}:1) y Amplitud Estéreo (${stereo.recommendedWidthPct}%) calibrados.`,
+        message: `Diagnóstico espectral completado: Preset "${recPreset.name}", ${freshReport.criticalEqPoints.length} puntos de EQ, Compresión (${comp.ratio}:1) y Amplitud (${stereo.recommendedWidthPct}%) calibrados.`,
       });
-    }, 220);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleApplyCriticalPoint = (point: AiCriticalEqPoint) => {
@@ -815,6 +858,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDurationSec(buffer.duration);
       setCurrentTimeSec(0);
       setAdaptationReport(report);
+      setLastExportQa(null);
       setStatusBanner({
         type: 'success',
         message:
@@ -867,6 +911,19 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     }
   };
 
+  const handleOpenInSampleLab = () => {
+    const buffer = engineRef.current?.getAudioBuffer();
+    if (buffer) {
+      SampleLabHandoff.sendAudioToSampleLab({
+        buffer,
+        title: trackTitle,
+        songId: activeSongId,
+        origin: 'mastering-buffer',
+      });
+    }
+    navigate('/sample-lab');
+  };
+
   const handleExportWav24 = async () => {
     const engine = engineRef.current;
     if (!engine || !hasAudio) return;
@@ -874,20 +931,20 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setIsExporting(true);
       setIsBypassed(false);
 
-      // 1. Persistir y recuperar el snapshot exacto de todas las configuraciones del módulo
-      const savedSnapshot = saveActiveMasteringConfigSnapshot(
+      // Snapshot inmutable en memoria (sin round-trip por localStorage como fuente de verdad)
+      const snapshot = saveActiveMasteringConfigSnapshot(
         buildCurrentConfigSnapshot()
       );
-      const verifiedSnapshot =
-        loadActiveMasteringConfigSnapshot(activeSongId) ?? savedSnapshot;
 
       const result = await engine.exportMasterToWav24Bit(
         (stage, pct) => {
           setExportProgress({ stage, pct });
         },
-        verifiedSnapshot.effectiveDspChain,
-        verifiedSnapshot.autoMakeupGainDb
+        snapshot.effectiveDspChain,
+        snapshot.autoMakeupGainDb
       );
+
+      setLastExportQa(result.qaReport);
 
       const cleanName =
         trackTitle.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]+/g, '_') ||
@@ -903,12 +960,13 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 10000);
 
+      const qa = result.qaReport;
       setStatusBanner({
-        type: 'success',
-        message: `Master WAV 24-Bit / 48kHz exportado con 100% de tus ajustes activos (${(
+        type: qa.grBudgetExceeded ? 'info' : 'success',
+        message: `Master WAV 24-Bit / 48kHz exportado (${(
           result.blob.size /
           (1024 * 1024)
-        ).toFixed(1)} MB · True Peak: ${result.finalTruePeakDbTp} dBTP · Dither TPDF).`,
+        ).toFixed(1)} MB · Out: ${qa.outputLufs.toFixed(1)} LUFS · True Peak: ${qa.finalTruePeakDbTp.toFixed(2)} dBTP · Lim GR: -${qa.maxLimiterReductionDb.toFixed(1)}dB · Clips: ${qa.clippedSamples}).${qa.grBudgetWarning ? ` Aviso: ${qa.grBudgetWarning}` : ''}`,
       });
     } catch (err) {
       setStatusBanner({
@@ -933,22 +991,22 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setStatusBanner({
         type: 'info',
         message:
-          'Guardando snapshot de configuración, renderizando Master WAV de 24-bits y subiendo a Supabase Storage...',
+          'Renderizando Master WAV 24-Bit verificado (2 pasadas) y subiendo a Supabase Storage...',
       });
 
-      const savedSnapshot = saveActiveMasteringConfigSnapshot(
+      const snapshot = saveActiveMasteringConfigSnapshot(
         buildCurrentConfigSnapshot()
       );
-      const verifiedSnapshot =
-        loadActiveMasteringConfigSnapshot(activeSongId) ?? savedSnapshot;
 
       const renderRes = await engine.exportMasterToWav24Bit(
         (stage, pct) => {
           setExportProgress({ stage, pct });
         },
-        verifiedSnapshot.effectiveDspChain,
-        verifiedSnapshot.autoMakeupGainDb
+        snapshot.effectiveDspChain,
+        snapshot.autoMakeupGainDb
       );
+
+      setLastExportQa(renderRes.qaReport);
 
       const savedRecord = await uploadAndSaveMasterSession({
         wavBlob: renderRes.blob,
@@ -958,14 +1016,14 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         presetName: selectedPreset.name,
         intensityPct,
         targetLufs: overrides.targetLufs,
-        inputLufs: liveMetrics.inputLufs,
-        outputLufs: liveMetrics.outputLufs,
-        truePeakDbTp: renderRes.finalTruePeakDbTp,
-        phaseCorrelation: liveMetrics.phaseCorrelation,
+        inputLufs: renderRes.qaReport.inputLufs,
+        outputLufs: renderRes.qaReport.outputLufs,
+        truePeakDbTp: renderRes.qaReport.finalTruePeakDbTp,
+        phaseCorrelation: renderRes.qaReport.phaseCorrelation,
         durationSeconds: renderRes.durationSec,
         sampleRate: renderRes.sampleRate,
-        dspSnapshot: verifiedSnapshot.effectiveDspChain,
-        surgicalOverrides: verifiedSnapshot.surgicalOverrides,
+        dspSnapshot: snapshot.effectiveDspChain,
+        surgicalOverrides: snapshot.surgicalOverrides,
       });
 
       setSessionsHistory((prev) => [savedRecord, ...prev]);
@@ -973,7 +1031,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
       setStatusBanner({
         type: 'success',
-        message: `Master 24-Bit guardado en Cloud exitosamente (${savedRecord.preset_name}).`,
+        message: `Master 24-Bit guardado en Cloud (${savedRecord.preset_name} · ${renderRes.qaReport.outputLufs.toFixed(1)} LUFS · ${renderRes.qaReport.finalTruePeakDbTp.toFixed(2)} dBTP).`,
       });
     } catch (err) {
       setStatusBanner({
@@ -1065,6 +1123,16 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 e.target.value = '';
               }}
             />
+
+            <button
+              type="button"
+              onClick={handleOpenInSampleLab}
+              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00]/20 to-[#00E5FF]/20 hover:from-[#FF6B00]/35 hover:to-[#00E5FF]/35 border border-[#00E5FF]/50 text-xs font-mono font-bold text-[#00E5FF] flex items-center gap-1.5 transition-all cursor-pointer"
+              title="Abrir Sample Lab (/sample-lab) para cortar, editar y crear sonidos desde esta pista"
+            >
+              <Grid size={13} className="text-[#FF6B00]" />
+              <span>Sample Lab</span>
+            </button>
 
             <button
               type="button"
@@ -1205,7 +1273,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           onStop={handleStop}
           onFileSelected={handleFileSelected}
           onLoadDemoTrack={() => void handleGenerateDemoTrack(false)}
-          onRunAiAnalysis={handleRunAiAnalysis}
+          onRunAiAnalysis={() => void handleRunAiAnalysis()}
           onToggleBypass={(bypass) => setIsBypassed(bypass)}
           onToggleGainMatch={() => setIsGainMatch((g) => !g)}
           onSelectTargetLufs={(lufs) =>
@@ -1281,6 +1349,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
               targetLufs={overrides.targetLufs}
               ceilingDbTp={overrides.ceilingDbTp}
               monoMakerFreq={overrides.monoMakerFreq}
+              lastExportQa={lastExportQa}
             />
           </div>
         </div>
@@ -1290,7 +1359,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           report={adaptationReport}
           overrides={overrides}
           isAnalyzing={isAnalyzing}
-          onRunFullAiOptimization={handleRunAiAnalysis}
+          onRunFullAiOptimization={() => void handleRunAiAnalysis()}
           onApplyCriticalPoint={handleApplyCriticalPoint}
           onApplyFilterSuggestion={handleApplyFilterSuggestion}
           onApplyAiCompression={handleApplyAiCompression}
@@ -1299,7 +1368,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           onUpdateCustomEqBand={handleUpdateCustomEqBand}
         />
 
-        {/* 2.75. Acoustic Drum Re-Synthesis & Forensic Anti-AI De-Fingerprinting Rack */}
+        {/* 2.75. Acoustic Drum Re-Synthesis & Analog Restorer Rack */}
         <DrumLayeringRackPanel
           drumConfig={overrides.drumLayering}
           forensicConfig={overrides.forensicHumanizer}
@@ -1310,8 +1379,11 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           inputSpectralProfile={liveMetrics.spectralBalance}
           detectedPhaseCorrelation={
             adaptationReport?.detectedPhaseCorrelation ??
-            liveMetrics.phaseCorrelation
+            (Number.isFinite(liveMetrics.phaseCorrelation)
+              ? liveMetrics.phaseCorrelation
+              : 0.85)
           }
+          baselineForensicReport={adaptationReport?.forensicSignature}
           customSampleNames={customDrumSampleNames}
           onChangeDrumConfig={handleChangeDrumConfig}
           onChangeForensicConfig={(nextForensic) =>

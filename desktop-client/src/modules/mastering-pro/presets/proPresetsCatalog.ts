@@ -15,9 +15,9 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'Imagine Dragons · OneRepublic · Coldplay',
     category: 'Rock',
     accentHex: '#FF6B00',
-    tags: ['Punch 60Hz', 'Bus Glue 4:1', 'Side Air 12kHz', '-9.5 LUFS'],
+    tags: ['Punch 60Hz', 'Bus Glue 2.8:1', 'Side Air 12kHz', '-10.0 LUFS'],
     description:
-      'Empuje masivo en el sub-bajo central, limpieza quirúrgica de barro en 320Hz, ataque vocal al frente y brillo abierto en los lados para coros de estadio.',
+      'Empuje calibrado en el sub-bajo central, limpieza quirúrgica de barro en 320Hz, ataque vocal al frente y aire abierto en los lados preservando el punch transiente.',
     targetSpectralProfile: {
       sub: -13.5,
       lowMid: -16.8,
@@ -91,28 +91,28 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
       ],
       compressor: {
         thresholdDb: -18,
-        ratio: 4.0,
+        ratio: 2.8,
         attackSec: 0.03,
-        releaseSec: 0.1,
+        releaseSec: 0.11,
         kneeDb: 6,
-        makeupGainDb: 2.2,
+        makeupGainDb: 0,
         parallelMix: 0.85,
       },
       saturation: {
         type: 'softclip',
-        drive: 0.22,
-        warmthTiltDb: 0.6,
+        drive: 0.16,
+        warmthTiltDb: 0.4,
       },
       stereoWidth: {
-        sideGainDb: 1.8,
-        widthPct: 123,
+        sideGainDb: 1.4,
+        widthPct: 117,
       },
       limiter: {
-        targetLufs: -9.5,
+        targetLufs: -10.0,
         ceilingDbTp: -1.0,
-        lookaheadMs: 2.0,
-        releaseMs: 55,
-        softClipPrePct: 0.35,
+        lookaheadMs: 5.0,
+        releaseMs: 65,
+        softClipPrePct: 0.25,
       },
     },
   },
@@ -123,7 +123,7 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'Daft Punk · Bruno Mars · Parcels',
     category: 'Funk',
     accentHex: '#00E5FF',
-    tags: ['Tight 55Hz', 'Fast Glue 3:1', 'Transformer Drive', '-9.0 LUFS'],
+    tags: ['Tight 55Hz', 'Fast Glue 2.5:1', 'Transformer Drive', '-10.0 LUFS'],
     description:
       'Mono Maker alto a 135Hz para un bajo funk ultra enfocado, recorte de congestión en 250Hz y saturación de transformador para realzar el slap y el bombo.',
     targetSpectralProfile: {
@@ -198,29 +198,29 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
         },
       ],
       compressor: {
-        thresholdDb: -16,
-        ratio: 3.0,
-        attackSec: 0.012,
-        releaseSec: 0.05,
+        thresholdDb: -16.5,
+        ratio: 2.5,
+        attackSec: 0.015,
+        releaseSec: 0.065,
         kneeDb: 5,
-        makeupGainDb: 2.0,
-        parallelMix: 0.88,
+        makeupGainDb: 0,
+        parallelMix: 0.82,
       },
       saturation: {
         type: 'transformer',
-        drive: 0.2,
-        warmthTiltDb: 0.8,
+        drive: 0.16,
+        warmthTiltDb: 0.5,
       },
       stereoWidth: {
-        sideGainDb: 1.5,
-        widthPct: 119,
+        sideGainDb: 1.3,
+        widthPct: 116,
       },
       limiter: {
-        targetLufs: -9.0,
+        targetLufs: -10.0,
         ceilingDbTp: -1.0,
-        lookaheadMs: 1.8,
-        releaseMs: 45,
-        softClipPrePct: 0.38,
+        lookaheadMs: 5.0,
+        releaseMs: 55,
+        softClipPrePct: 0.25,
       },
     },
   },
@@ -231,7 +231,7 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'Crowder · Needtobreathe · MTV Unplugged',
     category: 'Acoustic',
     accentHex: '#F59E0B',
-    tags: ['Warm 140Hz', 'Gentle 1.8:1', 'Tube Harmonics', '-11.5 LUFS'],
+    tags: ['Warm 140Hz', 'Gentle 1.8:1', 'Tube Harmonics', '-12.0 LUFS'],
     description:
       'Preserva la respiración de guitarras acústicas y voces íntimas. Cuerpo cálido en 140Hz, doma de dureza de cuerdas en 3.2kHz y aire sedoso a 15kHz.',
     targetSpectralProfile: {
@@ -311,24 +311,24 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
         attackSec: 0.035,
         releaseSec: 0.25,
         kneeDb: 8,
-        makeupGainDb: 1.4,
-        parallelMix: 0.75,
+        makeupGainDb: 0,
+        parallelMix: 0.72,
       },
       saturation: {
         type: 'tube',
-        drive: 0.14,
-        warmthTiltDb: 1.1,
+        drive: 0.12,
+        warmthTiltDb: 0.7,
       },
       stereoWidth: {
-        sideGainDb: 0.8,
-        widthPct: 110,
+        sideGainDb: 0.7,
+        widthPct: 108,
       },
       limiter: {
-        targetLufs: -11.5,
+        targetLufs: -12.0,
         ceilingDbTp: -1.0,
-        lookaheadMs: 2.2,
-        releaseMs: 85,
-        softClipPrePct: 0.18,
+        lookaheadMs: 5.0,
+        releaseMs: 90,
+        softClipPrePct: 0.15,
       },
     },
   },
@@ -339,7 +339,7 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'Jeremy Camp · Elevation · Hillsong United',
     category: 'Worship',
     accentHex: '#38BDF8',
-    tags: ['Vocal Focus 1.8k', 'Tape Glue', 'Wide Halo +2.2dB', '-10.5 LUFS'],
+    tags: ['Vocal Focus 1.8k', 'Tape Glue', 'Wide Halo +1.8dB', '-11.0 LUFS'],
     description:
       'Diseñado para adoración moderna y baladas de arena: cimiento profundo en 50Hz, foco vocal nítido en el canal Mid a 1.8kHz y un halo estéreo inmersivo en 10kHz.',
     targetSpectralProfile: {
@@ -416,27 +416,27 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
       compressor: {
         thresholdDb: -18,
         ratio: 2.2,
-        attackSec: 0.025,
+        attackSec: 0.028,
         releaseSec: 0.18,
         kneeDb: 7,
-        makeupGainDb: 1.8,
-        parallelMix: 0.82,
+        makeupGainDb: 0,
+        parallelMix: 0.8,
       },
       saturation: {
         type: 'tape',
-        drive: 0.18,
-        warmthTiltDb: 0.9,
+        drive: 0.15,
+        warmthTiltDb: 0.6,
       },
       stereoWidth: {
-        sideGainDb: 2.2,
-        widthPct: 128,
+        sideGainDb: 1.8,
+        widthPct: 123,
       },
       limiter: {
-        targetLufs: -10.5,
+        targetLufs: -11.0,
         ceilingDbTp: -1.0,
-        lookaheadMs: 2.0,
-        releaseMs: 70,
-        softClipPrePct: 0.25,
+        lookaheadMs: 5.0,
+        releaseMs: 75,
+        softClipPrePct: 0.2,
       },
     },
   },
@@ -447,7 +447,7 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'AI-to-Analog Mastering · Studer A800 Emulation',
     category: 'AI-Restore',
     accentHex: '#10B981',
-    tags: ['-3.2dB @ 3.8kHz', '-2.5dB @ 6.2kHz', 'Studer Tape 30%', '-11.0 LUFS'],
+    tags: ['-3.2dB @ 3.8kHz', '-2.5dB @ 6.2kHz', 'Studer Tape 24%', '-11.5 LUFS'],
     description:
       'Elimina quirúrgicamente la resonancia metálica en 3.8kHz, el aliasing sibilante en 6.2kHz y el barro sintético en 280Hz, devolviendo peso analógico en 95Hz y calidez de cinta.',
     targetSpectralProfile: {
@@ -527,24 +527,24 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
         attackSec: 0.028,
         releaseSec: 0.14,
         kneeDb: 6,
-        makeupGainDb: 1.9,
-        parallelMix: 0.85,
+        makeupGainDb: 0,
+        parallelMix: 0.82,
       },
       saturation: {
         type: 'tape',
-        drive: 0.3,
-        warmthTiltDb: 1.5,
+        drive: 0.24,
+        warmthTiltDb: 1.0,
       },
       stereoWidth: {
-        sideGainDb: 2.0,
-        widthPct: 126,
+        sideGainDb: 1.6,
+        widthPct: 120,
       },
       limiter: {
-        targetLufs: -11.0,
+        targetLufs: -11.5,
         ceilingDbTp: -1.0,
-        lookaheadMs: 2.2,
-        releaseMs: 65,
-        softClipPrePct: 0.28,
+        lookaheadMs: 5.0,
+        releaseMs: 70,
+        softClipPrePct: 0.2,
       },
     },
   },
@@ -555,7 +555,7 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
     referenceArtists: 'Camilo · Morat · Pop Urbano Moderno',
     category: 'Pop',
     accentHex: '#F43F5E',
-    tags: ['Sub +2.8dB @ 48Hz', 'Mono 140Hz', 'Air +3.0dB', '-8.5 LUFS'],
+    tags: ['Sub +2.8dB @ 48Hz', 'Mono 140Hz', 'Air +3.0dB', '-9.5 LUFS'],
     description:
       'Calibrado para competir al máximo nivel comercial: Mono Maker firme a 140Hz, golpe profundo en 48Hz, claridad vocal en 4.5kHz y aire ultra cristalino en 14kHz.',
     targetSpectralProfile: {
@@ -630,29 +630,29 @@ export const PRO_PRESETS_CATALOG: MasteringPreset[] = [
         },
       ],
       compressor: {
-        thresholdDb: -15,
-        ratio: 4.0,
-        attackSec: 0.015,
-        releaseSec: 0.06,
+        thresholdDb: -15.5,
+        ratio: 3.0,
+        attackSec: 0.018,
+        releaseSec: 0.075,
         kneeDb: 5,
-        makeupGainDb: 2.4,
-        parallelMix: 0.9,
+        makeupGainDb: 0,
+        parallelMix: 0.85,
       },
       saturation: {
         type: 'softclip',
-        drive: 0.25,
-        warmthTiltDb: 0.5,
+        drive: 0.18,
+        warmthTiltDb: 0.4,
       },
       stereoWidth: {
-        sideGainDb: 1.6,
-        widthPct: 120,
+        sideGainDb: 1.4,
+        widthPct: 117,
       },
       limiter: {
-        targetLufs: -8.5,
+        targetLufs: -9.5,
         ceilingDbTp: -1.0,
-        lookaheadMs: 1.8,
-        releaseMs: 42,
-        softClipPrePct: 0.42,
+        lookaheadMs: 5.0,
+        releaseMs: 55,
+        softClipPrePct: 0.3,
       },
     },
   },
@@ -772,6 +772,8 @@ export function buildEffectiveDspChain(
   } | null
 ): MasteringDspChain {
   const scale = Math.max(0, Math.min(1.5, intensityPct / 100));
+  const isTrueBypass = scale <= 0.005;
+
   // Subtle spectral delta assist when Auto-Adapt is active (capped to ±0.8 dB so it never fights manual sliders)
   const clampDelta = (d: number) => Math.max(-0.8, Math.min(0.8, d * 0.25));
   const subDelta = deltaAdjustments ? clampDelta(deltaAdjustments.subDeltaDb) * scale : 0;
@@ -815,42 +817,83 @@ export function buildEffectiveDspChain(
     return {
       ...band,
       freq: Math.max(20, Math.min(20000, freq)),
-      gainDb: band.enabled === false ? 0 : clampGain(rawGain),
+      gainDb: isTrueBypass || band.enabled === false ? 0 : clampGain(rawGain),
     };
   });
 
-  // Width percentage (0% = -24dB side, 100% = 0dB side, 150% = +4.5dB side)
-  const effectiveWidthPct =
-    100 + (overrides.stereoWidthPct - 100) * scale;
-  const widthRatio = Math.max(0.02, effectiveWidthPct / 100);
-  const sideGainDb = clampGain(20 * Math.log10(widthRatio), -18, 6);
+  // Width percentage (0% = true Mono -60dB side => 0.0 gain, 100% = 0dB side, 150% = +3.5dB side)
+  const effectiveWidthPct = isTrueBypass
+    ? 100
+    : 100 + (overrides.stereoWidthPct - 100) * Math.min(1.25, scale);
+  const sideGainDb =
+    effectiveWidthPct <= 0.5
+      ? -60
+      : clampGain(20 * Math.log10(Math.max(0.01, effectiveWidthPct / 100)), -36, 6);
 
-  // Saturation drive scaled by Macro Intensity
-  const effectiveDrive = Math.max(
-    0,
-    Math.min(0.95, (overrides.tapeDrivePct / 100) * (0.5 + 0.5 * scale))
-  );
+  // Saturation drive scaled linearly by Macro Intensity (0% => 0 drive)
+  const effectiveDrive = isTrueBypass
+    ? 0
+    : Math.max(0, Math.min(0.95, (overrides.tapeDrivePct / 100) * scale));
 
-  // Compressor ratio scaled gently with intensity
-  const effectiveRatio = Math.max(
-    1.1,
-    1 + (overrides.compressorRatio - 1) * Math.max(0.35, Math.min(1.25, scale))
-  );
+  // Compressor ratio & parallel mix scaled cleanly (0% => parallelMix = 0)
+  const effectiveRatio = isTrueBypass
+    ? 1.0
+    : Math.max(
+        1.05,
+        1 + (overrides.compressorRatio - 1) * Math.min(1.25, scale)
+      );
 
-  const killerScale =
-    Math.max(0, Math.min(1.5, (overrides.resonanceKillerPct ?? 100) / 100)) *
-    Math.max(0.4, scale);
+  const killerScale = isTrueBypass
+    ? 0
+    : Math.max(0, Math.min(1.5, (overrides.resonanceKillerPct ?? 100) / 100)) * scale;
   const resonanceNotches = (overrides.resonanceNotches || []).map((n) => ({
     ...n,
     gainCutDb: clampGain(n.gainCutDb * killerScale, -14, 0),
   }));
 
+  const rawHumanizer = overrides.forensicHumanizer
+    ? { ...overrides.forensicHumanizer }
+    : { ...DEFAULT_FORENSIC_HUMANIZER_CONFIG };
+  const isPureMono = effectiveWidthPct <= 0.5;
+  const scaledHumanizer = isTrueBypass
+    ? { ...rawHumanizer, enabled: false }
+    : {
+        ...rawHumanizer,
+        bassConcentrationCap: Math.min(1, rawHumanizer.bassConcentrationCap * scale),
+        highFreqExciterAmount: Math.min(1, rawHumanizer.highFreqExciterAmount * scale),
+        analogPhaseAndDrift: Math.min(1, rawHumanizer.analogPhaseAndDrift * scale),
+        transientMicroExpand: Math.min(
+          1,
+          (rawHumanizer.transientMicroExpand ?? 0.35) * scale
+        ),
+        studioRoomCoherence: isPureMono
+          ? 0
+          : Math.min(0.15, rawHumanizer.studioRoomCoherence * scale),
+        analogConsoleNoiseDb: isPureMono ? -90 : rawHumanizer.analogConsoleNoiseDb,
+      };
+
+  const rawDrum = overrides.drumLayering
+    ? { ...overrides.drumLayering }
+    : { ...DEFAULT_DRUM_LAYERING_CONFIG };
+  const scaledDrum = isTrueBypass
+    ? { ...rawDrum, enabled: false }
+    : {
+        ...rawDrum,
+        kickMix: Math.min(1, rawDrum.kickMix * Math.min(1.2, scale)),
+        snareMix: Math.min(1, rawDrum.snareMix * Math.min(1.2, scale)),
+      };
+
   return {
-    highPassFreq: Math.max(
-      18,
-      Math.min(60, overrides.highPassFreq || basePreset.dspChain.highPassFreq)
-    ),
-    monoMakerFreq: Math.max(40, Math.min(220, overrides.monoMakerFreq)),
+    intensityScale: scale,
+    highPassFreq: isTrueBypass
+      ? 18
+      : Math.max(
+          18,
+          Math.min(60, overrides.highPassFreq || basePreset.dspChain.highPassFreq)
+        ),
+    monoMakerFreq: isTrueBypass
+      ? 30
+      : Math.max(30, Math.min(220, overrides.monoMakerFreq)),
     eqBands,
     resonanceNotches,
     compressor: {
@@ -866,20 +909,20 @@ export function buildEffectiveDspChain(
         Math.min(1.0, (overrides.compressorReleaseMs || 120) / 1000)
       ),
       kneeDb: Math.max(0, Math.min(24, overrides.compressorKneeDb ?? 6)),
-      parallelMix: Math.max(
-        0,
-        Math.min(
-          1,
-          (overrides.compressorGlueMixPct / 100) * Math.min(1.1, scale || 0.01)
-        )
-      ),
+      makeupGainDb: 0,
+      parallelMix: isTrueBypass
+        ? 0
+        : Math.max(
+            0,
+            Math.min(1, (overrides.compressorGlueMixPct / 100) * Math.min(1.0, scale))
+          ),
     },
     saturation: {
       type: overrides.saturationType,
       drive: Number(effectiveDrive.toFixed(3)),
-      warmthTiltDb: Number(
-        (basePreset.dspChain.saturation.warmthTiltDb * scale).toFixed(2)
-      ),
+      warmthTiltDb: isTrueBypass
+        ? 0
+        : Number((basePreset.dspChain.saturation.warmthTiltDb * scale).toFixed(2)),
     },
     stereoWidth: {
       sideGainDb,
@@ -890,11 +933,7 @@ export function buildEffectiveDspChain(
       targetLufs: overrides.targetLufs,
       ceilingDbTp: overrides.ceilingDbTp,
     },
-    forensicHumanizer: overrides.forensicHumanizer
-      ? { ...overrides.forensicHumanizer }
-      : { ...DEFAULT_FORENSIC_HUMANIZER_CONFIG },
-    drumLayering: overrides.drumLayering
-      ? { ...overrides.drumLayering }
-      : { ...DEFAULT_DRUM_LAYERING_CONFIG },
+    forensicHumanizer: scaledHumanizer,
+    drumLayering: scaledDrum,
   };
 }

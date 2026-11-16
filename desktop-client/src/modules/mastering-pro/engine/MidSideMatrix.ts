@@ -147,13 +147,13 @@ export function createMidSideMatrix(
     sideBandFilters.set(band.id, filter);
   }
 
-  // 3. Stereo Width Side Gain
+  // 3. Stereo Width Side Gain (-36dB or lower => true digital Mono 0.0)
   const sideWidthGain = ctx.createGain();
   lockMonoDiscrete(sideWidthGain);
-  sideWidthGain.gain.value = Math.pow(
-    10,
-    Math.max(-24, Math.min(9, initialSideGainDb)) / 20
-  );
+  sideWidthGain.gain.value =
+    initialSideGainDb <= -36
+      ? 0.0
+      : Math.pow(10, Math.max(-36, Math.min(9, initialSideGainDb)) / 20);
   lastSideNode.connect(sideWidthGain);
 
   // --- DECODE NETWORK: L = Mid + Side, R = Mid - Side ---
@@ -198,7 +198,10 @@ export function createMidSideMatrix(
       monoMakerFilter.frequency.setTargetAtTime(clamped, now, 0.012);
     },
     updateSideGainDb: (sideGainDb: number, now: number) => {
-      const linear = Math.pow(10, Math.max(-24, Math.min(9, sideGainDb)) / 20);
+      const linear =
+        sideGainDb <= -36
+          ? 0.0
+          : Math.pow(10, Math.max(-36, Math.min(9, sideGainDb)) / 20);
       sideWidthGain.gain.value = linear;
       sideWidthGain.gain.setTargetAtTime(linear, now, 0.012);
     },

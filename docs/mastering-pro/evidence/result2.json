@@ -1,0 +1,86 @@
+{
+  "6s": {
+    "clean": {
+      "profile": {
+        "sub": -7,
+        "lowMid": -8.6,
+        "presence": -17.7,
+        "air": -28.7
+      },
+      "aiArtifactScore": 0,
+      "sibilanceScore": 0,
+      "notches": [
+        "2150Hz -3.2dB",
+        "3150Hz -3.2dB",
+        "4250Hz -3.2dB"
+      ]
+    },
+    "withAir12k_Sib6k2_Res3k85": {
+      "profile": {
+        "sub": -16.2,
+        "lowMid": -17.6,
+        "presence": -10.5,
+        "air": -17.7
+      },
+      "aiArtifactScore": 100,
+      "sibilanceScore": 90,
+      "notches": [
+        "3850Hz -5.8dB",
+        "5350Hz -3.2dB",
+        "6250Hz -5.8dB"
+      ]
+    }
+  },
+  "20s": {
+    "clean": {
+      "profile": {
+        "sub": -7.7,
+        "lowMid": -9.4,
+        "presence": -21,
+        "air": -23.9
+      },
+      "aiArtifactScore": 0,
+      "sibilanceScore": 0,
+      "notches": [
+        "2150Hz -3.2dB"
+      ]
+    },
+    "withAir12k_Sib6k2_Res3k85": {
+      "profile": {
+        "sub": -19,
+        "lowMid": -16.4,
+        "presence": -14.4,
+        "air": -12.2
+      },
+      "aiArtifactScore": 100,
+      "sibilanceScore": 67,
+      "notches": [
+        "2150Hz -3.2dB"
+      ]
+    }
+  },
+  "180s": {
+    "clean": {
+      "profile": {
+        "sub": -10.6,
+        "lowMid": -17.1,
+        "presence": -19.7,
+        "air": -14.6
+      },
+      "aiArtifactScore": 0,
+      "sibilanceScore": 18,
+      "notches": []
+    },
+    "withAir12k_Sib6k2_Res3k85": {
+      "profile": {
+        "sub": -18.2,
+        "lowMid": -14.4,
+        "presence": -13.9,
+        "air": -15.5
+      },
+      "aiArtifactScore": 34,
+      "sibilanceScore": 75,
+      "notches": []
+    }
+  }
+}

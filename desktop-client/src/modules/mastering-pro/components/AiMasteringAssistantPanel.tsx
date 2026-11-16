@@ -85,7 +85,7 @@ export const AiMasteringAssistantPanel: React.FC<
                 Asistente IA de Diagnóstico Quirúrgico & Personalización
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] font-bold">
-                Sibilancia: {report.sibilanceScore}% · Artefactos IA:{' '}
+                Sibilancia: {report.sibilanceScore}% · Aspereza 3.8k:{' '}
                 {report.aiArtifactScore}%
               </span>
             </div>

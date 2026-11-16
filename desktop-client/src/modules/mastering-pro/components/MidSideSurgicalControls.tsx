@@ -516,7 +516,7 @@ export const MidSideSurgicalControls: React.FC<
               />
               <div className="flex justify-between text-[10px] font-mono text-slate-500 mt-1">
                 <span>-1.0 dBTP (Estándar Spotify/Apple)</span>
-                <span>Lookahead 2.0ms</span>
+                <span>Lookahead 5.0ms 4x FIR</span>
               </div>
             </div>
           </div>

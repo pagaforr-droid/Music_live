@@ -3,95 +3,116 @@ import type { SaturationType } from '../types/mastering.types';
 const CURVE_RESOLUTION = 65536;
 
 /**
+ * +8 dB internal headroom scale so signals above 0 dBFS never hard-clip at WaveShaperNode's ±1.0 domain!
+ * Input gain divides by SAT_HEADROOM_SCALE, curve evaluates at SAT_HEADROOM_SCALE * x,
+ * and output trim multiplies back by SAT_HEADROOM_SCALE.
+ */
+export const SAT_HEADROOM_SCALE = 2.5;
+
+/**
  * Generates a 65,536-point Float32Array transfer curve for a 4x oversampled WaveShaperNode.
- * Every curve is strictly zero-centered at x = 0 (curve[32768] = 0) to prevent static DC offset.
+ * Every curve has:
+ * - Exact 1.0 small-signal unity slope at x = 0 (ZERO hidden volume boost!).
+ * - Zero static DC offset (curve[32768] = 0).
+ * - +8 dB peak headroom before curve domain saturation.
  */
 export function generateAnalogSaturationCurve(
   type: SaturationType,
   drive: number
 ): Float32Array<ArrayBuffer> {
   const curve = new Float32Array(CURVE_RESOLUTION);
-  const clampedDrive = Math.max(0.001, Math.min(1.0, drive));
+  const d = Math.max(0, Math.min(1.0, drive));
 
-  // Precompute f(0) to subtract any asymmetric DC bias at rest
-  const evalRaw = (x: number): number => {
+  // At drive = 0 -> pure bit-transparent linear bypass
+  if (d <= 0.002) {
+    for (let i = 0; i < CURVE_RESOLUTION; i++) {
+      curve[i] = (i * 2) / (CURVE_RESOLUTION - 1) - 1;
+    }
+    curve[CURVE_RESOLUTION >> 1] = 0;
+    return curve;
+  }
+
+  const evalUnitSlope = (u: number): number => {
     switch (type) {
       case 'tape': {
-        // Studer A800 style: soft hyperbolic tangent + subtle 2nd harmonic asymmetry
-        const k = 1.0 + clampedDrive * 3.4;
-        const asym = 0.045 * clampedDrive * x * x;
-        return Math.tanh(k * x + asym) / Math.tanh(k);
+        // Studer A800 style: hyperbolic tangent normalized so f'(0) = 1.0 + subtle 2nd harmonic warmth
+        const k = 0.65 + d * 2.2;
+        const asym = 0.032 * d * u * u;
+        return Math.tanh(k * u + asym) / k;
       }
       case 'tube': {
-        // Warm triode valve: asymmetric soft saturation favoring even harmonics
-        const k = 1.0 + clampedDrive * 3.8;
-        if (x >= 0) {
-          return (1 - Math.exp(-k * x)) / (1 - Math.exp(-k));
-        } else {
-          const kn = k * 0.82;
-          return -(1 - Math.exp(kn * x)) / (1 - Math.exp(-kn));
+        // Warm triode valve: asymmetric soft knee normalized so f'(0) = 1.0
+        const k = 0.7 + d * 2.5;
+        if (u >= 0) {
+          return (1 - Math.exp(-k * u)) / k;
         }
+        const kn = k * 0.8;
+        return -(1 - Math.exp(kn * u)) / kn;
       }
       case 'transformer': {
-        // Neve/API iron core: dense low-mid weight with algebraic S-curve saturation
-        const k = 1.0 + clampedDrive * 4.2;
-        const u = k * x;
-        const thirdOrder = u / Math.sqrt(1 + u * u);
-        const norm = k / Math.sqrt(1 + k * k);
-        const evenBias = 0.03 * clampedDrive * (x * Math.abs(x));
-        return Math.max(-0.995, Math.min(0.995, thirdOrder / norm + evenBias));
+        // Neve/API iron core: algebraic S-curve with exact slope 1.0 at zero
+        const k = 0.75 + d * 2.6;
+        const ku = k * u;
+        const odd = u / Math.sqrt(1 + ku * ku);
+        const evenBias = 0.022 * d * (u * Math.abs(u)) / (1 + Math.abs(u));
+        return odd + evenBias;
       }
       case 'softclip':
       default: {
-        // Mastering-grade polynomial knee clipper: 100% linear in core, smooth ceiling
-        const k = 1.0 + clampedDrive * 2.8;
-        const u = k * x;
-        if (Math.abs(u) <= 0.65) {
-          return u / k;
-        }
+        // Mastering-grade knee soft-clip: strictly 1:1 linear core, smooth tanh ceiling above threshold
+        const thresh = Math.max(0.28, 0.82 - d * 0.45);
+        const absU = Math.abs(u);
+        if (absU <= thresh) return u;
         const sign = u < 0 ? -1 : 1;
-        const excess = Math.abs(u) - 0.65;
-        const compressed = 0.65 + 0.35 * Math.tanh(excess / 0.35);
-        return (sign * compressed) / Math.min(1.35, 0.65 + 0.35 * Math.tanh((k - 0.65) / 0.35));
+        const excess = absU - thresh;
+        const kneeRoom = Math.max(0.18, 0.52 - d * 0.22);
+        return sign * (thresh + kneeRoom * Math.tanh(excess / kneeRoom));
       }
     }
   };
 
-  const zeroBias = evalRaw(0);
+  const zeroBias = evalUnitSlope(0);
 
   for (let i = 0; i < CURVE_RESOLUTION; i++) {
     const x = (i * 2) / (CURVE_RESOLUTION - 1) - 1;
-    const y = evalRaw(x) - zeroBias;
+    const u = x * SAT_HEADROOM_SCALE;
+    const y = (evalUnitSlope(u) - zeroBias) / SAT_HEADROOM_SCALE;
     curve[i] = Math.max(-0.9999, Math.min(0.9999, y));
   }
 
-  // Enforce exact zero at the center index
   curve[CURVE_RESOLUTION >> 1] = 0;
   return curve;
 }
 
 /**
- * Returns input drive gain and output compensation gain (linear) so increasing Drive
- * increases harmonic richness without artificially inflating loudness.
+ * Returns input drive gain and output compensation gain (linear) including ±8dB headroom scaling,
+ * so increasing Drive adds harmonic richness without distorting loudness or hard-clipping at ±1.0.
  */
 export function computeSaturationGainStaging(
   type: SaturationType,
   drive: number
 ): { inputGainLinear: number; outputTrimLinear: number } {
   const d = Math.max(0, Math.min(1, drive));
+  if (d <= 0.002) {
+    return {
+      inputGainLinear: 1 / SAT_HEADROOM_SCALE,
+      outputTrimLinear: SAT_HEADROOM_SCALE,
+    };
+  }
+
   const driveDb =
     type === 'tape'
-      ? d * 5.5
+      ? d * 3.8
       : type === 'tube'
-      ? d * 6.0
+      ? d * 4.2
       : type === 'transformer'
-      ? d * 5.0
-      : d * 4.5;
+      ? d * 3.5
+      : d * 3.2;
 
-  const inputGainLinear = Math.pow(10, driveDb / 20);
-  // Compensate ~72% of the input drive in dB so perceived loudness stays balanced
-  const compensationDb = -driveDb * 0.72;
-  const outputTrimLinear = Math.pow(10, compensationDb / 20);
+  const inputGainLinear = Math.pow(10, driveDb / 20) / SAT_HEADROOM_SCALE;
+  // Gentle compensation (-85% of drive) keeps RMS cohesive without jumping level
+  const compensationDb = -driveDb * 0.85;
+  const outputTrimLinear = Math.pow(10, compensationDb / 20) * SAT_HEADROOM_SCALE;
 
   return { inputGainLinear, outputTrimLinear };
 }

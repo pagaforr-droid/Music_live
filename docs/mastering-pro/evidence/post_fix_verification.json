@@ -1,0 +1,190 @@
+{
+  "dspVerification": {
+    "timestamp": "2026-11-16T16:56:01.804Z",
+    "sampleRate": 48000,
+    "checks": {
+      "A1_worklets": {
+        "hasCompWorklet": true,
+        "hasLimiterWorklet": true,
+        "hasPreMeterWorklet": true,
+        "hasPostMeterWorklet": true,
+        "idleIsActive": false,
+        "idleMomentaryIsNaN": true
+      },
+      "A2_parallel_flatness": {
+        "maxSampleDeviation": 0,
+        "pass": true
+      },
+      "A3_lufs_and_truepeak": {
+        "sine997Hz_0_1amp_lufs": -20,
+        "expectedLufs": -20,
+        "intersamplePeakDbTp": 0.09,
+        "sampledPeakDbFs": -3.01
+      },
+      "A4_export_matrix": {
+        "stadium_nominal": {
+          "targetLufs": -10,
+          "inputLufs": -23.57,
+          "outputLufs": -10.08,
+          "finalTruePeakDbTp": -1.02,
+          "crestFactorDb": 9.26,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 6.77,
+          "maxCompressorGrDb": 0.24
+        },
+        "stadium_quiet_in": {
+          "targetLufs": -10,
+          "inputLufs": -33.47,
+          "outputLufs": -10.08,
+          "finalTruePeakDbTp": -1.02,
+          "crestFactorDb": 9.26,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 6.86,
+          "maxCompressorGrDb": 0
+        },
+        "stadium_hot_in": {
+          "targetLufs": -10,
+          "inputLufs": -15.27,
+          "outputLufs": -10.05,
+          "finalTruePeakDbTp": -1.02,
+          "crestFactorDb": 9.24,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 6.54,
+          "maxCompressorGrDb": 2.91
+        },
+        "acoustic_12lufs": {
+          "targetLufs": -12,
+          "inputLufs": -23.57,
+          "outputLufs": -12.1,
+          "finalTruePeakDbTp": -1.02,
+          "crestFactorDb": 11.4,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 3.98,
+          "maxCompressorGrDb": 0.33
+        },
+        "latin_pop_9_5lufs": {
+          "targetLufs": -9.5,
+          "inputLufs": -23.57,
+          "outputLufs": -9.59,
+          "finalTruePeakDbTp": -1.01,
+          "crestFactorDb": 8.72,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 7.36,
+          "maxCompressorGrDb": 0.06
+        },
+        "width_zero_mono": {
+          "targetLufs": -10,
+          "inputLufs": -25.51,
+          "outputLufs": -10.09,
+          "finalTruePeakDbTp": -1.02,
+          "crestFactorDb": 8.98,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 7.36,
+          "maxCompressorGrDb": 0.05,
+          "maxMonoDiff": 0.000117,
+          "maxMonoDiffIdx": 219,
+          "sideGainDb": -60,
+          "graphMonoDiff": 0.0000202
+        },
+        "intensity_zero_bypass": {
+          "targetLufs": -10,
+          "inputLufs": -25.51,
+          "outputLufs": -25.1,
+          "finalTruePeakDbTp": -9.55,
+          "crestFactorDb": 16.33,
+          "clippedSamples": 0,
+          "maxLimiterReductionDb": 0,
+          "maxCompressorGrDb": 0
+        }
+      },
+      "A5_live_vs_export_parity": {
+        "offlineWorkletRegistered": true,
+        "liveDriveDb": 11.17,
+        "liveOutputLufs": -12.12,
+        "exportOutputLufs": -12.11,
+        "lufsDeltaLiveVsExport": 0.01,
+        "liveCrestFactorDb": 11.42,
+        "exportCrestFactorDb": 11.4,
+        "crestDeltaLiveVsExport": 0.02,
+        "unalignedSampleDiffDb": 3.99
+      },
+      "A6_spectral_analyzer": {
+        "cleanIsReal": true,
+        "cleanBwHz": 21000,
+        "cleanResonancesCount": 0,
+        "cleanEstSignatureScore": 61,
+        "harshResonances": [
+          {
+            "id": "line-killer-4195",
+            "freqHz": 4195,
+            "gainCutDb": -9,
+            "q": 12,
+            "label": "Notch 4195Hz (+40.4dB, 100%)",
+            "enabled": true,
+            "source": "ai-detected"
+          }
+        ],
+        "surroundDownmixErr": 0
+      },
+      "A7_param_sensitivity": {
+        "diffBetweenZeroedAndBoostedDb": -12.48
+      },
+      "B1_sample_lab": {
+        "loopRawDiscontinuityDb": 4.1,
+        "loopCrossfadedDiscontinuityDb": -70.7,
+        "pitchResults": [
+          {
+            "expectedHz": 110,
+            "expectedMidi": 45,
+            "freqHz": 110,
+            "midiNote": 45,
+            "noteName": "A2",
+            "centsOffset": 0,
+            "confidence": 1
+          },
+          {
+            "expectedHz": 440,
+            "expectedMidi": 69,
+            "freqHz": 440.02,
+            "midiNote": 69,
+            "noteName": "A4",
+            "centsOffset": 0,
+            "confidence": 1
+          },
+          {
+            "expectedHz": 880,
+            "expectedMidi": 81,
+            "freqHz": 880.05,
+            "midiNote": 81,
+            "noteName": "A5",
+            "centsOffset": 0,
+            "confidence": 1
+          }
+        ],
+        "transientSlicesCount": 8,
+        "gridQuarterSlicesCount": 8,
+        "wsolaRatioActual": 1.5,
+        "wsolaPitchAfterStretchHz": 439.89,
+        "padOfflineSamples": 28008,
+        "bounce1BarSec": 2,
+        "wavHasSmplChunk": true,
+        "wavHasCueChunk": true,
+        "zipMagicPK": true,
+        "indexedDbRoundtripOk": true
+      }
+    },
+    "failures": [],
+    "allPassed": true
+  },
+  "uiSmokeVerification": {
+    "uiSmokePassed": true,
+    "masteringRendered": true,
+    "masteringHasSampleLabHandoffBtn": true,
+    "sampleLabRendered": true,
+    "sampleLabHasSupabaseButton": true,
+    "sampleLabHasExportButton": true,
+    "sampleLabHasStepSequencer": true,
+    "renderedButtonsCount": 172,
+    "runtimeErrors": []
+  }
+}

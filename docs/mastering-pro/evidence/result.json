@@ -1,0 +1,616 @@
+{
+  "compressor": {
+    "thr-18_ratio2": {
+      "gainThroughCompressorWhenBelowThresholdDb": 4.55
+    },
+    "thr-24_ratio3": {
+      "gainThroughCompressorWhenBelowThresholdDb": 8.53
+    },
+    "thr-12_ratio1.5": {
+      "gainThroughCompressorWhenBelowThresholdDb": 1.81
+    },
+    "compressorLatencyMs": 6
+  },
+  "parallelCompFreqResponseDb": {
+    "40Hz": 0.19,
+    "83Hz": -7.99,
+    "100Hz": -4.95,
+    "166Hz": 3.36,
+    "250Hz": -3.63,
+    "333Hz": 3.07,
+    "500Hz": 2.12,
+    "1000Hz": 2.64,
+    "2000Hz": 2.89,
+    "4000Hz": 3.01
+  },
+  "exports": {
+    "stadium-pop-rock@in-20": {
+      "targetLufs": -9.5,
+      "ceiling": -1,
+      "makeupDbUsed": 8.94,
+      "reportInputLufs": -19.84,
+      "inStats": {
+        "lufs": -19.84,
+        "samplePeakDb": -7.68,
+        "truePeakDb": -7.68,
+        "rmsDb": -20,
+        "crestDb": 12.32,
+        "pctSamplesWithin2pctOfPeak": 0,
+        "clippedSamples": 0
+      },
+      "outStats": {
+        "lufs": -6.71,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.79,
+        "rmsDb": -6.65,
+        "crestDb": 5.63,
+        "pctSamplesWithin2pctOfPeak": 0.375,
+        "clippedSamples": 0
+      },
+      "engineReportedTruePeak": -0.79,
+      "engineReportedMaxGR": 3.68,
+      "lufsErrorVsTarget": 2.79
+    },
+    "stadium-pop-rock@in-14": {
+      "targetLufs": -9.5,
+      "ceiling": -1,
+      "makeupDbUsed": 2.94,
+      "reportInputLufs": -13.84,
+      "inStats": {
+        "lufs": -13.84,
+        "samplePeakDb": -1.68,
+        "truePeakDb": -1.68,
+        "rmsDb": -14,
+        "crestDb": 12.32,
+        "pctSamplesWithin2pctOfPeak": 0,
+        "clippedSamples": 0
+      },
+      "outStats": {
+        "lufs": -6.44,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.77,
+        "rmsDb": -6.31,
+        "crestDb": 5.29,
+        "pctSamplesWithin2pctOfPeak": 0.345,
+        "clippedSamples": 0
+      },
+      "engineReportedTruePeak": -0.77,
+      "engineReportedMaxGR": 2.65,
+      "lufsErrorVsTarget": 3.06
+    },
+    "nu-disco-funk@in-20": {
+      "targetLufs": -9,
+      "ceiling": -1,
+      "makeupDbUsed": 9.44,
+      "reportInputLufs": -19.84,
+      "inStats": {
+        "lufs": -19.84,
+        "samplePeakDb": -7.68,
+        "truePeakDb": -7.68,
+        "rmsDb": -20,
+        "crestDb": 12.32,
+        "pctSamplesWithin2pctOfPeak": 0,
+        "clippedSamples": 0
+      },
+      "outStats": {
+        "lufs": -5.17,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.79,
+        "rmsDb": -4.83,
+        "crestDb": 3.81,
+        "pctSamplesWithin2pctOfPeak": 1.82,
+        "clippedSamples": 0
+      },
+      "engineReportedTruePeak": -0.79,
+      "engineReportedMaxGR": 2.3,
+      "lufsErrorVsTarget": 3.83
+    },
+    "modern-worship-arena@in-14": {
+      "targetLufs": -10.5,
+      "ceiling": -1,
+      "makeupDbUsed": 1.94,
+      "reportInputLufs": -13.84,
+      "inStats": {
+        "lufs": -13.84,
+        "samplePeakDb": -1.68,
+        "truePeakDb": -1.68,
+        "rmsDb": -14,
+        "crestDb": 12.32,
+        "pctSamplesWithin2pctOfPeak": 0,
+        "clippedSamples": 0
+      },
+      "outStats": {
+        "lufs": -6.25,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.83,
+        "rmsDb": -6.01,
+        "crestDb": 4.99,
+        "pctSamplesWithin2pctOfPeak": 1.54,
+        "clippedSamples": 0
+      },
+      "engineReportedTruePeak": -0.83,
+      "engineReportedMaxGR": 2.29,
+      "lufsErrorVsTarget": 4.25
+    },
+    "crisp-latin-pop@in-14": {
+      "targetLufs": -8.5,
+      "ceiling": -1,
+      "makeupDbUsed": 3.94,
+      "reportInputLufs": -13.84,
+      "inStats": {
+        "lufs": -13.84,
+        "samplePeakDb": -1.68,
+        "truePeakDb": -1.68,
+        "rmsDb": -14,
+        "crestDb": 12.32,
+        "pctSamplesWithin2pctOfPeak": 0,
+        "clippedSamples": 0
+      },
+      "outStats": {
+        "lufs": -5.84,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.79,
+        "rmsDb": -5.56,
+        "crestDb": 4.54,
+        "pctSamplesWithin2pctOfPeak": 0.375,
+        "clippedSamples": 0
+      },
+      "engineReportedTruePeak": -0.79,
+      "engineReportedMaxGR": 2.64,
+      "lufsErrorVsTarget": 2.66
+    }
+  },
+  "sensitivity": {
+    "baseline": {
+      "stats": {
+        "lufs": -6.55,
+        "samplePeakDb": -1.02,
+        "truePeakDb": -0.84,
+        "rmsDb": -6.36,
+        "crestDb": 5.34,
+        "pctSamplesWithin2pctOfPeak": 0.349,
+        "clippedSamples": 0
+      }
+    },
+    "midLowPunchDb +6 (60Hz mid)": {
+      "lufs": -5.57,
+      "tp": -0.8,
+      "crest": 4.06,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 1.1,
+        "side60": -2.1,
+        "mid320": -3.3,
+        "side320": -3.7,
+        "mid1000": -3.8,
+        "side1000": 6.5,
+        "mid2800": -6.5,
+        "side2800": -4.2,
+        "mid3800": -6.9,
+        "side3800": -6.5,
+        "mid6200": -5.6,
+        "side6200": -2.4,
+        "mid12000": -1.6,
+        "side12000": 0.7
+      }
+    },
+    "stereoMudCutDb -6 (320Hz)": {
+      "lufs": -6.4,
+      "tp": -0.71,
+      "crest": 5.11,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.6,
+        "side60": -0.6,
+        "mid320": -3.6,
+        "side320": -3.4,
+        "mid1000": 0.8,
+        "side1000": 1.2,
+        "mid2800": -0.9,
+        "side2800": -6.8,
+        "mid3800": -0.8,
+        "side3800": 2.8,
+        "mid6200": 1.7,
+        "side6200": -1.7,
+        "mid12000": -2.5,
+        "side12000": 3.6
+      }
+    },
+    "midPresenceDb +6 (2.8k mid)": {
+      "lufs": -6.58,
+      "tp": -0.74,
+      "crest": 5.39,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0,
+        "side60": -0.4,
+        "mid320": -0.1,
+        "side320": -0.2,
+        "mid1000": 0.3,
+        "side1000": -0.2,
+        "mid2800": 1.7,
+        "side2800": 1.9,
+        "mid3800": 1.8,
+        "side3800": 0.1,
+        "mid6200": 2,
+        "side6200": 0.8,
+        "mid12000": -0.5,
+        "side12000": 2.5
+      }
+    },
+    "deHarshnessCutDb -6 (3.8k)": {
+      "lufs": -6.54,
+      "tp": -0.83,
+      "crest": 5.33,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.2,
+        "side60": 0.2,
+        "mid320": 0.1,
+        "side320": 0,
+        "mid1000": 0,
+        "side1000": 1,
+        "mid2800": 0.9,
+        "side2800": -0.5,
+        "mid3800": -3.2,
+        "side3800": -2.4,
+        "mid6200": -0.4,
+        "side6200": 0.1,
+        "mid12000": -0.2,
+        "side12000": 0.6
+      }
+    },
+    "sibilanceCutDb -6 (6.2k)": {
+      "lufs": -6.51,
+      "tp": -0.82,
+      "crest": 5.3,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.2,
+        "side60": 0.3,
+        "mid320": 0.1,
+        "side320": 0,
+        "mid1000": 0,
+        "side1000": 1,
+        "mid2800": 0.6,
+        "side2800": 0.3,
+        "mid3800": -0.3,
+        "side3800": -0.4,
+        "mid6200": -5,
+        "side6200": -4.4,
+        "mid12000": -0.3,
+        "side12000": 1.2
+      }
+    },
+    "sideAirBoostDb +6 (12k side)": {
+      "lufs": -6.65,
+      "tp": -0.8,
+      "crest": 5.45,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.1,
+        "side60": -0.1,
+        "mid320": -0.1,
+        "side320": -0.1,
+        "mid1000": 0,
+        "side1000": 0,
+        "mid2800": -0.4,
+        "side2800": -1.1,
+        "mid3800": -0.8,
+        "side3800": -0.6,
+        "mid6200": -1.1,
+        "side6200": -1.1,
+        "mid12000": 0.9,
+        "side12000": 2.5
+      }
+    },
+    "stereoWidthPct 0 (mono)": {
+      "lufs": -5.81,
+      "tp": -0.79,
+      "crest": 4.44,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.9,
+        "side60": -11.8,
+        "mid320": 0.9,
+        "side320": -19.1,
+        "mid1000": 1.7,
+        "side1000": -11.8,
+        "mid2800": 3.8,
+        "side2800": -9,
+        "mid3800": 2.3,
+        "side3800": -5.5,
+        "mid6200": 1.6,
+        "side6200": -7.3,
+        "mid12000": 1.9,
+        "side12000": -4.3
+      }
+    },
+    "stereoWidthPct 150": {
+      "lufs": -6.68,
+      "tp": -0.83,
+      "crest": 5.53,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0,
+        "side60": -0.5,
+        "mid320": -0.3,
+        "side320": 1.3,
+        "mid1000": -0.2,
+        "side1000": 0.2,
+        "mid2800": 0.5,
+        "side2800": 0.8,
+        "mid3800": -1.4,
+        "side3800": -0.3,
+        "mid6200": -0.9,
+        "side6200": 0.8,
+        "mid12000": 1.2,
+        "side12000": 4.7
+      }
+    },
+    "monoMakerFreq 250": {
+      "lufs": -6.59,
+      "tp": -0.73,
+      "crest": 5.39,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.1,
+        "side60": -0.6,
+        "mid320": -0.9,
+        "side320": 0.6,
+        "mid1000": -0.5,
+        "side1000": 3.3,
+        "mid2800": -3,
+        "side2800": -1.6,
+        "mid3800": -2.6,
+        "side3800": -3.1,
+        "mid6200": 0.6,
+        "side6200": -2.7,
+        "mid12000": -0.1,
+        "side12000": 2.7
+      }
+    },
+    "highPassFreq 60": {
+      "lufs": -6.58,
+      "tp": -0.63,
+      "crest": 5.65,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.2,
+        "side60": 0,
+        "mid320": -1.9,
+        "side320": -1.5,
+        "mid1000": 2.6,
+        "side1000": 5.5,
+        "mid2800": -0.1,
+        "side2800": 0,
+        "mid3800": 0.9,
+        "side3800": -2.5,
+        "mid6200": -5.6,
+        "side6200": -4.9,
+        "mid12000": 5.3,
+        "side12000": 1.4
+      }
+    },
+    "tapeDrivePct 95 tape": {
+      "lufs": -6.08,
+      "tp": -0.74,
+      "crest": 4.77,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.2,
+        "side60": -0.5,
+        "mid320": -6.3,
+        "side320": -5.9,
+        "mid1000": 2.7,
+        "side1000": 6.9,
+        "mid2800": -2.9,
+        "side2800": -10.5,
+        "mid3800": -7.4,
+        "side3800": -9.3,
+        "mid6200": -0.2,
+        "side6200": -7.8,
+        "mid12000": -2,
+        "side12000": -3.7
+      }
+    },
+    "comp glue mix 0%": {
+      "lufs": -7.48,
+      "tp": -0.71,
+      "crest": 6.05,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -2.2,
+        "side60": -11.2,
+        "mid320": -3.2,
+        "side320": -3.3,
+        "mid1000": -3.6,
+        "side1000": -10.1,
+        "mid2800": -6.4,
+        "side2800": -9.4,
+        "mid3800": -3.5,
+        "side3800": -9.8,
+        "mid6200": -4,
+        "side6200": -8.1,
+        "mid12000": -0.4,
+        "side12000": -1.5
+      }
+    },
+    "comp thr -35 ratio 8": {
+      "lufs": -5.97,
+      "tp": -0.75,
+      "crest": 4.65,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.5,
+        "side60": -2.1,
+        "mid320": -0.3,
+        "side320": -0.7,
+        "mid1000": 0.1,
+        "side1000": 6.8,
+        "mid2800": -0.8,
+        "side2800": -3,
+        "mid3800": -3.8,
+        "side3800": 0,
+        "mid6200": -0.7,
+        "side6200": -0.1,
+        "mid12000": 1.7,
+        "side12000": 4.2
+      }
+    },
+    "targetLufs -14": {
+      "lufs": -6.98,
+      "tp": -0.84,
+      "crest": 5.79,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.6,
+        "side60": -0.4,
+        "mid320": -0.3,
+        "side320": -0.4,
+        "mid1000": -0.1,
+        "side1000": 0,
+        "mid2800": 0,
+        "side2800": -0.5,
+        "mid3800": -0.6,
+        "side3800": -0.3,
+        "mid6200": -0.2,
+        "side6200": -0.7,
+        "mid12000": -0.4,
+        "side12000": -0.1
+      }
+    },
+    "targetLufs -8": {
+      "lufs": -6.43,
+      "tp": -0.8,
+      "crest": 5.21,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 0.2,
+        "side60": 0.2,
+        "mid320": 0.1,
+        "side320": 0.1,
+        "mid1000": 0,
+        "side1000": 0,
+        "mid2800": -0.1,
+        "side2800": 0.1,
+        "mid3800": 0.1,
+        "side3800": 0.1,
+        "mid6200": 0.1,
+        "side6200": 0.2,
+        "mid12000": 0.1,
+        "side12000": 0.1
+      }
+    },
+    "ceiling -3": {
+      "lufs": -7.8,
+      "tp": -2.71,
+      "crest": 4.57,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -1,
+        "side60": -0.8,
+        "mid320": -1.5,
+        "side320": -1.4,
+        "mid1000": -2.3,
+        "side1000": -1.5,
+        "mid2800": -3.2,
+        "side2800": -1.5,
+        "mid3800": -2,
+        "side3800": -1,
+        "mid6200": -1.5,
+        "side6200": -1.2,
+        "mid12000": -1.6,
+        "side12000": -1.8
+      }
+    },
+    "humanizer disabled": {
+      "lufs": -6.17,
+      "tp": -0.88,
+      "crest": 5.05,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": -0.4,
+        "side60": 0.4,
+        "mid320": 0.5,
+        "side320": 0.3,
+        "mid1000": 0,
+        "side1000": 0.3,
+        "mid2800": -0.4,
+        "side2800": 0.2,
+        "mid3800": 0.4,
+        "side3800": -0.9,
+        "mid6200": 1.8,
+        "side6200": 2.1,
+        "mid12000": 0.2,
+        "side12000": 3.6
+      }
+    },
+    "cqt a432_detune": {
+      "lufs": -6.47,
+      "tp": -0.73,
+      "crest": 5.17,
+      "durationSec": 8.148,
+      "deltaVsBaseline_dB": {
+        "mid60": -3.5,
+        "side60": 0.4,
+        "mid320": -17.9,
+        "side320": -17.5,
+        "mid1000": -1.7,
+        "side1000": 6.5,
+        "mid2800": -7.1,
+        "side2800": -1.6,
+        "mid3800": -3.8,
+        "side3800": -6.4,
+        "mid6200": 2.8,
+        "side6200": -4.5,
+        "mid12000": -0.5,
+        "side12000": 1.1
+      }
+    },
+    "drum layering ON": {
+      "lufs": -6.3,
+      "tp": -0.7,
+      "crest": 5.7,
+      "durationSec": 8,
+      "deltaVsBaseline_dB": {
+        "mid60": 8.3,
+        "side60": -2.3,
+        "mid320": -8.3,
+        "side320": -7.8,
+        "mid1000": 3.6,
+        "side1000": -2.2,
+        "mid2800": 3.5,
+        "side2800": -5.8,
+        "mid3800": 7.4,
+        "side3800": -6.9,
+        "mid6200": 7.3,
+        "side6200": -0.1,
+        "mid12000": 3.4,
+        "side12000": -3
+      }
+    }
+  },
+  "liveVsExport": {
+    "liveEquivalentGraph": {
+      "lufs": -5.98,
+      "samplePeakDb": -0.63,
+      "truePeakDb": -0.63,
+      "rmsDb": -5.69,
+      "crestDb": 5.06,
+      "pctSamplesWithin2pctOfPeak": 0.001,
+      "clippedSamples": 0
+    },
+    "export": {
+      "lufs": -6.45,
+      "samplePeakDb": -1.02,
+      "truePeakDb": -0.78,
+      "rmsDb": -6.13,
+      "crestDb": 5.11,
+      "pctSamplesWithin2pctOfPeak": 0.332,
+      "clippedSamples": 0
+    },
+    "residualVsLiveDb": -6.62,
+    "inputLufs": -14.01
+  }
+}

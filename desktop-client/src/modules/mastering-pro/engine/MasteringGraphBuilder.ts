@@ -1,29 +1,68 @@
 import type { EQBandConfig, MasteringDspChain } from '../types/mastering.types';
+import type { BusCompressorParams } from '../dsp-core/BusCompressorCore';
+import type { LookaheadLimiterParams } from '../dsp-core/LookaheadLimiterCore';
 import {
   computeSaturationGainStaging,
   generateAnalogSaturationCurve,
 } from './AnalogSaturationCurves';
+import type { TransientDuckHandles } from './DrumTransientReplacerDSP';
 import {
   DEFAULT_FORENSIC_HUMANIZER_CONFIG,
   ForensicHumanizerDSP,
 } from './ForensicHumanizerDSP';
-import type { TransientDuckHandles } from './DrumTransientReplacerDSP';
 import {
   createMidSideMatrix,
   type MidSideMatrixHandles,
 } from './MidSideMatrix';
-import { createBrickwallMaximizerCurve } from './TruePeakLimiter';
+import dynamicsWorkletUrl from './worklets/mastering-dynamics.worklet.ts?worker&url';
+import meteringWorkletUrl from './worklets/metering.worklet.ts?worker&url';
+
+const registeredDynamicsCtx = new WeakSet<BaseAudioContext>();
+const registeredMeteringCtx = new WeakSet<BaseAudioContext>();
+
+export async function ensureMasteringWorkletsRegistered(
+  ctx: BaseAudioContext
+): Promise<{ dynamicsReady: boolean; meteringReady: boolean }> {
+  let dynamicsReady = registeredDynamicsCtx.has(ctx);
+  let meteringReady = registeredMeteringCtx.has(ctx);
+
+  if (!ctx.audioWorklet) {
+    return { dynamicsReady: false, meteringReady: false };
+  }
+
+  if (!dynamicsReady) {
+    try {
+      await ctx.audioWorklet.addModule(dynamicsWorkletUrl);
+      registeredDynamicsCtx.add(ctx);
+      dynamicsReady = true;
+    } catch {
+      dynamicsReady = false;
+    }
+  }
+
+  if (!meteringReady) {
+    try {
+      await ctx.audioWorklet.addModule(meteringWorkletUrl);
+      registeredMeteringCtx.add(ctx);
+      meteringReady = true;
+    } catch {
+      meteringReady = false;
+    }
+  }
+
+  return { dynamicsReady, meteringReady };
+}
 
 export interface MasteringGraphHandles {
   inputNode: GainNode;
-  /** Bus de inyección para las capas acústicas de Kick/Snare (antes del Compresor Bus Glue) */
   drumLayerBusInput: GainNode;
-  /** Filtros de Ducking Quirúrgico para atenuar la transiente sintética original en cada golpe */
   transientDuckHandles: TransientDuckHandles;
   outputNode: GainNode;
-  busCompressor: DynamicsCompressorNode;
-  maximizerSafetyLimiter: DynamicsCompressorNode;
   midSideMatrix: MidSideMatrixHandles;
+  compWorkletNode: AudioWorkletNode | null;
+  limiterWorkletNode: AudioWorkletNode | null;
+  getLiveGainReduction: () => { compGrDb: number; limGrDb: number };
+  resetDynamics: () => void;
   applyDspChain: (
     chain: MasteringDspChain,
     autoMakeupGainDb: number,
@@ -56,50 +95,54 @@ function configureStereoFilterNode(
   }
 }
 
-function computeAdaptiveCompressorMakeupLinear(
-  chain: MasteringDspChain
-): number {
-  const extraCompMakeupDb = Math.max(
-    0,
-    (-16 - chain.compressor.thresholdDb) *
-      (1 - 1 / Math.max(1.1, chain.compressor.ratio)) *
-      0.35
-  );
-  const totalMakeupDb = Math.max(
-    0,
-    Math.min(9, chain.compressor.makeupGainDb + extraCompMakeupDb)
-  );
-  return Math.pow(10, totalMakeupDb / 20);
+export function buildBusCompressorParams(chain: MasteringDspChain): BusCompressorParams {
+  return {
+    thresholdDb: chain.compressor.thresholdDb,
+    ratio: chain.compressor.ratio,
+    attackSec: chain.compressor.attackSec,
+    releaseSec: chain.compressor.releaseSec,
+    kneeDb: chain.compressor.kneeDb,
+    makeupGainDb: 0, // Zero hidden auto-makeup!
+    parallelMix: Math.max(0, Math.min(1, chain.compressor.parallelMix)),
+    sidechainHpfHz: 90,
+  };
+}
+
+export function buildLookaheadLimiterParams(
+  chain: MasteringDspChain,
+  driveDb: number
+): LookaheadLimiterParams {
+  return {
+    driveDb,
+    ceilingDbTp: chain.limiter.ceilingDbTp,
+    lookaheadMs: Math.max(3.5, chain.limiter.lookaheadMs || 5.0),
+    releaseMs: chain.limiter.releaseMs || 65,
+  };
 }
 
 /**
- * Builds the complete 6-stage Studio Mastering DSP chain on any BaseAudioContext
- * (works identically for live AudioContext and 48kHz OfflineAudioContext).
+ * Builds Stage 2 -> Stage 3 -> Drum Layering Sum (Pre-Compressor).
+ * Shared identically by full live graph and Offline Pass 1A!
  */
-export function buildMasteringDspGraph(
+export function buildPreCompressorStages(
   ctx: BaseAudioContext,
-  initialChain: MasteringDspChain,
-  initialAutoMakeupDb = 0
-): MasteringGraphHandles {
+  initialChain: MasteringDspChain
+) {
   const inputNode = ctx.createGain();
-  const outputNode = ctx.createGain();
+  inputNode.channelCount = 2;
+  inputNode.channelCountMode = 'explicit';
 
-  // =========================================================================
-  // STAGE 2: Subtractive Surgery (Subsonic HPF + Stereo De-Mud / De-AI Notches)
-  // =========================================================================
   const subsonicHpf = ctx.createBiquadFilter();
   subsonicHpf.type = 'highpass';
   subsonicHpf.frequency.value = Math.max(
     18,
     Math.min(60, initialChain.highPassFreq)
   );
-  subsonicHpf.Q.value = Math.SQRT1_2; // Butterworth 0.7071
+  subsonicHpf.Q.value = Math.SQRT1_2;
 
   inputNode.connect(subsonicHpf);
   let lastStage2Node: AudioNode = subsonicHpf;
 
-  // Pre-allocate all band IDs in stereoBandFilters so switching any band between
-  // 'stereo', 'mid', and 'side' works 100% seamlessly in live playback and export.
   const stereoBandFilters = new Map<string, BiquadFilterNode>();
   for (const band of initialChain.eqBands) {
     const filter = ctx.createBiquadFilter();
@@ -109,7 +152,6 @@ export function buildMasteringDspGraph(
     stereoBandFilters.set(band.id, filter);
   }
 
-  // Stage 2B: Bank of 4 Ultra-Narrow Surgical Resonance Notches ("Spectral Line Killer", Q=10..16)
   const MAX_RESONANCE_NOTCHES = 4;
   const resonanceNotchFilters: BiquadFilterNode[] = [];
   const initialNotches = initialChain.resonanceNotches || [];
@@ -117,21 +159,19 @@ export function buildMasteringDspGraph(
     const notchNode = ctx.createBiquadFilter();
     notchNode.type = 'peaking';
     const spec = initialNotches[i];
-    const freqVal = spec ? Math.max(120, Math.min(18000, spec.freqHz)) : 3800 + i * 900;
-    const qVal = spec ? Math.max(4, Math.min(24, spec.q)) : 12.0;
-    const gainVal =
+    notchNode.frequency.value = spec
+      ? Math.max(120, Math.min(18000, spec.freqHz))
+      : 3800 + i * 900;
+    notchNode.Q.value = spec ? Math.max(4, Math.min(24, spec.q)) : 12.0;
+    notchNode.gain.value =
       spec && spec.enabled && Math.abs(spec.gainCutDb) > 0.05
         ? Math.max(-14, Math.min(0, spec.gainCutDb))
         : 0;
-    notchNode.frequency.value = freqVal;
-    notchNode.Q.value = qVal;
-    notchNode.gain.value = gainVal;
     lastStage2Node.connect(notchNode);
     lastStage2Node = notchNode;
     resonanceNotchFilters.push(notchNode);
   }
 
-  // Stage 2C: Sub-Mud Suppressor when Drum Layering is active ("Suppress AI Sub-Mud")
   const drumMudSuppressFilter = ctx.createBiquadFilter();
   drumMudSuppressFilter.type = 'peaking';
   drumMudSuppressFilter.frequency.value = 78;
@@ -139,24 +179,19 @@ export function buildMasteringDspGraph(
   drumMudSuppressFilter.gain.value =
     initialChain.drumLayering?.enabled &&
     initialChain.drumLayering?.suppressOriginalMud
-      ? -3.2 * Math.max(0.35, initialChain.drumLayering.kickMix)
+      ? -1.6 * Math.max(0.25, initialChain.drumLayering.kickMix)
       : 0;
   lastStage2Node.connect(drumMudSuppressFilter);
   lastStage2Node = drumMudSuppressFilter;
 
-  // =========================================================================
-  // STAGE 3: True Mid/Side Matrix + Mono Maker + Mid/Side EQ + Stereo Width
-  // =========================================================================
   const midSideMatrix = createMidSideMatrix(
     ctx,
     initialChain.monoMakerFreq,
     initialChain.stereoWidth.sideGainDb,
     initialChain.eqBands
   );
-
   lastStage2Node.connect(midSideMatrix.inputNode);
 
-  // Filtros de Ducking Quirúrgico para Reemplazo Real de Transientes (Kick 72Hz / Snare 245Hz)
   const kickDuckFilter = ctx.createBiquadFilter();
   kickDuckFilter.type = 'peaking';
   kickDuckFilter.frequency.value = 72;
@@ -169,8 +204,6 @@ export function buildMasteringDspGraph(
   snareDuckFilter.Q.value = 1.15;
   snareDuckFilter.gain.value = 0;
 
-  // Bus where Sample-Accurate Acoustic Drum Layers (Kick/Snare) are injected
-  // so they glue together with the mix inside Stage 4A Bus Compressor & Stage 4B Tape Saturator
   const drumLayerBusInput = ctx.createGain();
   drumLayerBusInput.gain.value = 1.0;
   const preGlueSumBus = ctx.createGain();
@@ -181,188 +214,17 @@ export function buildMasteringDspGraph(
   snareDuckFilter.connect(preGlueSumBus);
   drumLayerBusInput.connect(preGlueSumBus);
 
-  // =========================================================================
-  // STAGE 4A: SSL-Style Bus Glue Compressor with Parallel Dry/Wet Blend
-  // =========================================================================
-  const busCompressor = ctx.createDynamicsCompressor();
-  busCompressor.threshold.value = initialChain.compressor.thresholdDb;
-  busCompressor.ratio.value = initialChain.compressor.ratio;
-  busCompressor.attack.value = initialChain.compressor.attackSec;
-  busCompressor.release.value = initialChain.compressor.releaseSec;
-  busCompressor.knee.value = initialChain.compressor.kneeDb;
-
-  const compMakeupGain = ctx.createGain();
-  const compWetMix = ctx.createGain();
-  const compDryMix = ctx.createGain();
-  const stage4ASum = ctx.createGain();
-
-  const initialWet = Math.max(
-    0,
-    Math.min(1, initialChain.compressor.parallelMix)
-  );
-  compMakeupGain.gain.value = computeAdaptiveCompressorMakeupLinear(initialChain);
-  compWetMix.gain.value = initialWet;
-  compDryMix.gain.value = 1 - initialWet;
-
-  preGlueSumBus.connect(busCompressor);
-  busCompressor.connect(compMakeupGain);
-  compMakeupGain.connect(compWetMix);
-  compWetMix.connect(stage4ASum);
-
-  preGlueSumBus.connect(compDryMix);
-  compDryMix.connect(stage4ASum);
-
-  // =========================================================================
-  // STAGE 4B: 4x Oversampled Analog Saturator + Warmth Tilt + 18Hz DC Blocker
-  // =========================================================================
-  const satInputGain = ctx.createGain();
-  const waveShaper = ctx.createWaveShaper();
-  waveShaper.oversample = '4x';
-  const dcBlocker = ctx.createBiquadFilter();
-  dcBlocker.type = 'highpass';
-  dcBlocker.frequency.value = 18;
-  dcBlocker.Q.value = Math.SQRT1_2;
-
-  const warmthTilt = ctx.createBiquadFilter();
-  warmthTilt.type = 'lowshelf';
-  warmthTilt.frequency.value = 175;
-  warmthTilt.gain.value = initialChain.saturation.warmthTiltDb;
-
-  const satOutputTrim = ctx.createGain();
-
-  let currentSatSignature = '';
-  const updateSaturationState = (
-    type: MasteringDspChain['saturation']['type'],
-    drive: number,
-    tiltDb: number,
-    now: number
-  ) => {
-    const sig = `${type}:${drive.toFixed(3)}`;
-    if (sig !== currentSatSignature) {
-      waveShaper.curve = generateAnalogSaturationCurve(type, drive);
-      currentSatSignature = sig;
-    }
-    const { inputGainLinear, outputTrimLinear } = computeSaturationGainStaging(
-      type,
-      drive
-    );
-    satInputGain.gain.value = inputGainLinear;
-    satInputGain.gain.setTargetAtTime(inputGainLinear, now, 0.012);
-
-    satOutputTrim.gain.value = outputTrimLinear;
-    satOutputTrim.gain.setTargetAtTime(outputTrimLinear, now, 0.012);
-
-    warmthTilt.gain.value = tiltDb;
-    warmthTilt.gain.setTargetAtTime(tiltDb, now, 0.012);
-  };
-
-  updateSaturationState(
-    initialChain.saturation.type,
-    initialChain.saturation.drive,
-    initialChain.saturation.warmthTiltDb,
-    ctx.currentTime
-  );
-
-  stage4ASum.connect(satInputGain);
-  satInputGain.connect(waveShaper);
-  waveShaper.connect(dcBlocker);
-  dcBlocker.connect(warmthTilt);
-  warmthTilt.connect(satOutputTrim);
-
-  // =========================================================================
-  // STAGE 5: Dual-Stage Maximizer & True Peak Ceiling Guard (-1.0 dBTP)
-  // =========================================================================
-  const maximizerDriveGain = ctx.createGain();
-  const maximizerSafetyLimiter = ctx.createDynamicsCompressor();
-  maximizerSafetyLimiter.threshold.value = Math.max(
-    -6.0,
-    initialChain.limiter.ceilingDbTp - 0.6
-  );
-  maximizerSafetyLimiter.knee.value = 2.5;
-  maximizerSafetyLimiter.ratio.value = 16.0;
-  maximizerSafetyLimiter.attack.value = 0.001;
-  maximizerSafetyLimiter.release.value = Math.max(
-    0.025,
-    initialChain.limiter.releaseMs / 1000
-  );
-
-  const brickwallShaper = ctx.createWaveShaper();
-  brickwallShaper.oversample = '4x';
-
-  let currentLimiterSig = '';
-  const updateLimiterState = (
-    ceilingDbTp: number,
-    softClipPrePct: number,
-    releaseMs: number,
-    totalDriveDb: number,
-    now: number
-  ) => {
-    const sig = `${ceilingDbTp.toFixed(2)}:${softClipPrePct.toFixed(2)}`;
-    if (sig !== currentLimiterSig) {
-      brickwallShaper.curve = createBrickwallMaximizerCurve(
-        ceilingDbTp,
-        softClipPrePct
-      );
-      currentLimiterSig = sig;
-    }
-    const clampedDriveDb = Math.max(-9, Math.min(13, totalDriveDb));
-    const driveLinear = Math.pow(10, clampedDriveDb / 20);
-    const releaseSec = Math.max(0.02, Math.min(0.4, releaseMs / 1000));
-    const safetyThreshDb = Math.max(-6.0, ceilingDbTp - 0.6);
-
-    maximizerDriveGain.gain.value = driveLinear;
-    maximizerDriveGain.gain.setTargetAtTime(driveLinear, now, 0.012);
-
-    maximizerSafetyLimiter.threshold.value = safetyThreshDb;
-    maximizerSafetyLimiter.threshold.setTargetAtTime(safetyThreshDb, now, 0.012);
-
-    maximizerSafetyLimiter.release.value = releaseSec;
-    maximizerSafetyLimiter.release.setTargetAtTime(releaseSec, now, 0.012);
-  };
-
-  updateLimiterState(
-    initialChain.limiter.ceilingDbTp,
-    initialChain.limiter.softClipPrePct,
-    initialChain.limiter.releaseMs,
-    initialAutoMakeupDb,
-    ctx.currentTime
-  );
-
-  // =========================================================================
-  // STAGE 4C: Forensic Anti-AI Humanizer (Sub-Energy Rebalancer, Stereo-Linked
-  // All-Pass Phase Disperser, Studer Micro-Drift, 14-22kHz Harmonic Exciter,
-  // Balanced Early Reflections & Thermal Floor)
-  // =========================================================================
-  const humanizerStage = ForensicHumanizerDSP.createControllableHumanizerStage(
-    ctx,
-    initialChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG
-  );
-
-  satOutputTrim.connect(humanizerStage.inputNode);
-  humanizerStage.outputNode.connect(maximizerDriveGain);
-  maximizerDriveGain.connect(maximizerSafetyLimiter);
-  maximizerSafetyLimiter.connect(brickwallShaper);
-  brickwallShaper.connect(outputNode);
-
-  const applyDspChain = (
-    chain: MasteringDspChain,
-    autoMakeupGainDb: number,
-    now = ctx.currentTime
-  ) => {
-    // Stage 2: Subsonic HPF & All EQ Bands (Stereo + Mid + Side)
+  const updatePreCompressor = (chain: MasteringDspChain, now: number) => {
     const clampedHpf = Math.max(18, Math.min(60, chain.highPassFreq));
     subsonicHpf.frequency.value = clampedHpf;
     subsonicHpf.frequency.setTargetAtTime(clampedHpf, now, 0.012);
 
     for (const band of chain.eqBands) {
       const stereoNode = stereoBandFilters.get(band.id);
-      if (stereoNode) {
-        configureStereoFilterNode(stereoNode, band, now);
-      }
+      if (stereoNode) configureStereoFilterNode(stereoNode, band, now);
       midSideMatrix.updateBand(band, now);
     }
 
-    // Stage 2B: Update Ultra-Narrow Surgical Resonance Notches
     const activeNotches = chain.resonanceNotches || [];
     for (let i = 0; i < MAX_RESONANCE_NOTCHES; i++) {
       const node = resonanceNotchFilters[i];
@@ -383,84 +245,280 @@ export function buildMasteringDspGraph(
       }
     }
 
-    // Stage 2C: Sub-Mud Suppressor for Drum Layering
     const mudSuppressDb =
       chain.drumLayering?.enabled && chain.drumLayering?.suppressOriginalMud
-        ? -3.2 * Math.max(0.35, chain.drumLayering.kickMix)
+        ? -1.6 * Math.max(0.25, chain.drumLayering.kickMix)
         : 0;
     drumMudSuppressFilter.gain.value = mudSuppressDb;
     drumMudSuppressFilter.gain.setTargetAtTime(mudSuppressDb, now, 0.012);
 
-    // Stage 3: Mono Maker & Side Width
     midSideMatrix.updateMonoMakerFreq(chain.monoMakerFreq, now);
     midSideMatrix.updateSideGainDb(chain.stereoWidth.sideGainDb, now);
-
-    // Stage 4A: Compressor
-    busCompressor.threshold.value = chain.compressor.thresholdDb;
-    busCompressor.ratio.value = chain.compressor.ratio;
-    busCompressor.attack.value = chain.compressor.attackSec;
-    busCompressor.release.value = chain.compressor.releaseSec;
-    busCompressor.knee.value = chain.compressor.kneeDb;
-
-    busCompressor.threshold.setTargetAtTime(
-      chain.compressor.thresholdDb,
-      now,
-      0.012
-    );
-    busCompressor.ratio.setTargetAtTime(chain.compressor.ratio, now, 0.012);
-    busCompressor.attack.setTargetAtTime(
-      chain.compressor.attackSec,
-      now,
-      0.012
-    );
-    busCompressor.release.setTargetAtTime(
-      chain.compressor.releaseSec,
-      now,
-      0.012
-    );
-    busCompressor.knee.setTargetAtTime(chain.compressor.kneeDb, now, 0.012);
-
-    const wet = Math.max(0, Math.min(1, chain.compressor.parallelMix));
-    const makeupLinear = computeAdaptiveCompressorMakeupLinear(chain);
-    compMakeupGain.gain.value = makeupLinear;
-    compWetMix.gain.value = wet;
-    compDryMix.gain.value = 1 - wet;
-
-    compMakeupGain.gain.setTargetAtTime(makeupLinear, now, 0.012);
-    compWetMix.gain.setTargetAtTime(wet, now, 0.012);
-    compDryMix.gain.setTargetAtTime(1 - wet, now, 0.012);
-
-    // Stage 4B: Saturator
-    updateSaturationState(
-      chain.saturation.type,
-      chain.saturation.drive,
-      chain.saturation.warmthTiltDb,
-      now
-    );
-
-    // Stage 4C: Forensic Anti-AI Humanizer
-    if (chain.forensicHumanizer) {
-      humanizerStage.updateConfig(chain.forensicHumanizer, now);
-    }
-
-    // Stage 5: Maximizer & Brickwall Limiter
-    updateLimiterState(
-      chain.limiter.ceilingDbTp,
-      chain.limiter.softClipPrePct,
-      chain.limiter.releaseMs,
-      autoMakeupGainDb,
-      now
-    );
   };
 
   return {
     inputNode,
+    outputNode: preGlueSumBus,
     drumLayerBusInput,
     transientDuckHandles: { kickDuckFilter, snareDuckFilter },
-    outputNode,
-    busCompressor,
-    maximizerSafetyLimiter,
     midSideMatrix,
+    updatePreCompressor,
+  };
+}
+
+/**
+ * Builds Stage 4B (Click-Free Dual-WaveShaper 4x Saturator +8dB Headroom) -> Stage 4C (Analog Restorer).
+ * Shared identically by live graph and Offline Pass 1B!
+ */
+export function buildPostCompressorStages(
+  ctx: BaseAudioContext,
+  initialChain: MasteringDspChain
+) {
+  const inputNode = ctx.createGain();
+  const satInputGain = ctx.createGain();
+
+  const waveShaperA = ctx.createWaveShaper();
+  waveShaperA.oversample = '4x';
+  const waveShaperB = ctx.createWaveShaper();
+  waveShaperB.oversample = '4x';
+
+  const shaperGainA = ctx.createGain();
+  const shaperGainB = ctx.createGain();
+  shaperGainA.gain.value = 1.0;
+  shaperGainB.gain.value = 0.0;
+  let activeSlot: 'A' | 'B' = 'A';
+
+  const dcBlocker = ctx.createBiquadFilter();
+  dcBlocker.type = 'highpass';
+  dcBlocker.frequency.value = 18;
+  dcBlocker.Q.value = Math.SQRT1_2;
+
+  const warmthTilt = ctx.createBiquadFilter();
+  warmthTilt.type = 'lowshelf';
+  warmthTilt.frequency.value = 175;
+  warmthTilt.gain.value = initialChain.saturation.warmthTiltDb;
+
+  const satOutputTrim = ctx.createGain();
+
+  let currentSatSignature = '';
+  const updateSaturationState = (
+    type: MasteringDspChain['saturation']['type'],
+    drive: number,
+    tiltDb: number,
+    now: number,
+    isInit = false
+  ) => {
+    const sig = `${type}:${drive.toFixed(3)}`;
+    if (sig !== currentSatSignature) {
+      const nextCurve = generateAnalogSaturationCurve(type, drive);
+      if (isInit || now <= 0.001) {
+        waveShaperA.curve = nextCurve;
+        shaperGainA.gain.value = 1.0;
+        shaperGainB.gain.value = 0.0;
+        activeSlot = 'A';
+      } else {
+        // Crossfade smoothly over ~12ms on inactive WaveShaper so slider moves never click!
+        if (activeSlot === 'A') {
+          waveShaperB.curve = nextCurve;
+          shaperGainA.gain.setTargetAtTime(0.0, now, 0.004);
+          shaperGainB.gain.setTargetAtTime(1.0, now, 0.004);
+          activeSlot = 'B';
+        } else {
+          waveShaperA.curve = nextCurve;
+          shaperGainB.gain.setTargetAtTime(0.0, now, 0.004);
+          shaperGainA.gain.setTargetAtTime(1.0, now, 0.004);
+          activeSlot = 'A';
+        }
+      }
+      currentSatSignature = sig;
+    }
+
+    const { inputGainLinear, outputTrimLinear } = computeSaturationGainStaging(
+      type,
+      drive
+    );
+    satInputGain.gain.value = inputGainLinear;
+    satInputGain.gain.setTargetAtTime(inputGainLinear, now, 0.012);
+
+    satOutputTrim.gain.value = outputTrimLinear;
+    satOutputTrim.gain.setTargetAtTime(outputTrimLinear, now, 0.012);
+
+    warmthTilt.gain.value = tiltDb;
+    warmthTilt.gain.setTargetAtTime(tiltDb, now, 0.012);
+  };
+
+  updateSaturationState(
+    initialChain.saturation.type,
+    initialChain.saturation.drive,
+    initialChain.saturation.warmthTiltDb,
+    ctx.currentTime,
+    true
+  );
+
+  inputNode.connect(satInputGain);
+  satInputGain.connect(waveShaperA);
+  satInputGain.connect(waveShaperB);
+  waveShaperA.connect(shaperGainA);
+  waveShaperB.connect(shaperGainB);
+  shaperGainA.connect(dcBlocker);
+  shaperGainB.connect(dcBlocker);
+  dcBlocker.connect(warmthTilt);
+  warmthTilt.connect(satOutputTrim);
+
+  const humanizerStage = ForensicHumanizerDSP.createControllableHumanizerStage(
+    ctx,
+    initialChain.forensicHumanizer ?? DEFAULT_FORENSIC_HUMANIZER_CONFIG
+  );
+  satOutputTrim.connect(humanizerStage.inputNode);
+
+  const updatePostCompressor = (chain: MasteringDspChain, now: number) => {
+    updateSaturationState(
+      chain.saturation.type,
+      chain.saturation.drive,
+      chain.saturation.warmthTiltDb,
+      now,
+      false
+    );
+    if (chain.forensicHumanizer) {
+      humanizerStage.updateConfig(chain.forensicHumanizer, now);
+    }
+  };
+
+  return {
+    inputNode,
+    outputNode: humanizerStage.outputNode,
+    updatePostCompressor,
+  };
+}
+
+/**
+ * Builds the full live 6-stage Studio Mastering DSP graph using our pure-TS AudioWorklets
+ * for Bus Compression (Stage 4A) and Lookahead True Peak Limiting (Stage 5).
+ */
+export function buildMasteringDspGraph(
+  ctx: BaseAudioContext,
+  initialChain: MasteringDspChain,
+  initialMakeupDriveDb = 0
+): MasteringGraphHandles {
+  const preStages = buildPreCompressorStages(ctx, initialChain);
+  const postStages = buildPostCompressorStages(ctx, initialChain);
+  const outputNode = ctx.createGain();
+
+  let compWorkletNode: AudioWorkletNode | null = null;
+  let limiterWorkletNode: AudioWorkletNode | null = null;
+  let compGrDb = 0;
+  let limGrDb = 0;
+
+  const canCreateWorklet =
+    typeof AudioWorkletNode !== 'undefined' && registeredDynamicsCtx.has(ctx);
+
+  if (canCreateWorklet) {
+    try {
+      const isInitBypass = (initialChain.intensityScale ?? 1) <= 0.005;
+      compWorkletNode = new AudioWorkletNode(ctx, 'mastering-bus-compressor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+        processorOptions: {
+          initialParams: buildBusCompressorParams(initialChain),
+          initialBypass: isInitBypass || initialChain.compressor.parallelMix <= 0.005,
+        },
+      });
+      compWorkletNode.port.onmessage = (
+        ev: MessageEvent<{ type: string; grDb?: number }>
+      ) => {
+        if (ev.data?.type === 'gr' && typeof ev.data.grDb === 'number') {
+          compGrDb = ev.data.grDb;
+        }
+      };
+
+      limiterWorkletNode = new AudioWorkletNode(
+        ctx,
+        'mastering-lookahead-limiter',
+        {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          processorOptions: {
+            initialParams: buildLookaheadLimiterParams(initialChain, initialMakeupDriveDb),
+            initialBypass: false,
+          },
+        }
+      );
+      limiterWorkletNode.port.onmessage = (
+        ev: MessageEvent<{ type: string; grDb?: number }>
+      ) => {
+        if (ev.data?.type === 'gr' && typeof ev.data.grDb === 'number') {
+          limGrDb = ev.data.grDb;
+        }
+      };
+    } catch {
+      compWorkletNode = null;
+      limiterWorkletNode = null;
+    }
+  }
+
+  // Fallback transparent GainNodes if worklet module isn't available (e.g. unit test without worklet)
+  const fallbackDriveGain = ctx.createGain();
+  fallbackDriveGain.gain.value = Math.pow(10, initialMakeupDriveDb / 20);
+
+  if (compWorkletNode && limiterWorkletNode) {
+    preStages.outputNode.connect(compWorkletNode);
+    compWorkletNode.connect(postStages.inputNode);
+    postStages.outputNode.connect(limiterWorkletNode);
+    limiterWorkletNode.connect(outputNode);
+  } else {
+    preStages.outputNode.connect(postStages.inputNode);
+    postStages.outputNode.connect(fallbackDriveGain);
+    fallbackDriveGain.connect(outputNode);
+  }
+
+  const syncWorklets = (chain: MasteringDspChain, driveDb: number) => {
+    const isTrueBypass = (chain.intensityScale ?? 1) <= 0.005;
+    if (compWorkletNode) {
+      compWorkletNode.port.postMessage({
+        type: 'config',
+        params: buildBusCompressorParams(chain),
+        bypass: isTrueBypass || chain.compressor.parallelMix <= 0.005,
+      });
+    }
+    if (limiterWorkletNode) {
+      limiterWorkletNode.port.postMessage({
+        type: 'config',
+        params: buildLookaheadLimiterParams(chain, driveDb),
+        bypass: false,
+      });
+    }
+    fallbackDriveGain.gain.value = Math.pow(10, driveDb / 20);
+  };
+
+  syncWorklets(initialChain, initialMakeupDriveDb);
+
+  const applyDspChain = (
+    chain: MasteringDspChain,
+    driveDb: number,
+    now = ctx.currentTime
+  ) => {
+    preStages.updatePreCompressor(chain, now);
+    postStages.updatePostCompressor(chain, now);
+    syncWorklets(chain, driveDb);
+  };
+
+  return {
+    inputNode: preStages.inputNode,
+    drumLayerBusInput: preStages.drumLayerBusInput,
+    transientDuckHandles: preStages.transientDuckHandles,
+    outputNode,
+    midSideMatrix: preStages.midSideMatrix,
+    compWorkletNode,
+    limiterWorkletNode,
+    getLiveGainReduction: () => ({ compGrDb, limGrDb }),
+    resetDynamics: () => {
+      compGrDb = 0;
+      limGrDb = 0;
+      compWorkletNode?.port.postMessage({ type: 'reset' });
+      limiterWorkletNode?.port.postMessage({ type: 'reset' });
+    },
     applyDspChain,
   };
 }

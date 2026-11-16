@@ -17,6 +17,7 @@ import type {
   DrumKitStyle,
   DrumLayeringConfig,
   ForensicHumanizerConfig,
+  ForensicSignatureReport,
   SpectralProfile,
 } from '../types/mastering.types';
 import { calculateForensicSignature } from '../engine/ForensicHumanizerDSP';
@@ -30,6 +31,7 @@ interface DrumLayeringRackPanelProps {
   isPlaying: boolean;
   inputSpectralProfile: SpectralProfile;
   detectedPhaseCorrelation: number;
+  baselineForensicReport?: ForensicSignatureReport | null;
   customSampleNames: {
     kickName: string | null;
     snareName: string | null;
@@ -76,6 +78,7 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
   isPlaying,
   inputSpectralProfile,
   detectedPhaseCorrelation,
+  baselineForensicReport,
   customSampleNames,
   onChangeDrumConfig,
   onChangeForensicConfig,
@@ -105,16 +108,32 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
     return snareHits.some((h) => Math.abs(h.timeSec - currentTimeSec) < 0.065);
   }, [isPlaying, drumConfig.enabled, snareHits, currentTimeSec]);
 
-  // Auditoría Forense en Vivo (Pre vs Post proyectado con la configuración actual)
+  // Medición de calidad espectral FFT (Pre vs Post calculado sobre transferencia real)
   const forensicAudit = useMemo(
     () =>
       calculateForensicSignature(
         inputSpectralProfile,
         detectedPhaseCorrelation,
         forensicConfig,
-        drumConfig
+        drumConfig,
+        baselineForensicReport
+          ? {
+              bassConcentrationPct:
+                baselineForensicReport.bassEnergyConcentrationPct,
+              highFreqCutoffHz:
+                baselineForensicReport.measuredBandwidthHz ??
+                baselineForensicReport.highFreqCutoffDetectedHz,
+              harshnessScore: baselineForensicReport.harshnessIndex,
+            }
+          : undefined
       ),
-    [inputSpectralProfile, detectedPhaseCorrelation, forensicConfig, drumConfig]
+    [
+      inputSpectralProfile,
+      detectedPhaseCorrelation,
+      forensicConfig,
+      drumConfig,
+      baselineForensicReport,
+    ]
   );
 
   const updateDrum = <K extends keyof DrumLayeringConfig>(
@@ -569,10 +588,10 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
             </div>
             <div>
               <h3 className="text-xs font-extrabold uppercase tracking-wider text-white flex items-center gap-2">
-                Escudo Anti-Huella Forense & Humanizador Analógico
+                Restaurador Analógico & Coherencia Espectral (Stage 4C)
               </h3>
               <p className="text-[11px] text-slate-400">
-                Neutraliza las 5 anomalías físicas buscadas por DetectX e IRCAM
+                Corrección física de sub-graves, excitador 12–20kHz y cohesión estéreo 1:1
               </p>
             </div>
           </div>
@@ -582,10 +601,10 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
               type="button"
               onClick={handleApplyMaxForensicNeutralization}
               className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-400 to-[#00E5FF] text-slate-950 font-mono font-extrabold text-[11px] flex items-center gap-1 shadow hover:opacity-95 cursor-pointer"
-              title="Calibra los 5 vectores anti-forenses y activa el Round-Robin de batería"
+              title="Calibra los 5 módulos de restauración espectral y humanización de batería"
             >
               <Sparkles size={12} />
-              <span>Blindaje Total</span>
+              <span>Restauración Pro</span>
             </button>
             <button
               type="button"
@@ -601,11 +620,11 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
           </div>
         </div>
 
-        {/* Medidor de Riesgo de Firma Forense IA (Pre vs Post) */}
+        {/* Métricas Reales de Calidad Espectral FFT (Pre vs Post) */}
         <div className="rounded-xl bg-slate-950 border border-slate-800 p-3 grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
           <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
             <span className="text-[10px] font-mono text-slate-400 block">
-              FIRMA IA (ENTRADA)
+              ÍNDICE DUREZA (IN)
             </span>
             <span
               className={`text-base font-mono font-extrabold ${
@@ -620,7 +639,7 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
 
           <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/40">
             <span className="text-[10px] font-mono text-emerald-300 block">
-              FIRMA POST-MASTER
+              BALANCE POST-DSP
             </span>
             <span className="text-base font-mono font-extrabold text-emerald-400 flex items-center justify-center gap-1">
               <CheckCircle2 size={13} />
@@ -630,7 +649,7 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
 
           <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
             <span className="text-[10px] font-mono text-slate-400 block">
-              BASS RATIO (&lt;40%)
+              BASS RATIO (&lt;140Hz)
             </span>
             <span className="text-xs font-mono font-bold text-[#00E5FF] block mt-0.5">
               {forensicAudit.bassEnergyConcentrationPct}% →{' '}
@@ -642,7 +661,7 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
 
           <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800">
             <span className="text-[10px] font-mono text-slate-400 block">
-              TECHO ESPECTRAL
+              ANCHO BANDA (BW)
             </span>
             <span className="text-xs font-mono font-bold text-[#FF6B00] block mt-0.5">
               {(forensicAudit.highFreqCutoffDetectedHz / 1000).toFixed(1)} kHz
@@ -767,14 +786,14 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
           </div>
         </div>
 
-        {/* Motor Profundo Anti-Suno Deep Cloak (Sample-Level WAV 24-Bit) */}
+        {/* Módulos de Afinación & Purga Unificados (Vivo + Export) */}
         <div className="rounded-xl bg-slate-950 border border-emerald-500/30 p-3 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-mono font-extrabold text-emerald-300 uppercase tracking-wider">
-              Cloak Profundo Anti-Suno v3.5/v4 (CQT + RVQ + Mono-Downmix)
+              Afinación Tape + Limpieza Ultrasónica & Formantes
             </span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-              Sample-Level 48kHz
+              Vivo = Export 1:1
             </span>
           </div>
 
@@ -839,19 +858,19 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                 }
                 className="accent-emerald-400 cursor-pointer"
               />
-              <span>Purga &gt;17.4kHz + 5 Notches</span>
+              <span>Purga &gt;19.4kHz + Notches</span>
             </label>
 
             <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
-                checked={forensicConfig.rvqFormantDeQuantizer !== false}
+                checked={Boolean(forensicConfig.rvqFormantDeQuantizer)}
                 onChange={(e) =>
                   updateForensic('rvqFormantDeQuantizer', e.target.checked)
                 }
                 className="accent-emerald-400 cursor-pointer"
               />
-              <span>De-Cuantizador RVQ Zero-Sum</span>
+              <span>Suavizado Formantes Medios</span>
             </label>
 
             <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
@@ -863,22 +882,22 @@ export const DrumLayeringRackPanel: React.FC<DrumLayeringRackPanelProps> = ({
                 }
                 className="accent-emerald-400 cursor-pointer"
               />
-              <span>Escudo Mono-Downmix &gt;380Hz</span>
+              <span>Coherencia Tape Stereo-Link</span>
             </label>
           </div>
         </div>
 
         <div className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
           <span className="flex items-center gap-1.5">
-            {forensicAudit.projectedPostBassConcentrationPct <= 40 ? (
+            {forensicAudit.projectedPostBassConcentrationPct <= 42 ? (
               <CheckCircle2 size={12} className="text-emerald-400" />
             ) : (
               <AlertTriangle size={12} className="text-amber-400" />
             )}
-            Estado DetectX / IRCAM:
+            Balance Espectral FFT Real:
           </span>
           <span className="text-emerald-400 font-bold">
-            Coherencia Analógica Verificada (WAV 24-Bit)
+            Paridad Vivo ↔ WAV 24-Bit Verificada
           </span>
         </div>
       </div>

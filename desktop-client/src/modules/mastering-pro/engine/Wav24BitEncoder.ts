@@ -52,8 +52,8 @@ export function encodeAudioBufferToWav24Bit(
   let writeOffset = 44;
 
   for (let i = 0; i < numFrames; i++) {
-    // Channel 0 (Left)
-    const ditherL = applyTpdfDither ? (Math.random() - Math.random()) * 0.5 : 0;
+    // Channel 0 (Left) — Exact ±1 LSB Triangular PDF Dither (sum of two uniform [-0.5, 0.5] variates)
+    const ditherL = applyTpdfDither ? Math.random() - Math.random() : 0;
     const scaledL = Math.round(left[i] * MAX_INT24 + ditherL);
     const intL = scaledL > MAX_INT24 ? MAX_INT24 : scaledL < MIN_INT24 ? MIN_INT24 : scaledL;
 
@@ -64,7 +64,7 @@ export function encodeAudioBufferToWav24Bit(
 
     if (numChannels > 1) {
       // Channel 1 (Right)
-      const ditherR = applyTpdfDither ? (Math.random() - Math.random()) * 0.5 : 0;
+      const ditherR = applyTpdfDither ? Math.random() - Math.random() : 0;
       const scaledR = Math.round(right[i] * MAX_INT24 + ditherR);
       const intR = scaledR > MAX_INT24 ? MAX_INT24 : scaledR < MIN_INT24 ? MIN_INT24 : scaledR;
 
