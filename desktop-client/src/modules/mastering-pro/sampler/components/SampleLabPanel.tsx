@@ -5,7 +5,9 @@ import {
   CloudUpload,
   Download,
   FolderArchive,
+  Grid,
   HardDrive,
+  Layers,
   Music2,
   Scissors,
   Sliders,
@@ -36,6 +38,7 @@ import {
 import { useMidiInput } from '../hooks/useMidiInput';
 import { useSamplerEngine } from '../hooks/useSamplerEngine';
 import { useSamplerKeyboard } from '../hooks/useSamplerKeyboard';
+import { useStemReplacer } from '../hooks/useStemReplacer';
 import { midiNoteToName } from '../engine/PitchDetector';
 import { KitLibraryModal } from './KitLibraryModal';
 import { PadGrid } from './PadGrid';
@@ -44,11 +47,14 @@ import { SampleExportDialog } from './SampleExportDialog';
 import { SampleWaveformEditor } from './SampleWaveformEditor';
 import { SaveToSupabaseModal } from './SaveToSupabaseModal';
 import { SliceToolbar } from './SliceToolbar';
+import { StemReplacerPanel } from './StemReplacerPanel';
 import { StepSequencer } from './StepSequencer';
 
 export const SampleLabPanel: React.FC = () => {
   const navigate = useNavigate();
   const s = useSamplerEngine();
+  const replacer = useStemReplacer();
+  const [workspaceMode, setWorkspaceMode] = useState<'replacer' | 'pads'>('replacer');
 
   const [projectTracks, setProjectTracks] = useState<ProjectAudioTrackItem[]>([]);
   const [showBpmGrid, setShowBpmGrid] = useState<boolean>(true);
@@ -108,9 +114,13 @@ export const SampleLabPanel: React.FC = () => {
     },
   });
 
-  // QWERTY Keyboard performance & editing shortcuts
+  // QWERTY Keyboard performance & editing shortcuts (only active in Pads workspace)
   useSamplerKeyboard({
-    enabled: !isExportOpen && !isSupabaseOpen && !isKitLibraryOpen,
+    enabled:
+      workspaceMode === 'pads' &&
+      !isExportOpen &&
+      !isSupabaseOpen &&
+      !isKitLibraryOpen,
     chromaticMode,
     chromaticBaseMidi,
     onTriggerPad: (idx) => s.triggerPad(idx, 0.92),
@@ -289,61 +299,107 @@ export const SampleLabPanel: React.FC = () => {
                 </span>
               </div>
               <p className="text-[10px] font-mono text-slate-400">
-                Chop · Pitch YIN · Time-Stretch WSOLA/Paulstretch · 16 Pads + Sequencer
+                Stem Replacer (Batería · Bajo · Guitarra/Piano+) · 16 Pads + Sequencer
               </p>
             </div>
           </div>
 
-          <input
-            type="text"
-            value={s.kitName}
-            onChange={(e) => s.setKitName(e.target.value)}
-            placeholder="Nombre del Kit..."
-            className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-white w-44 md:w-52 focus:outline-none focus:border-[#00E5FF]"
-          />
-
-          {s.tempSavedAt && (
-            <span
-              className="hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400"
-              title="Los cambios y audios se guardan automáticamente en IndexedDB local"
+          {/* Primary Workspace Mode Switcher */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('replacer')}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                workspaceMode === 'replacer'
+                  ? 'bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950 shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
             >
-              <HardDrive size={11} className="text-emerald-400" />
-              Temp local {s.tempSavedAt}
-            </span>
-          )}
+              <Layers size={13} />
+              <span>Reemplazar Stem (Canción)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('pads')}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                workspaceMode === 'pads'
+                  ? 'bg-[#FF6B00] text-slate-950 shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Grid size={13} />
+              <span>Creador 16 Pads</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsKitLibraryOpen(true)}
-            className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono flex items-center gap-1.5 cursor-pointer"
-          >
-            <FolderArchive size={13} className="text-amber-400" />
-            <span>Kits Local / Cloud</span>
-          </button>
+        {workspaceMode === 'pads' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={s.kitName}
+              onChange={(e) => s.setKitName(e.target.value)}
+              placeholder="Nombre del Kit..."
+              className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-white w-40 md:w-48 focus:outline-none focus:border-[#00E5FF]"
+            />
 
-          <button
-            type="button"
-            onClick={() => setIsExportOpen(true)}
-            disabled={s.sources.length === 0}
-            className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
-          >
-            <Download size={13} />
-            <span>Exportar...</span>
-          </button>
+            {s.tempSavedAt && (
+              <span
+                className="hidden xl:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400"
+                title="Los cambios y audios se guardan automáticamente en IndexedDB local"
+              >
+                <HardDrive size={11} className="text-emerald-400" />
+                Temp {s.tempSavedAt}
+              </span>
+            )}
 
-          <button
-            type="button"
-            onClick={() => setIsSupabaseOpen(true)}
-            disabled={s.sources.length === 0}
-            className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-[#00E5FF] hover:brightness-110 text-slate-950 text-xs font-mono font-black flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-40"
-          >
-            <CloudUpload size={14} />
-            <span>Guardar en Supabase</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setIsKitLibraryOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono flex items-center gap-1.5 cursor-pointer"
+            >
+              <FolderArchive size={13} className="text-amber-400" />
+              <span>Kits</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsExportOpen(true)}
+              disabled={s.sources.length === 0}
+              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+            >
+              <Download size={13} />
+              <span>Exportar...</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsSupabaseOpen(true)}
+              disabled={s.sources.length === 0}
+              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-[#00E5FF] hover:brightness-110 text-slate-950 text-xs font-mono font-black flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-40"
+            >
+              <CloudUpload size={14} />
+              <span>Guardar en Supabase</span>
+            </button>
+          </div>
+        )}
       </header>
+
+      {workspaceMode === 'replacer' ? (
+        <StemReplacerPanel
+          replacer={replacer}
+          padsFromCreator={s.pads}
+          getBufferForPad={(padIdx) => {
+            const eng = s.engineRef.current;
+            const pad = s.pads[padIdx];
+            if (!eng || !pad?.regionId) return null;
+            const reg = s.regions.find((rg) => rg.id === pad.regionId);
+            if (!reg) return null;
+            return eng.getProcessedBufferForPad(eng.ensureContext(), reg, pad.params);
+          }}
+        />
+      ) : (
+        <>
 
       {/* Sources Tabs + MIDI Device Bar + Status Notification */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
@@ -577,6 +633,8 @@ export const SampleLabPanel: React.FC = () => {
           s.setPattern(createDefaultPattern(s.pattern.bpm, s.pattern.steps))
         }
       />
+        </>
+      )}
 
       {/* Export Dialog */}
       <SampleExportDialog

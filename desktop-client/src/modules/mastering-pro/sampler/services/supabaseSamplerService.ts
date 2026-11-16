@@ -1,10 +1,13 @@
 import { supabase } from '../../../../lib/supabase';
 import { encodeAudioBufferToWav24Bit } from '../../engine/Wav24BitEncoder';
+import { inferStemModeFromName } from '../engine/FullStemAnalyzer';
 import type {
   CloudSampleKitRecord,
   SampleKit,
   SampleSource,
   SongFolderItem,
+  SongStemEntry,
+  SongWithStemsFolder,
 } from '../types/sampler.types';
 
 const DEFAULT_BAND_ID = '00000000-0000-0000-0000-000000000000';
@@ -115,6 +118,69 @@ export async function createSongFolderForSampler(
 }
 
 /**
+ * Fetches songs with their stems grouped by Song Folder ("Canción -> Stems")
+ * including BPM, musical key, and inferred analysis mode per stem.
+ */
+export async function fetchSongsWithStemsForSampler(): Promise<SongWithStemsFolder[]> {
+  try {
+    const { data: songs, error } = await supabase
+      .from('songs')
+      .select('id, title, band_id, prompter_data, created_at')
+      .order('title', { ascending: true })
+      .limit(120);
+
+    if (error || !songs || songs.length === 0) return [];
+
+    const { data: stems } = await supabase
+      .from('stems')
+      .select('id, song_id, name, file_url, metadata')
+      .in(
+        'song_id',
+        songs.map((s) => s.id)
+      )
+      .order('name', { ascending: true });
+
+    const bySong = new Map<string, SongStemEntry[]>();
+    if (stems) {
+      for (const st of stems) {
+        if (!st.file_url) continue;
+        const meta = (st.metadata || {}) as Record<string, unknown>;
+        const list = bySong.get(st.song_id) ?? [];
+        list.push({
+          id: st.id,
+          songId: st.song_id,
+          name: st.name || 'Stem',
+          fileUrl: st.file_url,
+          isMaster: Boolean(meta.is_master),
+          durationSec:
+            typeof meta.duration_seconds === 'number'
+              ? meta.duration_seconds
+              : undefined,
+          inferredMode: inferStemModeFromName(st.name || ''),
+        });
+        bySong.set(st.song_id, list);
+      }
+    }
+
+    return songs.map((s) => {
+      const pd = (s.prompter_data || {}) as Record<string, unknown>;
+      return {
+        id: s.id,
+        title: s.title || 'Canción sin título',
+        bandId: s.band_id,
+        bpm: pd.bpm ? Math.round(Number(pd.bpm)) : undefined,
+        musicalKey: typeof pd.key === 'string' ? pd.key : undefined,
+        timeSignature:
+          typeof pd.timeSignature === 'string' ? pd.timeSignature : undefined,
+        stems: bySong.get(s.id) ?? [],
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Uploads a rendered WAV 24-bit sample/loop/bounce to Supabase Storage ('audios' bucket)
  * and registers it inside public.stems of the chosen Song Folder ("Tema") so it appears
  * immediately in Stem Studio, Live Concert, and Mastering Pro.
@@ -127,7 +193,7 @@ export async function addSampleToSongFolder(params: {
   durationSec: number;
   bpm?: number;
   rootNote?: number;
-  originKind: 'pad' | 'region' | 'bounce';
+  originKind: 'pad' | 'region' | 'bounce' | 'stem-replaced';
 }): Promise<{ fileUrl: string; stemName: string }> {
   const ts = Date.now();
   const baseName = params.sampleName.replace(/\.[^.]+$/, '').trim() || 'Sample';

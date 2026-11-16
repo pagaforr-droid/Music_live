@@ -1,0 +1,87 @@
+{
+  "allPassed": true,
+  "checks": {
+    "T1_drums_beyond_32_limit": true,
+    "T1_drums_bpm_accurate": true,
+    "T1_drums_exact_length": true,
+    "T1_drums_true_peak_safe": true,
+    "T1_drums_wav_export_valid": true,
+    "T2_bass_all_notes_found": true,
+    "T2_bass_exact_length": true,
+    "T3_poly_chord_recall_ge_75pct": true,
+    "T3_custom_silence_trimmed": true,
+    "T3_custom_yin_root_exact": true,
+    "T3_poly_exact_length": true,
+    "T3_poly_true_peak_safe": true,
+    "T3_guitar_multizone_ready": true
+  },
+  "results": {
+    "test1_drums": {
+      "expectedHits": 56,
+      "detectedTotal": 70,
+      "counts": {
+        "total": 70,
+        "kick": 21,
+        "snare": 17,
+        "hat": 32,
+        "tom": 0,
+        "notes": 0
+      },
+      "detectedBpm": 120,
+      "exactSampleLengthMatch": true,
+      "truePeakDbTp": -1.03,
+      "wavSize": 4320088
+    },
+    "test2_bass": {
+      "targetNotes": [
+        33,
+        36,
+        38,
+        40,
+        43
+      ],
+      "detectedMidis": [
+        33,
+        36,
+        38,
+        40,
+        43
+      ],
+      "matchedCount": 5,
+      "eventsCount": 5,
+      "exactSampleLengthMatch": true
+    },
+    "test3_polyphonic": {
+      "totalExpectedNotes": 16,
+      "totalMatchedNotes": 16,
+      "recallPct": 100,
+      "detectedEvents": [
+        "A2@0.14s",
+        "B2@0.14s",
+        "A3@0.14s",
+        "C4@0.14s",
+        "E4@0.14s",
+        "E4@0.21s",
+        "B2@1.40s",
+        "F2@1.53s",
+        "E3@1.53s",
+        "F3@1.53s",
+        "A3@1.53s",
+        "C4@1.53s",
+        "E2@2.79s",
+        "F#2@2.79s",
+        "C4@2.79s",
+        "C3@2.94s",
+        "C4@2.94s",
+        "E4@2.94s",
+        "G4@2.94s",
+        "G4@3.03s"
+      ],
+      "customRawDur": 1.2,
+      "customTrimmedDur": 0.982,
+      "customDetectedRoot": "G3 (55)",
+      "exactSampleLengthMatch": true,
+      "truePeakDbTp": -1.03
+    }
+  }
+}

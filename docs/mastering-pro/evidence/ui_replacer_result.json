@@ -1,0 +1,12 @@
+{
+  "uiSmokePassed": true,
+  "checks": {
+    "ui_mounted_replacer_primary": true,
+    "ui_poly_demo_analyzed": true,
+    "ui_drums_demo_analyzed": true,
+    "ui_secondary_pads_tab_works": true,
+    "ui_zero_runtime_errors": true
+  },
+  "runtimeErrors": [],
+  "buttonsRenderedInPadsTab": 174
+}

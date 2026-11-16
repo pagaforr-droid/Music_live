@@ -151,3 +151,105 @@ export interface SongFolderItem {
   stemCount?: number;
   created_at?: string;
 }
+
+export type StemAnalysisMode = 'drums' | 'monophonic' | 'polyphonic';
+export type DrumPieceRole = 'kick' | 'snare' | 'hat' | 'tom';
+
+export type DefaultDrumPresetId =
+  | 'drum-kick-punch'
+  | 'drum-kick-acoustic'
+  | 'drum-kick-808'
+  | 'drum-snare-studio'
+  | 'drum-snare-warm'
+  | 'drum-snare-tight'
+  | 'drum-hat-crisp'
+  | 'drum-hat-tight'
+  | 'drum-tom-deep';
+
+export type DefaultMelodicPresetId =
+  | 'inst-piano-grand'
+  | 'inst-piano-rhodes'
+  | 'inst-guitar-acoustic'
+  | 'inst-guitar-electric'
+  | 'inst-bass-finger'
+  | 'inst-bass-sub808'
+  | 'inst-synth-warm';
+
+export type DefaultInstrumentId = DefaultDrumPresetId | DefaultMelodicPresetId;
+
+export interface StemDrumHitEvent {
+  id: string;
+  timeSec: number;
+  peakTimeSec: number;
+  role: DrumPieceRole;
+  velocity: number; // 0.1..1.0
+}
+
+export interface StemNoteEvent {
+  id: string;
+  startSec: number;
+  durationSec: number;
+  midiNote: number; // 24..96
+  noteName: string;
+  velocity: number; // 0.1..1.0
+  clarity: number; // 0..1
+}
+
+export interface FullStemAnalysisResult {
+  mode: StemAnalysisMode;
+  bpm: number;
+  durationSec: number;
+  drumHits: StemDrumHitEvent[];
+  noteEvents: StemNoteEvent[];
+  midiRange?: { minMidi: number; maxMidi: number; minName: string; maxName: string };
+  counts: {
+    total: number;
+    kick: number;
+    snare: number;
+    hat: number;
+    tom: number;
+    notes: number;
+  };
+}
+
+export interface ReplacementSlotConfig {
+  roleOrTarget: DrumPieceRole | 'melodic';
+  enabled: boolean;
+  sourceType: 'preset' | 'recorded' | 'file' | 'pad' | 'stem-crop';
+  presetId: DefaultInstrumentId;
+  customName?: string;
+  customBuffer?: AudioBuffer;
+  customRootMidi?: number; // detected or manually calibrated MIDI root for tonal samples
+  customPeakOffsetSec?: number; // transient peak alignment offset for drums
+  gainDb: number; // -24..+12
+  pitchSemis: number; // -12..+12
+}
+
+export interface StemReplaceMixOptions {
+  replacementPct: number; // 0..100
+  originalPct: number; // 0..100
+  duckOriginalTransients: boolean;
+  roundRobinHumanize: boolean;
+  sustainScale: number; // 0.6..1.8 for melodic sustain/release feel
+  brightnessPct: number; // -50..+50 tilt
+}
+
+export interface SongStemEntry {
+  id: string;
+  songId: string;
+  name: string;
+  fileUrl: string;
+  isMaster: boolean;
+  durationSec?: number;
+  inferredMode: StemAnalysisMode;
+}
+
+export interface SongWithStemsFolder {
+  id: string;
+  title: string;
+  bandId?: string;
+  bpm?: number;
+  musicalKey?: string;
+  timeSignature?: string;
+  stems: SongStemEntry[];
+}

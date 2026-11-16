@@ -1,9 +1,15 @@
 import { detectPitchYin } from '../engine/PitchDetector';
 import { sliceByTransients } from '../engine/Slicer';
+import {
+  analyzeDrumStemFull,
+  analyzeMonophonicStemNotesFull,
+  analyzePolyphonicStemNotesFull,
+} from '../engine/FullStemAnalyzer';
+import type { StemAnalysisMode } from '../types/sampler.types';
 
 export interface SamplerAnalysisRequest {
   id: number;
-  kind: 'slice-transients' | 'detect-pitch';
+  kind: 'slice-transients' | 'detect-pitch' | 'analyze-full-stem';
   sourceId: string;
   mono: Float32Array;
   sampleRate: number;
@@ -11,6 +17,9 @@ export interface SamplerAnalysisRequest {
   rangeEndSec?: number;
   sensitivity?: number;
   minSpacingMs?: number;
+  stemMode?: StemAnalysisMode;
+  bpmHint?: number;
+  maxPolyphony?: number;
 }
 
 self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
@@ -19,6 +28,30 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
     if (req.kind === 'detect-pitch') {
       const pitch = detectPitchYin(req.mono, req.sampleRate);
       self.postMessage({ id: req.id, success: true, kind: req.kind, pitch });
+      return;
+    }
+
+    if (req.kind === 'analyze-full-stem') {
+      const mode = req.stemMode ?? 'drums';
+      const result =
+        mode === 'drums'
+          ? analyzeDrumStemFull(req.mono, req.sampleRate, {
+              sensitivity: req.sensitivity,
+              minIntervalMs: req.minSpacingMs,
+              bpmHint: req.bpmHint,
+            })
+          : mode === 'monophonic'
+          ? analyzeMonophonicStemNotesFull(req.mono, req.sampleRate, {
+              sensitivity: req.sensitivity,
+              bpmHint: req.bpmHint,
+            })
+          : analyzePolyphonicStemNotesFull(req.mono, req.sampleRate, {
+              sensitivity: req.sensitivity,
+              maxPolyphony: req.maxPolyphony,
+              bpmHint: req.bpmHint,
+            });
+
+      self.postMessage({ id: req.id, success: true, kind: req.kind, result });
       return;
     }
 
