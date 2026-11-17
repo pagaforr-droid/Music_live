@@ -28,6 +28,7 @@ interface SliceToolbarProps {
   onToggleMicRecording: () => void;
   onAutoSliceTransients: (sensitivity: number) => void;
   onAutoSliceGrid: (div: GridDivision) => void;
+  onAutoSliceChords?: () => void;
   onUpdateSourceBpm: (bpm: number) => void;
   onChangeSnapMode: (mode: SnapMode) => void;
   onToggleBpmGrid: () => void;
@@ -49,6 +50,7 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
   onToggleMicRecording,
   onAutoSliceTransients,
   onAutoSliceGrid,
+  onAutoSliceChords,
   onUpdateSourceBpm,
   onChangeSnapMode,
   onToggleBpmGrid,
@@ -185,6 +187,17 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
           >
             Rejilla
           </button>
+
+          {onAutoSliceChords && source?.preAnalysis?.chords && source.preAnalysis.chords.length > 0 && (
+            <button
+              type="button"
+              onClick={onAutoSliceChords}
+              className="px-2 py-1 rounded-lg bg-violet-500/20 hover:bg-violet-500 text-violet-200 hover:text-slate-950 border border-violet-500/40 text-[11px] font-mono font-bold transition-colors cursor-pointer"
+              title={`Cortar exactamente por los ${source.preAnalysis.chords.length} acordes detectados en memoria (${source.preAnalysis.chordProgressionSummary})`}
+            >
+              Cortar Acordes ({source.preAnalysis.chords.length})
+            </button>
+          )}
         </div>
       </div>
 

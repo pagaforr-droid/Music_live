@@ -122,18 +122,44 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
 
     const secToX = (sec: number) => ((sec - viewStartSec) / viewSpanSec) * w;
 
-    // Optional BPM Grid
+    // Optional BPM Grid (phase-aligned to beatOffsetSec in memory)
     if (showBpmGrid && source.bpm > 0) {
       const beatSec = 60 / source.bpm;
-      const firstBeat = Math.floor(viewStartSec / beatSec) * beatSec;
+      const offset = source.preAnalysis?.beatOffsetSec ?? 0;
+      const firstBeat = offset + Math.floor((viewStartSec - offset) / beatSec) * beatSec;
       ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
       ctx.beginPath();
       for (let t = firstBeat; t <= viewEndSec; t += beatSec) {
+        if (t < viewStartSec) continue;
         const x = secToX(t);
         ctx.moveTo(x, 0);
         ctx.lineTo(x, h);
       }
       ctx.stroke();
+    }
+
+    // Stored Pre-Import Chord Progression Overlay
+    if (source.preAnalysis?.chords?.length) {
+      for (const ch of source.preAnalysis.chords) {
+        const cx0 = secToX(ch.startSec);
+        const cx1 = secToX(ch.endSec);
+        if (cx1 < 0 || cx0 > w) continue;
+        ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cx0, 0);
+        ctx.lineTo(cx0, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (cx1 - cx0 >= 28 && cx0 >= -10 && cx0 < w - 20) {
+          ctx.fillStyle = 'rgba(139, 92, 246, 0.85)';
+          ctx.fillRect(Math.max(2, cx0 + 3), 2, Math.min(54, Math.max(24, ch.chord.length * 8 + 10)), 14);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 9px monospace';
+          ctx.fillText(ch.chord, Math.max(6, cx0 + 7), 12);
+        }
+      }
     }
 
     // Draw waveform from multi-res pyramid (or direct fallback)
@@ -413,6 +439,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
           {source && (
             <span className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300">
               {source.bpm} BPM · Root {midiNoteToName(source.rootNote)}
+              {source.preAnalysis?.isTonal ? ` · Tono ${source.preAnalysis.musicalKey}` : ''}
             </span>
           )}
           {selectedRegion && (

@@ -5,6 +5,7 @@ import {
 } from '../../dsp-core/SpectralFftCore';
 import { detectPitchYin, midiNoteToName } from './PitchDetector';
 import type {
+  DetectedChordSegment,
   DrumPieceRole,
   FullStemAnalysisResult,
   StemAnalysisMode,
@@ -154,7 +155,7 @@ function classifyDrumHitWindow(
 export function analyzeDrumStemFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number } = {}
+  options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number } = {}
 ): FullStemAnalysisResult {
   const sensitivity = options.sensitivity ?? 0.62;
   const minIntervalMs = options.minIntervalMs ?? 65;
@@ -235,14 +236,20 @@ export function analyzeDrumStemFull(
     };
   });
 
-  const bpm = estimateBpmFromOnsets(
-    drumHits.filter((h) => h.role === 'kick' || h.role === 'snare').map((h) => h.timeSec),
-    options.bpmHint ?? 120
-  );
+  const bpm =
+    options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
+      ? options.lockedBpm
+      : estimateBpmFromOnsets(
+          drumHits.filter((h) => h.role === 'kick' || h.role === 'snare').map((h) => h.timeSec),
+          options.bpmHint ?? 120
+        );
 
   return {
     mode: 'drums',
     bpm,
+    musicalKey: options.musicalKey,
+    detectedChords: options.detectedChords,
+    beatOffsetSec: options.beatOffsetSec,
     durationSec,
     drumHits,
     noteEvents: [],
@@ -269,7 +276,7 @@ function getMedianNumber(vals: number[]): number {
 export function analyzeMonophonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean } = {}
+  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = options.sensitivity ?? 0.62;
@@ -413,15 +420,21 @@ export function analyzeMonophonicStemNotesFull(
     if (n.midiNote > maxMidi) maxMidi = n.midiNote;
   }
 
-  const bpm = estimateBpmFromOnsets(
-    noteEvents.map((n) => n.startSec),
-    options.bpmHint ?? 120
-  );
+  const bpm =
+    options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
+      ? options.lockedBpm
+      : estimateBpmFromOnsets(
+          noteEvents.map((n) => n.startSec),
+          options.bpmHint ?? 120
+        );
 
   return {
     mode: 'monophonic',
     bassFocusApplied: bassOnly || undefined,
     bpm,
+    musicalKey: options.musicalKey,
+    detectedChords: options.detectedChords,
+    beatOffsetSec: options.beatOffsetSec,
     durationSec,
     drumHits: [],
     noteEvents,
@@ -454,7 +467,7 @@ export function analyzeMonophonicStemNotesFull(
 export function analyzePolyphonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number } = {}
+  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
@@ -785,11 +798,17 @@ export function analyzePolyphonicStemNotesFull(
     if (n.midiNote > maxFound) maxFound = n.midiNote;
   }
 
-  const bpm = estimateBpmFromOnsets(onsetsRes.onsetTimesSec, options.bpmHint ?? 120);
+  const bpm =
+    options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
+      ? options.lockedBpm
+      : estimateBpmFromOnsets(onsetsRes.onsetTimesSec, options.bpmHint ?? 120);
 
   return {
     mode: 'polyphonic',
     bpm,
+    musicalKey: options.musicalKey,
+    detectedChords: options.detectedChords,
+    beatOffsetSec: options.beatOffsetSec,
     durationSec,
     drumHits: [],
     noteEvents: dedupedEvents,
@@ -817,7 +836,7 @@ export function analyzePolyphonicStemNotesFull(
  * Isolates the 30 Hz - 210 Hz bass band (2nd-order HPF + 4th-order Butterworth LPF)
  * so vocals, snares, guitars and cymbals don't mask low-end bass tracking in full songs.
  */
-function filterBassIsolationBand(mono: Float32Array, sr: number): Float32Array {
+export function filterBassIsolationBand(mono: Float32Array, sr: number): Float32Array {
   const out = new Float32Array(mono.length);
   // Stage 1: 2nd-order Butterworth HPF @ 30Hz
   const wH = (2 * Math.PI * 30) / sr;
@@ -859,7 +878,7 @@ function filterBassIsolationBand(mono: Float32Array, sr: number): Float32Array {
   return out;
 }
 
-function foldPitchClassToSubRegister(
+export function foldPitchClassToSubRegister(
   pitchClass: number,
   prevMidi: number | null,
   minBassMidi = 28, // E1 (41.2 Hz)
@@ -940,17 +959,28 @@ function inferChordRootPitchClass(
 export function analyzeBassProgressionFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number } = {}
+  options: {
+    sensitivity?: number;
+    maxPolyphony?: number;
+    bpmHint?: number;
+    precomputedPoly?: FullStemAnalysisResult;
+    precomputedChords?: DetectedChordSegment[];
+    musicalKey?: string;
+    beatOffsetSec?: number;
+  } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
 
-  // 1. Detect polyphonic chords + full-band onsets so chord progressions without sub are tracked cleanly
-  const poly = analyzePolyphonicStemNotesFull(mono, sampleRate, {
-    sensitivity,
-    maxPolyphony: options.maxPolyphony ?? 5,
-    bpmHint: options.bpmHint,
-  });
+  // 1. Reuse pre-analyzed polyphonic notes + chords stored in memory when available
+  const poly =
+    options.precomputedPoly ??
+    analyzePolyphonicStemNotesFull(mono, sampleRate, {
+      sensitivity,
+      maxPolyphony: options.maxPolyphony ?? 5,
+      bpmHint: options.bpmHint,
+    });
+  const storedChords = options.precomputedChords ?? [];
 
   // 2. Isolate 30-210 Hz bass band and analyze frame-by-frame low fundamentals
   const lowBand = filterBassIsolationBand(mono, sampleRate);
@@ -1107,6 +1137,23 @@ export function analyzeBassProgressionFull(
       continue;
     }
 
+    if (storedChords.length > 0) {
+      const activeChord = storedChords.find(
+        (c) => tSec >= c.startSec - 0.03 && tSec <= c.endSec + 0.03
+      );
+      if (activeChord) {
+        const folded: number = foldPitchClassToSubRegister(
+          activeChord.rootPitchClass,
+          lastBassMidi,
+          28,
+          40
+        );
+        chosenFrameMidi[f] = folded;
+        lastBassMidi = folded;
+        continue;
+      }
+    }
+
     if (activePoly.length > 0) {
       const rootPc = inferChordRootPitchClass(activePoly, lowMidi);
       const folded: number = foldPitchClassToSubRegister(rootPc, lastBassMidi, 28, 40);
@@ -1257,10 +1304,18 @@ export function analyzeBassProgressionFull(
     if (n.midiNote > maxFound) maxFound = n.midiNote;
   }
 
+  const resolvedBpm =
+    options.bpmHint && options.bpmHint >= 45 && options.bpmHint <= 220
+      ? Math.round(options.bpmHint * 10) / 10
+      : poly.bpm;
+
   return {
     mode: poly.mode,
     bassFocusApplied: true,
-    bpm: poly.bpm,
+    bpm: resolvedBpm,
+    musicalKey: options.musicalKey ?? poly.musicalKey,
+    detectedChords: options.precomputedChords ?? poly.detectedChords,
+    beatOffsetSec: options.beatOffsetSec ?? poly.beatOffsetSec,
     durationSec,
     drumHits: [],
     noteEvents: monoBass,

@@ -4,6 +4,36 @@ export type SliceSource = 'manual' | 'transient' | 'grid';
 export type SnapMode = 'none' | 'zero-cross' | 'transient' | 'grid';
 export type TexturePresetId = 'pad-etereo' | 'riser-cinematico' | 'glitch-percusivo' | 'tape-stop';
 
+export interface DetectedChordSegment {
+  id: string;
+  startSec: number;
+  endSec: number;
+  chord: string;
+  rootPitchClass: number;
+  rootName: string;
+  rootMidi: number; // Sub/Bass register MIDI (28..40, E1..E2)
+  chordMidis: number[];
+  confidence: number;
+}
+
+export interface ImportedAudioMemoryAnalysis {
+  signature: string;
+  bpm: number;
+  bpmConfidence: number;
+  beatOffsetSec: number;
+  durationSec: number;
+  musicalKey: string;
+  keyConfidence: number;
+  isTonal: boolean;
+  chords: DetectedChordSegment[];
+  chordProgressionSummary: string;
+  detectedRootMidi: number;
+  detectedRootName: string;
+  polyNoteEvents: StemNoteEvent[];
+  onsetTimesSec: number[];
+  analyzedAt: number;
+}
+
 export interface SampleSource {
   id: string;
   name: string;
@@ -12,6 +42,7 @@ export interface SampleSource {
   bpm: number;
   rootNote: number; // MIDI 0..127 (default 60 = C4)
   detectedPitchHz?: number;
+  preAnalysis?: ImportedAudioMemoryAnalysis;
   provenance?: {
     fileName?: string;
     songId?: string;
@@ -208,6 +239,9 @@ export interface FullStemAnalysisResult {
   mode: StemAnalysisMode;
   bassFocusApplied?: boolean;
   bpm: number;
+  musicalKey?: string;
+  detectedChords?: DetectedChordSegment[];
+  beatOffsetSec?: number;
   durationSec: number;
   drumHits: StemDrumHitEvent[];
   noteEvents: StemNoteEvent[];

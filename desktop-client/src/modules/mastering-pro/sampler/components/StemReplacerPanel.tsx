@@ -40,6 +40,7 @@ import type {
   CustomSampleCategory,
   DefaultInstrumentId,
   DrumPieceRole,
+  ImportedAudioMemoryAnalysis,
   SamplePad,
   StemAnalysisMode,
 } from '../types/sampler.types';
@@ -49,7 +50,11 @@ interface StemReplacerPanelProps {
   padsFromCreator: SamplePad[];
   onAuditionCreatorPad?: (padIndex: number) => void;
   getBufferForPad?: (padIndex: number) => AudioBuffer | null;
-  onSendTo16Pads?: (buffer: AudioBuffer, title: string) => void;
+  onSendTo16Pads?: (
+    buffer: AudioBuffer,
+    title: string,
+    preAnalysis?: ImportedAudioMemoryAnalysis | null
+  ) => void;
 }
 
 const DRUM_ROLES: Array<{ role: DrumPieceRole; label: string; color: string }> = [
@@ -603,7 +608,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onClick={() =>
                       onSendTo16Pads(
                         r.replacedBuffer ?? r.originalBuffer!,
-                        r.stemTitle || 'Sample_PC'
+                        r.stemTitle || 'Sample_PC',
+                        r.importedMemory
                       )
                     }
                     className="px-2.5 py-1 rounded-lg bg-[#FF6B00] hover:brightness-110 text-slate-950 text-[10.5px] font-black cursor-pointer"
@@ -698,6 +704,39 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             >
               ✕
             </button>
+          )}
+        </div>
+      )}
+
+      {/* STORED PRE-IMPORT TEMPO & CHORDS MEMORY STRIP */}
+      {r.importedMemory && (
+        <div className="rounded-xl bg-slate-950/95 border border-violet-500/40 px-3 py-2 flex flex-wrap items-center gap-1.5 text-[11px] font-mono shadow-sm">
+          <span className="text-violet-300 font-bold mr-1">
+            Memoria Pre-Importación:{' '}
+          </span>
+          <span className="px-2 py-0.5 rounded bg-slate-900 border border-[#00E5FF]/45 text-[#00E5FF] font-bold">
+            {r.importedMemory.bpm} BPM
+          </span>{' '}
+          <span className="px-2 py-0.5 rounded bg-slate-900 border border-emerald-500/45 text-emerald-300 font-bold">
+            Tono: {r.importedMemory.musicalKey}
+          </span>{' '}
+          {r.importedMemory.chords.length > 0 ? (
+            <>
+              <span className="text-slate-400 ml-1">Acordes: </span>
+              {r.importedMemory.chords.slice(0, 16).map((ch) => (
+                <button
+                  key={ch.id}
+                  type="button"
+                  onClick={() => r.seekToSec(ch.startSec)}
+                  className="px-2 py-0.5 rounded bg-violet-500/15 hover:bg-violet-500/35 border border-violet-500/50 text-violet-200 font-bold cursor-pointer transition-colors"
+                  title={`Ir a ${ch.chord} (${ch.startSec.toFixed(2)}s–${ch.endSec.toFixed(2)}s · Sub ${ch.rootName})`}
+                >
+                  {ch.chord}
+                </button>
+              ))}
+            </>
+          ) : (
+            <span className="text-slate-400">· {r.importedMemory.chordProgressionSummary}</span>
           )}
         </div>
       )}

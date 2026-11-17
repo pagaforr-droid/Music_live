@@ -12,6 +12,13 @@ import {
   analyzePolyphonicStemNotesFull,
   inferStemModeFromName,
 } from '../engine/FullStemAnalyzer';
+import {
+  analyzeAudioBufferFirst,
+  computeAudioMemorySignature,
+  getCachedPreImportEntry,
+  registerPreImportMemoryEntry,
+  type PreImportMemoryEntry,
+} from '../engine/PreImportAnalyzer';
 import { buildMonoSliceFromBuffer } from '../engine/Slicer';
 import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
 import {
@@ -35,6 +42,7 @@ import type {
   DefaultInstrumentId,
   DrumPieceRole,
   FullStemAnalysisResult,
+  ImportedAudioMemoryAnalysis,
   ReplacementSlotConfig,
   SongStemEntry,
   SongWithStemsFolder,
@@ -126,7 +134,10 @@ export function useStemReplacer() {
   const [bassFocusMode, setBassFocusMode] = useState<boolean>(false);
   const [sensitivity, setSensitivity] = useState<number>(0.62);
   const [maxPolyphony, setMaxPolyphony] = useState<number>(5);
+  const [importedMemory, setImportedMemory] = useState<ImportedAudioMemoryAnalysis | null>(null);
   const [analysis, setAnalysis] = useState<FullStemAnalysisResult | null>(null);
+  const importedMemoryRef = useRef<ImportedAudioMemoryAnalysis | null>(null);
+  const importedPolyRef = useRef<FullStemAnalysisResult | null>(null);
   const polyAutoWeightAppliedRef = useRef<boolean>(false);
 
   const [drumSlots, setDrumSlots] = useState<Record<DrumPieceRole, ReplacementSlotConfig>>(
@@ -300,7 +311,87 @@ export function useStemReplacer() {
     return () => worker?.terminate();
   }, [originalBuffer]);
 
+  // STEP 1 ON IMPORT: Recognize & store Tempo + Musical Key + Chords in memory FIRST
+  const runPreImportAnalysis = useCallback(
+    async (buf: AudioBuffer, bpmHint?: number): Promise<PreImportMemoryEntry> => {
+      const cached = getCachedPreImportEntry(buf);
+      if (cached) {
+        importedMemoryRef.current = cached.memory;
+        importedPolyRef.current = cached.polyResult;
+        setImportedMemory(cached.memory);
+        return cached;
+      }
+
+      const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
+      const signature = computeAudioMemorySignature(mono, buf.sampleRate);
+      const runSync = (): PreImportMemoryEntry =>
+        analyzeAudioBufferFirst(buf, { bpmHint, sensitivity: 0.62 });
+
+      let entry: PreImportMemoryEntry;
+      if (typeof Worker !== 'undefined') {
+        entry = await new Promise<PreImportMemoryEntry>((resolve) => {
+          let w: Worker | null = null;
+          try {
+            w = new SamplerAnalysisWorker();
+          } catch {
+            w = null;
+          }
+          if (!w) {
+            resolve(runSync());
+            return;
+          }
+          const reqId = Date.now() + Math.floor(Math.random() * 1000);
+          const copy = new Float32Array(mono);
+          w.onmessage = (
+            ev: MessageEvent<{
+              id: number;
+              success: boolean;
+              preAnalysis?: ImportedAudioMemoryAnalysis;
+              polyResult?: FullStemAnalysisResult;
+            }>
+          ) => {
+            if (ev.data?.id === reqId) {
+              w?.terminate();
+              if (ev.data.preAnalysis && ev.data.polyResult) {
+                registerPreImportMemoryEntry(ev.data.preAnalysis, ev.data.polyResult);
+                resolve({ memory: ev.data.preAnalysis, polyResult: ev.data.polyResult });
+              } else {
+                resolve(runSync());
+              }
+            }
+          };
+          w.onerror = () => {
+            w?.terminate();
+            resolve(runSync());
+          };
+          w.postMessage(
+            {
+              id: reqId,
+              kind: 'pre-analyze-audio',
+              sourceId: 'pre-import',
+              mono: copy,
+              sampleRate: buf.sampleRate,
+              bpmHint,
+              sensitivity: 0.62,
+              signature,
+            },
+            [copy.buffer]
+          );
+        });
+      } else {
+        entry = runSync();
+      }
+
+      importedMemoryRef.current = entry.memory;
+      importedPolyRef.current = entry.polyResult;
+      setImportedMemory(entry.memory);
+      return entry;
+    },
+    []
+  );
+
   // Run full-track analysis (worker-backed so polyphonic 16384-pt FFT never blocks UI)
+  // Respects the Tempo & Chord progression already stored in importedMemory!
   const runAnalysis = useCallback(
     async (
       buf: AudioBuffer,
@@ -308,33 +399,72 @@ export function useStemReplacer() {
       sens: number,
       poly: number,
       bpmHint?: number,
-      bassFocus = bassFocusMode
+      bassFocus = bassFocusMode,
+      memoryOverride?: ImportedAudioMemoryAnalysis | null,
+      polyOverride?: FullStemAnalysisResult | null
     ) => {
       setIsAnalyzing(true);
       try {
+        const activeMem = memoryOverride !== undefined ? memoryOverride : importedMemoryRef.current;
+        const activePoly =
+          sens === 0.62
+            ? polyOverride !== undefined
+              ? polyOverride
+              : importedPolyRef.current
+            : undefined;
+        const effectiveBpm = activeMem?.bpm ?? bpmHint;
+
         const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
         const runSyncFallback = (): FullStemAnalysisResult => {
           if (mode === 'drums') {
-            return analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint });
+            return analyzeDrumStemFull(mono, buf.sampleRate, {
+              sensitivity: sens,
+              bpmHint: effectiveBpm,
+              lockedBpm: activeMem?.bpm,
+              musicalKey: activeMem?.musicalKey,
+              detectedChords: activeMem?.chords,
+              beatOffsetSec: activeMem?.beatOffsetSec,
+            });
           }
           if (mode === 'polyphonic' && bassFocus) {
             return analyzeBassProgressionFull(mono, buf.sampleRate, {
               sensitivity: sens,
               maxPolyphony: poly,
-              bpmHint,
+              bpmHint: effectiveBpm,
+              precomputedPoly: activePoly ?? undefined,
+              precomputedChords: activeMem?.chords,
+              musicalKey: activeMem?.musicalKey,
+              beatOffsetSec: activeMem?.beatOffsetSec,
             });
           }
           if (mode === 'monophonic') {
             return analyzeMonophonicStemNotesFull(mono, buf.sampleRate, {
               sensitivity: sens,
-              bpmHint,
+              bpmHint: effectiveBpm,
+              lockedBpm: activeMem?.bpm,
               bassOnly: bassFocus,
+              musicalKey: activeMem?.musicalKey,
+              detectedChords: activeMem?.chords,
+              beatOffsetSec: activeMem?.beatOffsetSec,
             });
+          }
+          if (activePoly && !bassFocus) {
+            return {
+              ...activePoly,
+              bpm: activeMem?.bpm ?? activePoly.bpm,
+              musicalKey: activeMem?.musicalKey ?? activePoly.musicalKey,
+              detectedChords: activeMem?.chords ?? activePoly.detectedChords,
+              beatOffsetSec: activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec,
+            };
           }
           return analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
             sensitivity: sens,
             maxPolyphony: poly,
-            bpmHint,
+            bpmHint: effectiveBpm,
+            lockedBpm: activeMem?.bpm,
+            musicalKey: activeMem?.musicalKey,
+            detectedChords: activeMem?.chords,
+            beatOffsetSec: activeMem?.beatOffsetSec,
           });
         };
 
@@ -381,8 +511,13 @@ export function useStemReplacer() {
                 sensitivity: sens,
                 stemMode: mode,
                 bassFocus,
-                bpmHint,
+                bpmHint: effectiveBpm,
+                lockedBpm: activeMem?.bpm,
                 maxPolyphony: poly,
+                musicalKey: activeMem?.musicalKey,
+                detectedChords: activeMem?.chords,
+                beatOffsetSec: activeMem?.beatOffsetSec,
+                precomputedPoly: activePoly ?? undefined,
               },
               [copy.buffer]
             );
@@ -395,12 +530,16 @@ export function useStemReplacer() {
         const rangeText = result.midiRange
           ? `${result.midiRange.minName} – ${result.midiRange.maxName}`
           : 'rango vacío';
+        const keyTag =
+          activeMem?.isTonal && activeMem.musicalKey
+            ? ` · Tono ${activeMem.musicalKey}`
+            : '';
         const summary =
           result.mode === 'drums'
             ? `Detectado: ${result.bpm} BPM · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hat · ${result.counts.tom} Tom)`
             : result.bassFocusApplied
-            ? `Solo Graves (${result.bpm} BPM): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
-            : `Detectado: ${result.bpm} BPM · ${result.counts.notes} notas (${rangeText})`;
+            ? `Solo Graves (${result.bpm} BPM${keyTag}): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
+            : `Detectado: ${result.bpm} BPM${keyTag} · ${result.counts.notes} notas (${rangeText})`;
         setStatusMessage(summary);
       } finally {
         setIsAnalyzing(false);
@@ -533,6 +672,9 @@ export function useStemReplacer() {
         setOriginalBuffer(decoded);
         setCurrentTimeSec(0);
 
+        setStatusMessage('Detectando tempo y acordes en memoria...');
+        const pre = await runPreImportAnalysis(decoded, song?.bpm);
+
         const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStemMode(inferredMode);
         const chosenPreset = chooseDefaultMelodicPresetForName(stem.name);
@@ -546,7 +688,16 @@ export function useStemReplacer() {
           }));
         }
 
-        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony, song?.bpm, nextFocus);
+        await runAnalysis(
+          decoded,
+          inferredMode,
+          sensitivity,
+          maxPolyphony,
+          pre.memory.bpm,
+          nextFocus,
+          pre.memory,
+          pre.polyResult
+        );
       } catch (err) {
         setStatusMessage(
           err instanceof Error ? err.message : 'Error cargando stem desde Supabase.'
@@ -555,7 +706,7 @@ export function useStemReplacer() {
         setIsLoadingStem(false);
       }
     },
-    [stopPlayback, ensureCtx, runAnalysis, sensitivity, maxPolyphony]
+    [stopPlayback, ensureCtx, runPreImportAnalysis, runAnalysis, sensitivity, maxPolyphony]
   );
 
   // Load local audio file directly as stem
@@ -572,6 +723,9 @@ export function useStemReplacer() {
         setStemTitle(file.name.replace(/\.[^.]+$/, ''));
         setCurrentTimeSec(0);
 
+        setStatusMessage('Detectando tempo y acordes en memoria...');
+        const pre = await runPreImportAnalysis(decoded, undefined);
+
         const inferredMode = inferStemModeFromName(file.name);
         setStemMode(inferredMode);
         const chosenPreset = chooseDefaultMelodicPresetForName(file.name);
@@ -584,7 +738,16 @@ export function useStemReplacer() {
             presetId: chosenPreset,
           }));
         }
-        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony, undefined, nextFocus);
+        await runAnalysis(
+          decoded,
+          inferredMode,
+          sensitivity,
+          maxPolyphony,
+          pre.memory.bpm,
+          nextFocus,
+          pre.memory,
+          pre.polyResult
+        );
       } catch (err) {
         setStatusMessage(
           err instanceof Error ? err.message : 'Error decodificando el stem.'
@@ -593,7 +756,7 @@ export function useStemReplacer() {
         setIsLoadingStem(false);
       }
     },
-    [stopPlayback, ensureCtx, runAnalysis, sensitivity, maxPolyphony]
+    [stopPlayback, ensureCtx, runPreImportAnalysis, runAnalysis, sensitivity, maxPolyphony]
   );
 
   // Load built-in realistic stem demos (Drums, Polyphonic Guitar/Piano Chords, Monophonic Bass)
@@ -709,9 +872,20 @@ export function useStemReplacer() {
         setMelodicSlot((p) => ({ ...p, presetId: 'inst-guitar-acoustic' }));
       }
       setCurrentTimeSec(0);
-      await runAnalysis(buf, kind, sensitivity, maxPolyphony, bpm, nextFocus);
+      setStatusMessage('Detectando tempo y acordes en memoria...');
+      const pre = await runPreImportAnalysis(buf, bpm);
+      await runAnalysis(
+        buf,
+        kind,
+        sensitivity,
+        maxPolyphony,
+        pre.memory.bpm,
+        nextFocus,
+        pre.memory,
+        pre.polyResult
+      );
     },
-    [stopPlayback, ensureCtx, runAnalysis, sensitivity, maxPolyphony]
+    [stopPlayback, ensureCtx, runPreImportAnalysis, runAnalysis, sensitivity, maxPolyphony]
   );
 
   const applyBassFocusChange = useCallback(
@@ -1344,6 +1518,7 @@ export function useStemReplacer() {
     setSensitivity,
     maxPolyphony,
     setMaxPolyphony,
+    importedMemory,
     analysis,
     drumSlots,
     melodicSlot,

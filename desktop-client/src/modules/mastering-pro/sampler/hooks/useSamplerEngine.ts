@@ -18,6 +18,13 @@ import {
   loadKitTempFromIndexedDb,
   saveKitTempToIndexedDb,
 } from '../engine/KitStorage';
+import {
+  analyzeAudioBufferFirst,
+  computeAudioMemorySignature,
+  getCachedPreImportEntry,
+  registerPreImportMemoryEntry,
+  type PreImportMemoryEntry,
+} from '../engine/PreImportAnalyzer';
 import { detectPitchYin, type PitchEstimate } from '../engine/PitchDetector';
 import { SampleLabHandoff } from '../engine/SampleLabHandoff';
 import { SamplerEngine } from '../engine/SamplerEngine';
@@ -30,6 +37,8 @@ import {
 } from '../engine/Slicer';
 import type {
   DefaultInstrumentId,
+  FullStemAnalysisResult,
+  ImportedAudioMemoryAnalysis,
   PadVoiceParams,
   SampleKit,
   SamplePad,
@@ -171,16 +180,89 @@ export function useSamplerEngine() {
     };
   }, [activeSource]);
 
+  const runPreImportForSampler = useCallback(
+    async (
+      buffer: AudioBuffer,
+      bpmHint?: number
+    ): Promise<ImportedAudioMemoryAnalysis> => {
+      const cached = getCachedPreImportEntry(buffer);
+      if (cached) return cached.memory;
+
+      const mono = buildMonoSliceFromBuffer(buffer, 0, buffer.duration);
+      const sig = computeAudioMemorySignature(mono, buffer.sampleRate);
+      const runSync = (): PreImportMemoryEntry =>
+        analyzeAudioBufferFirst(buffer, { bpmHint, sensitivity: 0.62 });
+
+      if (typeof Worker !== 'undefined') {
+        const entry = await new Promise<PreImportMemoryEntry>((resolve) => {
+          let w: Worker | null = null;
+          try {
+            w = new SamplerAnalysisWorker();
+          } catch {
+            w = null;
+          }
+          if (!w) {
+            resolve(runSync());
+            return;
+          }
+          const reqId = Date.now() + Math.floor(Math.random() * 1000);
+          const copy = new Float32Array(mono);
+          w.onmessage = (
+            ev: MessageEvent<{
+              id: number;
+              success: boolean;
+              preAnalysis?: ImportedAudioMemoryAnalysis;
+              polyResult?: FullStemAnalysisResult;
+            }>
+          ) => {
+            if (ev.data?.id === reqId) {
+              w?.terminate();
+              if (ev.data.preAnalysis && ev.data.polyResult) {
+                registerPreImportMemoryEntry(ev.data.preAnalysis, ev.data.polyResult);
+                resolve({ memory: ev.data.preAnalysis, polyResult: ev.data.polyResult });
+              } else {
+                resolve(runSync());
+              }
+            }
+          };
+          w.onerror = () => {
+            w?.terminate();
+            resolve(runSync());
+          };
+          w.postMessage(
+            {
+              id: reqId,
+              kind: 'pre-analyze-audio',
+              sourceId: 'sampler-import',
+              mono: copy,
+              sampleRate: buffer.sampleRate,
+              bpmHint,
+              sensitivity: 0.62,
+              signature: sig,
+            },
+            [copy.buffer]
+          );
+        });
+        return entry.memory;
+      }
+
+      return runSync().memory;
+    },
+    []
+  );
+
   const registerLoadedAudioBuffer = useCallback(
     (
       buffer: AudioBuffer,
       name: string,
       origin: SampleSource['origin'],
       provenance?: SampleSource['provenance'],
-      targetPadIndex?: number
+      targetPadIndex?: number,
+      preAnalysis?: ImportedAudioMemoryAnalysis
     ) => {
       const srcId = `src-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const bpm = estimateBpmQuick(buffer);
+      const resolvedPre = preAnalysis ?? getCachedPreImportEntry(buffer)?.memory;
+      const bpm = resolvedPre?.bpm ?? estimateBpmQuick(buffer);
       const monoForPitch = buildMonoSliceFromBuffer(
         buffer,
         0,
@@ -194,8 +276,14 @@ export function useSamplerEngine() {
         origin,
         buffer,
         bpm,
-        rootNote: pitch.confidence >= 0.45 ? pitch.midiNote : 60,
+        rootNote:
+          pitch.confidence >= 0.45
+            ? pitch.midiNote
+            : resolvedPre?.isTonal
+            ? resolvedPre.detectedRootMidi
+            : 60,
         detectedPitchHz: pitch.freqHz,
+        preAnalysis: resolvedPre,
         provenance,
       };
 
@@ -222,6 +310,10 @@ export function useSamplerEngine() {
       setLastPitchEstimate(pitch);
       setPattern((prev) => ({ ...prev, bpm }));
 
+      const memorySummary = resolvedPre?.isTonal
+        ? ` · Tono ${resolvedPre.musicalKey}${resolvedPre.chords.length > 0 ? ` (${resolvedPre.chordProgressionSummary})` : ''}`
+        : '';
+
       if (targetPadIndex !== undefined && targetPadIndex >= 0 && targetPadIndex < 16) {
         setPads((prev) => {
           const next = [...prev];
@@ -234,7 +326,7 @@ export function useSamplerEngine() {
         });
         setSelectedPadIndex(targetPadIndex);
         setStatusMessage(
-          `Audio "${name}" asignado al Pad ${targetPadIndex + 1} (${buffer.duration.toFixed(2)}s · ${pitch.noteName}).`
+          `Audio "${name}" asignado al Pad ${targetPadIndex + 1} (${bpm} BPM${memorySummary}).`
         );
       } else {
         const currentPads = padsRef.current;
@@ -257,11 +349,11 @@ export function useSamplerEngine() {
           );
           setSelectedPadIndex(autoPadIdx);
           setStatusMessage(
-            `Audio "${name}" cargado en Pad ${autoPadIdx + 1} (${buffer.duration.toFixed(2)}s · ${bpm} BPM · ${pitch.noteName}).`
+            `Audio "${name}" cargado en Pad ${autoPadIdx + 1} (${bpm} BPM${memorySummary}).`
           );
         } else {
           setStatusMessage(
-            `Audio "${name}" cargado en forma de onda (${buffer.duration.toFixed(2)}s · ${bpm} BPM). Pulsa "→ Pad" o "Auto-Slice" para asignarlo.`
+            `Audio "${name}" en memoria (${bpm} BPM${memorySummary}). Pulsa "Auto-Slice" o "Cortar Acordes".`
           );
         }
       }
@@ -277,10 +369,20 @@ export function useSamplerEngine() {
     void (async () => {
       const handoff = SampleLabHandoff.consumeAudioForSampleLab();
       if (handoff && !cancelled) {
-        registerLoadedAudioBuffer(handoff.buffer, handoff.title, handoff.origin, {
-          fileName: handoff.title,
-          songId: handoff.songId,
-        });
+        const pre = await runPreImportForSampler(handoff.buffer);
+        if (!cancelled) {
+          registerLoadedAudioBuffer(
+            handoff.buffer,
+            handoff.title,
+            handoff.origin,
+            {
+              fileName: handoff.title,
+              songId: handoff.songId,
+            },
+            undefined,
+            pre
+          );
+        }
         return;
       }
 
@@ -329,10 +431,51 @@ export function useSamplerEngine() {
   }, [kitId, kitName, sources, regions, pads, pattern]);
 
   const loadExternalBufferForSampling = useCallback(
-    (buffer: AudioBuffer, title: string) => {
-      registerLoadedAudioBuffer(buffer, title, 'file', { fileName: title });
+    (
+      buffer: AudioBuffer,
+      title: string,
+      preAnalysis?: ImportedAudioMemoryAnalysis | null
+    ) => {
+      if (preAnalysis) {
+        registerPreImportMemoryEntry(preAnalysis);
+        registerLoadedAudioBuffer(
+          buffer,
+          title,
+          'file',
+          { fileName: title },
+          undefined,
+          preAnalysis
+        );
+        return;
+      }
+      const cached = getCachedPreImportEntry(buffer);
+      if (cached) {
+        registerLoadedAudioBuffer(
+          buffer,
+          title,
+          'file',
+          { fileName: title },
+          undefined,
+          cached.memory
+        );
+        return;
+      }
+      setIsBusy(true);
+      setStatusMessage('Detectando tempo y acordes en memoria...');
+      void runPreImportForSampler(buffer)
+        .then((pre) => {
+          registerLoadedAudioBuffer(
+            buffer,
+            title,
+            'file',
+            { fileName: title },
+            undefined,
+            pre
+          );
+        })
+        .finally(() => setIsBusy(false));
     },
-    [registerLoadedAudioBuffer]
+    [registerLoadedAudioBuffer, runPreImportForSampler]
   );
 
   const loadAudioFile = async (file: File) => {
@@ -340,8 +483,17 @@ export function useSamplerEngine() {
     if (!engine) return;
     try {
       setIsBusy(true);
+      setStatusMessage('Paso previo: Detectando tempo y acordes en memoria...');
       const buf = await engine.decodeAudioFile(file);
-      registerLoadedAudioBuffer(buf, file.name, 'file', { fileName: file.name });
+      const pre = await runPreImportForSampler(buf);
+      registerLoadedAudioBuffer(
+        buf,
+        file.name,
+        'file',
+        { fileName: file.name },
+        undefined,
+        pre
+      );
     } catch (err) {
       setStatusMessage(
         err instanceof Error ? err.message : 'Error decodificando archivo de audio.'
@@ -356,8 +508,17 @@ export function useSamplerEngine() {
     if (!engine) return;
     try {
       setIsBusy(true);
+      setStatusMessage('Paso previo: Detectando tempo y acordes en memoria...');
       const buf = await engine.decodeAudioFile(file);
-      registerLoadedAudioBuffer(buf, file.name, 'file', { fileName: file.name }, padIndex);
+      const pre = await runPreImportForSampler(buf);
+      registerLoadedAudioBuffer(
+        buf,
+        file.name,
+        'file',
+        { fileName: file.name },
+        padIndex,
+        pre
+      );
     } catch (err) {
       setStatusMessage(
         err instanceof Error ? err.message : 'Error decodificando archivo de audio.'
@@ -376,11 +537,20 @@ export function useSamplerEngine() {
     if (!engine) return;
     try {
       setIsBusy(true);
+      setStatusMessage('Paso previo: Detectando tempo y acordes en memoria...');
       const buf = await engine.decodeAudioUrl(url);
-      registerLoadedAudioBuffer(buf, title, 'stem', {
-        fileName: title,
-        songId,
-      });
+      const pre = await runPreImportForSampler(buf);
+      registerLoadedAudioBuffer(
+        buf,
+        title,
+        'stem',
+        {
+          fileName: title,
+          songId,
+        },
+        undefined,
+        pre
+      );
     } catch (err) {
       setStatusMessage(
         err instanceof Error ? err.message : 'Error cargando pista remota.'
@@ -441,9 +611,15 @@ export function useSamplerEngine() {
       R[i] = Math.max(-0.9, Math.min(0.9, kick + snare + hat * 1.2 + stab * 0.92));
     }
 
-    registerLoadedAudioBuffer(buf, 'Loop Estudio 120 BPM (Demo)', 'file', {
-      fileName: 'Demo_120BPM.wav',
-    });
+    const preEntry = analyzeAudioBufferFirst(buf, { bpmHint: 120, sensitivity: 0.62 });
+    registerLoadedAudioBuffer(
+      buf,
+      'Loop Estudio 120 BPM (Demo)',
+      'file',
+      { fileName: 'Demo_120BPM.wav' },
+      undefined,
+      preEntry.memory
+    );
   };
 
   const buildStudioPresetSourceAndRegion = useCallback(
@@ -816,6 +992,37 @@ export function useSamplerEngine() {
     }
   };
 
+  const autoSliceByChords = () => {
+    if (!activeSource?.preAnalysis?.chords?.length) return;
+    const chords = activeSource.preAnalysis.chords.slice(0, 16);
+    const sliced: SampleRegion[] = chords.map((c, idx) => ({
+      id: `reg-chord-${Date.now()}-${idx}`,
+      sourceId: activeSource.id,
+      name: `${c.chord} (${c.rootName})`,
+      startSec: Number(Math.max(0, c.startSec).toFixed(4)),
+      endSec: Number(
+        Math.min(activeSource.buffer.duration, Math.max(c.startSec + 0.08, c.endSec)).toFixed(4)
+      ),
+      loopCrossfadeMs: 10,
+      sliceSource: 'transient',
+    }));
+    if (sliced.length > 0) {
+      setRegions((prev) => [
+        ...prev.filter((r) => r.sourceId !== activeSource.id),
+        ...sliced,
+      ]);
+      setSelectedRegionId(sliced[0].id);
+      setPads((prev) => assignSlicesToPads(prev, sliced));
+      setPattern((prev) => ({
+        ...prev,
+        bpm: activeSource.preAnalysis?.bpm ?? activeSource.bpm,
+      }));
+      setStatusMessage(
+        `Corte por Acordes en Memoria (${activeSource.bpm} BPM · Tono ${activeSource.preAnalysis.musicalKey}): ${sliced.length} acordes (${chords.map((c) => c.chord).join(' · ')}) asignados a los Pads.`
+      );
+    }
+  };
+
   const assignRegionToPad = useCallback((region: SampleRegion, padIndex: number) => {
     setPads((prev) =>
       prev.map((p, idx) =>
@@ -967,10 +1174,15 @@ export function useSamplerEngine() {
     if (!eng) return;
     const buf = await eng.stopMicrophoneRecording();
     setIsRecordingMic(false);
+    setStatusMessage('Detectando tempo y acordes de la grabación...');
+    const pre = await runPreImportForSampler(buf);
     registerLoadedAudioBuffer(
       buf,
       `Grabación ${new Date().toLocaleTimeString()}`,
-      'recording'
+      'recording',
+      undefined,
+      undefined,
+      pre
     );
   };
 
@@ -1068,6 +1280,7 @@ export function useSamplerEngine() {
     createSliceAtSec,
     autoSliceByTransients,
     autoSliceByGrid,
+    autoSliceByChords,
     assignRegionToPad,
     updatePadParams,
     updatePadLabelAndChoke,

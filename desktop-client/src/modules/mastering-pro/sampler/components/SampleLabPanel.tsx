@@ -466,8 +466,8 @@ export const SampleLabPanel: React.FC = () => {
             if (!reg) return null;
             return eng.getProcessedBufferForPad(eng.ensureContext(), reg, pad.params);
           }}
-          onSendTo16Pads={(buf, title) => {
-            s.loadExternalBufferForSampling(buf, title);
+          onSendTo16Pads={(buf, title, pre) => {
+            s.loadExternalBufferForSampling(buf, title, pre);
             setWorkspaceMode('pads');
           }}
         />
@@ -577,6 +577,7 @@ export const SampleLabPanel: React.FC = () => {
         }}
         onAutoSliceTransients={(sens) => void s.autoSliceByTransients(sens)}
         onAutoSliceGrid={s.autoSliceByGrid}
+        onAutoSliceChords={s.autoSliceByChords}
         onUpdateSourceBpm={(bpm) => {
           if (!s.activeSource) return;
           s.setSources((prev) =>

@@ -21,6 +21,15 @@ export {
   inferStemModeFromName,
 } from './engine/FullStemAnalyzer';
 export {
+  analyzeAudioBufferFirst,
+  analyzeImportedAudioFirst,
+  clearPreImportMemoryCache,
+  computeAudioMemorySignature,
+  getCachedPreImportEntry,
+  getPreImportCacheSize,
+  registerPreImportMemoryEntry,
+} from './engine/PreImportAnalyzer';
+export {
   BASS_PRESET_CATALOG,
   DRUM_PRESET_CATALOG,
   MELODIC_PRESET_CATALOG,
