@@ -144,7 +144,7 @@ export const SaveToSupabaseModal: React.FC<SaveToSupabaseModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-2xl flex flex-col gap-4 max-h-[88vh] overflow-y-auto">
+      <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-2xl flex flex-col gap-4 max-h-[88vh] overflow-y-auto studio-scrollbar-thin">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div className="flex items-center gap-2">
             <CloudUpload size={18} className="text-[#00E5FF]" />
@@ -309,7 +309,7 @@ export const SaveToSupabaseModal: React.FC<SaveToSupabaseModalProps> = ({
                 />
               </div>
 
-              <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+              <div className="max-h-36 overflow-y-auto studio-scrollbar-thin space-y-1 pr-1">
                 {loadingFolders ? (
                   <div className="py-4 text-center text-slate-500 font-mono">
                     Cargando temas de Supabase...
@@ -401,7 +401,7 @@ export const SaveToSupabaseModal: React.FC<SaveToSupabaseModalProps> = ({
 
         {/* TAB 3: SQL MIGRATION */}
         {activeTab === 'sql' && (
-          <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-72">
+          <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto overflow-y-auto studio-scrollbar-thin max-h-72">
             {SAMPLE_KITS_MIGRATION_SQL}
           </pre>
         )}

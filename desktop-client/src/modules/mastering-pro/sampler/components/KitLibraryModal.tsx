@@ -83,7 +83,7 @@ export const KitLibraryModal: React.FC<KitLibraryModalProps> = ({
             <span>Cargando kits...</span>
           </div>
         ) : (
-          <div className="overflow-y-auto space-y-4 pr-1 text-xs">
+          <div className="overflow-y-auto studio-scrollbar-thin space-y-4 pr-1 text-xs">
             {/* Local IndexedDB Kits */}
             <div className="space-y-2">
               <div className="text-[11px] font-mono font-bold text-[#FF6B00] flex items-center gap-1.5">

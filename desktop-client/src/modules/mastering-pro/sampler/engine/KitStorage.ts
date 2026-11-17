@@ -1,16 +1,23 @@
 import { encodeAudioBufferToWav24Bit } from '../../engine/Wav24BitEncoder';
-import type { SampleKit, SampleSource, SerializedSampleSource } from '../types/sampler.types';
+import type {
+  CustomReplacementSampleItem,
+  CustomSampleCategory,
+  SampleKit,
+  SampleSource,
+  SerializedSampleSource,
+} from '../types/sampler.types';
 
 /**
  * Temporary Local Persistence in IndexedDB ('tandao_sample_lab_v1').
- * Stores full 24-bit WAV source blobs + kit state safely (avoiding localStorage 5MB limit)
- * so loaded audio, chops, pads, and patterns survive page refreshes and route changes.
+ * Stores full 24-bit WAV source blobs, kit state, and user-uploaded custom replacement samples
+ * safely (avoiding localStorage 5MB limit) so loaded audio survives page refreshes.
  */
 
 const DB_NAME = 'tandao_sample_lab_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_KITS = 'kits';
 const STORE_SOURCES = 'source_blobs';
+const STORE_CUSTOM_SAMPLES = 'custom_replacement_samples';
 const ACTIVE_KIT_KEY = '__active_temp_kit__';
 
 function openDb(): Promise<IDBDatabase> {
@@ -27,6 +34,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_SOURCES)) {
         db.createObjectStore(STORE_SOURCES, { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains(STORE_CUSTOM_SAMPLES)) {
+        db.createObjectStore(STORE_CUSTOM_SAMPLES, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -170,6 +180,96 @@ export async function deleteLocalKit(kitId: string): Promise<void> {
   try {
     const db = await openDb();
     await txRun(db, STORE_KITS, 'readwrite', (s) => s.delete(kitId));
+    db.close();
+  } catch {
+    // ignore
+  }
+}
+
+interface StoredCustomReplacementRecord {
+  id: string;
+  name: string;
+  category: CustomSampleCategory;
+  sourceType: 'file' | 'recorded' | 'pad' | 'cloud';
+  wavBlob: Blob;
+  durationSec: number;
+  peakOffsetSec: number;
+  detectedRootMidi: number;
+  detectedNoteName: string;
+  waveformPreview: number[];
+  createdAt: string;
+}
+
+export async function saveCustomReplacementSampleToIdb(
+  item: CustomReplacementSampleItem
+): Promise<void> {
+  try {
+    const db = await openDb();
+    const wavBlob = encodeAudioBufferToWav24Bit(item.buffer, false);
+    const rec: StoredCustomReplacementRecord = {
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      sourceType: item.sourceType,
+      wavBlob,
+      durationSec: item.durationSec,
+      peakOffsetSec: item.peakOffsetSec,
+      detectedRootMidi: item.detectedRootMidi,
+      detectedNoteName: item.detectedNoteName,
+      waveformPreview: item.waveformPreview,
+      createdAt: item.createdAt,
+    };
+    await txRun(db, STORE_CUSTOM_SAMPLES, 'readwrite', (s) => s.put(rec));
+    db.close();
+  } catch {
+    // Graceful no-op if IndexedDB is blocked
+  }
+}
+
+export async function loadAllCustomReplacementSamplesFromIdb(
+  ctx: AudioContext
+): Promise<CustomReplacementSampleItem[]> {
+  try {
+    const db = await openDb();
+    const all = await txRun<StoredCustomReplacementRecord[]>(
+      db,
+      STORE_CUSTOM_SAMPLES,
+      'readonly',
+      (s) => s.getAll()
+    );
+    db.close();
+    const out: CustomReplacementSampleItem[] = [];
+    for (const rec of all || []) {
+      try {
+        const arr = await rec.wavBlob.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(arr.slice(0));
+        out.push({
+          id: rec.id,
+          name: rec.name,
+          category: rec.category,
+          sourceType: rec.sourceType,
+          buffer: decoded,
+          durationSec: rec.durationSec || decoded.duration,
+          peakOffsetSec: rec.peakOffsetSec,
+          detectedRootMidi: rec.detectedRootMidi,
+          detectedNoteName: rec.detectedNoteName,
+          waveformPreview: rec.waveformPreview || [],
+          createdAt: rec.createdAt,
+        });
+      } catch {
+        // skip corrupted entry
+      }
+    }
+    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteCustomReplacementSampleFromIdb(id: string): Promise<void> {
+  try {
+    const db = await openDb();
+    await txRun(db, STORE_CUSTOM_SAMPLES, 'readwrite', (s) => s.delete(id));
     db.close();
   } catch {
     // ignore

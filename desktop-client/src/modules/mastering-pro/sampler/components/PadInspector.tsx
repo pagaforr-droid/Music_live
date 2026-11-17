@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Sliders, Waves, Filter, Sparkles, Radio } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Sliders, Waves, Filter, Sparkles, Radio, Upload } from 'lucide-react';
 import type {
   PadVoiceParams,
   PlayMode,
@@ -14,6 +14,7 @@ interface PadInspectorProps {
   onUpdateLabel: (label: string) => void;
   onApplyTexturePreset: (presetId: TexturePresetId) => void;
   onAutoTuneToRoot: () => void;
+  onUploadFileToSelectedPad?: (file: File) => void;
 }
 
 export const PadInspector: React.FC<PadInspectorProps> = ({
@@ -22,8 +23,10 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
   onUpdateLabel,
   onApplyTexturePreset,
   onAutoTuneToRoot,
+  onUploadFileToSelectedPad,
 }) => {
   const [tab, setTab] = useState<'sample' | 'amp' | 'filter' | 'warp' | 'fx'>('sample');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const p = pad.params;
 
   // Compute clean SVG polyline for ADSR preview
@@ -39,9 +42,20 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
   return (
     <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f && onUploadFileToSelectedPad) onUploadFileToSelectedPad(f);
+          e.target.value = '';
+        }}
+      />
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span
             className="w-3 h-3 rounded-full"
             style={{ backgroundColor: pad.colorHex }}
@@ -50,11 +64,22 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
             type="text"
             value={pad.label}
             onChange={(e) => onUpdateLabel(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs font-bold text-white focus:border-[#00E5FF] focus:outline-none w-44"
+            className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs font-bold text-white focus:border-[#00E5FF] focus:outline-none w-36 sm:w-44"
           />
           <span className="text-[10px] font-mono text-slate-400">
             Pad {pad.index + 1} ({pad.keyboardKey})
           </span>
+          {onUploadFileToSelectedPad && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-2 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-mono font-bold flex items-center gap-1 cursor-pointer"
+              title="Subir tu propio audio para reemplazar este Pad"
+            >
+              <Upload size={11} />
+              <span>Subir Audio</span>
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-1 bg-slate-950 border border-slate-800 rounded-xl p-0.5">

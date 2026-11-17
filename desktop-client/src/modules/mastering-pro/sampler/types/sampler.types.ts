@@ -212,15 +212,33 @@ export interface FullStemAnalysisResult {
   };
 }
 
+export type CustomSampleCategory = DrumPieceRole | 'melodic';
+
+export interface CustomReplacementSampleItem {
+  id: string;
+  name: string;
+  category: CustomSampleCategory;
+  sourceType: 'file' | 'recorded' | 'pad' | 'cloud';
+  buffer: AudioBuffer;
+  durationSec: number;
+  peakOffsetSec: number;
+  detectedRootMidi: number;
+  detectedNoteName: string;
+  waveformPreview: number[]; // normalized 0..1 mini peak bars for pro bank cards
+  createdAt: string;
+}
+
 export interface ReplacementSlotConfig {
   roleOrTarget: DrumPieceRole | 'melodic';
   enabled: boolean;
   sourceType: 'preset' | 'recorded' | 'file' | 'pad' | 'stem-crop';
   presetId: DefaultInstrumentId;
+  customSampleId?: string;
   customName?: string;
   customBuffer?: AudioBuffer;
   customRootMidi?: number; // detected or manually calibrated MIDI root for tonal samples
   customPeakOffsetSec?: number; // transient peak alignment offset for drums
+  normalizeCustom?: boolean; // auto-normalize uploaded/recorded replacement sample to -1 dBFS
   gainDb: number; // -24..+12
   pitchSemis: number; // -12..+12
 }

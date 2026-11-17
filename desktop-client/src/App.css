@@ -169,6 +169,71 @@ body {
   background: rgba(244, 63, 94, 0.55);
 }
 
+/* High-Visibility Studio Scrollbars for Sample Lab & Audio Workstations */
+.studio-scrollbar {
+  scrollbar-width: auto;
+  scrollbar-color: #334155 #090e1a;
+  scrollbar-gutter: stable;
+}
+
+.studio-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.studio-scrollbar::-webkit-scrollbar-track {
+  background: #090e1a;
+  border-left: 1px solid rgba(51, 65, 85, 0.4);
+  border-top: 1px solid rgba(51, 65, 85, 0.4);
+  border-radius: 9999px;
+}
+
+.studio-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #475569 0%, #334155 100%);
+  border: 2px solid #090e1a;
+  border-radius: 9999px;
+  min-height: 36px;
+  min-width: 36px;
+}
+
+.studio-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #00e5ff 0%, #0284c7 100%);
+}
+
+.studio-scrollbar::-webkit-scrollbar-thumb:active {
+  background: linear-gradient(180deg, #ff6b00 0%, #ea580c 100%);
+}
+
+.studio-scrollbar::-webkit-scrollbar-corner {
+  background: #090e1a;
+}
+
+/* Thin high-visibility studio scrollbar for nested lists & grids */
+.studio-scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #090e1a;
+}
+
+.studio-scrollbar-thin::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.studio-scrollbar-thin::-webkit-scrollbar-track {
+  background: #090e1a;
+  border-radius: 9999px;
+}
+
+.studio-scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #334155;
+  border: 1px solid #090e1a;
+  border-radius: 9999px;
+}
+
+.studio-scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #00e5ff;
+}
+
 /* Emil Kowalski Fluid Micro-Interactions */
 button,
 a,

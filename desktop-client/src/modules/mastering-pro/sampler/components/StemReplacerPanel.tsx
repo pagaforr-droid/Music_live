@@ -2,9 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   CloudUpload,
   Disc3,
   Download,
+  FolderArchive,
   FolderOpen,
   Guitar,
   Layers,
@@ -17,9 +20,11 @@ import {
   Sliders,
   Sparkles,
   Square,
+  Trash2,
   Upload,
   Volume2,
   Wand2,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -30,6 +35,7 @@ import {
 } from '../engine/StudioSampleBank';
 import type { useStemReplacer } from '../hooks/useStemReplacer';
 import type {
+  CustomSampleCategory,
   DefaultInstrumentId,
   DrumPieceRole,
   SamplePad,
@@ -56,6 +62,14 @@ const MODE_LABELS: Array<{ id: StemAnalysisMode; label: string; hint: string }> 
   { id: 'polyphonic', label: 'Polifónico (Acordes)', hint: 'Guitarra · Piano · Keys+' },
 ];
 
+const CATEGORY_BADGES: Record<CustomSampleCategory, { label: string; color: string }> = {
+  kick: { label: 'KICK', color: '#FF6B00' },
+  snare: { label: 'SNARE', color: '#00E5FF' },
+  hat: { label: 'HI-HAT', color: '#F59E0B' },
+  tom: { label: 'TOM', color: '#10B981' },
+  melodic: { label: 'TONAL', color: '#A855F7' },
+};
+
 const formatTime = (sec: number) => {
   const s = Math.max(0, sec);
   const mins = Math.floor(s / 60);
@@ -71,14 +85,25 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const r = replacer;
   const stemFileInputRef = useRef<HTMLInputElement | null>(null);
   const slotFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [uploadTargetSlot, setUploadTargetSlot] = useState<DrumPieceRole | 'melodic'>('melodic');
+  const bankBatchFileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadTargetRef = useRef<DrumPieceRole | 'melodic'>('melodic');
 
   const [songSearch, setSongSearch] = useState('');
   const [zoom, setZoom] = useState(1);
   const [scrollNorm, setScrollNorm] = useState(0);
   const [saveStemName, setSaveStemName] = useState('');
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [showCustomBank, setShowCustomBank] = useState(false);
+  const [showCloudSamplePicker, setShowCloudSamplePicker] = useState(false);
+  const [cloudTargetRole, setCloudTargetRole] = useState<CustomSampleCategory>('kick');
+  const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (r.customSamples.length > 0) {
+      setShowCustomBank(true);
+    }
+  }, [r.customSamples.length]);
 
   useEffect(() => {
     if (r.stemTitle) {
@@ -284,6 +309,19 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
+          onClick={() => {
+            uploadTargetRef.current = target;
+            slotFileInputRef.current?.click();
+          }}
+          className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/55 text-[10px] font-mono font-bold text-[#00E5FF] flex items-center gap-1 cursor-pointer transition-all"
+          title="Subir tu propio audio de reemplazo (WAV, MP3, FLAC, OGG, M4A)"
+        >
+          <Upload size={11} />
+          <span>Subir Audio</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => void r.toggleMicRecordingForSlot(target)}
           className={`px-2 py-1 rounded-lg border text-[10px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all ${
             isRec
@@ -294,18 +332,6 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         >
           {isRec ? <Square size={10} className="fill-current" /> : <Mic size={11} />}
           <span>{isRec ? 'Detener Mic' : 'Grabar Mic'}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setUploadTargetSlot(target);
-            slotFileInputRef.current?.click();
-          }}
-          className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-200 flex items-center gap-1 cursor-pointer"
-        >
-          <Upload size={11} className="text-[#00E5FF]" />
-          <span>Subir WAV</span>
         </button>
 
         {loadedCreatorPads.length > 0 && getBufferForPad && (
@@ -334,19 +360,51 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         )}
 
         {slot.sourceType !== 'preset' && (
-          <button
-            type="button"
-            onClick={() => {
-              if (target === 'melodic') {
-                r.updateMelodicSlot({ sourceType: 'preset', customBuffer: undefined, customName: undefined });
-              } else {
-                r.updateDrumSlot(target, { sourceType: 'preset', customBuffer: undefined, customName: undefined });
-              }
-            }}
-            className="px-1.5 py-1 rounded bg-slate-800 text-[10px] font-mono text-slate-400 hover:text-white cursor-pointer"
-          >
-            Volver a Predet.
-          </button>
+          <>
+            <label
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[9.5px] font-mono text-emerald-300 cursor-pointer"
+              title="Normalizar automáticamente tu muestra propia a -1.0 dBFS"
+            >
+              <input
+                type="checkbox"
+                checked={slot.normalizeCustom !== false}
+                onChange={(e) => {
+                  const nextNorm = e.target.checked;
+                  if (target === 'melodic') {
+                    r.updateMelodicSlot({ normalizeCustom: nextNorm });
+                  } else {
+                    r.updateDrumSlot(target, { normalizeCustom: nextNorm });
+                  }
+                }}
+                className="accent-emerald-400"
+              />
+              <span>Norm</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                if (target === 'melodic') {
+                  r.updateMelodicSlot({
+                    sourceType: 'preset',
+                    customSampleId: undefined,
+                    customBuffer: undefined,
+                    customName: undefined,
+                  });
+                } else {
+                  r.updateDrumSlot(target, {
+                    sourceType: 'preset',
+                    customSampleId: undefined,
+                    customBuffer: undefined,
+                    customName: undefined,
+                  });
+                }
+              }}
+              className="px-1.5 py-1 rounded bg-slate-800 text-[10px] font-mono text-slate-400 hover:text-white cursor-pointer"
+              title="Volver a muestra predeterminada de estudio"
+            >
+              Volver a Predet.
+            </button>
+          </>
         )}
       </div>
     );
@@ -357,7 +415,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       <input
         ref={stemFileInputRef}
         type="file"
-        accept=".wav,.mp3,.flac,.ogg,.m4a,audio/*"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -368,11 +426,28 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       <input
         ref={slotFileInputRef}
         type="file"
-        accept=".wav,.mp3,.flac,.ogg,.m4a,audio/*"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) void r.loadCustomFileForSlot(uploadTargetSlot, f);
+          if (f) void r.loadCustomFileForSlot(uploadTargetRef.current, f);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={bankBatchFileInputRef}
+        type="file"
+        multiple
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            void r.uploadCustomReplacementFiles(
+              e.target.files,
+              r.stemMode === 'drums' ? 'auto' : 'melodic'
+            );
+            setShowCustomBank(true);
+          }
           e.target.value = '';
         }}
       />
@@ -406,7 +481,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             className="w-full px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white focus:outline-none focus:border-[#00E5FF]"
           />
 
-          <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+          <div className="max-h-40 overflow-y-auto studio-scrollbar-thin space-y-1 pr-1">
             {filteredSongs.length === 0 ? (
               <div className="text-[11px] font-mono text-slate-500 py-4 text-center">
                 {r.loadingSongs
@@ -484,7 +559,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
 
           {r.selectedSong && r.selectedSong.stems.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-44 overflow-y-auto studio-scrollbar-thin pr-1">
               {r.selectedSong.stems.map((st) => {
                 const isSelected = st.id === r.selectedStemId;
                 return (
@@ -671,16 +746,44 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           )}
         </div>
 
-        {zoom > 1.05 && duration > 0 && (
-          <input
-            type="range"
-            min={0}
-            max={Math.max(0, 1 - 1 / zoom)}
-            step={0.002}
-            value={scrollNorm}
-            onChange={(e) => setScrollNorm(Number(e.target.value))}
-            className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
-          />
+        {/* Horizontal Timeline Scrollbar + Pan Navigator */}
+        {duration > 0 && (
+          <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[10px] font-mono">
+            <button
+              type="button"
+              disabled={zoom <= 1.01}
+              onClick={() => setScrollNorm((s) => Math.max(0, s - 0.12 / zoom))}
+              className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+              title="Desplazar vista a la izquierda"
+            >
+              <ChevronLeft size={12} />
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0.001, 1 - 1 / zoom)}
+              step={0.001}
+              disabled={zoom <= 1.01}
+              value={Math.min(scrollNorm, Math.max(0, 1 - 1 / zoom))}
+              onChange={(e) => setScrollNorm(Number(e.target.value))}
+              className="flex-1 accent-[#00E5FF] h-2 bg-slate-800 rounded-full cursor-pointer disabled:opacity-40"
+              title="Barra de desplazamiento horizontal de la onda"
+            />
+            <button
+              type="button"
+              disabled={zoom <= 1.01}
+              onClick={() =>
+                setScrollNorm((s) => Math.min(Math.max(0, 1 - 1 / zoom), s + 0.12 / zoom))
+              }
+              className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+              title="Desplazar vista a la derecha"
+            >
+              <ChevronRight size={12} />
+            </button>
+            <span className="text-slate-400 shrink-0 tabular-nums">
+              {formatTime(viewStartSec)}–{formatTime(Math.min(duration, viewEndSec))}
+            </span>
+          </div>
         )}
 
         {/* Playback Transport + Phase-Locked A/B Comparison + Zoom */}
@@ -741,6 +844,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               onClick={() => setZoom((z) => Math.max(1, z / 1.5))}
               className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              title="Alejar zoom"
             >
               <ZoomOut size={13} />
             </button>
@@ -749,9 +853,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               onClick={() => setZoom((z) => Math.min(48, z * 1.5))}
               className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              title="Acercar zoom"
             >
               <ZoomIn size={13} />
             </button>
+            {zoom > 1.05 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setZoom(1);
+                  setScrollNorm(0);
+                }}
+                className="px-1.5 py-0.5 rounded bg-slate-900 text-[10px] text-slate-300 hover:text-white cursor-pointer"
+                title="Restablecer zoom 1x"
+              >
+                1x
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -760,7 +878,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-3.5">
         {/* Replacement Sample Selector (Drums 4 Slots OR Guitar/Piano/Bass Slot) */}
         <div className="xl:col-span-8 rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-lg flex flex-col gap-3">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
             <div className="flex items-center gap-2">
               {r.stemMode === 'drums' ? (
                 <Disc3 size={16} className="text-[#FF6B00]" />
@@ -769,11 +887,284 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               )}
               <h3 className="text-xs font-mono font-bold uppercase text-white">
                 {r.stemMode === 'drums'
-                  ? '3. Elige Muestras de Reemplazo por Pieza (Predeterminadas o Grabadas)'
-                  : '3. Elige Instrumento o Muestra Grabada para Reemplazar Conservando Notas'}
+                  ? '3. Elige o Sube Tus Muestras de Reemplazo por Pieza'
+                  : '3. Elige o Sube Tu Propio Instrumento / Muestra para Reemplazar Conservando Notas'}
               </h3>
             </div>
+
+            {/* Professional Custom Sample Upload & Library Action Bar */}
+            <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-mono">
+              <button
+                type="button"
+                onClick={() => bankBatchFileInputRef.current?.click()}
+                className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#00E5FF] to-emerald-400 hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+                title="Sube 1 o varios audios propios (WAV, MP3, FLAC, OGG, M4A) a tu Banco y asígnalos automáticamente"
+              >
+                <Upload size={12} />
+                <span>Subir Audios Propios</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowCustomBank((v) => !v)}
+                className={`px-2.5 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                  showCustomBank
+                    ? 'bg-[#FF6B00]/15 border-[#FF6B00] text-[#FF6B00]'
+                    : 'bg-slate-950 border-slate-700 text-slate-200 hover:border-[#00E5FF]/50'
+                }`}
+              >
+                <FolderArchive size={12} />
+                <span>Mi Banco ({r.customSamples.length})</span>
+              </button>
+
+              {r.songs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowCloudSamplePicker((v) => !v)}
+                  className={`px-2.5 py-1.5 rounded-xl border font-bold flex items-center gap-1 cursor-pointer transition-all ${
+                    showCloudSamplePicker
+                      ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
+                      : 'bg-slate-950 border-slate-700 text-slate-300 hover:text-white'
+                  }`}
+                  title="Importar una muestra o stem desde tus carpetas de Supabase como audio de reemplazo"
+                >
+                  <FolderOpen size={12} />
+                  <span>Desde Nube</span>
+                </button>
+              )}
+
+              {(r.melodicSlot.sourceType !== 'preset' ||
+                Object.values(r.drumSlots).some((s) => s.sourceType !== 'preset')) && (
+                <button
+                  type="button"
+                  onClick={r.resetAllSlotsToPresets}
+                  className="px-2 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                  title="Volver todas las piezas a muestras predeterminadas de estudio"
+                >
+                  Restablecer Predet.
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Cloud Song Stem -> Custom Sample Quick Importer */}
+          {showCloudSamplePicker && (
+            <div className="rounded-xl bg-slate-950 border border-[#00E5FF]/40 p-3 flex flex-col gap-2 text-xs font-mono">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[#00E5FF] font-bold">
+                  Importar Audio de Reemplazo desde Tus Canciones (Supabase)
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-400">Asignar a:</span>
+                  <select
+                    value={cloudTargetRole}
+                    onChange={(e) => setCloudTargetRole(e.target.value as CustomSampleCategory)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white"
+                  >
+                    <option value="kick">Kick (Bombo)</option>
+                    <option value="snare">Snare (Caja)</option>
+                    <option value="hat">Hi-Hat / Platos</option>
+                    <option value="tom">Tom / Perc</option>
+                    <option value="melodic">Instrumento Melódico / Acordes</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setShowCloudSamplePicker(false)}
+                    className="text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-36 overflow-y-auto studio-scrollbar-thin grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 pr-1">
+                {r.songs.flatMap((song) =>
+                  song.stems.map((st) => (
+                    <button
+                      key={`${song.id}-${st.id}`}
+                      type="button"
+                      onClick={() => {
+                        void r.importCustomSampleFromUrl(
+                          st.fileUrl,
+                          `${song.title} · ${st.name}`,
+                          cloudTargetRole
+                        );
+                        setShowCloudSamplePicker(false);
+                        setShowCustomBank(true);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-[#00E5FF] text-left flex items-center justify-between gap-1 cursor-pointer"
+                    >
+                      <span className="truncate text-[10.5px] text-slate-200">
+                        {song.title} · {st.name}
+                      </span>
+                      <Upload size={11} className="text-[#00E5FF] shrink-0" />
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Persistent User Custom Replacement Sample Bank */}
+          {showCustomBank && (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverTarget('bank');
+              }}
+              onDragLeave={() => setDragOverTarget(null)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverTarget(null);
+                if (e.dataTransfer.files?.length) {
+                  void r.uploadCustomReplacementFiles(
+                    e.dataTransfer.files,
+                    r.stemMode === 'drums' ? 'auto' : 'melodic'
+                  );
+                }
+              }}
+              className={`rounded-xl border p-3 flex flex-col gap-2.5 text-xs font-mono transition-all ${
+                dragOverTarget === 'bank'
+                  ? 'bg-[#00E5FF]/10 border-[#00E5FF]'
+                  : 'bg-slate-950/90 border-slate-800'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <FolderArchive size={14} className="text-[#FF6B00]" />
+                  <span className="font-bold text-white text-[11px]">
+                    BANCO DE TUS AUDIOS DE REEMPLAZO ({r.customSamples.length})
+                  </span>
+                  <span className="text-[10px] text-slate-400 hidden sm:inline">
+                    · Arrastra archivos WAV/MP3/FLAC aquí o asígnalos directo a cualquier pieza
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => bankBatchFileInputRef.current?.click()}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Upload size={11} />
+                  <span>+ Añadir Más Audios</span>
+                </button>
+              </div>
+
+              {r.customSamples.length === 0 ? (
+                <div className="py-3 text-center text-[11px] text-slate-400 border border-dashed border-slate-800 rounded-lg">
+                  Aún no has subido muestras propias. Pulsa{' '}
+                  <span className="text-[#00E5FF] font-bold">Subir Audios Propios</span> o arrastra tus WAVs aquí.
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto studio-scrollbar-thin space-y-1.5 pr-1">
+                  {r.customSamples.map((sample) => {
+                    const badge = CATEGORY_BADGES[sample.category];
+                    return (
+                      <div
+                        key={sample.id}
+                        className="rounded-lg bg-slate-900/90 border border-slate-800 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => r.auditionCustomSample(sample.id)}
+                            className="p-1.5 rounded-lg bg-slate-950 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-slate-950 border border-slate-700 cursor-pointer shrink-0 transition-colors"
+                            title="Escuchar muestra"
+                          >
+                            <Play size={10} className="fill-current" />
+                          </button>
+
+                          {/* Mini Peak Waveform Preview */}
+                          <div className="hidden sm:flex items-center gap-[1.5px] h-5 w-16 shrink-0 bg-slate-950 rounded px-1 border border-slate-800/80">
+                            {(sample.waveformPreview || []).slice(0, 18).map((pk, idx) => (
+                              <span
+                                key={idx}
+                                className="w-[2px] rounded-full bg-[#00E5FF]/80"
+                                style={{ height: `${Math.max(15, Math.round(pk * 100))}%` }}
+                              />
+                            ))}
+                          </div>
+
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="text-[9px] px-1.5 py-0.2 rounded font-bold text-slate-950 shrink-0"
+                                style={{ backgroundColor: badge.color }}
+                              >
+                                {badge.label}
+                              </span>
+                              <span className="text-[11px] font-bold text-white truncate">
+                                {sample.name}
+                              </span>
+                            </div>
+                            <div className="text-[9.5px] text-slate-400">
+                              {sample.durationSec.toFixed(2)}s · Pico{' '}
+                              {(sample.peakOffsetSec * 1000).toFixed(1)}ms · Root{' '}
+                              {sample.detectedNoteName}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1 shrink-0">
+                          {r.stemMode === 'drums' ? (
+                            DRUM_ROLES.map(({ role, label, color }) => {
+                              const isAssigned =
+                                r.drumSlots[role].sourceType !== 'preset' &&
+                                r.drumSlots[role].customSampleId === sample.id;
+                              return (
+                                <button
+                                  key={role}
+                                  type="button"
+                                  onClick={() => r.assignCustomSampleToSlot(sample.id, role)}
+                                  style={
+                                    isAssigned
+                                      ? { backgroundColor: color, borderColor: color, color: '#020617' }
+                                      : undefined
+                                  }
+                                  className={`px-1.5 py-0.5 rounded border text-[9.5px] font-bold cursor-pointer transition-all ${
+                                    isAssigned
+                                      ? ''
+                                      : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-[#00E5FF] hover:text-white'
+                                  }`}
+                                  title={`Usar en ${label}`}
+                                >
+                                  {role.toUpperCase()}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => r.assignCustomSampleToSlot(sample.id, 'melodic')}
+                              className={`px-2 py-1 rounded border text-[10px] font-bold cursor-pointer ${
+                                r.melodicSlot.sourceType !== 'preset' &&
+                                r.melodicSlot.customSampleId === sample.id
+                                  ? 'bg-[#00E5FF] border-[#00E5FF] text-slate-950'
+                                  : 'bg-slate-950 border-slate-700 text-[#00E5FF] hover:bg-[#00E5FF]/15'
+                              }`}
+                            >
+                              {r.melodicSlot.sourceType !== 'preset' &&
+                              r.melodicSlot.customSampleId === sample.id
+                                ? '✓ Activo en Pista'
+                                : 'Usar en Pista'}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => r.deleteCustomSample(sample.id)}
+                            className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-500 hover:text-rose-400 hover:border-rose-500/40 cursor-pointer"
+                            title="Eliminar del banco"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {r.stemMode === 'drums' ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -781,12 +1172,32 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 const slot = r.drumSlots[role];
                 const presets = DRUM_PRESET_CATALOG.filter((p) => p.category === role);
                 const hitCount = r.analysis?.counts[role] ?? 0;
+                const isDragOver = dragOverTarget === role;
+                const selectVal =
+                  slot.sourceType !== 'preset' && slot.customSampleId
+                    ? `custom:${slot.customSampleId}`
+                    : slot.presetId;
 
                 return (
                   <div
                     key={role}
-                    className={`rounded-xl bg-slate-950/90 border p-3 flex flex-col gap-2.5 text-xs font-mono ${
-                      slot.enabled ? 'border-slate-700' : 'border-slate-800/60 opacity-55'
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOverTarget(role);
+                    }}
+                    onDragLeave={() => setDragOverTarget(null)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverTarget(null);
+                      const f = e.dataTransfer.files?.[0];
+                      if (f) void r.loadCustomFileForSlot(role, f);
+                    }}
+                    className={`rounded-xl bg-slate-950/90 border p-3 flex flex-col gap-2.5 text-xs font-mono transition-all ${
+                      isDragOver
+                        ? 'border-[#00E5FF] bg-[#00E5FF]/10 shadow-[0_0_20px_rgba(0,229,255,0.22)]'
+                        : slot.enabled
+                        ? 'border-slate-700'
+                        : 'border-slate-800/60 opacity-55'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -817,25 +1228,51 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                       </div>
                     </div>
 
-                    {slot.sourceType === 'preset' ? (
-                      <select
-                        value={slot.presetId}
-                        onChange={(e) =>
+                    {/* Unified selector: User's Uploaded Custom Samples + Studio Presets */}
+                    <select
+                      value={selectVal}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val.startsWith('custom:')) {
+                          r.assignCustomSampleToSlot(val.slice(7), role);
+                        } else {
                           r.updateDrumSlot(role, {
-                            presetId: e.target.value as DefaultInstrumentId,
-                          })
+                            sourceType: 'preset',
+                            presetId: val as DefaultInstrumentId,
+                            customSampleId: undefined,
+                            customBuffer: undefined,
+                            customName: undefined,
+                          });
                         }
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
-                      >
+                      }}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white cursor-pointer"
+                    >
+                      {r.customSamples.length > 0 && (
+                        <optgroup label="★ Mis Audios Propios Subidos">
+                          {r.customSamples.map((cs) => (
+                            <option key={cs.id} value={`custom:${cs.id}`}>
+                              ★ {cs.name} ({cs.durationSec.toFixed(2)}s)
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="Estudio Predeterminados">
                         {presets.map((pr) => (
                           <option key={pr.id} value={pr.id}>
                             {pr.label}
                           </option>
                         ))}
-                      </select>
-                    ) : (
-                      <div className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] truncate">
-                        Muestra Propia: {slot.customName}
+                      </optgroup>
+                    </select>
+
+                    {slot.sourceType !== 'preset' && (
+                      <div className="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          Audio Propio: {slot.customName}
+                        </span>
+                        <span className="text-[9.5px] text-emerald-200/80 shrink-0">
+                          Pico {((slot.customPeakOffsetSec ?? 0) * 1000).toFixed(1)}ms
+                        </span>
                       </div>
                     )}
 
@@ -888,26 +1325,75 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               })}
             </div>
           ) : (
-            <div className="rounded-xl bg-slate-950/90 border border-slate-800 p-3.5 flex flex-col gap-3 text-xs font-mono">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Music2 size={14} className="text-[#00E5FF]" />
-                  <span className="font-bold text-white">
-                    Timbre de Reemplazo (Se transpondrá automáticamente a todas las notas del stem)
-                  </span>
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverTarget('melodic');
+              }}
+              onDragLeave={() => setDragOverTarget(null)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverTarget(null);
+                const f = e.dataTransfer.files?.[0];
+                if (f) void r.loadCustomFileForSlot('melodic', f);
+              }}
+              className={`rounded-xl bg-slate-950/90 border p-3.5 flex flex-col gap-3 text-xs font-mono transition-all ${
+                dragOverTarget === 'melodic'
+                  ? 'border-[#00E5FF] bg-[#00E5FF]/10'
+                  : 'border-slate-800'
+              }`}
+            >
+              {/* Top Custom Upload / Selection Card for Melodic & Polyphonic */}
+              <div className="rounded-xl bg-slate-900/90 border border-slate-700/80 p-3 flex flex-col gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Music2 size={14} className="text-[#00E5FF]" />
+                    <span className="font-bold text-white">
+                      Tu Audio Propio o Timbre de Estudio (Se transpone a cada nota)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => r.auditionSlotSample(r.melodicSlot)}
+                    className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Volume2 size={12} />
+                    <span>Probar Muestra (C4)</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => r.auditionSlotSample(r.melodicSlot)}
-                  className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                >
-                  <Volume2 size={12} />
-                  <span>Probar Muestra (C4)</span>
-                </button>
+
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  {renderCustomSourceControls('melodic', r.melodicSlot)}
+
+                  {r.customSamples.length > 0 && (
+                    <select
+                      value={
+                        r.melodicSlot.sourceType !== 'preset' && r.melodicSlot.customSampleId
+                          ? r.melodicSlot.customSampleId
+                          : ''
+                      }
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          r.assignCustomSampleToSlot(e.target.value, 'melodic');
+                        }
+                      }}
+                      className="bg-slate-950 border border-[#00E5FF]/40 rounded-lg px-2 py-1 text-[11px] text-white cursor-pointer max-w-[240px]"
+                    >
+                      <option value="" disabled>
+                        Elegir de Mis Audios ({r.customSamples.length})...
+                      </option>
+                      {r.customSamples.map((cs) => (
+                        <option key={cs.id} value={cs.id}>
+                          ★ {cs.name} (Root {cs.detectedNoteName})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
               </div>
 
               {r.melodicSlot.sourceType === 'preset' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto studio-scrollbar-thin pr-1">
                   {MELODIC_PRESET_CATALOG.map((pr) => {
                     const active = r.melodicSlot.presetId === pr.id;
                     return (
@@ -937,7 +1423,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     </div>
                     <div className="text-[10px] text-slate-300">
                       Nota raíz detectada (YIN):{' '}
-                      {midiNoteToName(r.melodicSlot.customRootMidi ?? 60)} — Ajusta abajo si grabaste otra nota:
+                      {midiNoteToName(r.melodicSlot.customRootMidi ?? 60)} — Loop sustain cruzado sin clics:
                     </div>
                   </div>
                   <select
@@ -955,13 +1441,6 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   </select>
                 </div>
               )}
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800">
-                <span className="text-[10.5px] text-slate-400">
-                  O reemplaza con tu propia nota grabada / archivo:
-                </span>
-                {renderCustomSourceControls('melodic', r.melodicSlot)}
-              </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-[10.5px] text-slate-400">
                 <div>
@@ -1041,9 +1520,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
           {/* Live Preview of Detected Notes/Chords */}
           {r.analysis && r.analysis.noteEvents.length > 0 && (
-            <div className="rounded-xl bg-slate-950 border border-slate-800 p-2.5 flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+            <div className="rounded-xl bg-slate-950 border border-slate-800 p-2.5 max-h-24 overflow-y-auto studio-scrollbar-thin flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
               <span className="text-slate-500 mr-1">Primeras notas detectadas:</span>
-              {r.analysis.noteEvents.slice(0, 18).map((ev) => (
+              {r.analysis.noteEvents.slice(0, 64).map((ev) => (
                 <span
                   key={ev.id}
                   onClick={() => r.seekToSec(ev.startSec)}

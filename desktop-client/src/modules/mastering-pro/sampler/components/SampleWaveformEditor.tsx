@@ -1,5 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Play, Square, Repeat, Scissors } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Play,
+  Square,
+  Repeat,
+  Scissors,
+} from 'lucide-react';
 import type { SampleRegion, SampleSource } from '../types/sampler.types';
 import type { WaveformPyramid } from '../workers/waveformPeaks.worker';
 import { midiNoteToName } from '../engine/PitchDetector';
@@ -427,26 +437,53 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
         />
       </div>
 
-      {/* Horizontal Pan Scrollbar when zoomed in */}
-      {zoom > 1.05 && duration > 0 && (
-        <input
-          type="range"
-          min={0}
-          max={Math.max(0, 1 - 1 / zoom)}
-          step={0.002}
-          value={scrollNorm}
-          onChange={(e) => setScrollNorm(Number(e.target.value))}
-          className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
-        />
+      {/* Horizontal Pan Scrollbar */}
+      {duration > 0 && (
+        <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-2.5 py-1 text-[10px] font-mono">
+          <button
+            type="button"
+            disabled={zoom <= 1.01}
+            onClick={() => setScrollNorm((s) => Math.max(0, s - 0.12 / zoom))}
+            className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+            title="Desplazar onda a la izquierda"
+          >
+            <ChevronLeft size={12} />
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0.001, 1 - 1 / zoom)}
+            step={0.001}
+            disabled={zoom <= 1.01}
+            value={Math.min(scrollNorm, Math.max(0, 1 - 1 / zoom))}
+            onChange={(e) => setScrollNorm(Number(e.target.value))}
+            className="flex-1 accent-[#00E5FF] h-2 bg-slate-800 rounded-full cursor-pointer disabled:opacity-40"
+            title="Barra de desplazamiento horizontal de la onda"
+          />
+          <button
+            type="button"
+            disabled={zoom <= 1.01}
+            onClick={() =>
+              setScrollNorm((s) => Math.min(Math.max(0, 1 - 1 / zoom), s + 0.12 / zoom))
+            }
+            className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+            title="Desplazar onda a la derecha"
+          >
+            <ChevronRight size={12} />
+          </button>
+          <span className="text-slate-400 shrink-0 tabular-nums">
+            {viewStartSec.toFixed(1)}s–{Math.min(duration, viewEndSec).toFixed(1)}s
+          </span>
+        </div>
       )}
 
       {/* Regions / Slices Strip (draggable onto Pads!) */}
       {regions.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+        <div className="flex flex-wrap items-center gap-1.5 pt-1 max-h-24 overflow-y-auto studio-scrollbar-thin pr-1">
           <span className="text-[10px] font-mono text-slate-500 mr-1">
             SLICES ({regions.length}) — Arrastra sobre un Pad:
           </span>
-          {regions.slice(0, 20).map((reg) => {
+          {regions.slice(0, 48).map((reg) => {
             const active = reg.id === selectedRegion?.id;
             return (
               <button

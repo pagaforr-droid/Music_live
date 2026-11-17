@@ -1,4 +1,6 @@
 import { applyTruePeakLookaheadLimiterOffline } from '../../dsp-core/LookaheadLimiterCore';
+import { buildCrossfadedLoopArrays } from './LoopCrossfade';
+import { normalizeStereoInPlace } from './SampleBufferOps';
 import { getPresetZones, type ZoneSampleBuffer } from './StudioSampleBank';
 import type {
   DrumPieceRole,
@@ -33,18 +35,31 @@ function buildZoneFromCustomSlot(
   outSampleRate: number
 ): ZoneSampleBuffer & { sampleRate: number } {
   const buf = slot.customBuffer!;
-  const ch0 = buf.getChannelData(0);
-  const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0;
+  const left = new Float32Array(buf.getChannelData(0));
+  const right = new Float32Array(buf.numberOfChannels > 1 ? buf.getChannelData(1) : left);
   const sr = buf.sampleRate || outSampleRate;
+  if (slot.normalizeCustom) {
+    normalizeStereoInPlace(left, right, -1.0);
+  }
   const peakOffsetSamples = Math.round((slot.customPeakOffsetSec ?? 0.002) * sr);
+  const loopStart = Math.round(left.length * 0.28);
+  const loopEnd = Math.round(left.length * 0.82);
+
+  // Build click-free equal-power crossfade inside the sustain loop for melodic playback
+  if (slot.roleOrTarget === 'melodic' && loopEnd - loopStart > Math.round(sr * 0.08)) {
+    const xf = buildCrossfadedLoopArrays(left, right, sr, loopStart, loopEnd, 24);
+    left.set(xf.left, loopStart);
+    right.set(xf.right, loopStart);
+  }
+
   return {
     rootMidi: slot.customRootMidi ?? 60,
-    left: ch0,
-    right: ch1,
+    left,
+    right,
     peakOffsetSamples,
     sampleRate: sr,
-    loopStartSample: Math.round(ch0.length * 0.28),
-    loopEndSample: Math.round(ch0.length * 0.82),
+    loopStartSample: loopStart,
+    loopEndSample: loopEnd,
   };
 }
 
@@ -207,7 +222,8 @@ export function renderFullStemReplacement(params: {
           env = Math.cos(Math.min(1, rNorm) * Math.PI * 0.5);
         }
 
-        if (srcPos >= srcLen - 4) {
+        const loopLimit = melodicSlot.sourceType !== 'preset' ? loopEnd : srcLen - 4;
+        if (srcPos >= loopLimit) {
           if (canLoopSustain && loopLen > 64) {
             srcPos = loopStart + ((srcPos - loopStart) % loopLen);
           } else {

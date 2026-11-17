@@ -25,6 +25,8 @@ export {
   getPresetZones,
   getPresetAuditionBuffer,
   prepareCustomReplacementSample,
+  inferReplacementCategoryFromName,
+  computeMiniWaveformPreview,
 } from './engine/StudioSampleBank';
 export { renderFullStemReplacement } from './engine/StemReplacerEngine';
 export { buildCrossfadedLoopArrays, measureLoopDiscontinuityDb } from './engine/LoopCrossfade';
@@ -37,6 +39,9 @@ export {
   saveKitTempToIndexedDb,
   loadKitTempFromIndexedDb,
   listSavedLocalKits,
+  saveCustomReplacementSampleToIdb,
+  loadAllCustomReplacementSamplesFromIdb,
+  deleteCustomReplacementSampleFromIdb,
 } from './engine/KitStorage';
 
 export { useStemReplacer } from './hooks/useStemReplacer';

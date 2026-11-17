@@ -163,7 +163,8 @@ export function useSamplerEngine() {
       buffer: AudioBuffer,
       name: string,
       origin: SampleSource['origin'],
-      provenance?: SampleSource['provenance']
+      provenance?: SampleSource['provenance'],
+      targetPadIndex?: number
     ) => {
       const srcId = `src-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const bpm = estimateBpmQuick(buffer);
@@ -185,11 +186,12 @@ export function useSamplerEngine() {
         provenance,
       };
 
+      const cleanBase = name.replace(/\.[^.]+$/, '');
       const bounds = detectSilenceBounds(buffer, -48);
       const defaultRegion: SampleRegion = {
-        id: `reg-${Date.now()}`,
+        id: `reg-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         sourceId: srcId,
-        name: `${name.replace(/\.[^.]+$/, '')} (Región 1)`,
+        name: targetPadIndex !== undefined ? cleanBase : `${cleanBase} (Región 1)`,
         startSec: bounds.startSec,
         endSec: Math.max(bounds.startSec + 0.05, bounds.endSec),
         loopCrossfadeMs: 10,
@@ -203,22 +205,38 @@ export function useSamplerEngine() {
       setLastPitchEstimate(pitch);
       setPattern((prev) => ({ ...prev, bpm }));
 
-      // Assign pad 0 cleanly if currently empty
-      setPads((prev) => {
-        if (!prev[0].regionId) {
+      if (targetPadIndex !== undefined && targetPadIndex >= 0 && targetPadIndex < 16) {
+        setPads((prev) => {
           const next = [...prev];
-          next[0] = {
-            ...next[0],
+          next[targetPadIndex] = {
+            ...next[targetPadIndex],
             regionId: defaultRegion.id,
-            label: defaultRegion.name.slice(0, 18),
+            label: cleanBase.slice(0, 20),
           };
           return next;
-        }
-        return prev;
-      });
-      setStatusMessage(
-        `Audio "${name}" cargado (${buffer.duration.toFixed(2)}s · ${bpm} BPM · Nota sugerida ${pitch.noteName}).`
-      );
+        });
+        setSelectedPadIndex(targetPadIndex);
+        setStatusMessage(
+          `Audio "${name}" asignado al Pad ${targetPadIndex + 1} (${buffer.duration.toFixed(2)}s · ${pitch.noteName}).`
+        );
+      } else {
+        // Assign pad 0 cleanly if currently empty
+        setPads((prev) => {
+          if (!prev[0].regionId) {
+            const next = [...prev];
+            next[0] = {
+              ...next[0],
+              regionId: defaultRegion.id,
+              label: defaultRegion.name.slice(0, 18),
+            };
+            return next;
+          }
+          return prev;
+        });
+        setStatusMessage(
+          `Audio "${name}" cargado (${buffer.duration.toFixed(2)}s · ${bpm} BPM · Nota sugerida ${pitch.noteName}).`
+        );
+      }
     },
     []
   );
@@ -289,6 +307,22 @@ export function useSamplerEngine() {
       setIsBusy(true);
       const buf = await engine.decodeAudioFile(file);
       registerLoadedAudioBuffer(buf, file.name, 'file', { fileName: file.name });
+    } catch (err) {
+      setStatusMessage(
+        err instanceof Error ? err.message : 'Error decodificando archivo de audio.'
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const loadAudioFileToPad = async (file: File, padIndex: number) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    try {
+      setIsBusy(true);
+      const buf = await engine.decodeAudioFile(file);
+      registerLoadedAudioBuffer(buf, file.name, 'file', { fileName: file.name }, padIndex);
     } catch (err) {
       setStatusMessage(
         err instanceof Error ? err.message : 'Error decodificando archivo de audio.'
@@ -840,6 +874,7 @@ export function useSamplerEngine() {
     setStatusMessage,
     tempSavedAt,
     loadAudioFile,
+    loadAudioFileToPad,
     loadAudioFromUrl,
     generateDemoSource,
     applySnapToSec,

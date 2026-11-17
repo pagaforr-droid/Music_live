@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Keyboard, Drum, Trash2, Copy, Volume2 } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Keyboard, Drum, Trash2, Copy, Volume2, Upload } from 'lucide-react';
 import type { SamplePad, SampleRegion } from '../types/sampler.types';
 import { midiNoteToName } from '../engine/PitchDetector';
 
@@ -18,6 +18,7 @@ interface PadGridProps {
   onPlayChromaticNote: (midiNote: number) => void;
   onReleaseChromaticNote: () => void;
   onDropRegionOnPad: (regionId: string, padIndex: number) => void;
+  onUploadFileToPad?: (file: File, padIndex: number) => void;
   onClearPad: (padIndex: number) => void;
   onCopyPadToNext: (padIndex: number) => void;
   onSendPadToMasteringDrum: (padIndex: number, type: 'kick' | 'snare') => void;
@@ -41,14 +42,31 @@ export const PadGrid: React.FC<PadGridProps> = ({
   onPlayChromaticNote,
   onReleaseChromaticNote,
   onDropRegionOnPad,
+  onUploadFileToPad,
   onClearPad,
   onCopyPadToNext,
   onSendPadToMasteringDrum,
 }) => {
   const [contextMenuPad, setContextMenuPad] = useState<number | null>(null);
+  const [dragPadIndex, setDragPadIndex] = useState<number | null>(null);
+  const padFileInputRef = useRef<HTMLInputElement | null>(null);
+  const targetPadRef = useRef<number>(selectedPadIndex);
 
   return (
     <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3">
+      <input
+        ref={padFileInputRef}
+        type="file"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f && onUploadFileToPad) {
+            onUploadFileToPad(f, targetPadRef.current);
+          }
+          e.target.value = '';
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
         <div className="flex items-center gap-2">
           <Volume2 size={15} className="text-[#FF6B00]" />
@@ -58,6 +76,20 @@ export const PadGrid: React.FC<PadGridProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5">
+          {onUploadFileToPad && (
+            <button
+              type="button"
+              onClick={() => {
+                targetPadRef.current = selectedPadIndex;
+                padFileInputRef.current?.click();
+              }}
+              className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] text-[11px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all"
+              title={`Subir audio propio directamente al Pad ${selectedPadIndex + 1}`}
+            >
+              <Upload size={12} />
+              <span>Subir Audio al Pad {selectedPadIndex + 1}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onToggleChromaticMode}
@@ -78,6 +110,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
         {pads.map((pad) => {
           const isSelected = pad.index === selectedPadIndex;
           const isActive = activePadSet.has(pad.index);
+          const isDragTarget = dragPadIndex === pad.index;
           const reg = pad.regionId
             ? regions.find((r) => r.id === pad.regionId)
             : undefined;
@@ -105,14 +138,26 @@ export const PadGrid: React.FC<PadGridProps> = ({
                   onSelectPad(pad.index);
                   setContextMenuPad(contextMenuPad === pad.index ? null : pad.index);
                 }}
-                onDragOver={(e) => e.preventDefault()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragPadIndex(pad.index);
+                }}
+                onDragLeave={() => setDragPadIndex(null)}
                 onDrop={(e) => {
                   e.preventDefault();
+                  setDragPadIndex(null);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file && onUploadFileToPad) {
+                    onUploadFileToPad(file, pad.index);
+                    return;
+                  }
                   const regionId = e.dataTransfer.getData('text/sampler-region-id');
                   if (regionId) onDropRegionOnPad(regionId, pad.index);
                 }}
                 style={{
-                  borderColor: isSelected
+                  borderColor: isDragTarget
+                    ? '#00E5FF'
+                    : isSelected
                     ? pad.colorHex
                     : isActive
                     ? '#FFFFFF'
@@ -158,7 +203,21 @@ export const PadGrid: React.FC<PadGridProps> = ({
               </button>
 
               {contextMenuPad === pad.index && (
-                <div className="absolute z-30 top-full left-0 mt-1 w-48 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-1.5 flex flex-col gap-1 text-[11px] font-mono">
+                <div className="absolute z-30 top-full left-0 mt-1 w-52 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-1.5 flex flex-col gap-1 text-[11px] font-mono">
+                  {onUploadFileToPad && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        targetPadRef.current = pad.index;
+                        padFileInputRef.current?.click();
+                        setContextMenuPad(null);
+                      }}
+                      className="px-2 py-1 rounded hover:bg-slate-800 text-left text-[#00E5FF] font-bold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Upload size={11} />
+                      Subir Audio a este Pad
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -236,7 +295,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
             </div>
           </div>
 
-          <div className="flex gap-1 overflow-x-auto pb-1">
+          <div className="flex gap-1 overflow-x-auto studio-scrollbar-thin pb-1.5">
             {CHROMATIC_NOTES.map((semi) => {
               const midi = Math.max(0, Math.min(127, chromaticBaseMidi + semi));
               const black = IS_BLACK_KEY(semi);

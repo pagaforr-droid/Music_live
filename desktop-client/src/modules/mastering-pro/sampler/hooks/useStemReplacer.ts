@@ -9,7 +9,13 @@ import {
 import { buildMonoSliceFromBuffer } from '../engine/Slicer';
 import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
 import {
+  deleteCustomReplacementSampleFromIdb,
+  loadAllCustomReplacementSamplesFromIdb,
+  saveCustomReplacementSampleToIdb,
+} from '../engine/KitStorage';
+import {
   getPresetAuditionBuffer,
+  inferReplacementCategoryFromName,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
 import {
@@ -17,6 +23,8 @@ import {
   fetchSongsWithStemsForSampler,
 } from '../services/supabaseSamplerService';
 import type {
+  CustomReplacementSampleItem,
+  CustomSampleCategory,
   DefaultInstrumentId,
   DrumPieceRole,
   FullStemAnalysisResult,
@@ -118,6 +126,7 @@ export function useStemReplacer() {
     brightnessPct: 0,
   });
 
+  const [customSamples, setCustomSamples] = useState<CustomReplacementSampleItem[]>([]);
   const [isLoadingStem, setIsLoadingStem] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isRendering, setIsRendering] = useState<boolean>(false);
@@ -177,7 +186,21 @@ export function useStemReplacer() {
 
   useEffect(() => {
     void refreshSongs();
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (typeof AudioContext === 'undefined') return;
+        const ctx = ensureCtx();
+        const saved = await loadAllCustomReplacementSamplesFromIdb(ctx);
+        if (!cancelled && saved.length > 0) {
+          setCustomSamples(saved);
+        }
+      } catch {
+        // ignore if audio/IDB unavailable
+      }
+    })();
     return () => {
+      cancelled = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       try {
         origNodeRef.current?.stop();
@@ -712,6 +735,59 @@ export function useStemReplacer() {
     setMelodicSlot((prev) => ({ ...prev, ...patch }));
   }, []);
 
+  // Register a decoded sample in the persistent Custom Sample Bank and optionally assign to a slot
+  const registerCustomSample = useCallback(
+    (
+      rawBuffer: AudioBuffer,
+      label: string,
+      category: CustomSampleCategory,
+      sourceType: 'file' | 'recorded' | 'pad' | 'cloud',
+      assignTarget?: DrumPieceRole | 'melodic'
+    ): CustomReplacementSampleItem => {
+      const prepared = prepareCustomReplacementSample(rawBuffer, { normalize: true });
+      const item: CustomReplacementSampleItem = {
+        id: `cs-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: label,
+        category,
+        sourceType,
+        buffer: prepared.trimmedBuffer,
+        durationSec: prepared.trimmedBuffer.duration,
+        peakOffsetSec: prepared.peakOffsetSec,
+        detectedRootMidi: prepared.detectedRootMidi,
+        detectedNoteName: prepared.detectedNoteName,
+        waveformPreview: prepared.waveformPreview,
+        createdAt: new Date().toISOString(),
+      };
+      setCustomSamples((prev) => [item, ...prev]);
+      void saveCustomReplacementSampleToIdb(item);
+
+      if (assignTarget) {
+        const slotSource: ReplacementSlotConfig['sourceType'] =
+          sourceType === 'cloud' ? 'file' : sourceType;
+        const patch: Partial<ReplacementSlotConfig> = {
+          enabled: true,
+          sourceType: slotSource,
+          customSampleId: item.id,
+          customName: item.name,
+          customBuffer: item.buffer,
+          customRootMidi: item.detectedRootMidi,
+          customPeakOffsetSec: item.peakOffsetSec,
+          normalizeCustom: true,
+        };
+        if (assignTarget === 'melodic') {
+          setMelodicSlot((prev) => ({ ...prev, ...patch }));
+        } else {
+          setDrumSlots((prev) => ({
+            ...prev,
+            [assignTarget]: { ...prev[assignTarget], ...patch },
+          }));
+        }
+      }
+      return item;
+    },
+    []
+  );
+
   // Apply custom decoded sample buffer (recorded, uploaded, pad, or cropped hit)
   const applyCustomBufferToSlot = useCallback(
     (
@@ -720,19 +796,132 @@ export function useStemReplacer() {
       label: string,
       sourceType: 'recorded' | 'file' | 'pad' | 'stem-crop'
     ) => {
-      const prepared = prepareCustomReplacementSample(rawBuffer);
+      const bankSource = sourceType === 'stem-crop' ? 'file' : sourceType;
+      const item = registerCustomSample(rawBuffer, label, target, bankSource, target);
+      if (target === 'melodic') {
+        setStatusMessage(
+          `Muestra "${item.name}" guardada en tu Banco y cargada para reemplazo tonal (Root YIN: ${item.detectedNoteName}).`
+        );
+      } else {
+        setStatusMessage(
+          `Muestra "${item.name}" guardada en tu Banco y asignada a ${target.toUpperCase()} (pico alineado a ${(
+            item.peakOffsetSec * 1000
+          ).toFixed(1)} ms).`
+        );
+      }
+    },
+    [registerCustomSample]
+  );
+
+  const loadCustomFileForSlot = useCallback(
+    async (target: DrumPieceRole | 'melodic', file: File) => {
+      try {
+        const ctx = ensureCtx();
+        const raw = await file.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(raw.slice(0));
+        applyCustomBufferToSlot(target, decoded, file.name, 'file');
+      } catch (err) {
+        setStatusMessage(
+          err instanceof Error
+            ? `No se pudo cargar "${file.name}": ${err.message}`
+            : `No se pudo decodificar "${file.name}".`
+        );
+      }
+    },
+    [ensureCtx, applyCustomBufferToSlot]
+  );
+
+  const uploadCustomReplacementFiles = useCallback(
+    async (files: FileList | File[], preferredTarget: CustomSampleCategory | 'auto' = 'auto') => {
+      const list = Array.from(files);
+      if (list.length === 0) return;
+      const ctx = ensureCtx();
+      let loadedCount = 0;
+      const assignedLabels: string[] = [];
+
+      for (const file of list) {
+        try {
+          const raw = await file.arrayBuffer();
+          const decoded = await ctx.decodeAudioData(raw.slice(0));
+          const category: CustomSampleCategory =
+            preferredTarget === 'auto'
+              ? inferReplacementCategoryFromName(file.name)
+              : preferredTarget;
+          const assignTarget: DrumPieceRole | 'melodic' | undefined =
+            preferredTarget !== 'auto'
+              ? preferredTarget
+              : stemMode === 'drums' && category !== 'melodic'
+              ? category
+              : stemMode !== 'drums' && category === 'melodic'
+              ? 'melodic'
+              : undefined;
+
+          const item = registerCustomSample(decoded, file.name, category, 'file', assignTarget);
+          loadedCount++;
+          if (assignTarget) assignedLabels.push(`${item.name} → ${assignTarget.toUpperCase()}`);
+        } catch {
+          // continue loading remaining valid files
+        }
+      }
+
+      if (loadedCount === 0) {
+        setStatusMessage('No se pudo decodificar ninguno de los archivos de audio seleccionados.');
+      } else if (assignedLabels.length > 0) {
+        setStatusMessage(
+          `${loadedCount} audio(s) propio(s) añadido(s) al Banco (${assignedLabels.join(' · ')}).`
+        );
+      } else {
+        setStatusMessage(
+          `${loadedCount} audio(s) propio(s) añadido(s) a tu Banco de Muestras Propias.`
+        );
+      }
+    },
+    [ensureCtx, registerCustomSample, stemMode]
+  );
+
+  const importCustomSampleFromUrl = useCallback(
+    async (url: string, name: string, target: CustomSampleCategory) => {
+      try {
+        const ctx = ensureCtx();
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const raw = await res.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(raw.slice(0));
+        const item = registerCustomSample(decoded, name, target, 'cloud', target);
+        setStatusMessage(
+          `Muestra "${item.name}" importada desde Canciones y asignada a ${target.toUpperCase()}.`
+        );
+      } catch (err) {
+        setStatusMessage(
+          err instanceof Error
+            ? `Error importando "${name}": ${err.message}`
+            : `Error importando "${name}".`
+        );
+      }
+    },
+    [ensureCtx, registerCustomSample]
+  );
+
+  const assignCustomSampleToSlot = useCallback(
+    (sampleId: string, target: DrumPieceRole | 'melodic') => {
+      const item = customSamples.find((s) => s.id === sampleId);
+      if (!item) return;
+      const slotSource: ReplacementSlotConfig['sourceType'] =
+        item.sourceType === 'cloud' ? 'file' : item.sourceType;
       const patch: Partial<ReplacementSlotConfig> = {
         enabled: true,
-        sourceType,
-        customName: label,
-        customBuffer: prepared.trimmedBuffer,
-        customRootMidi: prepared.detectedRootMidi,
-        customPeakOffsetSec: prepared.peakOffsetSec,
+        sourceType: slotSource,
+        customSampleId: item.id,
+        customName: item.name,
+        customBuffer: item.buffer,
+        customRootMidi: item.detectedRootMidi,
+        customPeakOffsetSec: item.peakOffsetSec,
+        normalizeCustom: true,
       };
       if (target === 'melodic') {
         setMelodicSlot((prev) => ({ ...prev, ...patch }));
         setStatusMessage(
-          `Muestra "${label}" cargada para reemplazo tonal (Nota raíz detectada: ${prepared.detectedNoteName}).`
+          `Muestra propia "${item.name}" asignada al Timbre Tonal (Root ${item.detectedNoteName}).`
         );
       } else {
         setDrumSlots((prev) => ({
@@ -740,24 +929,70 @@ export function useStemReplacer() {
           [target]: { ...prev[target], ...patch },
         }));
         setStatusMessage(
-          `Muestra "${label}" asignada a ${target.toUpperCase()} (pico alineado a ${(
-            prepared.peakOffsetSec * 1000
-          ).toFixed(1)} ms).`
+          `Muestra propia "${item.name}" asignada a ${target.toUpperCase()}.`
         );
       }
     },
-    []
+    [customSamples]
   );
 
-  const loadCustomFileForSlot = useCallback(
-    async (target: DrumPieceRole | 'melodic', file: File) => {
+  const auditionCustomSample = useCallback(
+    (sampleId: string) => {
+      const item = customSamples.find((s) => s.id === sampleId);
+      if (!item) return;
       const ctx = ensureCtx();
-      const raw = await file.arrayBuffer();
-      const decoded = await ctx.decodeAudioData(raw.slice(0));
-      applyCustomBufferToSlot(target, decoded, file.name, 'file');
+      const src = ctx.createBufferSource();
+      src.buffer = item.buffer;
+      src.connect(ctx.destination);
+      src.start();
     },
-    [ensureCtx, applyCustomBufferToSlot]
+    [customSamples, ensureCtx]
   );
+
+  const deleteCustomSample = useCallback((sampleId: string) => {
+    setCustomSamples((prev) => prev.filter((s) => s.id !== sampleId));
+    void deleteCustomReplacementSampleFromIdb(sampleId);
+    setDrumSlots((prev) => {
+      const next = { ...prev };
+      (['kick', 'snare', 'hat', 'tom'] as DrumPieceRole[]).forEach((role) => {
+        if (next[role].customSampleId === sampleId) {
+          next[role] = {
+            ...next[role],
+            sourceType: 'preset',
+            customSampleId: undefined,
+            customName: undefined,
+            customBuffer: undefined,
+          };
+        }
+      });
+      return next;
+    });
+    setMelodicSlot((prev) =>
+      prev.customSampleId === sampleId
+        ? {
+            ...prev,
+            sourceType: 'preset',
+            customSampleId: undefined,
+            customName: undefined,
+            customBuffer: undefined,
+          }
+        : prev
+    );
+  }, []);
+
+  const resetAllSlotsToPresets = useCallback(() => {
+    setDrumSlots(createDefaultDrumSlots());
+    setMelodicSlot((prev) => ({
+      ...prev,
+      sourceType: 'preset',
+      customSampleId: undefined,
+      customName: undefined,
+      customBuffer: undefined,
+      gainDb: 0,
+      pitchSemis: 0,
+    }));
+    setStatusMessage('Piezas y timbre restablecidos a predeterminados de estudio.');
+  }, []);
 
   // Microphone recording directly into a replacement slot!
   const toggleMicRecordingForSlot = useCallback(
@@ -904,6 +1139,7 @@ export function useStemReplacer() {
     analysis,
     drumSlots,
     melodicSlot,
+    customSamples,
     mixOptions,
     setMixOptions,
     isLoadingStem,
@@ -926,6 +1162,12 @@ export function useStemReplacer() {
     updateMelodicSlot,
     applyCustomBufferToSlot,
     loadCustomFileForSlot,
+    uploadCustomReplacementFiles,
+    importCustomSampleFromUrl,
+    assignCustomSampleToSlot,
+    auditionCustomSample,
+    deleteCustomSample,
+    resetAllSlotsToPresets,
     toggleMicRecordingForSlot,
     auditionSlotSample,
     togglePlayback,

@@ -270,7 +270,8 @@ export const SampleLabPanel: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 md:p-5 flex flex-col gap-3.5">
+    <div className="w-full h-full overflow-y-auto overflow-x-auto studio-scrollbar bg-[#020617] text-slate-100 p-4 md:p-5">
+      <div className="max-w-[1640px] mx-auto flex flex-col gap-3.5 pb-12">
       {/* Top Studio Header */}
       <header className="rounded-2xl bg-slate-900/95 border border-slate-800/90 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_14px_40px_rgba(0,0,0,0.6)]">
         <div className="flex flex-wrap items-center gap-3">
@@ -563,6 +564,7 @@ export const SampleLabPanel: React.FC = () => {
               const reg = s.regions.find((r) => r.id === regionId);
               if (reg) s.assignRegionToPad(reg, padIndex);
             }}
+            onUploadFileToPad={(file, padIndex) => void s.loadAudioFileToPad(file, padIndex)}
             onClearPad={(padIndex) => {
               s.setPads((prev) =>
                 prev.map((p, idx) =>
@@ -611,6 +613,9 @@ export const SampleLabPanel: React.FC = () => {
               s.applyTexturePreset(s.selectedPadIndex, presetId)
             }
             onAutoTuneToRoot={() => void s.autoTunePadToRoot(s.selectedPadIndex)}
+            onUploadFileToSelectedPad={(file) =>
+              void s.loadAudioFileToPad(file, s.selectedPadIndex)
+            }
           />
         </div>
       </div>
@@ -723,6 +728,7 @@ export const SampleLabPanel: React.FC = () => {
           s.loadHydratedKit(rec.kit_json, srcs);
         }}
       />
+      </div>
     </div>
   );
 };

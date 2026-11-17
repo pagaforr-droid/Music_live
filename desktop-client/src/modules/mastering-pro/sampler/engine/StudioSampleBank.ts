@@ -5,6 +5,7 @@ import {
   removeDcOffsetInPlace,
 } from './SampleBufferOps';
 import type {
+  CustomSampleCategory,
   DefaultDrumPresetId,
   DefaultInstrumentId,
   DefaultMelodicPresetId,
@@ -386,16 +387,60 @@ export function getPresetAuditionBuffer(
 }
 
 /**
+ * Infers which drum piece or melodic target a user-uploaded filename belongs to.
+ */
+export function inferReplacementCategoryFromName(name: string): CustomSampleCategory {
+  const n = (name || '').toLowerCase();
+  if (/(kick|bombo|bd|sub_hit|808_kick)/.test(n)) return 'kick';
+  if (/(snare|caja|tarola|redoblante|sd|rimshot|clap)/.test(n)) return 'snare';
+  if (/(hihat|hi-hat|hi_hat|hat|hh|plato|cymbal|crash|ride|shaker)/.test(n)) return 'hat';
+  if (/(tom|perc|conga|bongo|timbal|floor)/.test(n)) return 'tom';
+  return 'melodic';
+}
+
+/**
+ * Generates compact normalized peak bars (0..1) for sample bank mini-waveform previews.
+ */
+export function computeMiniWaveformPreview(
+  left: Float32Array,
+  right: Float32Array,
+  bars = 32
+): number[] {
+  const n = left.length;
+  if (n === 0 || bars <= 0) return Array(Math.max(1, bars)).fill(0.1);
+  const step = Math.max(1, Math.floor(n / bars));
+  const out: number[] = [];
+  let maxVal = 0.001;
+  for (let b = 0; b < bars; b++) {
+    const start = b * step;
+    const end = Math.min(n, start + step);
+    let peak = 0;
+    for (let i = start; i < end; i++) {
+      const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
+      if (a > peak) peak = a;
+    }
+    if (peak > maxVal) maxVal = peak;
+    out.push(peak);
+  }
+  return out.map((v) => Number(Math.max(0.06, Math.min(1, v / maxVal)).toFixed(3)));
+}
+
+/**
  * Prepares a user-recorded or uploaded sample for accurate full-track replacement:
- * - Auto-trims dead leading silence (below -42 dB) so notes/drums NEVER drag behind the beat
+ * - Auto-trims dead leading silence (below -40 dB) so notes/drums NEVER drag behind the beat
+ * - Optional studio peak normalization (-1.0 dBFS) for quiet mic recordings or raw exports
  * - Detects transient peak offset for phase/peak alignment on drum replacements
  * - Detects musical root MIDI note via YIN for melodic pitch-following replacement
  */
-export function prepareCustomReplacementSample(buffer: AudioBuffer): {
+export function prepareCustomReplacementSample(
+  buffer: AudioBuffer,
+  options?: { normalize?: boolean }
+): {
   trimmedBuffer: AudioBuffer;
   peakOffsetSec: number;
   detectedRootMidi: number;
   detectedNoteName: string;
+  waveformPreview: number[];
 } {
   const sr = buffer.sampleRate;
   const ch0 = buffer.getChannelData(0);
@@ -429,12 +474,22 @@ export function prepareCustomReplacementSample(buffer: AudioBuffer): {
   const right = new Float32Array(ch1.subarray(startIdx, startIdx + outLen));
   removeDcOffsetInPlace(left, right);
 
-  // De-click 2ms fade-in
+  if (options?.normalize !== false) {
+    normalizeStereoInPlace(left, right, -1.0);
+  }
+
+  // De-click 2ms fade-in and 4ms tail fade-out
   const fadeIn = Math.min(Math.floor(outLen / 4), Math.round(sr * 0.002));
   for (let i = 0; i < fadeIn; i++) {
     const g = i / Math.max(1, fadeIn);
     left[i] *= g;
     right[i] *= g;
+  }
+  const fadeOut = Math.min(Math.floor(outLen / 4), Math.round(sr * 0.004));
+  for (let i = 0; i < fadeOut; i++) {
+    const g = i / Math.max(1, fadeOut);
+    left[outLen - 1 - i] *= g;
+    right[outLen - 1 - i] *= g;
   }
 
   // Peak offset in first 25ms
@@ -456,6 +511,7 @@ export function prepareCustomReplacementSample(buffer: AudioBuffer): {
   }
   const pitch = detectPitchYin(mono, sr, 40, 1800);
   const rootMidi = pitch.confidence >= 0.42 ? pitch.midiNote : 60;
+  const waveformPreview = computeMiniWaveformPreview(left, right, 32);
 
   const trimmedBuffer = new AudioBuffer({
     length: outLen,
@@ -470,5 +526,6 @@ export function prepareCustomReplacementSample(buffer: AudioBuffer): {
     peakOffsetSec: Number((peakIdx / sr).toFixed(5)),
     detectedRootMidi: rootMidi,
     detectedNoteName: midiNoteToName(rootMidi),
+    waveformPreview,
   };
 }

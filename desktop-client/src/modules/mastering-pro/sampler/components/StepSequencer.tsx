@@ -112,7 +112,7 @@ export const StepSequencer: React.FC<StepSequencerProps> = ({
       </div>
 
       {/* Step Grid */}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto studio-scrollbar-thin pb-1.5">
         <div className="min-w-[660px] space-y-1">
           {visiblePads.map((pad) => {
             const lane = pattern.lanes[pad.index];
