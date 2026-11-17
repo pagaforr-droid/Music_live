@@ -43,20 +43,78 @@ export function inferStemModeFromName(rawName: string): StemAnalysisMode {
   return 'polyphonic';
 }
 
+function findNearestGridTimeOnBeatGrid(
+  rawSec: number,
+  beatTimes: number[],
+  fallbackBeatSec: number,
+  divsPerBeat: number
+): { targetSec: number; stepSec: number } {
+  // Binary search insertion point in beatTimes
+  let lo = 0;
+  let hi = beatTimes.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (beatTimes[mid] <= rawSec) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  const leftIdx = Math.max(0, Math.min(beatTimes.length - 1, hi));
+  let b0: number;
+  let b1: number;
+  if (rawSec < beatTimes[0]) {
+    const localBeat =
+      beatTimes.length >= 2
+        ? Math.max(0.25, Math.min(1.6, beatTimes[1] - beatTimes[0]))
+        : fallbackBeatSec;
+    const stepsBack = Math.ceil((beatTimes[0] - rawSec) / localBeat);
+    b0 = beatTimes[0] - stepsBack * localBeat;
+    b1 = b0 + localBeat;
+  } else if (leftIdx >= beatTimes.length - 1) {
+    const lastB = beatTimes[beatTimes.length - 1];
+    const localBeat =
+      beatTimes.length >= 2
+        ? Math.max(0.25, Math.min(1.6, lastB - beatTimes[beatTimes.length - 2]))
+        : fallbackBeatSec;
+    const stepsFwd = Math.floor((rawSec - lastB) / localBeat);
+    b0 = lastB + stepsFwd * localBeat;
+    b1 = b0 + localBeat;
+  } else {
+    b0 = beatTimes[leftIdx];
+    b1 = beatTimes[leftIdx + 1];
+  }
+  const span = Math.max(0.2, b1 - b0);
+  const stepSec = span / divsPerBeat;
+  const subIdx = Math.max(0, Math.min(divsPerBeat, Math.round((rawSec - b0) / stepSec)));
+  return {
+    targetSec: b0 + subIdx * stepSec,
+    stepSec,
+  };
+}
+
 function snapTimeToTempoGrid(
   rawSec: number,
   bpm: number,
   beatOffsetSec: number,
   durationSec: number,
-  mode: StemQuantizeMode
+  mode: StemQuantizeMode,
+  beatTimes?: number[]
 ): number {
   if (mode === 'off' || !Number.isFinite(bpm) || bpm < 40 || bpm > 220) {
     return rawSec;
   }
   const beatSec = 60 / bpm;
-  const stepSec = mode === 'grid-8' ? beatSec * 0.5 : beatSec * 0.25;
-  const gridIdx = Math.round((rawSec - beatOffsetSec) / stepSec);
-  const target = Math.max(0, Math.min(durationSec - 0.015, beatOffsetSec + gridIdx * stepSec));
+  const divsPerBeat = mode === 'grid-8' ? 2 : 4;
+  let rawTarget: number;
+  let stepSec: number;
+  if (beatTimes && beatTimes.length >= 2) {
+    const res = findNearestGridTimeOnBeatGrid(rawSec, beatTimes, beatSec, divsPerBeat);
+    rawTarget = res.targetSec;
+    stepSec = res.stepSec;
+  } else {
+    stepSec = beatSec / divsPerBeat;
+    const gridIdx = Math.round((rawSec - beatOffsetSec) / stepSec);
+    rawTarget = beatOffsetSec + gridIdx * stepSec;
+  }
+  const target = Math.max(0, Math.min(durationSec - 0.015, rawTarget));
   const dist = Math.abs(target - rawSec);
   if (mode === 'soft') {
     if (dist > stepSec * 0.36) return rawSec;
@@ -70,12 +128,13 @@ export function quantizeDrumHitsToTempo(
   bpm: number,
   beatOffsetSec: number,
   durationSec: number,
-  mode: StemQuantizeMode
+  mode: StemQuantizeMode,
+  beatTimes?: number[]
 ): StemDrumHitEvent[] {
   if (mode === 'off' || hits.length === 0) return hits;
   return hits
     .map((h) => {
-      const qTime = snapTimeToTempoGrid(h.timeSec, bpm, beatOffsetSec, durationSec, mode);
+      const qTime = snapTimeToTempoGrid(h.timeSec, bpm, beatOffsetSec, durationSec, mode, beatTimes);
       const peakLead = h.peakTimeSec - h.timeSec;
       return {
         ...h,
@@ -92,12 +151,13 @@ export function quantizeNoteEventsToTempo(
   beatOffsetSec: number,
   durationSec: number,
   mode: StemQuantizeMode,
-  strictMonophonic = false
+  strictMonophonic = false,
+  beatTimes?: number[]
 ): StemNoteEvent[] {
   if (mode === 'off' || notes.length === 0) return notes;
   const snapped = notes
     .map((n) => {
-      const qStart = snapTimeToTempoGrid(n.startSec, bpm, beatOffsetSec, durationSec, mode);
+      const qStart = snapTimeToTempoGrid(n.startSec, bpm, beatOffsetSec, durationSec, mode, beatTimes);
       return {
         ...n,
         startSec: qStart,
@@ -246,7 +306,7 @@ function classifyDrumHitWindow(
 export function analyzeDrumStemFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; quantizeMode?: StemQuantizeMode } = {}
+  options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode } = {}
 ): FullStemAnalysisResult {
   const sensitivity = options.sensitivity ?? 0.62;
   const minIntervalMs = options.minIntervalMs ?? 65;
@@ -342,7 +402,8 @@ export function analyzeDrumStemFull(
     bpm,
     options.beatOffsetSec ?? 0,
     durationSec,
-    qMode
+    qMode,
+    options.beatTimes
   );
 
   return {
@@ -350,8 +411,11 @@ export function analyzeDrumStemFull(
     quantizeMode: qMode,
     bpm,
     musicalKey: options.musicalKey,
+    camelotKey: options.camelotKey,
     detectedChords: options.detectedChords,
     beatOffsetSec: options.beatOffsetSec,
+    beatTimes: options.beatTimes,
+    downbeats: options.downbeats,
     durationSec,
     drumHits: finalDrumHits,
     noteEvents: [],
@@ -378,7 +442,7 @@ function getMedianNumber(vals: number[]): number {
 export function analyzeMonophonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; quantizeMode?: StemQuantizeMode } = {}
+  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = options.sensitivity ?? 0.62;
@@ -538,7 +602,8 @@ export function analyzeMonophonicStemNotesFull(
     options.beatOffsetSec ?? 0,
     durationSec,
     qMode,
-    true
+    true,
+    options.beatTimes
   );
 
   return {
@@ -547,8 +612,11 @@ export function analyzeMonophonicStemNotesFull(
     quantizeMode: qMode,
     bpm,
     musicalKey: options.musicalKey,
+    camelotKey: options.camelotKey,
     detectedChords: options.detectedChords,
     beatOffsetSec: options.beatOffsetSec,
+    beatTimes: options.beatTimes,
+    downbeats: options.downbeats,
     durationSec,
     drumHits: [],
     noteEvents: finalMonoNotes,
@@ -581,7 +649,7 @@ export function analyzeMonophonicStemNotesFull(
 export function analyzePolyphonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; quantizeMode?: StemQuantizeMode; hopOverride?: number } = {}
+  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode; hopOverride?: number } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
@@ -925,7 +993,8 @@ export function analyzePolyphonicStemNotesFull(
     options.beatOffsetSec ?? 0,
     durationSec,
     qMode,
-    false
+    false,
+    options.beatTimes
   );
 
   return {
@@ -933,8 +1002,11 @@ export function analyzePolyphonicStemNotesFull(
     quantizeMode: qMode,
     bpm,
     musicalKey: options.musicalKey,
+    camelotKey: options.camelotKey,
     detectedChords: options.detectedChords,
     beatOffsetSec: options.beatOffsetSec,
+    beatTimes: options.beatTimes,
+    downbeats: options.downbeats,
     durationSec,
     drumHits: [],
     noteEvents: finalPolyNotes,
@@ -1092,7 +1164,10 @@ export function analyzeBassProgressionFull(
     precomputedPoly?: FullStemAnalysisResult;
     precomputedChords?: DetectedChordSegment[];
     musicalKey?: string;
+    camelotKey?: string;
     beatOffsetSec?: number;
+    beatTimes?: number[];
+    downbeats?: number[];
     quantizeMode?: StemQuantizeMode;
   } = {}
 ): FullStemAnalysisResult {
@@ -1438,13 +1513,15 @@ export function analyzeBassProgressionFull(
 
   const qMode: StemQuantizeMode =
     options.quantizeMode ?? (options.bpmHint ? 'soft' : 'off');
+  const effectiveBeatTimes = options.beatTimes ?? poly.beatTimes;
   const finalBassNotes = quantizeNoteEventsToTempo(
     monoBass,
     resolvedBpm,
     options.beatOffsetSec ?? poly.beatOffsetSec ?? 0,
     durationSec,
     qMode,
-    true
+    true,
+    effectiveBeatTimes
   );
 
   return {
@@ -1453,8 +1530,11 @@ export function analyzeBassProgressionFull(
     quantizeMode: qMode,
     bpm: resolvedBpm,
     musicalKey: options.musicalKey ?? poly.musicalKey,
+    camelotKey: options.camelotKey ?? poly.camelotKey,
     detectedChords: options.precomputedChords ?? poly.detectedChords,
     beatOffsetSec: options.beatOffsetSec ?? poly.beatOffsetSec,
+    beatTimes: effectiveBeatTimes,
+    downbeats: options.downbeats ?? poly.downbeats,
     durationSec,
     drumHits: [],
     noteEvents: finalBassNotes,

@@ -33,8 +33,15 @@ export interface SamplerAnalysisRequest {
   maxPolyphony?: number;
   signature?: string;
   musicalKey?: string;
+  camelotKey?: string;
+  timeSignature?: string;
   detectedChords?: DetectedChordSegment[];
   beatOffsetSec?: number;
+  beatTimes?: number[];
+  downbeats?: number[];
+  seedBeatTimes?: number[];
+  seedDownbeats?: number[];
+  seedKey?: string;
   precomputedPoly?: FullStemAnalysisResult;
 }
 
@@ -52,6 +59,10 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
         bpmHint: req.bpmHint,
         sensitivity: req.sensitivity,
         signature: req.signature,
+        timeSignature: req.timeSignature,
+        seedBeatTimes: req.seedBeatTimes,
+        seedDownbeats: req.seedDownbeats,
+        seedKey: req.seedKey,
       });
       self.postMessage({
         id: req.id,
@@ -77,8 +88,11 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               bpmHint: req.bpmHint,
               lockedBpm: req.lockedBpm,
               musicalKey: req.musicalKey,
+              camelotKey: req.camelotKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              beatTimes: req.beatTimes,
+              downbeats: req.downbeats,
               quantizeMode: qMode,
             })
           : mode === 'polyphonic' && bassFocus
@@ -89,7 +103,10 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               precomputedPoly: req.precomputedPoly,
               precomputedChords: req.detectedChords,
               musicalKey: req.musicalKey,
+              camelotKey: req.camelotKey,
               beatOffsetSec: req.beatOffsetSec,
+              beatTimes: req.beatTimes,
+              downbeats: req.downbeats,
               quantizeMode: qMode,
             })
           : mode === 'monophonic'
@@ -99,28 +116,36 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               lockedBpm: req.lockedBpm,
               bassOnly: bassFocus,
               musicalKey: req.musicalKey,
+              camelotKey: req.camelotKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              beatTimes: req.beatTimes,
+              downbeats: req.downbeats,
               quantizeMode: qMode,
             })
           : req.precomputedPoly && !bassFocus
           ? (() => {
               const targetBpm = req.lockedBpm ?? req.precomputedPoly.bpm;
+              const activeBeats = req.beatTimes ?? req.precomputedPoly.beatTimes;
               const qNotes = quantizeNoteEventsToTempo(
                 req.precomputedPoly.noteEvents,
                 targetBpm,
                 req.beatOffsetSec ?? req.precomputedPoly.beatOffsetSec ?? 0,
                 durSec,
                 qMode,
-                false
+                false,
+                activeBeats
               );
               return {
                 ...req.precomputedPoly,
                 quantizeMode: qMode,
                 bpm: targetBpm,
                 musicalKey: req.musicalKey ?? req.precomputedPoly.musicalKey,
+                camelotKey: req.camelotKey ?? req.precomputedPoly.camelotKey,
                 detectedChords: req.detectedChords ?? req.precomputedPoly.detectedChords,
                 beatOffsetSec: req.beatOffsetSec ?? req.precomputedPoly.beatOffsetSec,
+                beatTimes: activeBeats,
+                downbeats: req.downbeats ?? req.precomputedPoly.downbeats,
                 noteEvents: qNotes,
               };
             })()
@@ -130,8 +155,11 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               bpmHint: req.bpmHint,
               lockedBpm: req.lockedBpm,
               musicalKey: req.musicalKey,
+              camelotKey: req.camelotKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              beatTimes: req.beatTimes,
+              downbeats: req.downbeats,
               quantizeMode: qMode,
             });
 

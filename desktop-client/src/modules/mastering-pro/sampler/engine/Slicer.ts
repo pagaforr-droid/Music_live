@@ -87,8 +87,62 @@ export function sliceByBpmGrid(
   bpm: number,
   division: GridDivision,
   maxSlices = 32,
-  beatOffsetSec = 0
+  beatOffsetSec = 0,
+  beatTimes?: number[]
 ): SampleRegion[] {
+  // Prefer Stem Studio's island-repaired Beat Grid (`beatTimes[]`) when available!
+  if (beatTimes && beatTimes.length >= 2) {
+    const subsPerBeat =
+      division === '1/8' ? 2 : division === '1/16' ? 4 : division === '1/8T' ? 3 : 1;
+    const beatStep = division === '1bar' ? 4 : division === '1/2' ? 2 : 1;
+    const cuts: number[] = [];
+    for (let i = 0; i < beatTimes.length - 1; i += beatStep) {
+      const b0 = beatTimes[i];
+      const bNext = beatTimes[Math.min(beatTimes.length - 1, i + beatStep)];
+      if (bNext <= rangeStartSec + 0.015) continue;
+      if (b0 >= rangeEndSec - 0.015) break;
+      if (subsPerBeat === 1) {
+        const clamped = Math.max(rangeStartSec, Math.min(rangeEndSec, b0));
+        if (cuts.length === 0 || clamped - cuts[cuts.length - 1] >= 0.025) {
+          cuts.push(Number(clamped.toFixed(4)));
+        }
+      } else {
+        const subStep = (bNext - b0) / subsPerBeat;
+        for (let s = 0; s < subsPerBeat; s++) {
+          const t = b0 + s * subStep;
+          if (t < rangeStartSec - 0.01 || t >= rangeEndSec - 0.015) continue;
+          const clamped = Math.max(rangeStartSec, t);
+          if (cuts.length === 0 || clamped - cuts[cuts.length - 1] >= 0.025) {
+            cuts.push(Number(clamped.toFixed(4)));
+          }
+        }
+      }
+      if (cuts.length > maxSlices + 2) break;
+    }
+    if (cuts.length >= 2) {
+      const regions: SampleRegion[] = [];
+      for (let i = 0; i < cuts.length && regions.length < maxSlices; i++) {
+        const st = cuts[i];
+        const fallbackBeat = 60 / Math.max(40, bpm || 120);
+        const en = Math.min(
+          rangeEndSec,
+          i + 1 < cuts.length ? cuts[i + 1] : Number((st + (fallbackBeat * beatStep) / subsPerBeat).toFixed(4))
+        );
+        if (en - st < 0.02) continue;
+        regions.push({
+          id: `reg-grid-${Date.now()}-${i}`,
+          sourceId,
+          name: `Beat ${i + 1} (${division})`,
+          startSec: st,
+          endSec: Number(en.toFixed(4)),
+          loopCrossfadeMs: 8,
+          sliceSource: 'grid',
+        });
+      }
+      if (regions.length > 0) return regions;
+    }
+  }
+
   const safeBpm = Math.max(40, Math.min(240, bpm || 120));
   const beatSec = 60 / safeBpm;
   const stepSec =

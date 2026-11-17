@@ -107,6 +107,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [cloudTargetRole, setCloudTargetRole] = useState<CustomSampleCategory>('kick');
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
   const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | null>(null);
+  const [showBeatGrid, setShowBeatGrid] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -223,6 +224,81 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       }
     }
 
+    // 1B. Overlay Stem Studio Beat Grid (`beatTimes` + `downbeats`) & Chord Progression Guide
+    if (showBeatGrid && (r.importedMemory?.beatTimes?.length || (r.importedMemory?.bpm ?? 0) > 0)) {
+      const mem = r.importedMemory!;
+      const gridBeats =
+        mem.beatTimes && mem.beatTimes.length >= 2
+          ? mem.beatTimes
+          : (() => {
+              const step = 60 / Math.max(40, mem.bpm || 120);
+              const off = mem.beatOffsetSec ?? 0;
+              const arr: number[] = [];
+              let t = off;
+              while (t <= duration + step) {
+                arr.push(t);
+                t += step;
+              }
+              return arr;
+            })();
+      const dbs = mem.downbeats;
+      const downSet = new Set((dbs ?? []).map((d) => Math.round(d * 20)));
+      let lastBarLabelX = -999;
+
+      for (let idx = 0; idx < gridBeats.length; idx++) {
+        const bt = gridBeats[idx];
+        if (bt < viewStartSec - 0.01 || bt > viewEndSec + 0.01) continue;
+        const x = secToX(bt);
+        const isDownbeat = dbs ? downSet.has(Math.round(bt * 20)) : idx % 4 === 0;
+        ctx.strokeStyle = isDownbeat
+          ? 'rgba(0, 229, 255, 0.44)'
+          : 'rgba(0, 229, 255, 0.14)';
+        ctx.lineWidth = isDownbeat ? 1.4 : 1;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+
+        if (isDownbeat && x - lastBarLabelX >= 28 && x >= 2 && x < w - 22) {
+          const barNum = dbs
+            ? Math.max(1, dbs.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
+            : Math.floor(idx / 4) + 1;
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.88)';
+          ctx.font = 'bold 9px monospace';
+          ctx.fillText(`C${barNum}`, x + 3, 11);
+          lastBarLabelX = x;
+        }
+      }
+      ctx.lineWidth = 1;
+
+      if (mem.chords?.length) {
+        let lastChordX = -999;
+        for (const ch of mem.chords) {
+          const cx0 = secToX(ch.startSec);
+          const cx1 = secToX(ch.endSec);
+          if (cx1 < 0 || cx0 > w) continue;
+          if (cx0 >= 0 && cx0 <= w) {
+            ctx.strokeStyle = 'rgba(167, 139, 250, 0.5)';
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(cx0, 0);
+            ctx.lineTo(cx0, h);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          if (cx0 - lastChordX >= 30 && cx1 - cx0 >= 18 && cx0 >= -4 && cx0 < w - 24) {
+            const boxW = Math.min(48, Math.max(20, ch.chord.length * 7 + 8));
+            ctx.fillStyle = 'rgba(109, 40, 217, 0.85)';
+            ctx.fillRect(Math.max(2, cx0 + 2), 14, boxW, 13);
+            ctx.fillStyle = '#EDE9FE';
+            ctx.font = 'bold 9px monospace';
+            ctx.fillText(ch.chord, Math.max(5, cx0 + 5), 24);
+            lastChordX = cx0;
+          }
+        }
+      }
+    }
+
     // 2. Overlay Detected Drum Hits OR Detected Melodic/Polyphonic Notes!
     if (r.analysis) {
       if (r.analysis.mode === 'drums') {
@@ -280,9 +356,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   }, [
     r.originalBuffer,
     r.waveformPyramid,
+    r.importedMemory,
     r.analysis,
     r.currentTimeSec,
     r.abMode,
+    showBeatGrid,
     duration,
     viewStartSec,
     viewEndSec,
@@ -735,8 +813,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               ×2
             </button>{' '}
             <span className="px-2 py-0.5 rounded bg-slate-900 border border-emerald-500/45 text-emerald-300 font-bold">
-              Tono: {r.importedMemory.musicalKey}
+              Tono:{' '}
+              {!r.importedMemory.isTonal ||
+              r.importedMemory.musicalKey.endsWith('m') ||
+              r.importedMemory.musicalKey.toLowerCase().includes('major')
+                ? r.importedMemory.musicalKey
+                : `${r.importedMemory.musicalKey} major`}
             </span>{' '}
+            {r.importedMemory.camelotKey && (
+              <span className="px-2 py-0.5 rounded bg-slate-900 border border-amber-500/45 text-amber-300 font-bold">
+                Camelot: {r.importedMemory.camelotKey}
+              </span>
+            )}{' '}
+            {(r.importedMemory.downbeats?.length ?? 0) > 0 && (
+              <span className="px-2 py-0.5 rounded bg-slate-900 border border-cyan-500/35 text-cyan-200 font-bold">
+                Grilla: {r.importedMemory.downbeats!.length} comp.
+              </span>
+            )}{' '}
             {r.importedMemory.chords.length > 0 ? (
               <>
                 <span className="text-slate-400 ml-1">Acordes: </span>
@@ -833,6 +926,19 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 </select>
               </div>
             )}
+
+            <button
+              type="button"
+              onClick={() => setShowBeatGrid((v) => !v)}
+              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer transition-all ${
+                showBeatGrid
+                  ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 text-[#00E5FF]'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+              }`}
+              title="Mostrar/ocultar grilla musical de compases, pulsos y acordes sobre la forma de onda"
+            >
+              Grilla {showBeatGrid ? 'ON' : 'OFF'}
+            </button>
 
             <button
               type="button"

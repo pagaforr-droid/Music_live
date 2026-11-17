@@ -164,6 +164,21 @@ export async function fetchSongsWithStemsForSampler(): Promise<SongWithStemsFold
 
     return songs.map((s) => {
       const pd = (s.prompter_data || {}) as Record<string, unknown>;
+      const rawBeats = Array.isArray(pd.beatTimes)
+        ? (pd.beatTimes as unknown[]).map(Number).filter((v) => Number.isFinite(v) && v >= 0)
+        : undefined;
+      const rawDownbeats = Array.isArray(pd.downbeats)
+        ? (pd.downbeats as unknown[]).map(Number).filter((v) => Number.isFinite(v) && v >= 0)
+        : undefined;
+      const rawChords = Array.isArray(pd.chords)
+        ? (pd.chords as Array<Record<string, unknown>>)
+            .map((c) => {
+              const t = Number(c.time ?? c.start ?? c.timeSec ?? 0);
+              const chord = typeof c.chord === 'string' ? c.chord.trim() : '';
+              return Number.isFinite(t) && chord ? { timeSec: t, chord } : null;
+            })
+            .filter((x): x is { timeSec: number; chord: string } => x !== null)
+        : undefined;
       return {
         id: s.id,
         title: s.title || 'Canción sin título',
@@ -172,6 +187,13 @@ export async function fetchSongsWithStemsForSampler(): Promise<SongWithStemsFold
         musicalKey: typeof pd.key === 'string' ? pd.key : undefined,
         timeSignature:
           typeof pd.timeSignature === 'string' ? pd.timeSignature : undefined,
+        beatTimes: rawBeats && rawBeats.length > 4 ? rawBeats : undefined,
+        downbeats: rawDownbeats && rawDownbeats.length > 0 ? rawDownbeats : undefined,
+        firstBeatOffset:
+          typeof pd.firstBeatOffset === 'number' && Number.isFinite(pd.firstBeatOffset)
+            ? pd.firstBeatOffset
+            : undefined,
+        prompterChords: rawChords && rawChords.length > 0 ? rawChords : undefined,
         stems: bySong.get(s.id) ?? [],
       };
     });

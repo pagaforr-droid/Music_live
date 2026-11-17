@@ -22,6 +22,7 @@ import {
   analyzeAudioBufferFirst,
   computeAudioMemorySignature,
   getCachedPreImportEntry,
+  rebuildBeatGridFromTempo,
   registerPreImportMemoryEntry,
   type PreImportMemoryEntry,
 } from '../engine/PreImportAnalyzer';
@@ -802,10 +803,31 @@ export function useSamplerEngine() {
         return snapSecToZeroCrossing(activeSource.buffer, clamped, 10);
       }
       if (snapMode === 'grid') {
+        const beats = activeSource.preAnalysis?.beatTimes;
+        if (beats && beats.length >= 2) {
+          let bestTick = clamped;
+          let bestDiff = Infinity;
+          for (let i = 0; i < beats.length - 1; i++) {
+            const b0 = beats[i];
+            const b1 = beats[i + 1];
+            const step = (b1 - b0) / 4;
+            for (let s = 0; s < 4; s++) {
+              const tick = b0 + s * step;
+              const d = Math.abs(tick - clamped);
+              if (d < bestDiff) {
+                bestDiff = d;
+                bestTick = tick;
+              }
+            }
+          }
+          return Math.min(activeSource.buffer.duration, Number(bestTick.toFixed(4)));
+        }
+        const beatOffset = activeSource.preAnalysis?.beatOffsetSec ?? 0;
         const stepSec = 60 / Math.max(40, activeSource.bpm || 120) / 4;
+        const k = Math.round((clamped - beatOffset) / stepSec);
         return Math.min(
           activeSource.buffer.duration,
-          Math.round(clamped / stepSec) * stepSec
+          Math.max(0, Number((beatOffset + k * stepSec).toFixed(4)))
         );
       }
       if (snapMode === 'transient' && activeSourceRegions.length > 0) {
@@ -998,8 +1020,25 @@ export function useSamplerEngine() {
       setSources((prev) =>
         prev.map((src) => {
           if (src.id !== sourceId) return src;
+          let nextGrid: { beatOffsetSec: number; beatTimes: number[]; downbeats: number[] } | null = null;
+          if (src.buffer) {
+            const mono = buildMonoSliceFromBuffer(src.buffer, 0, src.buffer.duration);
+            nextGrid = rebuildBeatGridFromTempo(
+              mono,
+              src.buffer.sampleRate,
+              clamped,
+              src.preAnalysis?.beatOffsetSec ?? 0,
+              src.preAnalysis?.timeSignature ?? '4/4'
+            );
+          }
           const updatedPre = src.preAnalysis
-            ? { ...src.preAnalysis, bpm: clamped }
+            ? {
+                ...src.preAnalysis,
+                bpm: clamped,
+                beatOffsetSec: nextGrid?.beatOffsetSec ?? src.preAnalysis.beatOffsetSec,
+                beatTimes: nextGrid?.beatTimes ?? src.preAnalysis.beatTimes,
+                downbeats: nextGrid?.downbeats ?? src.preAnalysis.downbeats,
+              }
             : undefined;
           if (updatedPre) registerPreImportMemoryEntry(updatedPre);
           return { ...src, bpm: clamped, preAnalysis: updatedPre };
@@ -1008,7 +1047,7 @@ export function useSamplerEngine() {
       if (alsoSyncPattern) {
         setPattern((prev) => ({ ...prev, bpm: clamped }));
       }
-      setStatusMessage(`Tempo ajustado a ${clamped} BPM (Memoria y Sync actualizados).`);
+      setStatusMessage(`Tempo ajustado a ${clamped} BPM (Grilla Stem Studio y Sync actualizados).`);
     },
     []
   );
@@ -1020,6 +1059,7 @@ export function useSamplerEngine() {
       ? selectedRegion.endSec
       : activeSource.buffer.duration;
     const beatOffsetSec = activeSource.preAnalysis?.beatOffsetSec ?? 0;
+    const beatTimes = activeSource.preAnalysis?.beatTimes;
     const sliced = sliceByBpmGrid(
       activeSource.id,
       startSec,
@@ -1027,7 +1067,8 @@ export function useSamplerEngine() {
       activeSource.bpm,
       division,
       32,
-      beatOffsetSec
+      beatOffsetSec,
+      beatTimes
     );
     if (sliced.length > 0) {
       setRegions((prev) => [

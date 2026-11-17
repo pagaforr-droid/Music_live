@@ -23,7 +23,11 @@ export interface ImportedAudioMemoryAnalysis {
   beatOffsetSec: number;
   durationSec: number;
   musicalKey: string;
+  camelotKey?: string;
   keyConfidence: number;
+  timeSignature?: string;
+  beatTimes?: number[];
+  downbeats?: number[];
   isTonal: boolean;
   chords: DetectedChordSegment[];
   chordProgressionSummary: string;
@@ -244,8 +248,11 @@ export interface FullStemAnalysisResult {
   quantizeMode?: StemQuantizeMode;
   bpm: number;
   musicalKey?: string;
+  camelotKey?: string;
   detectedChords?: DetectedChordSegment[];
   beatOffsetSec?: number;
+  beatTimes?: number[];
+  downbeats?: number[];
   durationSec: number;
   drumHits: StemDrumHitEvent[];
   noteEvents: StemNoteEvent[];
@@ -316,6 +323,11 @@ export interface SongWithStemsFolder {
   bandId?: string;
   bpm?: number;
   musicalKey?: string;
+  camelotKey?: string;
   timeSignature?: string;
+  beatTimes?: number[];
+  downbeats?: number[];
+  firstBeatOffset?: number;
+  prompterChords?: Array<{ timeSec: number; chord: string }>;
   stems: SongStemEntry[];
 }

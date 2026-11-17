@@ -17,6 +17,7 @@ import {
   analyzeAudioBufferFirst,
   computeAudioMemorySignature,
   getCachedPreImportEntry,
+  rebuildBeatGridFromTempo,
   registerPreImportMemoryEntry,
   type PreImportMemoryEntry,
 } from '../engine/PreImportAnalyzer';
@@ -316,10 +317,28 @@ export function useStemReplacer() {
     return () => worker?.terminate();
   }, [originalBuffer]);
 
-  // STEP 1 ON IMPORT: Recognize & store Tempo + Musical Key + Chords in memory FIRST
+  // STEP 1 ON IMPORT: Recognize & store Tempo + Stem Studio Beat Grid + Key + Chords in memory FIRST
   const runPreImportAnalysis = useCallback(
-    async (buf: AudioBuffer, bpmHint?: number): Promise<PreImportMemoryEntry> => {
-      const cached = getCachedPreImportEntry(buf);
+    async (
+      buf: AudioBuffer,
+      bpmHintOrOpts?:
+        | number
+        | {
+            bpmHint?: number;
+            timeSignature?: string;
+            seedBeatTimes?: number[];
+            seedDownbeats?: number[];
+            seedKey?: string;
+          }
+    ): Promise<PreImportMemoryEntry> => {
+      const opts =
+        typeof bpmHintOrOpts === 'number'
+          ? { bpmHint: bpmHintOrOpts }
+          : bpmHintOrOpts ?? {};
+      const hasStemStudioSeed = Boolean(
+        opts.seedBeatTimes && opts.seedBeatTimes.length >= 4
+      );
+      const cached = !hasStemStudioSeed ? getCachedPreImportEntry(buf) : null;
       if (cached) {
         importedMemoryRef.current = cached.memory;
         importedPolyRef.current = cached.polyResult;
@@ -330,7 +349,14 @@ export function useStemReplacer() {
       const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
       const signature = computeAudioMemorySignature(mono, buf.sampleRate);
       const runSync = (): PreImportMemoryEntry =>
-        analyzeAudioBufferFirst(buf, { bpmHint, sensitivity: 0.62 });
+        analyzeAudioBufferFirst(buf, {
+          bpmHint: opts.bpmHint,
+          sensitivity: 0.62,
+          timeSignature: opts.timeSignature,
+          seedBeatTimes: opts.seedBeatTimes,
+          seedDownbeats: opts.seedDownbeats,
+          seedKey: opts.seedKey,
+        });
 
       let entry: PreImportMemoryEntry;
       if (typeof Worker !== 'undefined') {
@@ -376,9 +402,13 @@ export function useStemReplacer() {
               sourceId: 'pre-import',
               mono: copy,
               sampleRate: buf.sampleRate,
-              bpmHint,
+              bpmHint: opts.bpmHint,
               sensitivity: 0.62,
               signature,
+              timeSignature: opts.timeSignature,
+              seedBeatTimes: opts.seedBeatTimes,
+              seedDownbeats: opts.seedDownbeats,
+              seedKey: opts.seedKey,
             },
             [copy.buffer]
           );
@@ -429,8 +459,11 @@ export function useStemReplacer() {
               bpmHint: effectiveBpm,
               lockedBpm: activeMem?.bpm,
               musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
               detectedChords: activeMem?.chords,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
               quantizeMode: qMode,
             });
           }
@@ -442,7 +475,10 @@ export function useStemReplacer() {
               precomputedPoly: activePoly ?? undefined,
               precomputedChords: activeMem?.chords,
               musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
               quantizeMode: qMode,
             });
           }
@@ -453,28 +489,36 @@ export function useStemReplacer() {
               lockedBpm: activeMem?.bpm,
               bassOnly: bassFocus,
               musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
               detectedChords: activeMem?.chords,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
               quantizeMode: qMode,
             });
           }
           if (activePoly && !bassFocus) {
             const targetBpm = activeMem?.bpm ?? activePoly.bpm;
+            const activeBeats = activeMem?.beatTimes ?? activePoly.beatTimes;
             const qNotes = quantizeNoteEventsToTempo(
               activePoly.noteEvents,
               targetBpm,
               activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec ?? 0,
               buf.duration,
               qMode,
-              false
+              false,
+              activeBeats
             );
             return {
               ...activePoly,
               quantizeMode: qMode,
               bpm: targetBpm,
               musicalKey: activeMem?.musicalKey ?? activePoly.musicalKey,
+              camelotKey: activeMem?.camelotKey ?? activePoly.camelotKey,
               detectedChords: activeMem?.chords ?? activePoly.detectedChords,
               beatOffsetSec: activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec,
+              beatTimes: activeBeats,
+              downbeats: activeMem?.downbeats ?? activePoly.downbeats,
               noteEvents: qNotes,
             };
           }
@@ -484,8 +528,11 @@ export function useStemReplacer() {
             bpmHint: effectiveBpm,
             lockedBpm: activeMem?.bpm,
             musicalKey: activeMem?.musicalKey,
+            camelotKey: activeMem?.camelotKey,
             detectedChords: activeMem?.chords,
             beatOffsetSec: activeMem?.beatOffsetSec,
+            beatTimes: activeMem?.beatTimes,
+            downbeats: activeMem?.downbeats,
             quantizeMode: qMode,
           });
         };
@@ -538,8 +585,11 @@ export function useStemReplacer() {
                 lockedBpm: activeMem?.bpm,
                 maxPolyphony: poly,
                 musicalKey: activeMem?.musicalKey,
+                camelotKey: activeMem?.camelotKey,
                 detectedChords: activeMem?.chords,
                 beatOffsetSec: activeMem?.beatOffsetSec,
+                beatTimes: activeMem?.beatTimes,
+                downbeats: activeMem?.downbeats,
                 precomputedPoly: activePoly ?? undefined,
               },
               [copy.buffer]
@@ -695,8 +745,19 @@ export function useStemReplacer() {
         setOriginalBuffer(decoded);
         setCurrentTimeSec(0);
 
-        setStatusMessage('Detectando tempo y acordes en memoria...');
-        const pre = await runPreImportAnalysis(decoded, song?.bpm);
+        setStatusMessage('Detectando tempo, grilla Stem Studio y acordes en memoria...');
+        const pre = await runPreImportAnalysis(
+          decoded,
+          song
+            ? {
+                bpmHint: song.bpm,
+                timeSignature: song.timeSignature,
+                seedBeatTimes: song.beatTimes,
+                seedDownbeats: song.downbeats,
+                seedKey: song.musicalKey,
+              }
+            : undefined
+        );
 
         const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStemMode(inferredMode);
@@ -1032,13 +1093,33 @@ export function useStemReplacer() {
     async (rawBpm: number) => {
       const clamped = Math.max(40, Math.min(220, Math.round(rawBpm * 10) / 10));
       const curMem = importedMemoryRef.current;
+      let nextGrid: { beatOffsetSec: number; beatTimes: number[]; downbeats: number[] } | null = null;
+      if (originalBuffer) {
+        const mono = buildMonoSliceFromBuffer(originalBuffer, 0, originalBuffer.duration);
+        nextGrid = rebuildBeatGridFromTempo(
+          mono,
+          originalBuffer.sampleRate,
+          clamped,
+          curMem?.beatOffsetSec ?? 0,
+          curMem?.timeSignature ?? '4/4'
+        );
+      }
       if (curMem) {
         const updatedMem: ImportedAudioMemoryAnalysis = {
           ...curMem,
           bpm: clamped,
+          beatOffsetSec: nextGrid?.beatOffsetSec ?? curMem.beatOffsetSec,
+          beatTimes: nextGrid?.beatTimes ?? curMem.beatTimes,
+          downbeats: nextGrid?.downbeats ?? curMem.downbeats,
         };
         const updatedPoly = importedPolyRef.current
-          ? { ...importedPolyRef.current, bpm: clamped }
+          ? {
+              ...importedPolyRef.current,
+              bpm: clamped,
+              beatOffsetSec: nextGrid?.beatOffsetSec ?? importedPolyRef.current.beatOffsetSec,
+              beatTimes: nextGrid?.beatTimes ?? importedPolyRef.current.beatTimes,
+              downbeats: nextGrid?.downbeats ?? importedPolyRef.current.downbeats,
+            }
           : null;
         importedMemoryRef.current = updatedMem;
         importedPolyRef.current = updatedPoly;

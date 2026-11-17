@@ -122,20 +122,52 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
 
     const secToX = (sec: number) => ((sec - viewStartSec) / viewSpanSec) * w;
 
-    // Optional BPM Grid (phase-aligned to beatOffsetSec in memory)
+    // Stem Studio Beat Grid (`beatTimes` & `downbeats`, fallback to regular offset+bpm)
     if (showBpmGrid && source.bpm > 0) {
-      const beatSec = 60 / source.bpm;
-      const offset = source.preAnalysis?.beatOffsetSec ?? 0;
-      const firstBeat = offset + Math.floor((viewStartSec - offset) / beatSec) * beatSec;
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
-      ctx.beginPath();
-      for (let t = firstBeat; t <= viewEndSec; t += beatSec) {
-        if (t < viewStartSec) continue;
-        const x = secToX(t);
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
+      const beats = source.preAnalysis?.beatTimes;
+      const downbeats = source.preAnalysis?.downbeats;
+      if (beats && beats.length >= 2) {
+        const downSet = new Set((downbeats ?? []).map((d) => Math.round(d * 20)));
+        let lastBarX = -999;
+        beats.forEach((bt, idx) => {
+          if (bt < viewStartSec - 0.01 || bt > viewEndSec + 0.01) return;
+          const x = secToX(bt);
+          const isDown = downbeats
+            ? downSet.has(Math.round(bt * 20))
+            : idx % 4 === 0;
+          ctx.strokeStyle = isDown
+            ? 'rgba(0, 229, 255, 0.36)'
+            : 'rgba(0, 229, 255, 0.12)';
+          ctx.lineWidth = isDown ? 1.4 : 1;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, h);
+          ctx.stroke();
+          if (isDown && x - lastBarX >= 28 && x < w - 18) {
+            const barNum = downbeats
+              ? Math.max(1, downbeats.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
+              : Math.floor(idx / 4) + 1;
+            ctx.fillStyle = 'rgba(0, 229, 255, 0.72)';
+            ctx.font = 'bold 9px monospace';
+            ctx.fillText(`C${barNum}`, x + 3, h - 6);
+            lastBarX = x;
+          }
+        });
+        ctx.lineWidth = 1;
+      } else {
+        const beatSec = 60 / source.bpm;
+        const offset = source.preAnalysis?.beatOffsetSec ?? 0;
+        const firstBeat = offset + Math.floor((viewStartSec - offset) / beatSec) * beatSec;
+        ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
+        ctx.beginPath();
+        for (let t = firstBeat; t <= viewEndSec; t += beatSec) {
+          if (t < viewStartSec) continue;
+          const x = secToX(t);
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, h);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
 
     // Stored Pre-Import Chord Progression Overlay
