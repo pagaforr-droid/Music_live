@@ -64,7 +64,7 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
       <input
         ref={fileRef}
         type="file"
-        accept=".wav,.mp3,.flac,.ogg,.m4a,audio/*"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,.aiff,.aif,audio/*"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -80,9 +80,10 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
           onClick={() => fileRef.current?.click()}
           disabled={isBusy}
           className="px-3 py-1.5 rounded-xl bg-[#00E5FF] hover:bg-cyan-300 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+          title="Subir audio desde tu PC (WAV, MP3, FLAC, OGG, M4A, AAC)"
         >
           <Upload size={13} />
-          <span>Cargar Audio</span>
+          <span>Subir del PC</span>
         </button>
 
         <button

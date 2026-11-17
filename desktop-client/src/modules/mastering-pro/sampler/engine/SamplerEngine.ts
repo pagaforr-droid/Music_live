@@ -649,6 +649,12 @@ export class SamplerEngine {
       pattern,
       bars
     );
+    const hasAudioEvents = events.some((ev) => Boolean(this.pads[ev.padIndex]?.regionId));
+    if (!hasAudioEvents) {
+      throw new Error(
+        'El secuenciador no tiene pasos activos con pads cargados. Activa al menos 1 paso o exporta el Pad / Región.'
+      );
+    }
     const tailSec = seamlessLoop ? 0 : 1.6;
     const totalFrames = Math.max(256, Math.ceil((totalDurationSec + tailSec) * sr));
 

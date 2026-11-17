@@ -173,6 +173,15 @@ export type DefaultMelodicPresetId =
   | 'inst-guitar-electric'
   | 'inst-bass-finger'
   | 'inst-bass-sub808'
+  | 'inst-bass-astra-sub'
+  | 'inst-bass-astra-pluck'
+  | 'inst-bass-sh101-funk'
+  | 'inst-bass-juno-chorus'
+  | 'inst-bass-jupiter-fat'
+  | 'inst-bass-monark-sub'
+  | 'inst-bass-90s-pad'
+  | 'inst-bass-autowah'
+  | 'inst-bass-suboctave'
   | 'inst-synth-warm';
 
 export type DefaultInstrumentId = DefaultDrumPresetId | DefaultMelodicPresetId;

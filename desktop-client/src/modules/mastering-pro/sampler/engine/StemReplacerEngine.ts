@@ -210,7 +210,11 @@ export function renderFullStemReplacement(params: {
         Math.max(loopStart + 256, zone.loopEndSample ?? Math.floor(srcLen * 0.8))
       );
       const loopLen = loopEnd - loopStart;
-      const canLoopSustain = melodicSlot.sourceType !== 'preset' || loopLen > 256;
+      const hasExplicitLoop =
+        (melodicSlot.sourceType !== 'preset' ||
+          (zone.loopStartSample !== undefined && zone.loopEndSample !== undefined)) &&
+        loopLen > 64;
+      const loopLimit = hasExplicitLoop ? loopEnd : srcLen - 4;
 
       let srcPos = 0;
       for (let i = 0; i < noteOutSamples; i++) {
@@ -222,9 +226,8 @@ export function renderFullStemReplacement(params: {
           env = Math.cos(Math.min(1, rNorm) * Math.PI * 0.5);
         }
 
-        const loopLimit = melodicSlot.sourceType !== 'preset' ? loopEnd : srcLen - 4;
         if (srcPos >= loopLimit) {
-          if (canLoopSustain && loopLen > 64) {
+          if (hasExplicitLoop) {
             srcPos = loopStart + ((srcPos - loopStart) % loopLen);
           } else {
             break;

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  Download,
   ZoomIn,
   ZoomOut,
   Maximize2,
@@ -9,6 +10,7 @@ import {
   Square,
   Repeat,
   Scissors,
+  Upload,
 } from 'lucide-react';
 import type { SampleRegion, SampleSource } from '../types/sampler.types';
 import type { WaveformPyramid } from '../workers/waveformPeaks.worker';
@@ -18,6 +20,7 @@ interface SampleWaveformEditorProps {
   source: SampleSource | null;
   regions: SampleRegion[];
   selectedRegion: SampleRegion | null;
+  selectedPadIndex?: number;
   pyramid: WaveformPyramid | null;
   isAuditioning: boolean;
   loopAudition: boolean;
@@ -28,12 +31,17 @@ interface SampleWaveformEditorProps {
   onCreateSliceAtSec: (sec: number) => void;
   onToggleAudition: () => void;
   onToggleLoopAudition: () => void;
+  onDropAudioFile?: (file: File) => void;
+  onClickUploadAudio?: () => void;
+  onAssignRegionToSelectedPad?: () => void;
+  onQuickExportRegion?: () => void;
 }
 
 export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
   source,
   regions,
   selectedRegion,
+  selectedPadIndex = 0,
   pyramid,
   isAuditioning,
   loopAudition,
@@ -44,6 +52,10 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
   onCreateSliceAtSec,
   onToggleAudition,
   onToggleLoopAudition,
+  onDropAudioFile,
+  onClickUploadAudio,
+  onAssignRegionToSelectedPad,
+  onQuickExportRegion,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [zoom, setZoom] = useState<number>(1);
@@ -51,6 +63,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
   const [dragMode, setDragMode] = useState<'none' | 'start' | 'end' | 'new'>('none');
   const [dragAnchorSec, setDragAnchorSec] = useState<number>(0);
   const [hoverSec, setHoverSec] = useState<number | null>(null);
+  const [isFileDragOver, setIsFileDragOver] = useState<boolean>(false);
 
   const duration = source?.buffer.duration ?? 0;
   const viewSpanSec = duration > 0 ? duration / zoom : 1;
@@ -355,19 +368,44 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
           </button>
 
           {selectedRegion && (
-            <button
-              type="button"
-              onClick={() =>
-                onCreateSliceAtSec(
-                  (selectedRegion.startSec + selectedRegion.endSec) / 2
-                )
-              }
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 flex items-center gap-1 cursor-pointer"
-              title="Dividir la región actual en 2 (o haz doble clic en la onda)"
-            >
-              <Scissors size={12} className="text-emerald-400" />
-              <span>Cortar Mitad</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  onCreateSliceAtSec(
+                    (selectedRegion.startSec + selectedRegion.endSec) / 2
+                  )
+                }
+                className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 flex items-center gap-1 cursor-pointer"
+                title="Dividir la región actual en 2 (o haz doble clic en la onda)"
+              >
+                <Scissors size={12} className="text-emerald-400" />
+                <span>Cortar Mitad</span>
+              </button>
+
+              {onAssignRegionToSelectedPad && (
+                <button
+                  type="button"
+                  onClick={onAssignRegionToSelectedPad}
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-xs font-mono font-bold text-[#FF6B00] cursor-pointer"
+                  title={`Asignar la región seleccionada al Pad ${selectedPadIndex + 1}`}
+                >
+                  → Pad {selectedPadIndex + 1}
+                </button>
+              )}
+
+              {onQuickExportRegion && (
+                <button
+                  type="button"
+                  onClick={onQuickExportRegion}
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/50 text-xs font-mono font-bold text-emerald-300 flex items-center gap-1 cursor-pointer"
+                  title="Exportar esta región sampleada como WAV 24-bit directo a tu PC"
+                >
+                  <Download size={12} />
+                  <span>Exportar Corte al PC</span>
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -419,8 +457,31 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
         </div>
       </div>
 
-      {/* Main Canvas */}
-      <div className="relative w-full h-44 rounded-xl overflow-hidden border border-slate-800 bg-[#040711]">
+      {/* Main Canvas (supports direct Drag & Drop of audio files from PC) */}
+      <div
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault();
+            setIsFileDragOver(true);
+          }
+        }}
+        onDragLeave={() => setIsFileDragOver(false)}
+        onDrop={(e) => {
+          const f = e.dataTransfer.files?.[0];
+          if (f && onDropAudioFile) {
+            e.preventDefault();
+            setIsFileDragOver(false);
+            onDropAudioFile(f);
+          } else {
+            setIsFileDragOver(false);
+          }
+        }}
+        className={`relative w-full h-44 rounded-xl overflow-hidden border bg-[#040711] transition-all ${
+          isFileDragOver
+            ? 'border-[#00E5FF] shadow-[0_0_24px_rgba(0,229,255,0.28)]'
+            : 'border-slate-800'
+        }`}
+      >
         <canvas
           ref={canvasRef}
           onMouseDown={handleMouseDown}
@@ -433,8 +494,21 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
           onWheel={handleWheel}
           onDoubleClick={handleDoubleClick}
           className="w-full h-full block cursor-crosshair"
-          title="Arrastra las asas S/E · Shift+Arrastra para re-seleccionar · Doble clic para cortar slice · Rueda para Zoom"
+          title="Arrastra un archivo del PC aquí · Arrastra asas S/E · Doble clic para cortar slice · Rueda para Zoom"
         />
+
+        {!source && onClickUploadAudio && (
+          <div className="pointer-events-none absolute inset-0 flex items-end justify-center pb-4">
+            <button
+              type="button"
+              onClick={onClickUploadAudio}
+              className="pointer-events-auto px-3.5 py-1.5 rounded-xl bg-[#00E5FF]/15 hover:bg-[#00E5FF] border border-[#00E5FF]/60 text-[#00E5FF] hover:text-slate-950 text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition-all"
+            >
+              <Upload size={13} />
+              <span>Subir Archivo del PC para Samplear</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Horizontal Pan Scrollbar */}

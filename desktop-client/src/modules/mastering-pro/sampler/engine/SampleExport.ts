@@ -99,13 +99,34 @@ export async function encodeBufferToWav24WithMetadata(
   return new Blob([out], { type: 'audio/wav' });
 }
 
+const VALID_MP3_RATES = new Set([16000, 22050, 24000, 32000, 44100, 48000]);
+
+async function ensureMp3CompatibleBuffer(buffer: AudioBuffer): Promise<AudioBuffer> {
+  if (VALID_MP3_RATES.has(buffer.sampleRate)) {
+    return buffer;
+  }
+  const targetSr = 48000;
+  const targetLen = Math.max(1, Math.ceil(buffer.duration * targetSr));
+  const offCtx = new OfflineAudioContext(
+    Math.min(2, Math.max(1, buffer.numberOfChannels)),
+    targetLen,
+    targetSr
+  );
+  const src = offCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(offCtx.destination);
+  src.start(0);
+  return offCtx.startRendering();
+}
+
 export async function encodeBufferToMp3(
   buffer: AudioBuffer,
   kbps = 320
 ): Promise<Blob> {
   const lamejs = await loadLameJs();
-  const numChannels = Math.min(2, Math.max(1, buffer.numberOfChannels));
-  const sr = buffer.sampleRate;
+  const safeBuffer = await ensureMp3CompatibleBuffer(buffer);
+  const numChannels = Math.min(2, Math.max(1, safeBuffer.numberOfChannels));
+  const sr = safeBuffer.sampleRate;
   const encoder = new lamejs.Mp3Encoder(numChannels, sr, kbps);
 
   const floatToInt16 = (f: Float32Array): Int16Array => {
@@ -117,9 +138,9 @@ export async function encodeBufferToMp3(
     return out;
   };
 
-  const left = floatToInt16(buffer.getChannelData(0));
+  const left = floatToInt16(safeBuffer.getChannelData(0));
   const right =
-    numChannels > 1 ? floatToInt16(buffer.getChannelData(1)) : left;
+    numChannels > 1 ? floatToInt16(safeBuffer.getChannelData(1)) : left;
 
   const blockSize = 1152;
   const mp3Parts: Uint8Array[] = [];
@@ -194,13 +215,28 @@ export async function exportSlicePackZip(params: {
   return zip.generateAsync({ type: 'blob' });
 }
 
+export function sanitizeDownloadBaseName(raw: string, fallback = 'audio_sample'): string {
+  const cleaned = (raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || fallback;
+}
+
 export function triggerFileDownload(blob: Blob, fileName: string): void {
+  if (!blob || blob.size === 0) {
+    throw new Error('No se pudo generar el archivo de descarga (archivo vacío).');
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
+  a.style.display = 'none';
+  a.rel = 'noopener';
   a.href = url;
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }

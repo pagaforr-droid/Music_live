@@ -1,9 +1,11 @@
+import { buildCrossfadedLoopArrays } from './LoopCrossfade';
 import { detectPitchYin, midiNoteToName } from './PitchDetector';
 import {
   arraysToAudioBuffer,
   normalizeStereoInPlace,
   removeDcOffsetInPlace,
 } from './SampleBufferOps';
+import { synthesizeProBassZone, type ProBassPresetId } from './SynthBassDsp';
 import type {
   CustomSampleCategory,
   DefaultDrumPresetId,
@@ -17,6 +19,8 @@ export interface PresetCatalogEntry {
   label: string;
   category: DrumPieceRole | 'melodic';
   description: string;
+  group?: 'bass' | 'keys-guitar';
+  badge?: string;
 }
 
 export const DRUM_PRESET_CATALOG: PresetCatalogEntry[] = [
@@ -32,14 +36,43 @@ export const DRUM_PRESET_CATALOG: PresetCatalogEntry[] = [
 ];
 
 export const MELODIC_PRESET_CATALOG: PresetCatalogEntry[] = [
-  { id: 'inst-piano-grand', label: 'Grand Piano Estudio', category: 'melodic', description: 'Armónicos inarmónicos naturales y ataque de martillo' },
-  { id: 'inst-piano-rhodes', label: 'Rhodes Eléctrico', category: 'melodic', description: 'Tine suave + cuerpo cálido estéreo' },
-  { id: 'inst-guitar-acoustic', label: 'Guitarra Acústica (Física)', category: 'melodic', description: 'Cuerda punteada Karplus-Strong con caja acústica' },
-  { id: 'inst-guitar-electric', label: 'Guitarra Eléctrica Limpia', category: 'melodic', description: 'Pastilla mástil cálida y sustain dulce' },
-  { id: 'inst-bass-finger', label: 'Bajo Eléctrico Finger', category: 'melodic', description: 'Cuerda grave cálida con ataque de dedo' },
-  { id: 'inst-bass-sub808', label: 'Bajo Sub 808 Limpio', category: 'melodic', description: 'Fundamental pura con calidez analógica' },
-  { id: 'inst-synth-warm', label: 'Synth Teclado Cálido', category: 'melodic', description: 'Voces estéreo detune suavizadas' },
+  { id: 'inst-piano-grand', label: 'Grand Piano Estudio', category: 'melodic', group: 'keys-guitar', badge: 'PIANO', description: 'Armónicos inarmónicos naturales y ataque de martillo' },
+  { id: 'inst-piano-rhodes', label: 'Rhodes Eléctrico', category: 'melodic', group: 'keys-guitar', badge: 'RHODES', description: 'Tine suave + cuerpo cálido estéreo' },
+  { id: 'inst-guitar-acoustic', label: 'Guitarra Acústica (Física)', category: 'melodic', group: 'keys-guitar', badge: 'ACÚSTICA', description: 'Cuerda punteada Karplus-Strong con caja acústica' },
+  { id: 'inst-guitar-electric', label: 'Guitarra Eléctrica Limpia', category: 'melodic', group: 'keys-guitar', badge: 'ELÉCTRICA', description: 'Pastilla mástil cálida y sustain dulce' },
+  { id: 'inst-synth-warm', label: 'Synth Teclado Cálido', category: 'melodic', group: 'keys-guitar', badge: 'SYNTH', description: 'Voces estéreo detune suavizadas' },
+  { id: 'inst-bass-finger', label: 'Bajo Eléctrico Finger', category: 'melodic', group: 'bass', badge: 'FINGER', description: 'Cuerda grave cálida con ataque de dedo' },
+  { id: 'inst-bass-sub808', label: 'Bajo Sub 808 Limpio', category: 'melodic', group: 'bass', badge: 'SUB 808', description: 'Fundamental pura con calidez analógica' },
+  { id: 'inst-bass-astra-sub', label: 'Astra Hybrid Sub-Bass', category: 'melodic', group: 'bass', badge: 'ASTRA FM', description: 'Sub pesado limpio FM + wavetable con presencia moderna' },
+  { id: 'inst-bass-astra-pluck', label: 'Astra Hybrid FM Pluck', category: 'melodic', group: 'bass', badge: 'ASTRA PLUCK', description: 'Pluck moderno FM + VA/wavetable que corta la mezcla' },
+  { id: 'inst-bass-sh101-funk', label: 'SH-101 Disco-Funk Pluck', category: 'melodic', group: 'bass', badge: 'SH-101', description: 'Sinte mono icónico Disco-Funk / Pop con filtro OTA punchy' },
+  { id: 'inst-bass-juno-chorus', label: 'Juno-106 Analog Chorus', category: 'melodic', group: 'bass', badge: 'JUNO-106', description: 'DCO analógico pop retro con chorus BBD estéreo mono-safe' },
+  { id: 'inst-bass-jupiter-fat', label: 'Jupiter-8 Fat Pop Bass', category: 'melodic', group: 'bass', badge: 'JUPITER-8', description: 'Doble VCO analógico ancho para pop retro y synthwave' },
+  { id: 'inst-bass-monark-sub', label: 'Monark Ladder Sub Grueso', category: 'melodic', group: 'bass', badge: 'MONARK', description: 'Emulación Ladder 3-VCO denso ideal para empalmar bajo acústico' },
+  { id: 'inst-bass-90s-pad', label: 'Pad de Bajo Años 90', category: 'melodic', group: 'bass', badge: '90s PAD', description: 'Pad organ-sub cálido estilo 90s House/R&B con sustain continuo' },
+  { id: 'inst-bass-autowah', label: 'Funk Auto-Wah Envelope', category: 'melodic', group: 'bass', badge: 'AUTO-WAH', description: 'Filtro resonante dinámico Auto-Wah con núcleo sub firme' },
+  { id: 'inst-bass-suboctave', label: 'Sub-Octava Analógica', category: 'melodic', group: 'bass', badge: 'SUB-OCT', description: 'Refuerzo -1 octava analógico para engordar bajos finos' },
 ];
+
+export const BASS_PRESET_CATALOG: PresetCatalogEntry[] = MELODIC_PRESET_CATALOG.filter(
+  (entry) => entry.group === 'bass'
+);
+
+export function isBassPresetId(id: DefaultInstrumentId): boolean {
+  return id.startsWith('inst-bass-');
+}
+
+const PRO_BASS_IDS = new Set<string>([
+  'inst-bass-astra-sub',
+  'inst-bass-astra-pluck',
+  'inst-bass-sh101-funk',
+  'inst-bass-juno-chorus',
+  'inst-bass-jupiter-fat',
+  'inst-bass-monark-sub',
+  'inst-bass-90s-pad',
+  'inst-bass-autowah',
+  'inst-bass-suboctave',
+]);
 
 export interface ZoneSampleBuffer {
   rootMidi: number;
@@ -205,6 +238,10 @@ function buildMelodicZoneArrays(
   midiRoot: number,
   sr: number
 ): ZoneSampleBuffer {
+  if (PRO_BASS_IDS.has(id)) {
+    return synthesizeProBassZone(id as ProBassPresetId, midiRoot, sr);
+  }
+
   const f0 = 440 * Math.pow(2, (midiRoot - 69) / 12);
   const durSec = id.startsWith('inst-bass') ? 2.4 : 2.8;
   const len = Math.floor(sr * durSec);
@@ -260,8 +297,6 @@ function buildMelodicZoneArrays(
       left: L,
       right: R,
       peakOffsetSamples: Math.round(sr * 0.002),
-      loopStartSample: Math.round(sr * 0.35),
-      loopEndSample: Math.round(sr * 1.4),
     };
   }
 
@@ -346,13 +381,18 @@ function buildMelodicZoneArrays(
     R[i] = lpR * atk * fade;
   }
   normalizeStereoInPlace(L, R, -2.5);
+  const synthLoopStart = Math.round(sr * 0.45);
+  const synthLoopEnd = Math.round(sr * 1.8);
+  const synthXf = buildCrossfadedLoopArrays(L, R, sr, synthLoopStart, synthLoopEnd, 36);
+  L.set(synthXf.left, synthLoopStart);
+  R.set(synthXf.right, synthLoopStart);
   return {
     rootMidi: midiRoot,
     left: L,
     right: R,
     peakOffsetSamples: Math.round(sr * 0.01),
-    loopStartSample: Math.round(sr * 0.45),
-    loopEndSample: Math.round(sr * 1.8),
+    loopStartSample: synthLoopStart,
+    loopEndSample: synthLoopEnd,
   };
 }
 
@@ -368,7 +408,8 @@ export function getPresetZones(
   if (presetId.startsWith('drum-')) {
     zones = [buildDrumPresetArrays(presetId as DefaultDrumPresetId, sampleRate)];
   } else {
-    const zoneRoots = [36, 48, 60, 72]; // C2, C3, C4, C5 multi-sampled across 4 octaves
+    // 5 octave zones (C1..C5) for basses so sub-register notes (E1..B1) track cleanly; 4 zones (C2..C5) for keys/guitars
+    const zoneRoots = isBassPresetId(presetId) ? [24, 36, 48, 60, 72] : [36, 48, 60, 72];
     zones = zoneRoots.map((r) =>
       buildMelodicZoneArrays(presetId as DefaultMelodicPresetId, r, sampleRate)
     );
@@ -382,7 +423,10 @@ export function getPresetAuditionBuffer(
   presetId: DefaultInstrumentId
 ): AudioBuffer {
   const zones = getPresetZones(presetId, ctx.sampleRate);
-  const chosen = zones.length > 1 ? zones[Math.min(zones.length - 1, 2)] : zones[0]; // C4 for melodic
+  const targetMidi = isBassPresetId(presetId) ? 36 : 60; // C2 for basses, C4 for keys/guitars
+  const chosen =
+    zones.find((z) => z.rootMidi === targetMidi) ??
+    (zones.length > 1 ? zones[Math.min(zones.length - 1, 2)] : zones[0]);
   return arraysToAudioBuffer(ctx, chosen.left, chosen.right, ctx.sampleRate);
 }
 

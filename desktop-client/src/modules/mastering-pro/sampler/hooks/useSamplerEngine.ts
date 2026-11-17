@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyTexturePresetToPadParams,
+  arraysToAudioBuffer,
   createDefaultPads,
   createDefaultPattern,
   detectSilenceBounds,
   snapSecToZeroCrossing,
 } from '../engine/SampleBufferOps';
+import {
+  BASS_PRESET_CATALOG,
+  getPresetAuditionBuffer,
+  getPresetZones,
+  isBassPresetId,
+  MELODIC_PRESET_CATALOG,
+} from '../engine/StudioSampleBank';
 import {
   loadKitTempFromIndexedDb,
   saveKitTempToIndexedDb,
@@ -21,6 +29,7 @@ import {
   type GridDivision,
 } from '../engine/Slicer';
 import type {
+  DefaultInstrumentId,
   PadVoiceParams,
   SampleKit,
   SamplePad,
@@ -62,6 +71,10 @@ export function useSamplerEngine() {
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [pads, setPads] = useState<SamplePad[]>(() => createDefaultPads());
   const [selectedPadIndex, setSelectedPadIndex] = useState<number>(0);
+  const padsRef = useRef<SamplePad[]>(pads);
+  padsRef.current = pads;
+  const selectedPadIndexRef = useRef<number>(selectedPadIndex);
+  selectedPadIndexRef.current = selectedPadIndex;
   const [pattern, setPattern] = useState<SamplerPattern>(() => createDefaultPattern(120, 16));
 
   const [activePadSet, setActivePadSet] = useState<Set<number>>(new Set());
@@ -188,12 +201,16 @@ export function useSamplerEngine() {
 
       const cleanBase = name.replace(/\.[^.]+$/, '');
       const bounds = detectSilenceBounds(buffer, -48);
+      const safeEndSec = Math.min(
+        buffer.duration,
+        Math.max(bounds.startSec + Math.min(0.05, buffer.duration * 0.5), bounds.endSec)
+      );
       const defaultRegion: SampleRegion = {
         id: `reg-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         sourceId: srcId,
         name: targetPadIndex !== undefined ? cleanBase : `${cleanBase} (Región 1)`,
-        startSec: bounds.startSec,
-        endSec: Math.max(bounds.startSec + 0.05, bounds.endSec),
+        startSec: Math.min(bounds.startSec, Math.max(0, safeEndSec - 0.01)),
+        endSec: Math.max(0.01, safeEndSec),
         loopCrossfadeMs: 10,
         sliceSource: 'manual',
       };
@@ -220,22 +237,33 @@ export function useSamplerEngine() {
           `Audio "${name}" asignado al Pad ${targetPadIndex + 1} (${buffer.duration.toFixed(2)}s · ${pitch.noteName}).`
         );
       } else {
-        // Assign pad 0 cleanly if currently empty
-        setPads((prev) => {
-          if (!prev[0].regionId) {
-            const next = [...prev];
-            next[0] = {
-              ...next[0],
-              regionId: defaultRegion.id,
-              label: defaultRegion.name.slice(0, 18),
-            };
-            return next;
-          }
-          return prev;
-        });
-        setStatusMessage(
-          `Audio "${name}" cargado (${buffer.duration.toFixed(2)}s · ${bpm} BPM · Nota sugerida ${pitch.noteName}).`
-        );
+        const currentPads = padsRef.current;
+        const curSel = selectedPadIndexRef.current;
+        const autoPadIdx = !currentPads[curSel]?.regionId
+          ? curSel
+          : currentPads.findIndex((p) => !p.regionId);
+
+        if (autoPadIdx >= 0) {
+          setPads((prev) =>
+            prev.map((p, idx) =>
+              idx === autoPadIdx
+                ? {
+                    ...p,
+                    regionId: defaultRegion.id,
+                    label: cleanBase.slice(0, 18),
+                  }
+                : p
+            )
+          );
+          setSelectedPadIndex(autoPadIdx);
+          setStatusMessage(
+            `Audio "${name}" cargado en Pad ${autoPadIdx + 1} (${buffer.duration.toFixed(2)}s · ${bpm} BPM · ${pitch.noteName}).`
+          );
+        } else {
+          setStatusMessage(
+            `Audio "${name}" cargado en forma de onda (${buffer.duration.toFixed(2)}s · ${bpm} BPM). Pulsa "→ Pad" o "Auto-Slice" para asignarlo.`
+          );
+        }
       }
     },
     []
@@ -299,6 +327,13 @@ export function useSamplerEngine() {
     }, 1500);
     return () => clearTimeout(timer);
   }, [kitId, kitName, sources, regions, pads, pattern]);
+
+  const loadExternalBufferForSampling = useCallback(
+    (buffer: AudioBuffer, title: string) => {
+      registerLoadedAudioBuffer(buffer, title, 'file', { fileName: title });
+    },
+    [registerLoadedAudioBuffer]
+  );
 
   const loadAudioFile = async (file: File) => {
     const engine = engineRef.current;
@@ -410,6 +445,152 @@ export function useSamplerEngine() {
       fileName: 'Demo_120BPM.wav',
     });
   };
+
+  const buildStudioPresetSourceAndRegion = useCallback(
+    (ctx: AudioContext, presetId: DefaultInstrumentId) => {
+      const sr = ctx.sampleRate;
+      const zones = getPresetZones(presetId, sr);
+      const isBass = isBassPresetId(presetId);
+      const targetMidi = isBass ? 36 : 60;
+      const zone =
+        zones.find((z) => z.rootMidi === targetMidi) ??
+        (zones.length > 1 ? zones[Math.min(zones.length - 1, 2)] : zones[0]);
+      const buf = arraysToAudioBuffer(ctx, zone.left, zone.right, sr);
+      const meta = MELODIC_PRESET_CATALOG.find((p) => p.id === presetId);
+      const label = meta?.label ?? presetId;
+      const srcId = `src-preset-${presetId}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+
+      const src: SampleSource = {
+        id: srcId,
+        name: label,
+        origin: 'file',
+        buffer: buf,
+        bpm: pattern.bpm || 120,
+        rootNote: zone.rootMidi,
+        detectedPitchHz: Number((440 * Math.pow(2, (zone.rootMidi - 69) / 12)).toFixed(2)),
+        provenance: { fileName: `${presetId}.wav` },
+      };
+
+      const hasLoop =
+        zone.loopStartSample !== undefined && zone.loopEndSample !== undefined;
+      const reg: SampleRegion = {
+        id: `reg-preset-${presetId}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        sourceId: srcId,
+        name: meta?.badge ? `${meta.badge} · ${label}` : label,
+        startSec: 0,
+        endSec: buf.duration,
+        loopStartSec: hasLoop ? zone.loopStartSample! / sr : undefined,
+        loopEndSec: hasLoop ? zone.loopEndSample! / sr : undefined,
+        loopCrossfadeMs: hasLoop ? 36 : 10,
+        sliceSource: 'manual',
+        classification: 'melodic',
+      };
+
+      return { src, reg, meta, isBass, hasLoop };
+    },
+    [pattern.bpm]
+  );
+
+  const auditionStudioPreset = useCallback((presetId: DefaultInstrumentId) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const ctx = engine.ensureContext();
+    const buf = getPresetAuditionBuffer(ctx, presetId);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = 0.85;
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start();
+  }, []);
+
+  const loadStudioPresetToPad = useCallback(
+    (presetId: DefaultInstrumentId, padIndex?: number) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const ctx = engine.ensureContext();
+      const targetIdx = padIndex ?? selectedPadIndex;
+      const { src, reg, meta, isBass, hasLoop } = buildStudioPresetSourceAndRegion(
+        ctx,
+        presetId
+      );
+
+      setSources((prev) => [...prev, src]);
+      setActiveSourceId(src.id);
+      setRegions((prev) => [...prev, reg]);
+      setSelectedRegionId(reg.id);
+      setPads((prev) =>
+        prev.map((p, idx) =>
+          idx === targetIdx
+            ? {
+                ...p,
+                regionId: reg.id,
+                label: (meta?.badge || meta?.label || presetId).slice(0, 18),
+                params: {
+                  ...p.params,
+                  playMode: hasLoop ? 'loop' : 'oneshot',
+                  chokeGroup: isBass ? 1 : p.params.chokeGroup,
+                  amp: {
+                    ...p.params.amp,
+                    attackMs: 2,
+                    releaseMs: isBass ? 180 : 120,
+                  },
+                },
+              }
+            : p
+        )
+      );
+      setSelectedPadIndex(targetIdx);
+      setStatusMessage(
+        `Sonido "${src.name}" cargado en Pad ${targetIdx + 1} (Root ${
+          isBass ? 'C2' : 'C4'
+        } · listo para Modo Cromático y Secuenciador).`
+      );
+    },
+    [buildStudioPresetSourceAndRegion, selectedPadIndex]
+  );
+
+  const loadProBassPackToPads = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const ctx = engine.ensureContext();
+    const built = BASS_PRESET_CATALOG.slice(0, 16).map((entry) =>
+      buildStudioPresetSourceAndRegion(ctx, entry.id)
+    );
+    if (built.length === 0) return;
+
+    setSources((prev) => [...prev, ...built.map((b) => b.src)]);
+    setActiveSourceId(built[0].src.id);
+    setRegions((prev) => [...prev, ...built.map((b) => b.reg)]);
+    setSelectedRegionId(built[0].reg.id);
+    setPads((prev) =>
+      prev.map((p, idx) => {
+        const item = built[idx];
+        if (!item) return p;
+        return {
+          ...p,
+          regionId: item.reg.id,
+          label: (item.meta?.badge || item.meta?.label || `Bass ${idx + 1}`).slice(0, 18),
+          params: {
+            ...p.params,
+            playMode: item.hasLoop ? 'loop' : 'oneshot',
+            chokeGroup: 1,
+            amp: {
+              ...p.params.amp,
+              attackMs: 2,
+              releaseMs: 180,
+            },
+          },
+        };
+      })
+    );
+    setSelectedPadIndex(0);
+    setKitName('Pack Bajos Pro (Disco-Funk · 90s · Monark · Astra)');
+    setStatusMessage(
+      `Pack de ${built.length} Bajos Profesionales cargado en Pads 1–${built.length} (Mono Choke 1 · Root C2).`
+    );
+  }, [buildStudioPresetSourceAndRegion]);
 
   const applySnapToSec = useCallback(
     (rawSec: number): number => {
@@ -876,7 +1057,11 @@ export function useSamplerEngine() {
     loadAudioFile,
     loadAudioFileToPad,
     loadAudioFromUrl,
+    loadExternalBufferForSampling,
     generateDemoSource,
+    auditionStudioPreset,
+    loadStudioPresetToPad,
+    loadProBassPackToPads,
     applySnapToSec,
     updateRegionBounds,
     updateRegionCrossfade,

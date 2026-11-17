@@ -20,10 +20,12 @@ export {
   inferStemModeFromName,
 } from './engine/FullStemAnalyzer';
 export {
+  BASS_PRESET_CATALOG,
   DRUM_PRESET_CATALOG,
   MELODIC_PRESET_CATALOG,
   getPresetZones,
   getPresetAuditionBuffer,
+  isBassPresetId,
   prepareCustomReplacementSample,
   inferReplacementCategoryFromName,
   computeMiniWaveformPreview,

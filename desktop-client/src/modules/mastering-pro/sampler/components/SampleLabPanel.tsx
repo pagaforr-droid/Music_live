@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -12,13 +12,22 @@ import {
   Scissors,
   Sliders,
   Sparkles,
+  Upload,
   Usb,
+  Volume2,
+  Waves,
 } from 'lucide-react';
 import {
   fetchProjectAudioTracksForMastering,
   type ProjectAudioTrackItem,
 } from '../../services/supabaseMasteringService';
 import { createDefaultPadParams, createDefaultPattern } from '../engine/SampleBufferOps';
+import {
+  BASS_PRESET_CATALOG,
+  isBassPresetId,
+  MELODIC_PRESET_CATALOG,
+} from '../engine/StudioSampleBank';
+import type { DefaultInstrumentId } from '../types/sampler.types';
 import {
   loadKitTempFromIndexedDb,
   saveKitTempToIndexedDb,
@@ -28,6 +37,7 @@ import {
   encodeBufferToMp3,
   encodeBufferToWav24WithMetadata,
   exportSlicePackZip,
+  sanitizeDownloadBaseName,
   triggerFileDownload,
 } from '../engine/SampleExport';
 import {
@@ -60,10 +70,14 @@ export const SampleLabPanel: React.FC = () => {
   const [showBpmGrid, setShowBpmGrid] = useState<boolean>(true);
   const [chromaticMode, setChromaticMode] = useState<boolean>(false);
   const [chromaticBaseMidi, setChromaticBaseMidi] = useState<number>(48); // C3
+  const [selectedStudioPresetId, setSelectedStudioPresetId] = useState<DefaultInstrumentId>(
+    'inst-bass-sh101-funk'
+  );
 
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
   const [isSupabaseOpen, setIsSupabaseOpen] = useState<boolean>(false);
   const [isKitLibraryOpen, setIsKitLibraryOpen] = useState<boolean>(false);
+  const pcUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load Supabase project tracks so the user can pull any Stem/Song directly into Sample Lab
   useEffect(() => {
@@ -160,28 +174,52 @@ export const SampleLabPanel: React.FC = () => {
     kind: 'pad' | 'region' | 'bounce',
     bounceBars = 2,
     seamlessLoop = true
-  ): Promise<{ buffer: AudioBuffer; baseName: string; rootNote: number }> => {
+  ): Promise<{
+    buffer: AudioBuffer;
+    baseName: string;
+    rootNote: number;
+    loopStartSample?: number;
+    loopEndSample?: number;
+  }> => {
     const engine = s.engineRef.current;
     if (!engine) throw new Error('Motor de audio no inicializado.');
 
     if (kind === 'pad') {
       const buf = await engine.renderPadOffline(s.selectedPadIndex);
-      const clean = s.selectedPad.label.replace(/[^a-zA-Z0-9_-]+/g, '_') || 'pad_sample';
+      const clean = sanitizeDownloadBaseName(s.selectedPad.label, 'pad_sample');
+      const padReg = s.selectedPad.regionId
+        ? s.regions.find((r) => r.id === s.selectedPad.regionId)
+        : undefined;
+      const padSrc = padReg
+        ? s.sources.find((src) => src.id === padReg.sourceId)
+        : s.activeSource;
       return {
         buffer: buf,
         baseName: clean,
-        rootNote: s.activeSource?.rootNote ?? 60,
+        rootNote: padSrc?.rootNote ?? 60,
       };
     }
 
     if (kind === 'region') {
       if (!s.selectedRegion) throw new Error('No hay ninguna región seleccionada.');
       const buf = engine.renderRegionToBuffer(s.selectedRegion);
-      const clean = s.selectedRegion.name.replace(/[^a-zA-Z0-9_-]+/g, '_') || 'slice';
+      const clean = sanitizeDownloadBaseName(s.selectedRegion.name, 'slice');
+      const regSrc = s.sources.find((src) => src.id === s.selectedRegion?.sourceId) ?? s.activeSource;
+      const hasLoop =
+        s.selectedRegion.loopStartSec !== undefined &&
+        s.selectedRegion.loopEndSec !== undefined &&
+        s.selectedRegion.loopEndSec > s.selectedRegion.loopStartSec;
+      const sr = buf.sampleRate;
       return {
         buffer: buf,
         baseName: clean,
-        rootNote: s.activeSource?.rootNote ?? 60,
+        rootNote: regSrc?.rootNote ?? 60,
+        loopStartSample: hasLoop
+          ? Math.max(0, Math.round((s.selectedRegion.loopStartSec! - s.selectedRegion.startSec) * sr))
+          : undefined,
+        loopEndSample: hasLoop
+          ? Math.min(buf.length, Math.round((s.selectedRegion.loopEndSec! - s.selectedRegion.startSec) * sr))
+          : undefined,
       };
     }
 
@@ -190,7 +228,7 @@ export const SampleLabPanel: React.FC = () => {
       bounceBars,
       seamlessLoop
     );
-    const cleanKit = s.kitName.replace(/[^a-zA-Z0-9_-]+/g, '_') || 'sample_lab';
+    const cleanKit = sanitizeDownloadBaseName(s.kitName, 'sample_lab');
     return {
       buffer: buf,
       baseName: `${cleanKit}_loop_${s.pattern.bpm}bpm`,
@@ -204,17 +242,20 @@ export const SampleLabPanel: React.FC = () => {
     bars = 2,
     seamless = true
   ) => {
-    const { buffer, baseName, rootNote } = await renderExportAudioBuffer(
-      kind,
-      bars,
-      seamless
-    );
+    const { buffer, baseName, rootNote, loopStartSample, loopEndSample } =
+      await renderExportAudioBuffer(kind, bars, seamless);
     const blob =
       format === 'wav'
-        ? await encodeBufferToWav24WithMetadata(buffer, { rootMidiNote: rootNote })
+        ? await encodeBufferToWav24WithMetadata(buffer, {
+            rootMidiNote: rootNote,
+            loopStartSample,
+            loopEndSample,
+          })
         : await encodeBufferToMp3(buffer, 320);
     triggerFileDownload(blob, `${baseName}.${format}`);
-    s.setStatusMessage(`Exportado: ${baseName}.${format}`);
+    s.setStatusMessage(
+      `Exportado al PC: ${baseName}.${format} (${buffer.duration.toFixed(2)}s).`
+    );
   };
 
   const handleExportSlicesZip = async () => {
@@ -271,6 +312,23 @@ export const SampleLabPanel: React.FC = () => {
 
   return (
     <div className="w-full h-full overflow-y-auto overflow-x-auto studio-scrollbar bg-[#020617] text-slate-100 p-4 md:p-5">
+      <input
+        ref={pcUploadInputRef}
+        type="file"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,.aiff,.aif,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) {
+            if (workspaceMode === 'replacer') {
+              void replacer.loadLocalStemFile(f);
+            } else {
+              void s.loadAudioFile(f);
+            }
+          }
+          e.target.value = '';
+        }}
+      />
       <div className="max-w-[1640px] mx-auto flex flex-col gap-3.5 pb-12">
       {/* Top Studio Header */}
       <header className="rounded-2xl bg-slate-900/95 border border-slate-800/90 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_14px_40px_rgba(0,0,0,0.6)]">
@@ -365,12 +423,22 @@ export const SampleLabPanel: React.FC = () => {
 
             <button
               type="button"
+              onClick={() => pcUploadInputRef.current?.click()}
+              className="px-3 py-1.5 rounded-xl bg-[#00E5FF] hover:bg-cyan-300 text-slate-950 text-xs font-mono font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+              title="Subir archivo de audio desde tu PC para samplear y exportar"
+            >
+              <Upload size={13} />
+              <span>Subir del PC</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setIsExportOpen(true)}
               disabled={s.sources.length === 0}
               className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
             >
               <Download size={13} />
-              <span>Exportar...</span>
+              <span>Exportar al PC...</span>
             </button>
 
             <button
@@ -397,6 +465,10 @@ export const SampleLabPanel: React.FC = () => {
             const reg = s.regions.find((rg) => rg.id === pad.regionId);
             if (!reg) return null;
             return eng.getProcessedBufferForPad(eng.ensureContext(), reg, pad.params);
+          }}
+          onSendTo16Pads={(buf, title) => {
+            s.loadExternalBufferForSampling(buf, title);
+            setWorkspaceMode('pads');
           }}
         />
       ) : (
@@ -523,10 +595,82 @@ export const SampleLabPanel: React.FC = () => {
         }}
       />
 
+      {/* Studio Bass & Synth Instrument Generator for 16 Pads + Chromatic Keyboard */}
+      <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 px-3.5 py-2.5 shadow-lg flex flex-wrap items-center justify-between gap-2.5 text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 text-[#FF6B00] font-bold">
+            <Waves size={14} />
+            <span>Bajos Synth & Estudio → Pads:</span>
+          </div>
+
+          <select
+            value={selectedStudioPresetId}
+            onChange={(e) =>
+              setSelectedStudioPresetId(e.target.value as DefaultInstrumentId)
+            }
+            className="bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white focus:border-[#00E5FF] focus:outline-none max-w-[260px] cursor-pointer"
+          >
+            <optgroup label={`Bajos Profesionales (${BASS_PRESET_CATALOG.length})`}>
+              {BASS_PRESET_CATALOG.map((bp) => (
+                <option key={bp.id} value={bp.id}>
+                  {bp.badge ? `[${bp.badge}] ` : ''}
+                  {bp.label}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Teclados, Guitarras & Synth">
+              {MELODIC_PRESET_CATALOG.filter((m) => m.group !== 'bass').map((mp) => (
+                <option key={mp.id} value={mp.id}>
+                  {mp.label}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+
+          <button
+            type="button"
+            onClick={() => s.auditionStudioPreset(selectedStudioPresetId)}
+            className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-[#00E5FF] font-bold flex items-center gap-1 cursor-pointer"
+            title="Escuchar muestra de estudio antes de cargar"
+          >
+            <Volume2 size={13} />
+            <span>Probar</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              s.loadStudioPresetToPad(selectedStudioPresetId, s.selectedPadIndex);
+              if (isBassPresetId(selectedStudioPresetId)) {
+                setChromaticBaseMidi(36);
+              }
+            }}
+            className="px-3 py-1.5 rounded-xl bg-[#FF6B00] hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+          >
+            <Sparkles size={13} />
+            <span>Cargar en Pad {s.selectedPadIndex + 1}</span>
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            s.loadProBassPackToPads();
+            setChromaticBaseMidi(36);
+          }}
+          className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00]/20 to-[#00E5FF]/20 hover:from-[#FF6B00]/30 hover:to-[#00E5FF]/30 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center gap-1.5 cursor-pointer"
+          title="Carga los 11 bajos profesionales (SH-101, Juno-106, Jupiter-8, Monark, Astra, 90s Pad, Auto-Wah, Sub-Octava...) directo en Pads 1–11"
+        >
+          <Grid size={13} />
+          <span>Cargar Pack {BASS_PRESET_CATALOG.length} Bajos Pro</span>
+        </button>
+      </div>
+
       <SampleWaveformEditor
         source={s.activeSource}
         regions={s.activeSourceRegions}
         selectedRegion={s.selectedRegion}
+        selectedPadIndex={s.selectedPadIndex}
         pyramid={s.waveformPyramid}
         isAuditioning={s.isAuditioning}
         loopAudition={s.loopAudition}
@@ -537,6 +681,23 @@ export const SampleLabPanel: React.FC = () => {
         onCreateSliceAtSec={s.createSliceAtSec}
         onToggleAudition={s.toggleAudition}
         onToggleLoopAudition={() => s.setLoopAudition((prev) => !prev)}
+        onDropAudioFile={(file) => void s.loadAudioFile(file)}
+        onClickUploadAudio={() => pcUploadInputRef.current?.click()}
+        onAssignRegionToSelectedPad={() => {
+          if (s.selectedRegion) {
+            s.assignRegionToPad(s.selectedRegion, s.selectedPadIndex);
+            s.setStatusMessage(
+              `Región "${s.selectedRegion.name}" asignada al Pad ${s.selectedPadIndex + 1}.`
+            );
+          }
+        }}
+        onQuickExportRegion={() => {
+          void handleExportSingle('region', 'wav').catch((err) =>
+            s.setStatusMessage(
+              err instanceof Error ? err.message : 'Error exportando región al PC.'
+            )
+          );
+        }}
       />
 
       {/* Main Performance + Synthesis / Sound Design Grid */}

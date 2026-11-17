@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { encodeBufferToWav24WithMetadata, triggerFileDownload } from '../engine/SampleExport';
+import {
+  encodeBufferToMp3,
+  encodeBufferToWav24WithMetadata,
+  sanitizeDownloadBaseName,
+  triggerFileDownload,
+} from '../engine/SampleExport';
 import {
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
@@ -16,6 +21,7 @@ import {
 import {
   getPresetAuditionBuffer,
   inferReplacementCategoryFromName,
+  isBassPresetId,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
 import {
@@ -88,7 +94,16 @@ function createDefaultMelodicSlot(presetId: DefaultInstrumentId = 'inst-piano-gr
 
 function chooseDefaultMelodicPresetForName(stemName: string): DefaultInstrumentId {
   const n = (stemName || '').toLowerCase();
-  if (n.includes('bass') || n.includes('bajo')) return 'inst-bass-finger';
+  if (n.includes('bass') || n.includes('bajo') || n.includes('sub')) {
+    if (n.includes('808') || n.includes('sub')) return 'inst-bass-astra-sub';
+    if (n.includes('moog') || n.includes('monark') || n.includes('analog')) return 'inst-bass-monark-sub';
+    if (n.includes('juno') || n.includes('chorus')) return 'inst-bass-juno-chorus';
+    if (n.includes('jupiter')) return 'inst-bass-jupiter-fat';
+    if (n.includes('pad') || n.includes('90s')) return 'inst-bass-90s-pad';
+    if (n.includes('wah')) return 'inst-bass-autowah';
+    if (n.includes('synth') || n.includes('disco') || n.includes('funk')) return 'inst-bass-sh101-funk';
+    return 'inst-bass-finger';
+  }
   if (n.includes('guitar') || n.includes('guitarr') || n.includes('gtr')) return 'inst-guitar-acoustic';
   if (n.includes('rhodes') || n.includes('ep')) return 'inst-piano-rhodes';
   if (n.includes('synth') || n.includes('pad') || n.includes('string')) return 'inst-synth-warm';
@@ -130,6 +145,7 @@ export function useStemReplacer() {
   const [isLoadingStem, setIsLoadingStem] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isRendering, setIsRendering] = useState<boolean>(false);
+  const [isExportingPc, setIsExportingPc] = useState<boolean>(false);
   const [isSavingCloud, setIsSavingCloud] = useState<boolean>(false);
   const [recordingTarget, setRecordingTarget] = useState<DrumPieceRole | 'melodic' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -1072,16 +1088,45 @@ export function useStemReplacer() {
     [ensureCtx]
   );
 
-  // Export exact-length 24-bit WAV
-  const downloadReplacedWav24 = useCallback(async () => {
-    if (!replacedBuffer) return;
-    const wavBlob = await encodeBufferToWav24WithMetadata(replacedBuffer, {
-      rootMidiNote: analysis?.midiRange?.minMidi ?? 60,
-    });
-    const clean = (stemTitle || 'stem').replace(/[^a-zA-Z0-9_-]+/g, '_');
-    triggerFileDownload(wavBlob, `${clean}_Sampled_Pro.wav`);
-    setStatusMessage(`Exportado WAV 24-bit (${replacedBuffer.duration.toFixed(2)}s exactos).`);
-  }, [replacedBuffer, analysis, stemTitle]);
+  // Export exact-length 24-bit WAV or MP3 320kbps directly to PC
+  const downloadReplacedAudio = useCallback(
+    async (format: 'wav' | 'mp3' = 'wav', customFileName?: string) => {
+      const targetBuffer = replacedBuffer ?? originalBuffer;
+      if (!targetBuffer) return;
+      setIsExportingPc(true);
+      try {
+        const rawBase = (customFileName || stemTitle || 'stem_sampled_pro').trim();
+        const clean = sanitizeDownloadBaseName(rawBase, 'stem_sampled_pro');
+        const fileName = `${clean}.${format}`;
+        const blob =
+          format === 'wav'
+            ? await encodeBufferToWav24WithMetadata(targetBuffer, {
+                rootMidiNote: analysis?.midiRange?.minMidi ?? 60,
+              })
+            : await encodeBufferToMp3(targetBuffer, 320);
+        triggerFileDownload(blob, fileName);
+        setStatusMessage(
+          `Exportado al PC: "${fileName}" (${targetBuffer.duration.toFixed(2)}s · ${
+            format === 'wav' ? 'WAV 24-Bit' : 'MP3 320 kbps'
+          }).`
+        );
+      } catch (err) {
+        setStatusMessage(
+          err instanceof Error ? err.message : 'Error exportando archivo al PC.'
+        );
+      } finally {
+        setIsExportingPc(false);
+      }
+    },
+    [replacedBuffer, originalBuffer, analysis, stemTitle]
+  );
+
+  const downloadReplacedWav24 = useCallback(
+    async (customFileName?: string) => {
+      await downloadReplacedAudio('wav', customFileName);
+    },
+    [downloadReplacedAudio]
+  );
 
   // Save directly back into the Song Folder ("Carpeta de la Canción") in Supabase!
   const saveReplacedStemToSong = useCallback(
@@ -1119,6 +1164,52 @@ export function useStemReplacer() {
     [replacedBuffer, selectedSong, stemTitle, analysis, refreshSongs]
   );
 
+  const applyMixPreset = useCallback(
+    (mode: 'replace' | 'layer-sub' | 'hybrid') => {
+      if (mode === 'replace') {
+        setMixOptions((p) => ({
+          ...p,
+          replacementPct: 100,
+          originalPct: 0,
+          brightnessPct: 0,
+        }));
+        setStatusMessage('Modo Mezcla: 100% Reemplazo limpio.');
+        return;
+      }
+      if (mode === 'layer-sub') {
+        setMixOptions((p) => ({
+          ...p,
+          replacementPct: 60,
+          originalPct: 88,
+          brightnessPct: -25,
+        }));
+        if (
+          melodicSlot.sourceType === 'preset' &&
+          (!isBassPresetId(melodicSlot.presetId) ||
+            melodicSlot.presetId === 'inst-bass-finger')
+        ) {
+          setMelodicSlot((p) => ({
+            ...p,
+            sourceType: 'preset',
+            presetId: 'inst-bass-monark-sub',
+          }));
+        }
+        setStatusMessage(
+          'Empalme Sub Activo: Bajo Synth denso debajo del bajo original (60% Sub / 88% Original).'
+        );
+        return;
+      }
+      setMixOptions((p) => ({
+        ...p,
+        replacementPct: 70,
+        originalPct: 55,
+        brightnessPct: 0,
+      }));
+      setStatusMessage('Modo Mezcla Híbrida: 70% Synth / 55% Original.');
+    },
+    [melodicSlot.presetId, melodicSlot.sourceType]
+  );
+
   return {
     songs,
     loadingSongs,
@@ -1142,9 +1233,11 @@ export function useStemReplacer() {
     customSamples,
     mixOptions,
     setMixOptions,
+    applyMixPreset,
     isLoadingStem,
     isAnalyzing,
     isRendering,
+    isExportingPc,
     isSavingCloud,
     recordingTarget,
     statusMessage,
@@ -1172,6 +1265,7 @@ export function useStemReplacer() {
     auditionSlotSample,
     togglePlayback,
     seekToSec,
+    downloadReplacedAudio,
     downloadReplacedWav24,
     saveReplacedStemToSong,
   };
