@@ -10,17 +10,20 @@ import { detectInstrumentCategory } from '../utils/instrumentIcons';
 import {
   STAGE_EQ_18_BANDS,
   StageEqProfile,
+  StageBusDspNodes,
   MultiChannelPatchConfig,
   EqMemoryScope,
   StemBusGroupId,
   LIVE_STORAGE_KEYS,
   DEFAULT_STAGE_EQ_PROFILE,
   createStageSafetySoftClipCurve,
-  computeEqAutoHeadroomGain,
+  createStageBusDspNodes,
+  applyProfileToStageBusDspNodes,
   resolveConsoleTarget,
   resolvePairIndices,
   resolveCueIndices,
   computeRequiredMergerChannels,
+  detectOutOfRangeAssignments,
   mapInstrumentCategoryToBusGroup,
   loadStoredJson,
   loadNormalizedMultiChannelPatch,
@@ -36,14 +39,6 @@ interface DecodedStemBuffer {
   volume: number;
   pan: number;
   buffer: AudioBuffer;
-}
-
-interface BusDspChain {
-  hpf: BiquadFilterNode;
-  eqBands: BiquadFilterNode[];
-  headroomGain: GainNode;
-  shaper: WaveShaperNode;
-  output: AudioNode;
 }
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -316,7 +311,7 @@ export default function LiveConcert() {
   const cueMonoSumGainRef = useRef<GainNode | null>(null);
   const mergerRef = useRef<ChannelMergerNode | null>(null);
   const stemTailNodesRef = useRef<AudioNode[]>([]);
-  const stemBusDspChainsRef = useRef<BusDspChain[]>([]);
+  const stemBusDspChainsRef = useRef<StageBusDspNodes[]>([]);
 
   const fohVolumeRef = useRef<number>(fohVolume);
   const cueVolumeRef = useRef<number>(cueVolume);
@@ -353,70 +348,11 @@ export default function LiveConcert() {
   const nextSongRef = useRef<() => void>(() => {});
   const prevSongRef = useRef<() => void>(() => {});
 
-  const createBusDspChain = (ctx: AudioContext): BusDspChain => {
-    const hpf = ctx.createBiquadFilter();
-    hpf.type = 'highpass';
-    hpf.frequency.value = 1;
-    hpf.Q.value = 0.707;
-
-    const eqBands = STAGE_EQ_18_BANDS.map((spec) => {
-      const biquad = ctx.createBiquadFilter();
-      biquad.type = spec.type;
-      biquad.frequency.value = spec.freq;
-      biquad.Q.value = spec.q;
-      biquad.gain.value = 0;
-      return biquad;
-    });
-
-    const headroomGain = ctx.createGain();
-    headroomGain.gain.value = 1.0;
-
-    const shaper = ctx.createWaveShaper();
-    shaper.oversample = '2x';
+  const getSafetyCurve = () => {
     if (!safetyCurveRef.current) {
       safetyCurveRef.current = createStageSafetySoftClipCurve(-0.3);
     }
-    shaper.curve = safetyCurveRef.current;
-
-    let prev: AudioNode = hpf;
-    for (const band of eqBands) {
-      prev.connect(band);
-      prev = band;
-    }
-    prev.connect(headroomGain);
-    headroomGain.connect(shaper);
-
-    return { hpf, eqBands, headroomGain, shaper, output: shaper };
-  };
-
-  const applyProfileToDspChain = (
-    ctx: AudioContext,
-    chain: {
-      hpf: BiquadFilterNode;
-      eqBands: BiquadFilterNode[];
-      headroomGain: GainNode;
-      shaper: WaveShaperNode;
-    },
-    profile: StageEqProfile
-  ) => {
-    const now = ctx.currentTime;
-    const hpfTarget = profile.enabled && profile.hpfFreq > 0 ? profile.hpfFreq : 1;
-    chain.hpf.frequency.setTargetAtTime(hpfTarget, now, 0.015);
-
-    chain.eqBands.forEach((node, idx) => {
-      const targetGain = profile.enabled ? (profile.gains[idx] ?? 0) : 0;
-      node.gain.setTargetAtTime(targetGain, now, 0.018);
-    });
-
-    const trimGain = profile.enabled
-      ? computeEqAutoHeadroomGain(profile.gains, profile.limiterEnabled)
-      : 1.0;
-    chain.headroomGain.gain.setTargetAtTime(trimGain, now, 0.02);
-
-    if (!safetyCurveRef.current) {
-      safetyCurveRef.current = createStageSafetySoftClipCurve(-0.3);
-    }
-    chain.shaper.curve = profile.limiterEnabled ? safetyCurveRef.current : null;
+    return safetyCurveRef.current;
   };
 
   const ensureDspGraph = () => {
@@ -433,7 +369,7 @@ export default function LiveConcert() {
       fohGainRef.current = ctx.createGain();
       fohGainRef.current.gain.value = fohVolumeRef.current;
 
-      const chain = createBusDspChain(ctx);
+      const chain = createStageBusDspNodes(ctx, getSafetyCurve());
       fohHpfRef.current = chain.hpf;
       fohEqNodesRef.current = chain.eqBands;
       fohHeadroomGainRef.current = chain.headroomGain;
@@ -476,6 +412,7 @@ export default function LiveConcert() {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
     ensureDspGraph();
+    const curve = getSafetyCurve();
 
     if (
       fohHpfRef.current &&
@@ -483,21 +420,23 @@ export default function LiveConcert() {
       fohHeadroomGainRef.current &&
       fohShaperRef.current
     ) {
-      applyProfileToDspChain(
+      applyProfileToStageBusDspNodes(
         ctx,
         {
           hpf: fohHpfRef.current,
           eqBands: fohEqNodesRef.current,
           headroomGain: fohHeadroomGainRef.current,
           shaper: fohShaperRef.current,
+          output: fohShaperRef.current,
         },
-        profile
+        profile,
+        curve
       );
     }
 
     // Actualizar cadenas DSP de stems si el modo Multitrack Stems está activo
     stemBusDspChainsRef.current.forEach((chain) => {
-      applyProfileToDspChain(ctx, chain, profile);
+      applyProfileToStageBusDspNodes(ctx, chain, profile, curve);
     });
 
     // Tono In-Ear del canal MÚSICOS (CUE)
@@ -1140,7 +1079,11 @@ export default function LiveConcert() {
     }
 
     if (actualRoutingMode === 'MultiChannel') {
-      const targetChannels = computeRequiredMergerChannels(patch, maxChannels);
+      const targetChannels = computeRequiredMergerChannels(
+        patch,
+        maxChannels,
+        activeStemsRef.current.map((s) => s.id)
+      );
 
       try {
         ctx.destination.channelInterpretation = 'discrete';
@@ -1193,8 +1136,9 @@ export default function LiveConcert() {
 
             let signalEnd: AudioNode = busInput;
             if (patch.applyEqToStems) {
-              const chain = createBusDspChain(ctx);
-              applyProfileToDspChain(ctx, chain, activeEqProfileRef.current);
+              const curve = getSafetyCurve();
+              const chain = createStageBusDspNodes(ctx, curve);
+              applyProfileToStageBusDspNodes(ctx, chain, activeEqProfileRef.current, curve);
               busInput.connect(chain.hpf);
               signalEnd = chain.output;
               stemBusDspChainsRef.current.push(chain);
@@ -1866,19 +1810,54 @@ export default function LiveConcert() {
             </select>
           </div>
 
-          {/* Botón Verificador Soundcheck & I/O */}
-          <button
-            type="button"
-            onClick={() => {
-              (document.activeElement as HTMLElement)?.blur();
-              navigate('/soundcheck');
-            }}
-            className="px-2.5 py-2 rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider cursor-pointer border bg-zinc-100 text-zinc-800 border-zinc-200 hover:bg-zinc-900 hover:text-white hover:border-zinc-900"
-            title="Abrir Verificador de Hardware & Soundcheck Canal por Canal (Pre-Show)"
-          >
-            <Activity size={13} className="text-[#e11d48]" />
-            <span>I/O</span>
-          </button>
+          {/* Botón Semáforo Verificador Soundcheck & I/O */}
+          {(() => {
+            const outOfRange = detectOutOfRangeAssignments(
+              routingMode,
+              multiChannelPatch,
+              hardwareMaxChannels,
+              loadedStemsSummary.map((s) => s.id)
+            );
+            const isFallbackSplit = routingMode === 'MultiChannel' && hardwareMaxChannels < 4;
+            const hasWarning = outOfRange.length > 0 || isFallbackSplit;
+            const badgeText =
+              outOfRange.length > 0
+                ? 'I/O !'
+                : isFallbackSplit
+                ? 'I/O Split'
+                : routingMode === 'MultiChannel'
+                ? `I/O ${hardwareMaxChannels}ch`
+                : routingMode === 'StereoSplit'
+                ? 'I/O L/R'
+                : 'I/O';
+
+            return (
+              <button
+                type="button"
+                onClick={() => {
+                  (document.activeElement as HTMLElement)?.blur();
+                  navigate('/soundcheck');
+                }}
+                className={`px-2.5 py-2 rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider cursor-pointer border ${
+                  hasWarning
+                    ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                    : routingMode === 'MultiChannel'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                    : 'bg-zinc-100 text-zinc-800 border-zinc-200 hover:bg-zinc-900 hover:text-white hover:border-zinc-900'
+                }`}
+                title={
+                  outOfRange.length > 0
+                    ? `Canales fuera de rango (${outOfRange.map((o) => `${o.busLabel} → ${o.target}`).join(', ')}). Clic para abrir Soundcheck & I/O.`
+                    : isFallbackSplit
+                    ? 'Interfaz <4 canales: Protección Split L/R activa. Clic para abrir Soundcheck & I/O.'
+                    : 'Abrir Verificador de Hardware & Soundcheck Canal por Canal (Pre-Show)'
+                }
+              >
+                <Activity size={13} className={hasWarning ? 'text-amber-600' : routingMode === 'MultiChannel' ? 'text-emerald-600' : 'text-[#e11d48]'} />
+                <span>{badgeText}</span>
+              </button>
+            );
+          })()}
 
           {/* Botón Rack Ecualizador 18 Bandas + Matriz Multicanal */}
           <button

@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  Bluetooth,
   BookmarkCheck,
   Check,
   CheckCircle2,
@@ -13,10 +14,12 @@ import {
   MonitorSpeaker,
   Music,
   Play,
+  Radio,
   RefreshCw,
   Save,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   Smartphone,
   Speaker,
   Square,
@@ -40,9 +43,15 @@ import {
   RoutingMode,
   STAGE_EQ_PRESETS,
   STEM_BUS_GROUPS,
+  StageBusDspNodes,
   StageEqProfile,
   VenueRigProfile,
+  applyProfileToStageBusDspNodes,
   computeRequiredMergerChannels,
+  createStageBusDspNodes,
+  createStageSafetySoftClipCurve,
+  detectOutOfRangeAssignments,
+  findMatchingVenueProfile,
   loadNormalizedMultiChannelPatch,
   loadStoredJson,
   loadStoredRoutingMode,
@@ -57,7 +66,7 @@ import {
   subscribeStageIoUpdates,
 } from '../utils/liveConsoleDSP';
 
-type TestSignalType = 'tone' | 'click' | 'pink';
+type TestSignalType = 'tone' | 'click' | 'pink' | 'sweep';
 
 interface SongStemRow {
   id: string;
@@ -76,44 +85,69 @@ export default function StageSoundcheck() {
   const navigate = useNavigate();
 
   const [routingMode, setRoutingMode] = useState<RoutingMode>(() => loadStoredRoutingMode());
+  const routingModeRef = useRef<RoutingMode>(routingMode);
+  useEffect(() => { routingModeRef.current = routingMode; }, [routingMode]);
+
   const [patch, setPatch] = useState<MultiChannelPatchConfig>(() => loadNormalizedMultiChannelPatch());
+  const patchRef = useRef<MultiChannelPatchConfig>(patch);
+  useEffect(() => { patchRef.current = patch; }, [patch]);
+
   const [eqProfile, setEqProfile] = useState<StageEqProfile>(() =>
     loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE)
   );
+  const eqProfileRef = useRef<StageEqProfile>(eqProfile);
+  useEffect(() => { eqProfileRef.current = eqProfile; }, [eqProfile]);
 
   const [probeReport, setProbeReport] = useState<HardwareProbeReport | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [ctxState, setCtxState] = useState<AudioContextState>('suspended');
 
-  // Test Signal State
+  // Test Signal State & Live Metering
   const [signalType, setSignalType] = useState<TestSignalType>('tone');
-  const [activeTestTarget, setActiveTestTarget] = useState<string | null>(null); // 'ch-0', 'cue-isolation', etc.
+  const [activeTestTarget, setActiveTestTarget] = useState<string | null>(null);
   const [testVolume, setTestVolume] = useState<number>(0.45);
-  const [testLevelPulse, setTestLevelPulse] = useState<number>(0);
+  const [polarityInvertR, setPolarityInvertR] = useState<boolean>(false);
+  const [testMeterPct, setTestMeterPct] = useState<number>(0);
+  const [testDbfs, setTestDbfs] = useState<number>(-90);
 
   // Venue Profiles
   const [venueProfiles, setVenueProfiles] = useState<VenueRigProfile[]>(() => loadVenueProfiles());
   const [newProfileName, setNewProfileName] = useState<string>('');
   const [statusToast, setStatusToast] = useState<string | null>(null);
+  const [dismissedMatchedRigId, setDismissedMatchedRigId] = useState<string | null>(null);
 
-  // Songs / Stems preview for individual stem overrides
+  // Songs / Stems preview
   const [songs, setSongs] = useState<SongOption[]>([]);
   const [selectedSongId, setSelectedSongId] = useState<string>('');
   const [songStems, setSongStems] = useState<SongStemRow[]>([]);
   const [isLoadingStems, setIsLoadingStems] = useState<boolean>(false);
 
   const testCtxRef = useRef<AudioContext | null>(null);
+  const masterTestGainRef = useRef<GainNode | null>(null);
+  const fohRightPolarityGainRef = useRef<GainNode | null>(null);
+  const testFohDspRef = useRef<StageBusDspNodes | null>(null);
+  const testSafetyCurveRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  const testAnalyserRef = useRef<AnalyserNode | null>(null);
+  const testMeterRafRef = useRef<number>(0);
   const testStopCleanupRef = useRef<(() => void) | null>(null);
   const pulseIntervalRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
     setStatusToast(msg);
-    window.setTimeout(() => setStatusToast(null), 2600);
+    toastTimerRef.current = window.setTimeout(() => {
+      setStatusToast(null);
+      toastTimerRef.current = null;
+    }, 2600);
   };
 
   // Persist changes & broadcast immediately to Live Concert
   const commitRoutingMode = (next: RoutingMode) => {
     setRoutingMode(next);
+    routingModeRef.current = next;
     try {
       localStorage.setItem(LIVE_STORAGE_KEYS.ROUTING_MODE, next);
     } catch {}
@@ -123,6 +157,7 @@ export default function StageSoundcheck() {
   const commitPatch = (updater: (prev: MultiChannelPatchConfig) => MultiChannelPatchConfig) => {
     setPatch((prev) => {
       const next = updater(prev);
+      patchRef.current = next;
       try {
         localStorage.setItem(LIVE_STORAGE_KEYS.MC_PATCH, JSON.stringify(next));
       } catch {}
@@ -142,6 +177,7 @@ export default function StageSoundcheck() {
         hpfFreq: found.hpfFreq,
         gains: [...found.gains],
       };
+      eqProfileRef.current = next;
       try {
         localStorage.setItem(LIVE_STORAGE_KEYS.EQ_GLOBAL, JSON.stringify(next));
       } catch {}
@@ -154,16 +190,58 @@ export default function StageSoundcheck() {
   // Listen to updates from LiveConcert if edited in another tab/view
   useEffect(() => {
     return subscribeStageIoUpdates(() => {
-      setRoutingMode(loadStoredRoutingMode());
-      setPatch(loadNormalizedMultiChannelPatch());
-      setEqProfile(loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE));
+      const nextMode = loadStoredRoutingMode();
+      const nextPatch = loadNormalizedMultiChannelPatch();
+      const nextEq = loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE);
+      routingModeRef.current = nextMode;
+      patchRef.current = nextPatch;
+      eqProfileRef.current = nextEq;
+      setRoutingMode(nextMode);
+      setPatch(nextPatch);
+      setEqProfile(nextEq);
     });
   }, []);
+
+  // Sincronizar nivel de prueba y polaridad R en tiempo real sin cortar el audio
+  useEffect(() => {
+    if (masterTestGainRef.current && testCtxRef.current && testCtxRef.current.state !== 'closed') {
+      masterTestGainRef.current.gain.setTargetAtTime(testVolume, testCtxRef.current.currentTime, 0.02);
+    }
+  }, [testVolume]);
+
+  useEffect(() => {
+    if (fohRightPolarityGainRef.current && testCtxRef.current && testCtxRef.current.state !== 'closed') {
+      fohRightPolarityGainRef.current.gain.setTargetAtTime(
+        polarityInvertR ? -1 : 1,
+        testCtxRef.current.currentTime,
+        0.015
+      );
+    }
+  }, [polarityInvertR]);
+
+  // Actualizar el EQ de 18 bandas en vivo si está sonando "Probar Bus FOH (con EQ 18B)"
+  useEffect(() => {
+    if (testFohDspRef.current && testCtxRef.current && testCtxRef.current.state !== 'closed') {
+      if (!testSafetyCurveRef.current) {
+        testSafetyCurveRef.current = createStageSafetySoftClipCurve(-0.3);
+      }
+      applyProfileToStageBusDspNodes(
+        testCtxRef.current,
+        testFohDspRef.current,
+        eqProfile,
+        testSafetyCurveRef.current
+      );
+    }
+  }, [eqProfile]);
 
   const ensureTestContext = async (): Promise<AudioContext> => {
     if (!testCtxRef.current || testCtxRef.current.state === 'closed') {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      testCtxRef.current = new AudioContextClass();
+      const newCtx = new AudioContextClass();
+      newCtx.onstatechange = () => {
+        setCtxState(newCtx.state);
+      };
+      testCtxRef.current = newCtx;
     }
     const ctx = testCtxRef.current;
     if (ctx.state === 'suspended') {
@@ -171,9 +249,10 @@ export default function StageSoundcheck() {
         await ctx.resume();
       } catch {}
     }
-    if (typeof (ctx as any).setSinkId === 'function' && patch.sinkId !== undefined) {
+    const sinkId = patchRef.current.sinkId;
+    if (typeof (ctx as any).setSinkId === 'function' && sinkId !== undefined) {
       try {
-        await (ctx as any).setSinkId(patch.sinkId === 'default' ? '' : patch.sinkId);
+        await (ctx as any).setSinkId(sinkId === 'default' ? '' : sinkId);
       } catch {}
     }
     setCtxState(ctx.state);
@@ -181,18 +260,27 @@ export default function StageSoundcheck() {
   };
 
   const stopTestSignal = () => {
+    if (testMeterRafRef.current) {
+      cancelAnimationFrame(testMeterRafRef.current);
+      testMeterRafRef.current = 0;
+    }
+    if (pulseIntervalRef.current) {
+      window.clearInterval(pulseIntervalRef.current);
+      pulseIntervalRef.current = null;
+    }
     if (testStopCleanupRef.current) {
       try {
         testStopCleanupRef.current();
       } catch {}
       testStopCleanupRef.current = null;
     }
-    if (pulseIntervalRef.current) {
-      window.clearInterval(pulseIntervalRef.current);
-      pulseIntervalRef.current = null;
-    }
+    masterTestGainRef.current = null;
+    fohRightPolarityGainRef.current = null;
+    testFohDspRef.current = null;
+    testAnalyserRef.current = null;
     setActiveTestTarget(null);
-    setTestLevelPulse(0);
+    setTestMeterPct(0);
+    setTestDbfs(-90);
   };
 
   const runHardwareScan = async (unlockLabels = false) => {
@@ -201,16 +289,21 @@ export default function StageSoundcheck() {
     try {
       const report = await probeAudioHardware({ unlockLabels });
       setProbeReport(report);
+      if (!testCtxRef.current || testCtxRef.current.state === 'closed') {
+        setCtxState(report.audioContextState);
+      } else {
+        setCtxState(testCtxRef.current.state);
+      }
       try {
         localStorage.setItem(LIVE_STORAGE_KEYS.LAST_SOUNDCHECK, JSON.stringify(report));
       } catch {}
 
-      // Si el sinkId guardado ya no existe pero el sinkLabel coincide, re-vincular automáticamente
-      if (patch.sinkLabel) {
+      const currentPatch = patchRef.current;
+      if (currentPatch.sinkLabel) {
         const byLabel = report.devices.find(
-          (d) => d.label && d.label.toLowerCase() === patch.sinkLabel?.toLowerCase()
+          (d) => d.label && d.label.toLowerCase() === currentPatch.sinkLabel?.toLowerCase()
         );
-        if (byLabel && byLabel.deviceId !== patch.sinkId) {
+        if (byLabel && byLabel.deviceId !== currentPatch.sinkId) {
           commitPatch((prev) => ({ ...prev, sinkId: byLabel.deviceId }));
         }
       }
@@ -230,6 +323,7 @@ export default function StageSoundcheck() {
 
     return () => {
       navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       stopTestSignal();
       if (testCtxRef.current && testCtxRef.current.state !== 'closed') {
         testCtxRef.current.close().catch(() => {});
@@ -321,7 +415,6 @@ export default function StageSoundcheck() {
 
   const unlockAudioDeviceNow = async () => {
     const ctx = await ensureTestContext();
-    // Breve impulso silencioso para garantizar desbloqueo en iOS/Safari/Chrome
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     g.gain.value = 0.0001;
@@ -334,11 +427,33 @@ export default function StageSoundcheck() {
   };
 
   /**
-   * Genera señal de prueba quirúrgica (Tono, Click o Ruido Rosa) hacia canales discretos exactos
+   * Inicia lectura real dBFS y nivel visual desde AnalyserNode
+   */
+  const startRealMeterLoop = (analyser: AnalyserNode) => {
+    const buf = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      analyser.getFloatTimeDomainData(buf);
+      let peak = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const a = Math.abs(buf[i]);
+        if (a > peak) peak = a;
+      }
+      const db = peak > 0.00003 ? Math.max(-90, 20 * Math.log10(peak)) : -90;
+      const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+      setTestDbfs(Math.round(db * 10) / 10);
+      setTestMeterPct(Math.round(pct));
+      testMeterRafRef.current = requestAnimationFrame(tick);
+    };
+    testMeterRafRef.current = requestAnimationFrame(tick);
+  };
+
+  /**
+   * Genera señal de prueba quirúrgica (Tono, Click, Ruido Rosa o Barrido 40Hz-10kHz)
+   * hacia canales discretos exactos o a través del Bus FOH + EQ 18B.
    */
   const playDiscreteTestSignal = async (
     targetKey: string,
-    mode: 'single_channel' | 'cue_isolation',
+    mode: 'single_channel' | 'cue_isolation' | 'foh_dsp',
     channelIdx0 = 0
   ) => {
     if (activeTestTarget === targetKey) {
@@ -352,13 +467,29 @@ export default function StageSoundcheck() {
 
     const masterTestGain = ctx.createGain();
     masterTestGain.gain.value = testVolume;
+    masterTestGainRef.current = masterTestGain;
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    testAnalyserRef.current = analyser;
 
     let merger: ChannelMergerNode | null = null;
     let panner: StereoPannerNode | null = null;
+    let fohRightPol: GainNode | null = null;
+    let fohDspNodes: StageBusDspNodes | null = null;
+    const extraCleanupNodes: AudioNode[] = [];
+
+    const currentPatch = patchRef.current;
+    const currentRouting = routingModeRef.current;
+    const currentEq = eqProfileRef.current;
 
     if (mode === 'cue_isolation') {
-      if (routingMode === 'MultiChannel' && maxCh >= 4) {
-        const reqCh = Math.min(maxCh, computeRequiredMergerChannels(patch, maxCh));
+      masterTestGain.connect(analyser);
+      if (currentRouting === 'MultiChannel' && maxCh >= 4) {
+        const reqCh = Math.min(
+          maxCh,
+          computeRequiredMergerChannels(currentPatch, maxCh, songStems.map((s) => s.id))
+        );
         try {
           ctx.destination.channelInterpretation = 'discrete';
           ctx.destination.channelCountMode = 'explicit';
@@ -368,10 +499,10 @@ export default function StageSoundcheck() {
         merger.channelInterpretation = 'discrete';
         merger.connect(ctx.destination);
 
-        const cuePatch = resolveCueIndices(patch.cueRouting, reqCh);
-        masterTestGain.connect(merger, 0, cuePatch.leftIdx);
+        const cuePatch = resolveCueIndices(currentPatch.cueRouting, reqCh);
+        analyser.connect(merger, 0, cuePatch.leftIdx);
         if (!cuePatch.isMono && cuePatch.rightIdx !== cuePatch.leftIdx) {
-          masterTestGain.connect(merger, 0, cuePatch.rightIdx);
+          analyser.connect(merger, 0, cuePatch.rightIdx);
         }
       } else {
         try {
@@ -380,12 +511,72 @@ export default function StageSoundcheck() {
           ctx.destination.channelCount = Math.min(2, maxCh);
         } catch {}
         panner = ctx.createStereoPanner();
-        panner.pan.value = routingMode === 'StereoSplit' ? -1 : 0;
-        masterTestGain.connect(panner);
+        panner.pan.value = currentRouting === 'StereoSplit' ? -1 : 0;
+        analyser.connect(panner);
+        panner.connect(ctx.destination);
+      }
+    } else if (mode === 'foh_dsp') {
+      // Test del Bus FOH pasando exactamente por HPF + EQ 18 Bandas + Safety Limiter + Check Polaridad R
+      if (!testSafetyCurveRef.current) {
+        testSafetyCurveRef.current = createStageSafetySoftClipCurve(-0.3);
+      }
+      fohDspNodes = createStageBusDspNodes(ctx, testSafetyCurveRef.current);
+      applyProfileToStageBusDspNodes(ctx, fohDspNodes, currentEq, testSafetyCurveRef.current);
+      testFohDspRef.current = fohDspNodes;
+
+      masterTestGain.connect(fohDspNodes.hpf);
+      fohDspNodes.output.connect(analyser);
+
+      fohRightPol = ctx.createGain();
+      fohRightPol.gain.value = polarityInvertR ? -1 : 1;
+      fohRightPolarityGainRef.current = fohRightPol;
+
+      const leftPass = ctx.createGain();
+      leftPass.gain.value = 1;
+      const stereoMerger = ctx.createChannelMerger(2);
+      extraCleanupNodes.push(leftPass, stereoMerger);
+
+      // Alimentamos señal idéntica a L y a R (R pasa por inversor de polaridad si está activo)
+      analyser.connect(leftPass);
+      analyser.connect(fohRightPol);
+      leftPass.connect(stereoMerger, 0, 0);
+      fohRightPol.connect(stereoMerger, 0, 1);
+
+      if (currentRouting === 'MultiChannel' && maxCh >= 4) {
+        const reqCh = Math.min(
+          maxCh,
+          computeRequiredMergerChannels(currentPatch, maxCh, songStems.map((s) => s.id))
+        );
+        try {
+          ctx.destination.channelInterpretation = 'discrete';
+          ctx.destination.channelCountMode = 'explicit';
+          ctx.destination.channelCount = reqCh;
+        } catch {}
+        merger = ctx.createChannelMerger(reqCh);
+        merger.channelInterpretation = 'discrete';
+        merger.connect(ctx.destination);
+
+        const splitter = ctx.createChannelSplitter(2);
+        stereoMerger.connect(splitter);
+        extraCleanupNodes.push(splitter);
+
+        const [fohL, fohR] = resolvePairIndices(currentPatch.fohPair, reqCh);
+        splitter.connect(merger, 0, fohL);
+        splitter.connect(merger, 1, fohR);
+      } else {
+        try {
+          ctx.destination.channelInterpretation = 'speakers';
+          ctx.destination.channelCountMode = 'explicit';
+          ctx.destination.channelCount = Math.min(2, maxCh);
+        } catch {}
+        panner = ctx.createStereoPanner();
+        panner.pan.value = currentRouting === 'StereoSplit' ? 1 : 0;
+        stereoMerger.connect(panner);
         panner.connect(ctx.destination);
       }
     } else {
       // Prueba de un solo canal físico discreto (CH 1..N)
+      masterTestGain.connect(analyser);
       if (maxCh >= 4) {
         const reqCh = Math.min(maxCh, Math.max(4, channelIdx0 + 1));
         try {
@@ -396,7 +587,7 @@ export default function StageSoundcheck() {
         merger = ctx.createChannelMerger(reqCh);
         merger.channelInterpretation = 'discrete';
         merger.connect(ctx.destination);
-        masterTestGain.connect(merger, 0, Math.min(channelIdx0, reqCh - 1));
+        analyser.connect(merger, 0, Math.min(channelIdx0, reqCh - 1));
       } else {
         try {
           ctx.destination.channelInterpretation = 'speakers';
@@ -405,7 +596,7 @@ export default function StageSoundcheck() {
         } catch {}
         panner = ctx.createStereoPanner();
         panner.pan.value = channelIdx0 % 2 === 0 ? -1 : 1;
-        masterTestGain.connect(panner);
+        analyser.connect(panner);
         panner.connect(ctx.destination);
       }
     }
@@ -414,7 +605,6 @@ export default function StageSoundcheck() {
     const chosenSignal: TestSignalType = mode === 'cue_isolation' ? 'click' : signalType;
 
     if (chosenSignal === 'pink') {
-      // Buffer de Ruido Rosa (-18 dBFS suave, loop continuo sin clics)
       const len = ctx.sampleRate * 2;
       const noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
       const data = noiseBuf.getChannelData(0);
@@ -438,7 +628,29 @@ export default function StageSoundcheck() {
       activeStopFns.push(() => {
         try { src.stop(); src.disconnect(); } catch {}
       });
-      setTestLevelPulse(0.85);
+    } else if (chosenSignal === 'sweep') {
+      // Barrido logarítmico continuo 40 Hz -> 10 kHz en 5.5s para detectar resonancias del salón
+      const fireSweep = () => {
+        if (!testCtxRef.current || testCtxRef.current.state !== 'running') return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const env = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(40, now);
+        osc.frequency.exponentialRampToValueAtTime(10000, now + 5.2);
+
+        env.gain.setValueAtTime(0.0001, now);
+        env.gain.linearRampToValueAtTime(0.32, now + 0.15);
+        env.gain.setValueAtTime(0.32, now + 5.0);
+        env.gain.exponentialRampToValueAtTime(0.0001, now + 5.35);
+
+        osc.connect(env);
+        env.connect(masterTestGain);
+        osc.start(now);
+        osc.stop(now + 5.4);
+      };
+      fireSweep();
+      pulseIntervalRef.current = window.setInterval(fireSweep, 5700);
     } else {
       let beatStep = 0;
       const firePulse = () => {
@@ -460,7 +672,6 @@ export default function StageSoundcheck() {
           osc.stop(now + 0.075);
           beatStep++;
         } else {
-          // Tono armónico de identificación agradable (440 Hz -> 554 Hz suave)
           const freqs = [440, 554.37, 659.25, 554.37];
           const f = freqs[beatStep % freqs.length];
           osc.type = 'triangle';
@@ -474,25 +685,37 @@ export default function StageSoundcheck() {
           osc.stop(now + 0.48);
           beatStep++;
         }
-
-        setTestLevelPulse(1);
-        window.setTimeout(() => setTestLevelPulse(0.25), 140);
       };
 
       firePulse();
       pulseIntervalRef.current = window.setInterval(firePulse, chosenSignal === 'click' ? 500 : 650);
     }
 
+    startRealMeterLoop(analyser);
+
     testStopCleanupRef.current = () => {
       activeStopFns.forEach((fn) => fn());
       try { masterTestGain.disconnect(); } catch {}
+      try { analyser.disconnect(); } catch {}
+      try { fohRightPol?.disconnect(); } catch {}
       try { merger?.disconnect(); } catch {}
       try { panner?.disconnect(); } catch {}
+      if (fohDspNodes) {
+        try {
+          fohDspNodes.hpf.disconnect();
+          fohDspNodes.eqBands.forEach((b) => b.disconnect());
+          fohDspNodes.headroomGain.disconnect();
+          fohDspNodes.shaper.disconnect();
+        } catch {}
+      }
+      extraCleanupNodes.forEach((n) => {
+        try { n.disconnect(); } catch {}
+      });
     };
     setActiveTestTarget(targetKey);
   };
 
-  // Asistente de 4 Escenarios Universales
+  // Asistente de 4 Escenarios Universales (adaptado a 4ch, 6ch u 8+ ch)
   const applyScenarioWizard = (
     scenario: 'multichannel_bus' | 'multichannel_stems' | 'cable_y' | 'inear_rehearsal'
   ) => {
@@ -508,18 +731,28 @@ export default function StageSoundcheck() {
       showToast('Configurado: Consola Multicanal (1–2 FOH Estéreo + 3–4 CUE)');
     } else if (scenario === 'multichannel_stems') {
       commitRoutingMode('MultiChannel');
-      const use8ChLayout = detectedMaxChannels >= 8;
+      const is8Plus = detectedMaxChannels >= 8;
+      const is6Ch = detectedMaxChannels >= 6 && detectedMaxChannels < 8;
+
       commitPatch((prev) => ({
         ...prev,
         consoleBusMode: 'multitrack_stems',
-        cueRouting: use8ChLayout ? '7-8' : '3-4',
-        stemGroupTargets: use8ChLayout
+        cueRouting: is8Plus ? '7-8' : is6Ch ? '5-6' : '3-4',
+        stemGroupTargets: is8Plus
           ? {
               drums_perc: '1-2',
               bass: 'ch-3',
               keys_synth: 'ch-4',
               guitars: 'ch-5',
               vocals_other: 'ch-6',
+            }
+          : is6Ch
+          ? {
+              drums_perc: 'ch-1',
+              bass: 'ch-2',
+              keys_synth: 'ch-3',
+              guitars: 'ch-4',
+              vocals_other: 'ch-4',
             }
           : {
               drums_perc: 'ch-1',
@@ -530,8 +763,10 @@ export default function StageSoundcheck() {
             },
       }));
       showToast(
-        use8ChLayout
+        is8Plus
           ? 'Configurado: Stems Separados (Ch 1–6) + Click/Guía (Ch 7–8)'
+          : is6Ch
+          ? 'Configurado: Stems en Ch 1–4 + Click/Guía en Ch 5–6'
           : 'Configurado: Stems en Ch 1–2 + Click/Guía en Ch 3–4'
       );
     } else if (scenario === 'cable_y') {
@@ -543,12 +778,18 @@ export default function StageSoundcheck() {
     }
   };
 
-  // Mapeo inverso: qué roles salen por cada canal físico (1..16) + detección de conflictos
+  // Mapeo inverso: qué roles salen por cada canal físico (1..16) + detección de conflictos y fuera de rango
   const channelCountToDisplay = Math.max(4, Math.min(16, detectedMaxChannels >= 4 ? detectedMaxChannels : 4));
   const channelAssignments: { roles: { label: string; kind: 'foh' | 'cue' | 'stem' }[] }[] = Array.from(
     { length: channelCountToDisplay },
     () => ({ roles: [] })
   );
+
+  const isMultitrackFallbackToFoh =
+    routingMode === 'MultiChannel' &&
+    detectedMaxChannels >= 4 &&
+    patch.consoleBusMode === 'multitrack_stems' &&
+    songStems.length === 0;
 
   if (routingMode === 'StereoInEar') {
     channelAssignments[0].roles.push({ label: 'FOH L + CUE', kind: 'foh' });
@@ -565,7 +806,7 @@ export default function StageSoundcheck() {
       channelAssignments[cuePos.rightIdx]?.roles.push({ label: 'CUE R (Guía)', kind: 'cue' });
     }
 
-    if (patch.consoleBusMode === 'stereo_bus') {
+    if (patch.consoleBusMode === 'stereo_bus' || isMultitrackFallbackToFoh) {
       const [fL, fR] = resolvePairIndices(patch.fohPair, channelCountToDisplay);
       channelAssignments[fL]?.roles.push({ label: 'FOH Público L', kind: 'foh' });
       channelAssignments[fR]?.roles.push({ label: 'FOH Público R', kind: 'foh' });
@@ -600,6 +841,20 @@ export default function StageSoundcheck() {
       hasMusic: ch.roles.some((r) => r.kind === 'foh' || r.kind === 'stem'),
     }))
     .filter((c) => c.hasCue && c.hasMusic);
+
+  const outOfRangeIssues = detectOutOfRangeAssignments(
+    routingMode,
+    patch,
+    detectedMaxChannels,
+    songStems.map((s) => s.id)
+  );
+
+  const matchedRigSuggestion = findMatchingVenueProfile(
+    probeReport,
+    venueProfiles,
+    patch,
+    routingMode
+  );
 
   // Perfiles de Lugar
   const handleSaveVenueProfile = () => {
@@ -665,7 +920,7 @@ export default function StageSoundcheck() {
               </span>
             </div>
             <p className="text-xs text-zinc-500">
-              Verifica el hardware conectado en el evento, prueba canal por canal sin fugas y deja listo Live Concert
+              Verifica hardware real en cualquier dispositivo, prueba salidas sin fugas y calibra el PA antes del show
             </p>
           </div>
         </div>
@@ -718,9 +973,43 @@ export default function StageSoundcheck() {
 
       {/* BODY SCROLLABLE */}
       <div className="flex-1 overflow-y-auto p-6 space-y-5 max-w-[1440px] w-full mx-auto">
+        {/* BANNER AUTO-SUGERENCIA PLUG & PLAY DE PERFIL DETECTADO */}
+        {matchedRigSuggestion && matchedRigSuggestion.profile.id !== dismissedMatchedRigId && (
+          <div className="px-4 py-3 rounded-2xl bg-zinc-950 text-white border border-zinc-800 flex items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-[#e11d48] flex items-center justify-center shrink-0">
+                <Radio size={16} className="animate-pulse" />
+              </div>
+              <div>
+                <div className="text-xs font-extrabold uppercase tracking-wider">
+                  Interfaz conocida detectada: {matchedRigSuggestion.device.label}
+                </div>
+                <p className="text-[11px] text-zinc-300">
+                  Tienes guardado el perfil <strong>&ldquo;{matchedRigSuggestion.profile.name}&rdquo;</strong> ({matchedRigSuggestion.profile.routingMode}) para esta consola/interfaz.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleApplyVenueProfile(matchedRigSuggestion.profile)}
+                className="px-3.5 py-1.5 rounded-xl bg-[#e11d48] hover:bg-[#be123c] text-white text-xs font-extrabold uppercase tracking-wider cursor-pointer"
+              >
+                Aplicar Perfil en 1 Clic
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissedMatchedRigId(matchedRigSuggestion.profile.id)}
+                className="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold cursor-pointer"
+              >
+                Ignorar
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* FILA 1: SEMÁFORO PRE-SHOW & ASISTENTE DE 4 ESCENARIOS */}
         <div className="grid grid-cols-12 gap-4">
-          {/* Semáforo de Estado en Vivo (4 cols) */}
           <div className="col-span-4 bg-white rounded-2xl border border-zinc-200 p-4 shadow-2xs flex flex-col justify-between">
             <div className="flex items-center justify-between mb-3">
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-zinc-800 flex items-center gap-1.5">
@@ -728,15 +1017,19 @@ export default function StageSoundcheck() {
               </span>
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-                  isFallbackSplitActive || (routingMode === 'MultiChannel' && cueFohConflicts.length > 0)
+                  isFallbackSplitActive ||
+                  (routingMode === 'MultiChannel' && (cueFohConflicts.length > 0 || outOfRangeIssues.length > 0)) ||
+                  activeDevice?.isBluetoothSuspect
                     ? 'bg-amber-50 text-amber-800 border-amber-300'
                     : 'bg-emerald-50 text-emerald-700 border-emerald-300'
                 }`}
               >
-                {isFallbackSplitActive
+                {activeDevice?.isBluetoothSuspect
+                  ? 'LATENCIA BLUETOOTH'
+                  : isFallbackSplitActive
                   ? 'PROTECCIÓN SPLIT L/R'
-                  : routingMode === 'MultiChannel' && cueFohConflicts.length > 0
-                  ? 'REVISAR CRUCE DE CANAL'
+                  : routingMode === 'MultiChannel' && (cueFohConflicts.length > 0 || outOfRangeIssues.length > 0)
+                  ? 'REVISAR CANALES'
                   : 'LISTO PARA ESCENARIO'}
               </span>
             </div>
@@ -761,7 +1054,9 @@ export default function StageSoundcheck() {
                     ? isFallbackSplitActive
                       ? 'Split Seguro L/R (Fallback <4ch)'
                       : patch.consoleBusMode === 'multitrack_stems'
-                      ? 'Multitrack Stems Discreto'
+                      ? isMultitrackFallbackToFoh
+                        ? `Stems (Respaldo FOH ${patch.fohPair})`
+                        : 'Multitrack Stems Discreto'
                       : `Multicanal FOH (${patch.fohPair}) + CUE (${patch.cueRouting})`
                     : routingMode === 'StereoSplit'
                     ? 'Split L/R (Cable Y)'
@@ -778,7 +1073,7 @@ export default function StageSoundcheck() {
             </div>
           </div>
 
-          {/* Asistente de Escenario en 1 Clic (8 cols) */}
+          {/* Asistente de Escenario en 1 Clic */}
           <div className="col-span-8 bg-white rounded-2xl border border-zinc-200 p-4 shadow-2xs flex flex-col justify-between">
             <div className="flex items-center justify-between mb-3">
               <div>
@@ -789,6 +1084,11 @@ export default function StageSoundcheck() {
                   Elige el escenario del lugar para configurar automáticamente el ruteo más seguro
                 </p>
               </div>
+              {detectedMaxChannels < 4 && (
+                <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-bold">
+                  Hardware actual: 2ch (Cable Y activo si eliges Multi)
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-4 gap-3">
@@ -924,6 +1224,16 @@ export default function StageSoundcheck() {
             </div>
           </div>
 
+          {/* Alerta Bluetooth / Alta Latencia */}
+          {activeDevice?.isBluetoothSuspect && (
+            <div className="px-4 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-center gap-2.5">
+              <Bluetooth size={16} className="text-[#e11d48] shrink-0" />
+              <span>
+                <strong>Advertencia de Latencia Bluetooth (~{activeDevice.latencyMs} ms):</strong> La salida seleccionada parece ser inalámbrica/Bluetooth. Para tocar en vivo con Click y evitar retraso entre la pista y los músicos, usa cable USB o salida Jack física.
+              </span>
+            </div>
+          )}
+
           {/* Diagnóstico inteligente del hardware */}
           {probeReport && (
             <div
@@ -947,7 +1257,7 @@ export default function StageSoundcheck() {
                   </span>
                 ) : probeReport.rigTier === 'wdm_multi_pairs' ? (
                   <span>
-                    <strong>Modo Windows WDM por Pares Estéreo ({probeReport.wdmPairGroups.join(', ') || 'Múltiples salidas de 2 ch'}):</strong> Windows dividió o limitó las salidas a 2 canales por puerto. En navegador web, el modo más seguro para concierto es <strong>Split L/R (Cable Y)</strong> o configurar la interfaz en 5.1/7.1 en el Panel de Sonido de Windows.
+                    <strong>Windows WDM dividido en pares estéreo ({probeReport.wdmPairGroups.join(', ')}):</strong> Windows dividió esta interfaz en varios puertos de 2 canales. Para concierto desde navegador usa <strong>Split L/R (Cable Y)</strong> o habilita modo 5.1/7.1 en el Panel de Sonido de Windows para desbloquear canales discretos en un solo dispositivo.
                   </span>
                 ) : (
                   <span>
@@ -967,6 +1277,7 @@ export default function StageSoundcheck() {
                 <div
                   key={`${dev.deviceId}-${idx}`}
                   onClick={() => {
+                    stopTestSignal();
                     commitPatch((prev) => ({
                       ...prev,
                       sinkId: dev.deviceId === 'default' ? '' : dev.deviceId,
@@ -982,8 +1293,15 @@ export default function StageSoundcheck() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-zinc-900 truncate" title={dev.label}>
-                        {dev.label}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold text-zinc-900 truncate" title={dev.label}>
+                          {dev.label}
+                        </span>
+                        {dev.isBluetoothSuspect && (
+                          <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold shrink-0">
+                            BT
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
                         {dev.isDefault ? 'Predeterminado del Sistema' : 'Puerto de Audio'}
@@ -1014,7 +1332,7 @@ export default function StageSoundcheck() {
           </div>
         </div>
 
-        {/* FILA 3: PROBADOR FÍSICO CANAL POR CANAL (CH 1..16) + PRUEBA ANTI-FUGA */}
+        {/* FILA 3: PROBADOR FÍSICO CANAL POR CANAL + BUS FOH EQ 18B + CHECK POLARIDAD */}
         <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-2xs space-y-4">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-2.5">
@@ -1023,22 +1341,23 @@ export default function StageSoundcheck() {
               </div>
               <div>
                 <h2 className="text-xs font-extrabold uppercase tracking-wider text-zinc-900">
-                  2. Probador Físico Canal por Canal (Soundcheck en Consola)
+                  2. Probador Físico Canal por Canal, Bus FOH (EQ 18B) & Check Anti-Fuga
                 </h2>
                 <p className="text-[11px] text-zinc-500">
-                  Envía una señal limpia a un solo canal físico a la vez para confirmar con el sonidista cada entrada de la consola
+                  Envía Tono, Click, Ruido Rosa o Barrido 40Hz–10kHz con lectura real en dBFS y verificación de fase
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5 flex-wrap">
               {/* Selector de tipo de señal */}
               <div className="flex items-center bg-zinc-100 p-1 rounded-xl border border-zinc-200">
                 {(
                   [
-                    { id: 'tone', label: 'Tono Musical' },
-                    { id: 'click', label: 'Pulso Click' },
-                    { id: 'pink', label: 'Ruido Rosa (-18dB)' },
+                    { id: 'tone', label: 'Tono' },
+                    { id: 'click', label: 'Click' },
+                    { id: 'pink', label: 'Ruido Rosa' },
+                    { id: 'sweep', label: 'Barrido Sala' },
                   ] as { id: TestSignalType; label: string }[]
                 ).map((s) => (
                   <button
@@ -1059,13 +1378,13 @@ export default function StageSoundcheck() {
                 ))}
               </div>
 
-              {/* Nivel de prueba */}
+              {/* Nivel de prueba en vivo */}
               <div className="flex items-center gap-2 bg-zinc-50 px-3 py-1.5 rounded-xl border border-zinc-200">
                 <span className="text-[10px] font-bold text-zinc-600 uppercase">Nivel:</span>
                 <input
                   type="range"
-                  min="0.1"
-                  max="0.9"
+                  min="0.05"
+                  max="0.95"
                   step="0.05"
                   value={testVolume}
                   onChange={(e) => setTestVolume(parseFloat(e.target.value))}
@@ -1076,11 +1395,40 @@ export default function StageSoundcheck() {
                 </span>
               </div>
 
+              {/* Invertir Fase R (Check Polaridad Estéreo) */}
+              <button
+                type="button"
+                onClick={() => setPolarityInvertR((v) => !v)}
+                className={`px-2.5 py-2 rounded-xl text-[10px] font-extrabold uppercase tracking-wider border cursor-pointer transition-all ${
+                  polarityInvertR
+                    ? 'bg-violet-600 text-white border-violet-700 shadow-xs'
+                    : 'bg-zinc-50 text-zinc-700 border-zinc-200 hover:bg-zinc-100'
+                }`}
+                title="Invierte la polaridad del canal Derecho (R) durante 'Probar Bus FOH' para detectar cables mal cableados o cancelaciones en mono"
+              >
+                Fase R: {polarityInvertR ? 'INVERTIDA (-Φ)' : 'Normal (+Φ)'}
+              </button>
+
+              {/* Probar Bus FOH (con EQ 18 Bandas) */}
+              <button
+                type="button"
+                onClick={() => playDiscreteTestSignal('foh-dsp', 'foh_dsp')}
+                className={`px-3 py-2 rounded-xl text-[10.5px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer border transition-all ${
+                  activeTestTarget === 'foh-dsp'
+                    ? 'bg-[#e11d48] text-white border-[#e11d48] shadow-sm'
+                    : 'bg-rose-50 text-[#e11d48] border-rose-300 hover:bg-rose-100'
+                }`}
+                title="Prueba el Bus FOH pasando por el Ecualizador de 18 Bandas y el Safety Limiter configurados"
+              >
+                <Sliders size={13} />
+                <span>{activeTestTarget === 'foh-dsp' ? 'Detener Bus FOH' : 'Probar Bus FOH (EQ 18B)'}</span>
+              </button>
+
               {/* Botón Prueba Anti-Fuga */}
               <button
                 type="button"
                 onClick={() => playDiscreteTestSignal('cue-isolation', 'cue_isolation')}
-                className={`px-3.5 py-2 rounded-xl text-[11px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer border transition-all ${
+                className={`px-3 py-2 rounded-xl text-[10.5px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer border transition-all ${
                   activeTestTarget === 'cue-isolation'
                     ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
                     : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
@@ -1088,18 +1436,14 @@ export default function StageSoundcheck() {
                 title="Envía Click exclusivamente a los canales de MÚSICOS para verificar que no se filtra al Público"
               >
                 <Headphones size={13} />
-                <span>
-                  {activeTestTarget === 'cue-isolation'
-                    ? 'Detener Prueba Anti-Fuga'
-                    : 'Prueba Anti-Fuga (Solo CUE)'}
-                </span>
+                <span>{activeTestTarget === 'cue-isolation' ? 'Detener CUE' : 'Prueba Anti-Fuga (Solo CUE)'}</span>
               </button>
 
               {activeTestTarget && (
                 <button
                   type="button"
                   onClick={stopTestSignal}
-                  className="px-3 py-2 rounded-xl bg-zinc-950 text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-2 rounded-xl bg-zinc-950 text-white text-[10.5px] font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   <Square size={12} fill="currentColor" />
                   <span>Silenciar</span>
@@ -1108,12 +1452,69 @@ export default function StageSoundcheck() {
             </div>
           </div>
 
+          {/* Medidor Peak dBFS Real en Vivo cuando hay prueba sonando */}
+          {activeTestTarget && (
+            <div className="px-4 py-2.5 rounded-xl bg-zinc-950 text-white flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2.5 text-xs">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48] animate-ping" />
+                <span className="font-bold uppercase tracking-wider">
+                  Señal Activa:{' '}
+                  {activeTestTarget === 'foh-dsp'
+                    ? `Bus FOH + EQ 18B (${polarityInvertR ? 'Fase R Invertida' : 'Fase Normal'})`
+                    : activeTestTarget === 'cue-isolation'
+                    ? 'Solo Músicos (CUE Anti-Fuga)'
+                    : activeTestTarget.toUpperCase()}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 flex-1 max-w-md">
+                <div className="flex-1 h-2.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-75 ${
+                      testDbfs >= -1 ? 'bg-rose-500' : 'bg-gradient-to-r from-emerald-400 via-amber-400 to-[#e11d48]'
+                    }`}
+                    style={{ width: `${testMeterPct}%` }}
+                  />
+                </div>
+                <span
+                  className={`text-xs font-mono font-bold tabular-nums w-20 text-right ${
+                    testDbfs >= -1 ? 'text-rose-400' : 'text-emerald-400'
+                  }`}
+                >
+                  {testDbfs <= -89 ? '-∞ dBFS' : `${testDbfs.toFixed(1)} dBFS`}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Alerta de Conflictos CUE vs FOH */}
           {cueFohConflicts.length > 0 && routingMode === 'MultiChannel' && detectedMaxChannels >= 4 && (
             <div className="px-4 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-center gap-2">
               <ShieldAlert size={16} className="text-[#e11d48] shrink-0" />
               <span>
                 <strong>¡Alerta de Conflicto de Canal!</strong> El Click/Guía (CUE) y la Música comparten salida en:{' '}
                 <strong>{cueFohConflicts.map((c) => `CH ${c.chNum}`).join(', ')}</strong>. Cambia el canal de CUE o del instrumento abajo para aislarlos antes del concierto.
+              </span>
+            </div>
+          )}
+
+          {/* Alerta de Canales Asignados Fuera de Rango */}
+          {outOfRangeIssues.length > 0 && (
+            <div className="px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-2">
+              <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+              <span>
+                <strong>Canales fuera de rango para esta interfaz ({detectedMaxChannels} Ch):</strong>{' '}
+                {outOfRangeIssues.map((iss) => `${iss.busLabel} → ${iss.target}`).join(' · ')}.{' '}
+                Live Concert ajustará esas salidas al límite del hardware hasta que las reasignes dentro de 1–{detectedMaxChannels}.
+              </span>
+            </div>
+          )}
+
+          {/* Aviso si Stems Separados está activo pero la canción no tiene stems */}
+          {isMultitrackFallbackToFoh && (
+            <div className="px-4 py-2 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-xs flex items-center gap-2">
+              <Music size={15} className="text-sky-600 shrink-0" />
+              <span>
+                La canción seleccionada aún no tiene stems separados; en Live Concert la música saldrá automáticamente por el respaldo <strong>FOH Estéreo ({patch.fohPair})</strong>.
               </span>
             </div>
           )}
@@ -1173,11 +1574,11 @@ export default function StageSoundcheck() {
                     )}
                   </div>
 
-                  {/* Barra de pulso visual cuando se está probando */}
+                  {/* Barra real de dBFS en el canal activo */}
                   <div className="w-full h-1.5 bg-zinc-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-[#e11d48] transition-all duration-100"
-                      style={{ width: isTestingThis ? `${Math.round(testLevelPulse * 100)}%` : '0%' }}
+                      className="h-full bg-[#e11d48] transition-all duration-75"
+                      style={{ width: isTestingThis ? `${testMeterPct}%` : '0%' }}
                     />
                   </div>
 
@@ -1222,7 +1623,10 @@ export default function StageSoundcheck() {
               <div className="flex items-center gap-2">
                 <select
                   value={routingMode}
-                  onChange={(e) => commitRoutingMode(e.target.value as RoutingMode)}
+                  onChange={(e) => {
+                    stopTestSignal();
+                    commitRoutingMode(e.target.value as RoutingMode);
+                  }}
                   className="bg-zinc-50 border border-zinc-300 rounded-xl px-3 py-1.5 text-xs font-bold text-zinc-900 outline-none"
                 >
                   <option value="StereoInEar">🎧 In-Ear Estéreo</option>

@@ -493,7 +493,8 @@ export function resolveCueIndices(
  */
 export function computeRequiredMergerChannels(
   patch: MultiChannelPatchConfig,
-  maxHardwareChannels: number
+  maxHardwareChannels: number,
+  activeStemIds?: string[]
 ): number {
   const cueReq = resolveCueIndices(patch.cueRouting, maxHardwareChannels).requiredChannels;
   if (patch.consoleBusMode === 'stereo_bus') {
@@ -505,11 +506,142 @@ export function computeRequiredMergerChannels(
     const req = resolveConsoleTarget(t, maxHardwareChannels).requiredChannels;
     if (req > maxStemReq) maxStemReq = req;
   });
-  (Object.values(patch.stemOverrides || {}) as ConsoleTargetAssignment[]).forEach((t) => {
-    const req = resolveConsoleTarget(t, maxHardwareChannels).requiredChannels;
+  const overrideEntries = Object.entries(patch.stemOverrides || {});
+  overrideEntries.forEach(([stemId, target]) => {
+    if (activeStemIds && !activeStemIds.includes(stemId)) return;
+    const req = resolveConsoleTarget(target, maxHardwareChannels).requiredChannels;
     if (req > maxStemReq) maxStemReq = req;
   });
   return Math.min(maxHardwareChannels, Math.max(4, maxStemReq, cueReq));
+}
+
+export interface OutOfRangeAssignment {
+  busLabel: string;
+  target: string;
+  requiredChannels: number;
+}
+
+/**
+ * Detecta asignaciones cuyo canal excede la capacidad real de la interfaz conectada
+ * (evita recortes silenciosos o colisiones ocultas).
+ */
+export function detectOutOfRangeAssignments(
+  routingMode: RoutingMode,
+  patch: MultiChannelPatchConfig,
+  maxHardwareChannels: number,
+  activeStemIds?: string[]
+): OutOfRangeAssignment[] {
+  if (routingMode !== 'MultiChannel' || maxHardwareChannels < 4) return [];
+  const issues: OutOfRangeAssignment[] = [];
+
+  const getReq = (target: string): number => {
+    if (target.endsWith('-mono')) return parseInt(target.split('-')[0], 10) || 3;
+    if (target.startsWith('ch-')) return parseInt(target.replace('ch-', ''), 10) || 1;
+    const parts = target.split('-').map((n) => parseInt(n, 10));
+    return Number.isFinite(parts[1]) ? parts[1] : 2;
+  };
+
+  const cueReq = getReq(patch.cueRouting);
+  if (cueReq > maxHardwareChannels) {
+    issues.push({ busLabel: 'Bus MÚSICOS (CUE)', target: patch.cueRouting, requiredChannels: cueReq });
+  }
+
+  if (patch.consoleBusMode === 'stereo_bus') {
+    const fohReq = getReq(patch.fohPair);
+    if (fohReq > maxHardwareChannels) {
+      issues.push({ busLabel: 'Bus PÚBLICO (FOH)', target: patch.fohPair, requiredChannels: fohReq });
+    }
+  } else {
+    STEM_BUS_GROUPS.forEach((grp) => {
+      const target = patch.stemGroupTargets[grp.id];
+      const req = getReq(target);
+      if (req > maxHardwareChannels) {
+        issues.push({ busLabel: grp.label, target, requiredChannels: req });
+      }
+    });
+    Object.entries(patch.stemOverrides || {}).forEach(([stemId, target]) => {
+      if (activeStemIds && !activeStemIds.includes(stemId)) return;
+      const req = getReq(target);
+      if (req > maxHardwareChannels) {
+        issues.push({ busLabel: `Pista (${stemId.slice(0, 6)})`, target, requiredChannels: req });
+      }
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Cadena DSP compartida para Bus FOH y Stems (HPF + 18 Bandas + Auto-Headroom + Safety Soft-Clip -0.3 dBFS)
+ */
+export interface StageBusDspNodes {
+  hpf: BiquadFilterNode;
+  eqBands: BiquadFilterNode[];
+  headroomGain: GainNode;
+  shaper: WaveShaperNode;
+  output: AudioNode;
+}
+
+export function createStageBusDspNodes(
+  ctx: AudioContext,
+  safetyCurve: Float32Array<ArrayBuffer>
+): StageBusDspNodes {
+  const hpf = ctx.createBiquadFilter();
+  hpf.type = 'highpass';
+  hpf.frequency.value = 1;
+  hpf.Q.value = 0.707;
+
+  const eqBands = STAGE_EQ_18_BANDS.map((spec) => {
+    const biquad = ctx.createBiquadFilter();
+    biquad.type = spec.type;
+    biquad.frequency.value = spec.freq;
+    biquad.Q.value = spec.q;
+    biquad.gain.value = 0;
+    return biquad;
+  });
+
+  const headroomGain = ctx.createGain();
+  headroomGain.gain.value = 1.0;
+
+  const shaper = ctx.createWaveShaper();
+  shaper.oversample = '2x';
+  shaper.curve = safetyCurve;
+
+  let prev: AudioNode = hpf;
+  for (const band of eqBands) {
+    prev.connect(band);
+    prev = band;
+  }
+  prev.connect(headroomGain);
+  headroomGain.connect(shaper);
+
+  return { hpf, eqBands, headroomGain, shaper, output: shaper };
+}
+
+export function applyProfileToStageBusDspNodes(
+  ctx: AudioContext,
+  chain: StageBusDspNodes,
+  profile: StageEqProfile,
+  safetyCurve: Float32Array<ArrayBuffer>
+): void {
+  const now = ctx.currentTime;
+  const hpfTarget = profile.enabled && profile.hpfFreq > 0 ? profile.hpfFreq : 1;
+  chain.hpf.frequency.setTargetAtTime(hpfTarget, now, 0.015);
+
+  chain.eqBands.forEach((node, idx) => {
+    const targetGain = profile.enabled ? (profile.gains[idx] ?? 0) : 0;
+    node.gain.setTargetAtTime(targetGain, now, 0.018);
+  });
+
+  const trimGain = profile.enabled
+    ? computeEqAutoHeadroomGain(profile.gains, profile.limiterEnabled)
+    : 1.0;
+  chain.headroomGain.gain.setTargetAtTime(trimGain, now, 0.02);
+  chain.shaper.curve = profile.limiterEnabled ? safetyCurve : null;
+}
+
+export function isBluetoothAudioLabel(label: string): boolean {
+  return /bluetooth|airpods|galaxy buds|headset|hands-free|a2dp|wh-1000|bose qc|\bbt\b/i.test(label);
 }
 
 /**
@@ -525,6 +657,7 @@ export interface ProbedAudioDevice {
   sampleRate: number;
   latencyMs: number;
   supportsSinkSwitch: boolean;
+  isBluetoothSuspect: boolean;
 }
 
 export type RigHardwareTier = 'multichannel_pro' | 'wdm_multi_pairs' | 'stereo_universal';
@@ -559,6 +692,12 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
     } catch {}
   }
 
+  const defaultMaxCh = probeCtx.destination.maxChannelCount || 2;
+  const defaultSampleRate = probeCtx.sampleRate || 48000;
+  const defaultLatencyMs = Math.round(
+    (((probeCtx as any).baseLatency || 0) + ((probeCtx as any).outputLatency || 0)) * 1000 * 10
+  ) / 10;
+
   const supportsSetSinkId = typeof (probeCtx as any).setSinkId === 'function';
   let rawOutputs: MediaDeviceInfo[] = [];
   try {
@@ -572,28 +711,27 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
     rawOutputs.length > 0 && rawOutputs.every((d) => !d.label || d.label.trim() === '');
 
   const probedDevices: ProbedAudioDevice[] = [];
+  let preCloseCtxState: AudioContextState = probeCtx.state;
 
   try {
     if (rawOutputs.length === 0) {
-      const baseLat = ((probeCtx as any).baseLatency || 0) + ((probeCtx as any).outputLatency || 0);
       probedDevices.push({
         deviceId: '',
         label: 'Salida de Audio Principal del Dispositivo',
         groupId: 'default',
         isDefault: true,
-        maxChannels: probeCtx.destination.maxChannelCount || 2,
-        sampleRate: probeCtx.sampleRate || 48000,
-        latencyMs: Math.round(baseLat * 1000 * 10) / 10,
+        maxChannels: defaultMaxCh,
+        sampleRate: defaultSampleRate,
+        latencyMs: defaultLatencyMs,
         supportsSinkSwitch: false,
+        isBluetoothSuspect: false,
       });
     } else {
       for (let i = 0; i < rawOutputs.length; i++) {
         const dev = rawOutputs[i];
-        let maxCh = probeCtx.destination.maxChannelCount || 2;
-        let sRate = probeCtx.sampleRate || 48000;
-        let latMs = Math.round(
-          (((probeCtx as any).baseLatency || 0) + ((probeCtx as any).outputLatency || 0)) * 1000 * 10
-        ) / 10;
+        let maxCh = defaultMaxCh;
+        let sRate = defaultSampleRate;
+        let latMs = defaultLatencyMs;
 
         if (supportsSetSinkId) {
           try {
@@ -603,22 +741,28 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
             const rawLat = ((probeCtx as any).baseLatency || 0) + ((probeCtx as any).outputLatency || 0);
             latMs = Math.round(rawLat * 1000 * 10) / 10;
           } catch {
-            // Mantener valores actuales si un dispositivo virtual rechaza setSinkId
+            // Restaurar valores base del sistema para jamás heredar canales de la iteración anterior
+            maxCh = defaultMaxCh;
+            sRate = defaultSampleRate;
+            latMs = defaultLatencyMs;
           }
         }
 
+        const label = dev.label || `Salida de Audio #${i + 1}`;
         probedDevices.push({
           deviceId: dev.deviceId,
-          label: dev.label || `Salida de Audio #${i + 1}`,
+          label,
           groupId: dev.groupId || '',
           isDefault: dev.deviceId === 'default' || (i === 0 && !rawOutputs.some((d) => d.deviceId === 'default')),
           maxChannels: maxCh,
           sampleRate: sRate,
           latencyMs: latMs,
           supportsSinkSwitch: supportsSetSinkId,
+          isBluetoothSuspect: isBluetoothAudioLabel(label) || latMs >= 95,
         });
       }
     }
+    preCloseCtxState = probeCtx.state;
   } finally {
     try {
       await probeCtx.close();
@@ -627,9 +771,12 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
 
   const bestMaxChannels = probedDevices.reduce((max, d) => Math.max(max, d.maxChannels), 2);
 
-  // Detectar si Windows WDM dividió una interfaz multicanal en varios pares estéreo ("Out 1-2 (...)", "Out 3-4 (...)")
+  // Filtrar alias virtuales ('default', 'communications') antes de detectar pares WDM divididos
+  const physicalEndpoints = probedDevices.filter(
+    (d) => d.deviceId !== 'default' && d.deviceId !== 'communications'
+  );
   const parenGroups = new Map<string, number>();
-  probedDevices.forEach((d) => {
+  physicalEndpoints.forEach((d) => {
     const match = d.label.match(/\(([^)]+)\)\s*$/);
     if (match && match[1]) {
       const parentName = match[1].trim();
@@ -643,7 +790,7 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
   let rigTier: RigHardwareTier = 'stereo_universal';
   if (bestMaxChannels >= 4) {
     rigTier = 'multichannel_pro';
-  } else if (wdmPairGroups.length > 0 || probedDevices.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications').length >= 2) {
+  } else if (wdmPairGroups.length > 0) {
     rigTier = 'wdm_multi_pairs';
   }
 
@@ -667,6 +814,39 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
     bestMaxChannels,
     rigTier,
     wdmPairGroups,
-    audioContextState: probeCtx.state,
+    audioContextState: preCloseCtxState,
   };
+}
+
+/**
+ * Busca si existe un perfil de lugar guardado que coincida con algún dispositivo físico conectado
+ * y sea diferente a la configuración actualmente activa.
+ */
+export function findMatchingVenueProfile(
+  report: HardwareProbeReport | null,
+  profiles: VenueRigProfile[],
+  currentPatch: MultiChannelPatchConfig,
+  currentRoutingMode: RoutingMode
+): { profile: VenueRigProfile; device: ProbedAudioDevice } | null {
+  if (!report || profiles.length === 0) return null;
+  const physicalDevices = report.devices.filter(
+    (d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && d.label.trim() !== ''
+  );
+
+  for (const prof of profiles) {
+    if (!prof.deviceLabel) continue;
+    const matchDev = physicalDevices.find(
+      (d) => d.label.toLowerCase() === prof.deviceLabel.toLowerCase()
+    );
+    if (!matchDev) continue;
+
+    const alreadyActive =
+      currentRoutingMode === prof.routingMode &&
+      (currentPatch.sinkLabel?.toLowerCase() === prof.deviceLabel.toLowerCase() ||
+        currentPatch.sinkId === matchDev.deviceId);
+    if (!alreadyActive) {
+      return { profile: prof, device: matchDev };
+    }
+  }
+  return null;
 }
