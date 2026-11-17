@@ -1492,10 +1492,28 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                         </button>
                       ))}
                     </div>
-                    <span className="text-[10px] text-slate-500">
-                      Disco-Funk · Pop Retro · 90s Pad · Hybrid FM · Monark Sub
-                    </span>
+                    <button
+                      type="button"
+                      onClick={r.toggleBassFocusMode}
+                      className={`px-2.5 py-1 rounded-lg border font-bold cursor-pointer transition-all ${
+                        r.bassFocusMode
+                          ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950 shadow-[0_0_12px_rgba(255,107,0,0.3)]'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-[#FF6B00]/50'
+                      }`}
+                      title="Extrae únicamente los graves (30–210 Hz) y la nota raíz de la progresión de acordes para dar peso sin tocar notas agudas"
+                    >
+                      {r.bassFocusMode ? '● Solo Graves / Progresión: ON' : 'Solo Graves / Progresión: OFF'}
+                    </button>
                   </div>
+
+                  {r.bassFocusMode && (
+                    <div className="px-2.5 py-1.5 rounded-lg bg-[#FF6B00]/10 border border-[#FF6B00]/40 text-[10px] text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        <strong className="text-[#FF6B00]">Modo Solo Graves Activo:</strong>{' '}
+                        Analizando los bajos y la raíz armónica de los acordes de tu audio para sumar peso subgrave sin invadir medios/agudos.
+                      </span>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-64 overflow-y-auto studio-scrollbar-thin pr-1">
                     {MELODIC_PRESET_CATALOG.filter((pr) =>
@@ -1644,7 +1662,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           {/* Live Preview of Detected Notes/Chords */}
           {r.analysis && r.analysis.noteEvents.length > 0 && (
             <div className="rounded-xl bg-slate-950 border border-slate-800 p-2.5 max-h-24 overflow-y-auto studio-scrollbar-thin flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-              <span className="text-slate-500 mr-1">Primeras notas detectadas:</span>
+              <span className="text-slate-500 mr-1">
+                Primeras notas detectadas
+                {r.analysis.bassFocusApplied ? ' (Solo Graves / Progresión)' : ''}:
+              </span>
               {r.analysis.noteEvents.slice(0, 64).map((ev) => (
                 <span
                   key={ev.id}
@@ -1705,10 +1726,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               />
             </div>
 
-            {r.stemMode === 'monophonic' && (
+            {(r.stemMode === 'monophonic' || r.bassFocusMode) && (
               <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
                 <div className="text-[10px] text-slate-400">
-                  Modos rápidos de Bajo / Empalme:
+                  {r.stemMode === 'polyphonic'
+                    ? 'Peso Sub-Bass sobre la Canción:'
+                    : 'Modos rápidos de Bajo / Empalme:'}
                 </div>
                 <div className="grid grid-cols-3 gap-1.5 text-[10px]">
                   <button

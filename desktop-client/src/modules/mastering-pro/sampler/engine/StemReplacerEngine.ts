@@ -181,8 +181,9 @@ export function renderFullStemReplacement(params: {
           }));
 
     const slotGain = Math.pow(10, melodicSlot.gainDb / 20);
-    // Reduce gain slightly in polyphonic mode so 4-5 note chords stay headroom-balanced
-    const polyScale = analysis.mode === 'polyphonic' ? 0.42 : 0.78;
+    // Reduce gain slightly in polyphonic mode so 4-5 note chords stay headroom-balanced; keep full level for Bass-Focus monophonic progression
+    const polyScale =
+      analysis.mode === 'polyphonic' && !analysis.bassFocusApplied ? 0.42 : 0.78;
     const attackSamples = Math.max(32, Math.round(sr * 0.005)); // 5ms click-free attack
     const baseReleaseSec = analysis.mode === 'monophonic' ? 0.08 : 0.16;
 

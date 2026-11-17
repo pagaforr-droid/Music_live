@@ -206,6 +206,7 @@ export interface StemNoteEvent {
 
 export interface FullStemAnalysisResult {
   mode: StemAnalysisMode;
+  bassFocusApplied?: boolean;
   bpm: number;
   durationSec: number;
   drumHits: StemDrumHitEvent[];

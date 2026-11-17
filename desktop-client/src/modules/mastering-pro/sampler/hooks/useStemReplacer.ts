@@ -6,6 +6,7 @@ import {
   triggerFileDownload,
 } from '../engine/SampleExport';
 import {
+  analyzeBassProgressionFull,
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,
@@ -122,9 +123,11 @@ export function useStemReplacer() {
   const [waveformPyramid, setWaveformPyramid] = useState<WaveformPyramid | null>(null);
 
   const [stemMode, setStemMode] = useState<StemAnalysisMode>('drums');
+  const [bassFocusMode, setBassFocusMode] = useState<boolean>(false);
   const [sensitivity, setSensitivity] = useState<number>(0.62);
   const [maxPolyphony, setMaxPolyphony] = useState<number>(5);
   const [analysis, setAnalysis] = useState<FullStemAnalysisResult | null>(null);
+  const polyAutoWeightAppliedRef = useRef<boolean>(false);
 
   const [drumSlots, setDrumSlots] = useState<Record<DrumPieceRole, ReplacementSlotConfig>>(
     () => createDefaultDrumSlots()
@@ -304,11 +307,37 @@ export function useStemReplacer() {
       mode: StemAnalysisMode,
       sens: number,
       poly: number,
-      bpmHint?: number
+      bpmHint?: number,
+      bassFocus = bassFocusMode
     ) => {
       setIsAnalyzing(true);
       try {
         const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
+        const runSyncFallback = (): FullStemAnalysisResult => {
+          if (mode === 'drums') {
+            return analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint });
+          }
+          if (mode === 'polyphonic' && bassFocus) {
+            return analyzeBassProgressionFull(mono, buf.sampleRate, {
+              sensitivity: sens,
+              maxPolyphony: poly,
+              bpmHint,
+            });
+          }
+          if (mode === 'monophonic') {
+            return analyzeMonophonicStemNotesFull(mono, buf.sampleRate, {
+              sensitivity: sens,
+              bpmHint,
+              bassOnly: bassFocus,
+            });
+          }
+          return analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
+            sensitivity: sens,
+            maxPolyphony: poly,
+            bpmHint,
+          });
+        };
+
         let result: FullStemAnalysisResult;
 
         if (typeof Worker !== 'undefined') {
@@ -320,17 +349,7 @@ export function useStemReplacer() {
               w = null;
             }
             if (!w) {
-              resolve(
-                mode === 'drums'
-                  ? analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-                  : mode === 'monophonic'
-                  ? analyzeMonophonicStemNotesFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-                  : analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
-                      sensitivity: sens,
-                      maxPolyphony: poly,
-                      bpmHint,
-                    })
-              );
+              resolve(runSyncFallback());
               return;
             }
 
@@ -344,23 +363,13 @@ export function useStemReplacer() {
                 if (ev.data.result) {
                   resolve(ev.data.result);
                 } else {
-                  resolve(analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint }));
+                  resolve(runSyncFallback());
                 }
               }
             };
             w.onerror = () => {
               w?.terminate();
-              resolve(
-                mode === 'drums'
-                  ? analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-                  : mode === 'monophonic'
-                  ? analyzeMonophonicStemNotesFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-                  : analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
-                      sensitivity: sens,
-                      maxPolyphony: poly,
-                      bpmHint,
-                    })
-              );
+              resolve(runSyncFallback());
             };
             w.postMessage(
               {
@@ -371,6 +380,7 @@ export function useStemReplacer() {
                 sampleRate: buf.sampleRate,
                 sensitivity: sens,
                 stemMode: mode,
+                bassFocus,
                 bpmHint,
                 maxPolyphony: poly,
               },
@@ -378,33 +388,25 @@ export function useStemReplacer() {
             );
           });
         } else {
-          result =
-            mode === 'drums'
-              ? analyzeDrumStemFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-              : mode === 'monophonic'
-              ? analyzeMonophonicStemNotesFull(mono, buf.sampleRate, { sensitivity: sens, bpmHint })
-              : analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
-                  sensitivity: sens,
-                  maxPolyphony: poly,
-                  bpmHint,
-                });
+          result = runSyncFallback();
         }
 
         setAnalysis(result);
+        const rangeText = result.midiRange
+          ? `${result.midiRange.minName} – ${result.midiRange.maxName}`
+          : 'rango vacío';
         const summary =
           result.mode === 'drums'
             ? `Detectado: ${result.bpm} BPM · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hat · ${result.counts.tom} Tom)`
-            : `Detectado: ${result.bpm} BPM · ${result.counts.notes} notas (${
-                result.midiRange
-                  ? `${result.midiRange.minName} – ${result.midiRange.maxName}`
-                  : 'rango vacío'
-              })`;
+            : result.bassFocusApplied
+            ? `Solo Graves (${result.bpm} BPM): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
+            : `Detectado: ${result.bpm} BPM · ${result.counts.notes} notas (${rangeText})`;
         setStatusMessage(summary);
       } finally {
         setIsAnalyzing(false);
       }
     },
-    []
+    [bassFocusMode]
   );
 
   // Auto-render replaced buffer cleanly whenever analysis or replacement settings change
@@ -533,14 +535,18 @@ export function useStemReplacer() {
 
         const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStemMode(inferredMode);
+        const chosenPreset = chooseDefaultMelodicPresetForName(stem.name);
+        const nextFocus = inferredMode !== 'drums' && isBassPresetId(chosenPreset);
+        setBassFocusMode(nextFocus);
+        polyAutoWeightAppliedRef.current = false;
         if (inferredMode !== 'drums') {
           setMelodicSlot((prev) => ({
             ...prev,
-            presetId: chooseDefaultMelodicPresetForName(stem.name),
+            presetId: chosenPreset,
           }));
         }
 
-        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony, song?.bpm);
+        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony, song?.bpm, nextFocus);
       } catch (err) {
         setStatusMessage(
           err instanceof Error ? err.message : 'Error cargando stem desde Supabase.'
@@ -568,13 +574,17 @@ export function useStemReplacer() {
 
         const inferredMode = inferStemModeFromName(file.name);
         setStemMode(inferredMode);
+        const chosenPreset = chooseDefaultMelodicPresetForName(file.name);
+        const nextFocus = inferredMode !== 'drums' && isBassPresetId(chosenPreset);
+        setBassFocusMode(nextFocus);
+        polyAutoWeightAppliedRef.current = false;
         if (inferredMode !== 'drums') {
           setMelodicSlot((prev) => ({
             ...prev,
-            presetId: chooseDefaultMelodicPresetForName(file.name),
+            presetId: chosenPreset,
           }));
         }
-        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony);
+        await runAnalysis(decoded, inferredMode, sensitivity, maxPolyphony, undefined, nextFocus);
       } catch (err) {
         setStatusMessage(
           err instanceof Error ? err.message : 'Error decodificando el stem.'
@@ -689,41 +699,95 @@ export function useStemReplacer() {
 
       setOriginalBuffer(buf);
       setStemMode(kind);
+      const nextFocus = kind === 'monophonic';
+      setBassFocusMode(nextFocus);
+      polyAutoWeightAppliedRef.current = false;
+      setMixOptions((p) => ({ ...p, originalPct: 0, replacementPct: 100 }));
       if (kind === 'monophonic') {
         setMelodicSlot((p) => ({ ...p, presetId: 'inst-bass-finger' }));
       } else if (kind === 'polyphonic') {
         setMelodicSlot((p) => ({ ...p, presetId: 'inst-guitar-acoustic' }));
       }
       setCurrentTimeSec(0);
-      await runAnalysis(buf, kind, sensitivity, maxPolyphony, bpm);
+      await runAnalysis(buf, kind, sensitivity, maxPolyphony, bpm, nextFocus);
     },
     [stopPlayback, ensureCtx, runAnalysis, sensitivity, maxPolyphony]
   );
+
+  const applyBassFocusChange = useCallback(
+    (nextBassFocus: boolean, targetMode = stemMode, buf = originalBuffer) => {
+      setBassFocusMode(nextBassFocus);
+      if (targetMode === 'polyphonic') {
+        if (nextBassFocus && mixOptions.originalPct === 0) {
+          setMixOptions((p) => ({ ...p, originalPct: 88, replacementPct: 60 }));
+          polyAutoWeightAppliedRef.current = true;
+        } else if (!nextBassFocus && polyAutoWeightAppliedRef.current) {
+          setMixOptions((p) => ({ ...p, originalPct: 0, replacementPct: 100 }));
+          polyAutoWeightAppliedRef.current = false;
+        }
+      }
+      if (buf && targetMode !== 'drums') {
+        void runAnalysis(
+          buf,
+          targetMode,
+          sensitivity,
+          maxPolyphony,
+          selectedSong?.bpm,
+          nextBassFocus
+        );
+      }
+    },
+    [
+      stemMode,
+      originalBuffer,
+      mixOptions.originalPct,
+      runAnalysis,
+      sensitivity,
+      maxPolyphony,
+      selectedSong?.bpm,
+    ]
+  );
+
+  const toggleBassFocusMode = useCallback(() => {
+    applyBassFocusChange(!bassFocusMode);
+  }, [applyBassFocusChange, bassFocusMode]);
 
   // Switch analysis mode and re-scan
   const changeStemModeAndReanalyze = useCallback(
     async (nextMode: StemAnalysisMode) => {
       setStemMode(nextMode);
-      if (nextMode !== 'drums') {
-        setMelodicSlot((prev) => ({
-          ...prev,
-          presetId:
-            nextMode === 'monophonic'
-              ? 'inst-bass-finger'
-              : chooseDefaultMelodicPresetForName(stemTitle),
-        }));
+      let nextFocus = bassFocusMode;
+      if (nextMode === 'drums') {
+        nextFocus = false;
+      } else if (nextMode === 'monophonic') {
+        if (!isBassPresetId(melodicSlot.presetId)) {
+          setMelodicSlot((prev) => ({ ...prev, presetId: 'inst-bass-finger' }));
+        }
+        nextFocus = true;
+      } else {
+        nextFocus = isBassPresetId(melodicSlot.presetId);
       }
+      setBassFocusMode(nextFocus);
       if (originalBuffer) {
         await runAnalysis(
           originalBuffer,
           nextMode,
           sensitivity,
           maxPolyphony,
-          selectedSong?.bpm
+          selectedSong?.bpm,
+          nextFocus
         );
       }
     },
-    [originalBuffer, runAnalysis, sensitivity, maxPolyphony, selectedSong?.bpm, stemTitle]
+    [
+      bassFocusMode,
+      melodicSlot.presetId,
+      originalBuffer,
+      runAnalysis,
+      sensitivity,
+      maxPolyphony,
+      selectedSong?.bpm,
+    ]
   );
 
   const reanalyzeCurrentStem = useCallback(async () => {
@@ -733,9 +797,18 @@ export function useStemReplacer() {
       stemMode,
       sensitivity,
       maxPolyphony,
-      selectedSong?.bpm
+      selectedSong?.bpm,
+      bassFocusMode
     );
-  }, [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, selectedSong?.bpm]);
+  }, [
+    originalBuffer,
+    runAnalysis,
+    stemMode,
+    sensitivity,
+    maxPolyphony,
+    selectedSong?.bpm,
+    bassFocusMode,
+  ]);
 
   const updateDrumSlot = useCallback(
     (role: DrumPieceRole, patch: Partial<ReplacementSlotConfig>) => {
@@ -747,9 +820,27 @@ export function useStemReplacer() {
     []
   );
 
-  const updateMelodicSlot = useCallback((patch: Partial<ReplacementSlotConfig>) => {
-    setMelodicSlot((prev) => ({ ...prev, ...patch }));
-  }, []);
+  const updateMelodicSlot = useCallback(
+    (patch: Partial<ReplacementSlotConfig>) => {
+      const nextSlot = { ...melodicSlot, ...patch };
+      setMelodicSlot(nextSlot);
+
+      if (stemMode !== 'drums' && ('presetId' in patch || 'sourceType' in patch)) {
+        let nextFocus = bassFocusMode;
+        if (nextSlot.sourceType === 'preset') {
+          nextFocus = isBassPresetId(nextSlot.presetId);
+        } else if (nextSlot.customName) {
+          if (/(bass|bajo|sub|808|sh101|monark|juno|jupiter)/i.test(nextSlot.customName)) {
+            nextFocus = true;
+          }
+        }
+        if (nextFocus !== bassFocusMode) {
+          applyBassFocusChange(nextFocus);
+        }
+      }
+    },
+    [melodicSlot, stemMode, bassFocusMode, applyBassFocusChange]
+  );
 
   // Register a decoded sample in the persistent Custom Sample Bank and optionally assign to a slot
   const registerCustomSample = useCallback(
@@ -1166,6 +1257,7 @@ export function useStemReplacer() {
 
   const applyMixPreset = useCallback(
     (mode: 'replace' | 'layer-sub' | 'hybrid') => {
+      polyAutoWeightAppliedRef.current = false;
       if (mode === 'replace') {
         setMixOptions((p) => ({
           ...p,
@@ -1194,8 +1286,21 @@ export function useStemReplacer() {
             presetId: 'inst-bass-monark-sub',
           }));
         }
+        if (!bassFocusMode && stemMode !== 'drums') {
+          setBassFocusMode(true);
+          if (originalBuffer) {
+            void runAnalysis(
+              originalBuffer,
+              stemMode,
+              sensitivity,
+              maxPolyphony,
+              selectedSong?.bpm,
+              true
+            );
+          }
+        }
         setStatusMessage(
-          'Empalme Sub Activo: Bajo Synth denso debajo del bajo original (60% Sub / 88% Original).'
+          'Empalme Sub Activo: Bajo Synth denso debajo del audio original (60% Sub / 88% Original).'
         );
         return;
       }
@@ -1207,7 +1312,17 @@ export function useStemReplacer() {
       }));
       setStatusMessage('Modo Mezcla Híbrida: 70% Synth / 55% Original.');
     },
-    [melodicSlot.presetId, melodicSlot.sourceType]
+    [
+      melodicSlot.presetId,
+      melodicSlot.sourceType,
+      bassFocusMode,
+      stemMode,
+      originalBuffer,
+      runAnalysis,
+      sensitivity,
+      maxPolyphony,
+      selectedSong?.bpm,
+    ]
   );
 
   return {
@@ -1223,6 +1338,8 @@ export function useStemReplacer() {
     stemTitle,
     waveformPyramid,
     stemMode,
+    bassFocusMode,
+    toggleBassFocusMode,
     sensitivity,
     setSensitivity,
     maxPolyphony,

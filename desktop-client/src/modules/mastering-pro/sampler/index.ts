@@ -14,6 +14,7 @@ export { SampleLabHandoff } from './engine/SampleLabHandoff';
 export { detectPitchYin, midiNoteToName } from './engine/PitchDetector';
 export { sliceByTransients, sliceByBpmGrid } from './engine/Slicer';
 export {
+  analyzeBassProgressionFull,
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,

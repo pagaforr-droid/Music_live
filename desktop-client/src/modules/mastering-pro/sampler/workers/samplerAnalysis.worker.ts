@@ -1,6 +1,7 @@
 import { detectPitchYin } from '../engine/PitchDetector';
 import { sliceByTransients } from '../engine/Slicer';
 import {
+  analyzeBassProgressionFull,
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,
@@ -18,6 +19,7 @@ export interface SamplerAnalysisRequest {
   sensitivity?: number;
   minSpacingMs?: number;
   stemMode?: StemAnalysisMode;
+  bassFocus?: boolean;
   bpmHint?: number;
   maxPolyphony?: number;
 }
@@ -33,6 +35,7 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
 
     if (req.kind === 'analyze-full-stem') {
       const mode = req.stemMode ?? 'drums';
+      const bassFocus = Boolean(req.bassFocus);
       const result =
         mode === 'drums'
           ? analyzeDrumStemFull(req.mono, req.sampleRate, {
@@ -40,10 +43,17 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               minIntervalMs: req.minSpacingMs,
               bpmHint: req.bpmHint,
             })
+          : mode === 'polyphonic' && bassFocus
+          ? analyzeBassProgressionFull(req.mono, req.sampleRate, {
+              sensitivity: req.sensitivity,
+              maxPolyphony: req.maxPolyphony,
+              bpmHint: req.bpmHint,
+            })
           : mode === 'monophonic'
           ? analyzeMonophonicStemNotesFull(req.mono, req.sampleRate, {
               sensitivity: req.sensitivity,
               bpmHint: req.bpmHint,
+              bassOnly: bassFocus,
             })
           : analyzePolyphonicStemNotesFull(req.mono, req.sampleRate, {
               sensitivity: req.sensitivity,

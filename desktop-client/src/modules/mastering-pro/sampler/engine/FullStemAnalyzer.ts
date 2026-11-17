@@ -269,13 +269,15 @@ function getMedianNumber(vals: number[]): number {
 export function analyzeMonophonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number } = {}
+  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = options.sensitivity ?? 0.62;
   const minNoteSec = (options.minNoteMs ?? 45) / 1000;
+  const bassOnly = Boolean(options.bassOnly);
+  const analysisSig = bassOnly ? filterBassIsolationBand(mono, sampleRate) : mono;
 
-  const onsetsRes = detectOnsetsSpectralFlux(mono, sampleRate, {
+  const onsetsRes = detectOnsetsSpectralFlux(analysisSig, sampleRate, {
     sensitivity,
     minIntervalMs: 70,
     snapToZeroCrossing: false,
@@ -285,14 +287,14 @@ export function analyzeMonophonicStemNotesFull(
   let globalPeakRms = 1e-6;
   const hop = Math.max(512, Math.round(sampleRate * 0.022)); // ~22ms frame hop
   const winLen = Math.max(2048, Math.round(sampleRate * 0.064)); // ~64ms YIN window (covers down to ~35 Hz E1!)
-  const numFrames = Math.max(1, Math.floor((mono.length - winLen) / hop) + 1);
+  const numFrames = Math.max(1, Math.floor((analysisSig.length - winLen) / hop) + 1);
   const frameRms = new Float32Array(numFrames);
 
   for (let f = 0; f < numFrames; f++) {
     const off = f * hop;
     let sumSq = 0;
     for (let i = 0; i < winLen; i += 2) {
-      const v = mono[off + i];
+      const v = analysisSig[off + i];
       sumSq += v * v;
     }
     const rms = Math.sqrt(sumSq / (winLen / 2));
@@ -303,13 +305,15 @@ export function analyzeMonophonicStemNotesFull(
   const rmsGate = globalPeakRms * 0.045;
   const rawMidi = new Int16Array(numFrames).fill(-1);
   const rawConf = new Float32Array(numFrames);
+  const maxYinHz = bassOnly ? 240 : 1400;
+  const maxAllowedMidi = bassOnly ? 55 : 96; // Clamp to G3 in bassOnly mode
 
   for (let f = 0; f < numFrames; f++) {
     if (frameRms[f] < rmsGate) continue;
     const off = f * hop;
-    const slice = mono.subarray(off, off + winLen);
-    const est = detectPitchYin(slice, sampleRate, 36, 1400);
-    if (est.confidence >= 0.48 && est.midiNote >= 24 && est.midiNote <= 96) {
+    const slice = analysisSig.subarray(off, off + winLen);
+    const est = detectPitchYin(slice, sampleRate, 35, maxYinHz);
+    if (est.confidence >= 0.48 && est.midiNote >= 24 && est.midiNote <= maxAllowedMidi) {
       rawMidi[f] = est.midiNote;
       rawConf[f] = est.confidence;
     }
@@ -416,6 +420,7 @@ export function analyzeMonophonicStemNotesFull(
 
   return {
     mode: 'monophonic',
+    bassFocusApplied: bassOnly || undefined,
     bpm,
     durationSec,
     drumHits: [],
@@ -804,6 +809,477 @@ export function analyzePolyphonicStemNotesFull(
       hat: 0,
       tom: 0,
       notes: dedupedEvents.length,
+    },
+  };
+}
+
+/**
+ * Isolates the 30 Hz - 210 Hz bass band (2nd-order HPF + 4th-order Butterworth LPF)
+ * so vocals, snares, guitars and cymbals don't mask low-end bass tracking in full songs.
+ */
+function filterBassIsolationBand(mono: Float32Array, sr: number): Float32Array {
+  const out = new Float32Array(mono.length);
+  // Stage 1: 2nd-order Butterworth HPF @ 30Hz
+  const wH = (2 * Math.PI * 30) / sr;
+  const cH = Math.cos(wH);
+  const aH = Math.sin(wH) / (2 * Math.SQRT1_2);
+  const a0H = 1 + aH;
+  const hb0 = ((1 + cH) * 0.5) / a0H;
+  const hb1 = -(1 + cH) / a0H;
+  const ha1 = (-2 * cH) / a0H;
+  const ha2 = (1 - aH) / a0H;
+
+  // Stage 2 & 3: Cascaded 2nd-order Butterworth LPF @ 210Hz (24 dB/oct)
+  const wL = (2 * Math.PI * 210) / sr;
+  const cL = Math.cos(wL);
+  const aL = Math.sin(wL) / (2 * Math.SQRT1_2);
+  const a0L = 1 + aL;
+  const lb0 = ((1 - cL) * 0.5) / a0L;
+  const lb1 = (1 - cL) / a0L;
+  const la1 = (-2 * cL) / a0L;
+  const la2 = (1 - aL) / a0L;
+
+  let hx1 = 0, hx2 = 0, hy1 = 0, hy2 = 0;
+  let l1x1 = 0, l1x2 = 0, l1y1 = 0, l1y2 = 0;
+  let l2x1 = 0, l2x2 = 0, l2y1 = 0, l2y2 = 0;
+
+  for (let i = 0; i < mono.length; i++) {
+    const x = mono[i];
+    const hp = hb0 * x + hb1 * hx1 + hb0 * hx2 - ha1 * hy1 - ha2 * hy2;
+    hx2 = hx1; hx1 = x; hy2 = hy1; hy1 = hp;
+
+    const lp1 = lb0 * hp + lb1 * l1x1 + lb0 * l1x2 - la1 * l1y1 - la2 * l1y2;
+    l1x2 = l1x1; l1x1 = hp; l1y2 = l1y1; l1y1 = lp1;
+
+    const lp2 = lb0 * lp1 + lb1 * l2x1 + lb0 * l2x2 - la1 * l2y1 - la2 * l2y2;
+    l2x2 = l2x1; l2x1 = lp1; l2y2 = l2y1; l2y1 = lp2;
+
+    out[i] = lp2;
+  }
+  return out;
+}
+
+function foldPitchClassToSubRegister(
+  pitchClass: number,
+  prevMidi: number | null,
+  minBassMidi = 28, // E1 (41.2 Hz)
+  maxBassMidi = 43  // G2 (98.0 Hz)
+): number {
+  const pc = ((pitchClass % 12) + 12) % 12;
+  const anchor = prevMidi ?? 35; // B1 / C2 center
+  let best = minBassMidi + ((pc - (minBassMidi % 12) + 12) % 12);
+  let bestDist = Infinity;
+  for (let m = minBassMidi; m <= maxBassMidi; m++) {
+    if (m % 12 !== pc) continue;
+    const d = Math.abs(m - anchor);
+    if (d < bestDist) {
+      bestDist = d;
+      best = m;
+    }
+  }
+  return best;
+}
+
+function inferChordRootPitchClass(
+  activeNotes: StemNoteEvent[],
+  lowBandMidi: number
+): number {
+  const lowestNote = activeNotes.reduce(
+    (best, n) => (n.midiNote < best.midiNote ? n : best),
+    activeNotes[0]
+  );
+  if (activeNotes.length === 1) {
+    return lowestNote.midiNote % 12;
+  }
+
+  const pcWeight = new Float32Array(12);
+  for (const n of activeNotes) {
+    const pc = n.midiNote % 12;
+    pcWeight[pc] += Math.max(0.2, n.velocity);
+  }
+
+  const lowestPc = lowestNote.midiNote % 12;
+  const lowBandPc = lowBandMidi >= 28 ? lowBandMidi % 12 : -1;
+
+  let bestPc = lowestPc;
+  let bestScore = -1;
+
+  for (let pc = 0; pc < 12; pc++) {
+    if (pcWeight[pc] <= 0) continue;
+    let score = pcWeight[pc];
+    // Major / Minor triad structural support
+    const hasMaj3 = pcWeight[(pc + 4) % 12] > 0;
+    const hasMin3 = pcWeight[(pc + 3) % 12] > 0;
+    const hasFifth = pcWeight[(pc + 7) % 12] > 0;
+    const hasMin7 = pcWeight[(pc + 10) % 12] > 0;
+
+    if (hasMaj3 || hasMin3) score += 0.55;
+    if (hasFifth) score += 0.85;
+    if (hasMin7) score += 0.25;
+    if (pc === lowestPc) score += 0.35;
+    if (pc === lowBandPc) score += 0.45;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestPc = pc;
+    }
+  }
+
+  return bestPc;
+}
+
+/**
+ * Bass-Focus Progression & Sub-Register Analyzer:
+ * Extracts ONLY monophonic sub/bass notes (E1..G#2 / 41..104 Hz) from ANY full song,
+ * chord progression (Piano/Guitar), or bass stem:
+ * 1) Isolates the 30-210 Hz bass band via 16384-pt FFT to track existing basslines in full mixes.
+ * 2) When the mix/stem has no low bassline (e.g. chords/guitar/piano), detects the harmonic chord
+ *    progression and infers the root note folded smoothly into sub-bass register (E1..G2).
+ * 3) Enforces strict non-overlapping monophonic bass note events.
+ */
+export function analyzeBassProgressionFull(
+  mono: Float32Array,
+  sampleRate: number,
+  options: { sensitivity?: number; maxPolyphony?: number; bpmHint?: number } = {}
+): FullStemAnalysisResult {
+  const durationSec = mono.length / sampleRate;
+  const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
+
+  // 1. Detect polyphonic chords + full-band onsets so chord progressions without sub are tracked cleanly
+  const poly = analyzePolyphonicStemNotesFull(mono, sampleRate, {
+    sensitivity,
+    maxPolyphony: options.maxPolyphony ?? 5,
+    bpmHint: options.bpmHint,
+  });
+
+  // 2. Isolate 30-210 Hz bass band and analyze frame-by-frame low fundamentals
+  const lowBand = filterBassIsolationBand(mono, sampleRate);
+  const fullOnsets = detectOnsetsSpectralFlux(mono, sampleRate, {
+    sensitivity,
+    minIntervalMs: 75,
+    snapToZeroCrossing: false,
+  });
+  const lowOnsets = detectOnsetsSpectralFlux(lowBand, sampleRate, {
+    sensitivity: Math.min(0.95, sensitivity + 0.08),
+    minIntervalMs: 85,
+    snapToZeroCrossing: false,
+  });
+
+  const frameLen = 8192;
+  const fftSize = 16384;
+  const halfBins = fftSize / 2;
+  const hop = durationSec <= 75 ? 1024 : 2048;
+  const numFrames = Math.max(1, Math.floor((mono.length - frameLen) / hop) + 1);
+  const binHz = sampleRate / fftSize;
+
+  const lowRms = new Float32Array(numFrames);
+  const fullRms = new Float32Array(numFrames);
+  let peakLowRms = 1e-6;
+  let peakFullRms = 1e-6;
+  const coreStart = Math.floor(frameLen * 0.2);
+  const coreEnd = Math.floor(frameLen * 0.8);
+
+  for (let f = 0; f < numFrames; f++) {
+    const off = f * hop;
+    let sumL = 0;
+    let sumF = 0;
+    for (let i = coreStart; i < coreEnd; i += 4) {
+      const vl = lowBand[off + i];
+      const vf = mono[off + i];
+      sumL += vl * vl;
+      sumF += vf * vf;
+    }
+    const rl = Math.sqrt(sumL / ((coreEnd - coreStart) / 4));
+    const rf = Math.sqrt(sumF / ((coreEnd - coreStart) / 4));
+    lowRms[f] = rl;
+    fullRms[f] = rf;
+    if (rl > peakLowRms) peakLowRms = rl;
+    if (rf > peakFullRms) peakFullRms = rf;
+  }
+
+  const win = buildHannWindow(frameLen);
+  const re = new Float32Array(fftSize);
+  const im = new Float32Array(fftSize);
+  const mag = new Float32Array(halfBins);
+  const maxLowBin = Math.min(halfBins - 4, Math.ceil(380 / binHz));
+  const rawLowMidi = new Int16Array(numFrames).fill(-1);
+  const lowGate = peakLowRms * (0.14 - sensitivity * 0.06);
+
+  for (let f = 0; f < numFrames; f++) {
+    if (lowRms[f] < lowGate) continue;
+    const off = f * hop;
+    re.fill(0);
+    im.fill(0);
+    for (let i = 0; i < frameLen; i++) {
+      re[i] = lowBand[off + i] * win[i];
+    }
+    fftInPlace(re, im);
+
+    let frameMax = 0;
+    for (let k = 6; k <= maxLowBin; k++) {
+      const a = Math.hypot(re[k], im[k]);
+      mag[k] = a;
+      if (a > frameMax) frameMax = a;
+    }
+    if (frameMax < 1e-4) continue;
+
+    const peaks: Array<{ freqHz: number; amp: number }> = [];
+    const floor = frameMax * 0.14;
+    for (let k = 8; k < maxLowBin - 2; k++) {
+      const a = mag[k];
+      if (a > floor && a >= mag[k - 1] && a > mag[k + 1]) {
+        const s0 = mag[k - 1];
+        const s2 = mag[k + 1];
+        const denom = s0 - 2 * a + s2;
+        const delta = Math.abs(denom) > 1e-9 ? Math.max(-0.5, Math.min(0.5, (0.5 * (s0 - s2)) / denom)) : 0;
+        const freqHz = (k + delta) * binHz;
+        if (freqHz >= 36 && freqHz <= 350) {
+          peaks.push({ freqHz, amp: a });
+        }
+      }
+    }
+    if (peaks.length === 0) continue;
+
+    const findPeak = (targetHz: number) => {
+      const lo = targetHz * 0.975;
+      const hi = targetHz * 1.026;
+      let best = 0;
+      for (let i = 0; i < peaks.length; i++) {
+        if (peaks[i].freqHz > hi) break;
+        if (peaks[i].freqHz >= lo && peaks[i].amp > best) best = peaks[i].amp;
+      }
+      return best;
+    };
+
+    let bestMidi = -1;
+    let bestScore = 0;
+    for (let m = 28; m <= 50; m++) {
+      const f0 = 440 * Math.pow(2, (m - 69) / 12);
+      const amp1 = findPeak(f0);
+      if (amp1 < floor) continue;
+      const amp2 = f0 * 2 <= 350 ? findPeak(f0 * 2) : 0;
+      // Reject sub-octave artifacts when 2nd harmonic dwarfs fundamental below 62Hz
+      if (f0 < 62 && amp1 < amp2 * 0.35) continue;
+      const score = amp1 + amp2 * 0.45;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMidi = m;
+      }
+    }
+    rawLowMidi[f] = bestMidi;
+  }
+
+  // 3-frame median filter on low-band MIDI to reject 1-frame kick-drum sweeps
+  const smoothedLowMidi = new Int16Array(numFrames).fill(-1);
+  for (let f = 0; f < numFrames; f++) {
+    if (rawLowMidi[f] < 0) continue;
+    const vals: number[] = [];
+    for (let d = -1; d <= 1; d++) {
+      const idx = f + d;
+      if (idx >= 0 && idx < numFrames && rawLowMidi[idx] >= 0) {
+        vals.push(rawLowMidi[idx]);
+      }
+    }
+    smoothedLowMidi[f] = vals.length >= 2 ? getMedianNumber(vals) : -1;
+  }
+
+  // 3. Fuse low-band bass tracking + polyphonic chord-root extraction per frame
+  const chosenFrameMidi = new Int16Array(numFrames).fill(-1);
+  const fullGate = peakFullRms * 0.08;
+  let lastBassMidi: number | null = null;
+
+  for (let f = 0; f < numFrames; f++) {
+    if (fullRms[f] < fullGate && lowRms[f] < peakLowRms * 0.12) continue;
+    const tSec = (f * hop + frameLen * 0.38) / sampleRate;
+    const activePoly = poly.noteEvents.filter(
+      (ev) => ev.startSec <= tSec + 0.035 && ev.startSec + ev.durationSec >= tSec - 0.015
+    );
+    const lowMidi = smoothedLowMidi[f];
+    const lowEnergyRatio = lowRms[f] / (fullRms[f] + 1e-6);
+
+    const hasTrueSubBass =
+      (lowMidi >= 28 && lowMidi <= 40 && (lowEnergyRatio >= 0.14 || activePoly.length === 0)) ||
+      (lowMidi >= 28 && lowMidi <= 44 && activePoly.length <= 1);
+
+    if (hasTrueSubBass) {
+      chosenFrameMidi[f] = lowMidi;
+      lastBassMidi = lowMidi;
+      continue;
+    }
+
+    if (activePoly.length > 0) {
+      const rootPc = inferChordRootPitchClass(activePoly, lowMidi);
+      const folded: number = foldPitchClassToSubRegister(rootPc, lastBassMidi, 28, 40);
+      chosenFrameMidi[f] = folded;
+      lastBassMidi = folded;
+      continue;
+    }
+
+    if (lowMidi >= 28 && fullRms[f] >= fullGate) {
+      const folded: number =
+        lowMidi <= 44
+          ? lowMidi
+          : foldPitchClassToSubRegister(lowMidi % 12, lastBassMidi, 28, 40);
+      chosenFrameMidi[f] = folded;
+      lastBassMidi = folded;
+    }
+  }
+
+  // Smooth fused frame decisions
+  const finalMidi = new Int16Array(numFrames).fill(-1);
+  for (let f = 0; f < numFrames; f++) {
+    if (chosenFrameMidi[f] < 0) continue;
+    const vals: number[] = [];
+    for (let d = -1; d <= 1; d++) {
+      const idx = f + d;
+      if (idx >= 0 && idx < numFrames && chosenFrameMidi[idx] >= 0) vals.push(chosenFrameMidi[idx]);
+    }
+    finalMidi[f] = vals.length >= 2 ? getMedianNumber(vals) : chosenFrameMidi[f];
+  }
+
+  const allOnsets = [...fullOnsets.onsetTimesSec, ...lowOnsets.onsetTimesSec].sort((a, b) => a - b);
+  const onsetFrames = new Set<number>();
+  for (const os of lowOnsets.onsetTimesSec) {
+    onsetFrames.add(Math.round((os * sampleRate) / hop));
+  }
+  for (const ev of poly.noteEvents) {
+    onsetFrames.add(Math.round((ev.startSec * sampleRate) / hop));
+  }
+
+  const noteEvents: StemNoteEvent[] = [];
+  let curMidi = -1;
+  let curStartF = 0;
+  let curPeakRms = 0;
+  let curFrames = 0;
+
+  const flushBassNote = (endF: number) => {
+    if (curMidi < 0 || curFrames < 3) return;
+    const rawStartSec = Math.max(0, (curStartF * hop + frameLen * 0.35) / sampleRate);
+    const rawEndSec = Math.min(durationSec, (endF * hop + frameLen * 0.5) / sampleRate);
+    let snappedStart = rawStartSec;
+    let bestD = 0.065;
+    for (const oSec of allOnsets) {
+      const d = Math.abs(oSec - rawStartSec);
+      if (d <= bestD) {
+        bestD = d;
+        snappedStart = oSec;
+      }
+    }
+    // Check polyphonic note start alignment too
+    for (const ev of poly.noteEvents) {
+      const d = Math.abs(ev.startSec - rawStartSec);
+      if (d <= bestD) {
+        bestD = d;
+        snappedStart = ev.startSec;
+      }
+    }
+
+    const dur = Math.max(0.05, rawEndSec - snappedStart);
+    if (dur < 0.065) return;
+
+    const vel = Number(
+      Math.max(0.32, Math.min(1.0, curPeakRms / Math.max(1e-4, peakFullRms * 0.72))).toFixed(3)
+    );
+    noteEvents.push({
+      id: '',
+      startSec: Number(snappedStart.toFixed(4)),
+      durationSec: Number(dur.toFixed(4)),
+      midiNote: curMidi,
+      noteName: midiNoteToName(curMidi),
+      velocity: vel,
+      clarity: 0.9,
+    });
+  };
+
+  for (let f = 0; f < numFrames; f++) {
+    const m = finalMidi[f];
+    const frameEnergy = Math.max(lowRms[f], fullRms[f] * 0.7);
+    const prevEnergy =
+      f >= 2
+        ? Math.min(
+            Math.max(lowRms[f - 1], fullRms[f - 1] * 0.7),
+            Math.max(lowRms[f - 2], fullRms[f - 2] * 0.7)
+          )
+        : frameEnergy;
+    const reAttack =
+      f > curStartF + 4 && onsetFrames.has(f) && frameEnergy > prevEnergy * 1.25;
+    if (m < 0) {
+      flushBassNote(f);
+      curMidi = -1;
+      curFrames = 0;
+      continue;
+    }
+    if (curMidi < 0) {
+      curMidi = m;
+      curStartF = f;
+      curPeakRms = frameEnergy;
+      curFrames = 1;
+    } else if (m !== curMidi || reAttack) {
+      flushBassNote(f);
+      curMidi = m;
+      curStartF = f;
+      curPeakRms = frameEnergy;
+      curFrames = 1;
+    } else {
+      curFrames++;
+      if (frameEnergy > curPeakRms) curPeakRms = frameEnergy;
+    }
+  }
+  flushBassNote(numFrames);
+
+  // Deduplicate/merge near-simultaneous notes & enforce strictly non-overlapping monophonic bass line
+  noteEvents.sort((a, b) => a.startSec - b.startSec);
+  const monoBass: StemNoteEvent[] = [];
+  for (const ev of noteEvents) {
+    const prev = monoBass[monoBass.length - 1];
+    if (prev && Math.abs(ev.startSec - prev.startSec) < 0.045) {
+      prev.durationSec = Math.max(prev.durationSec, ev.durationSec);
+      prev.velocity = Math.max(prev.velocity, ev.velocity);
+    } else {
+      monoBass.push(ev);
+    }
+  }
+
+  for (let i = 0; i < monoBass.length; i++) {
+    monoBass[i].id = `bf-${i}`;
+    if (i < monoBass.length - 1) {
+      const maxDur = Math.max(0.04, monoBass[i + 1].startSec - monoBass[i].startSec - 0.008);
+      if (monoBass[i].durationSec > maxDur) {
+        monoBass[i].durationSec = Number(maxDur.toFixed(4));
+      }
+    }
+  }
+
+  let minFound = 127;
+  let maxFound = 0;
+  for (const n of monoBass) {
+    if (n.midiNote < minFound) minFound = n.midiNote;
+    if (n.midiNote > maxFound) maxFound = n.midiNote;
+  }
+
+  return {
+    mode: poly.mode,
+    bassFocusApplied: true,
+    bpm: poly.bpm,
+    durationSec,
+    drumHits: [],
+    noteEvents: monoBass,
+    midiRange:
+      monoBass.length > 0
+        ? {
+            minMidi: minFound,
+            maxMidi: maxFound,
+            minName: midiNoteToName(minFound),
+            maxName: midiNoteToName(maxFound),
+          }
+        : undefined,
+    counts: {
+      total: monoBass.length,
+      kick: 0,
+      snare: 0,
+      hat: 0,
+      tom: 0,
+      notes: monoBass.length,
     },
   };
 }
