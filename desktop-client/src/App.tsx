@@ -10,6 +10,7 @@ const LivePrompter = lazy(() => import('./pages/LivePrompter'));
 const StemStudio = lazy(() => import('./pages/StemStudio'));
 const SetlistBuilder = lazy(() => import('./pages/SetlistBuilder'));
 const LiveConcert = lazy(() => import('./pages/LiveConcert'));
+const StageSoundcheck = lazy(() => import('./pages/StageSoundcheck'));
 const MobileInEar = lazy(() => import('./pages/MobileInEar'));
 const MusicHub = lazy(() => import('./pages/MusicHub'));
 const AdminCMS = lazy(() => import('./pages/AdminCMS'));
@@ -68,6 +69,7 @@ function AppRoutes() {
         }>
           <Route path="/" element={<LiveConcert />} />
           <Route path="/concert" element={<LiveConcert />} />
+          <Route path="/soundcheck" element={<StageSoundcheck />} />
           <Route path="/editor" element={<LivePrompter />} />
           <Route path="/studio" element={<StemStudio />} />
           <Route path="/mastering" element={<StudioMasteringModule />} />

@@ -262,67 +262,115 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (!audioContext.current) return;
     const ctx = audioContext.current;
 
-    sourceNodes.current.forEach(node => node.disconnect());
-    gainNodes.current.forEach(node => node.disconnect());
-    pannerNodes.current.forEach(node => node.disconnect());
+    sourceNodes.current.forEach(node => { try { node.disconnect(); } catch {} });
+    gainNodes.current.forEach(node => { try { node.disconnect(); } catch {} });
+    pannerNodes.current.forEach(node => { try { node.disconnect(); } catch {} });
+    try { mergerNode.current?.disconnect(); } catch {}
+    try { globalMasterGainNode.current?.disconnect(); } catch {}
 
-    const maxChannels = ctx.destination.maxChannelCount;
+    const maxChannels = ctx.destination.maxChannelCount || 2;
+    let effectiveMode = routingMode;
     if (routingMode === 'MultiChannel' && maxChannels < 4) {
-      console.warn("Hardware interface only supports", maxChannels, "channels. Falling back to StereoInEar.");
-      setRoutingMode('StereoInEar');
+      console.warn('Hardware interface only supports', maxChannels, 'channels. Falling back safely to StereoSplit (L=CUE, R=FOH).');
+      effectiveMode = 'StereoSplit';
+      setRoutingMode('StereoSplit');
     }
 
-    if (routingMode === 'MultiChannel') {
-      ctx.destination.channelCount = maxChannels;
+    if (effectiveMode === 'MultiChannel') {
+      try {
+        ctx.destination.channelInterpretation = 'discrete';
+        ctx.destination.channelCountMode = 'explicit';
+        ctx.destination.channelCount = maxChannels;
+      } catch {}
+      if (globalMasterGainNode.current) {
+        globalMasterGainNode.current.channelCount = maxChannels;
+        globalMasterGainNode.current.channelCountMode = 'explicit';
+        globalMasterGainNode.current.channelInterpretation = 'discrete';
+        globalMasterGainNode.current.connect(ctx.destination);
+      }
       splitterNode.current = ctx.createChannelSplitter(maxChannels);
       mergerNode.current = ctx.createChannelMerger(maxChannels);
+      mergerNode.current.channelInterpretation = 'discrete';
       mergerNode.current.connect(globalMasterGainNode.current!);
+    } else {
+      try {
+        ctx.destination.channelInterpretation = 'speakers';
+        ctx.destination.channelCountMode = 'explicit';
+        ctx.destination.channelCount = Math.min(2, maxChannels);
+      } catch {}
+      if (globalMasterGainNode.current) {
+        globalMasterGainNode.current.channelCount = 2;
+        globalMasterGainNode.current.channelCountMode = 'max';
+        globalMasterGainNode.current.channelInterpretation = 'speakers';
+        globalMasterGainNode.current.connect(ctx.destination);
+      }
     }
 
     const hasSolo = stems.some(s => s.solo);
 
     stems.forEach(stem => {
       const isMuted = stem.muted || (hasSolo && !stem.solo);
+      const isClickOrCue = stem.type === 'Click' || stem.type === 'Cues';
 
       if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
-         const gain = ctx.createGain();
-         gain.gain.value = isMuted ? 0 : stem.volume;
-         if (routingMode === 'StereoInEar' || routingMode === 'StereoSplit') {
-           const panner = ctx.createStereoPanner();
-           panner.pan.value = stem.pan || 0;
-           gain.connect(panner);
-           panner.connect(globalMasterGainNode.current!);
-           pannerNodes.current.set(stem.id, panner);
-         } else if (routingMode === 'MultiChannel' && mergerNode.current) {
-           const targetOutput = stem.targetOutputChannel ?? 0;
-           gain.connect(mergerNode.current, 0, targetOutput);
-         } else {
-           gain.connect(globalMasterGainNode.current!);
-         }
-         gainNodes.current.set(stem.id, gain);
-         return;
+        const gain = ctx.createGain();
+        gain.gain.value = isMuted ? 0 : stem.volume;
+        if (effectiveMode === 'StereoInEar' || effectiveMode === 'StereoSplit') {
+          const panner = ctx.createStereoPanner();
+          panner.pan.value = effectiveMode === 'StereoSplit' ? -1 : (stem.pan || 0);
+          gain.connect(panner);
+          panner.connect(globalMasterGainNode.current!);
+          pannerNodes.current.set(stem.id, panner);
+        } else if (effectiveMode === 'MultiChannel' && mergerNode.current) {
+          // Click -> Salida 3 (idx 2), Cues -> Salida 4 (idx 3 o idx 2 si solo 3)
+          const defaultCueCh = stem.type === 'Cues' && maxChannels >= 4 ? 3 : 2;
+          const targetOutput = stem.targetOutputChannel && stem.targetOutputChannel >= 2
+            ? Math.min(stem.targetOutputChannel, maxChannels - 1)
+            : Math.min(defaultCueCh, maxChannels - 1);
+          gain.connect(mergerNode.current, 0, targetOutput);
+        } else {
+          gain.connect(globalMasterGainNode.current!);
+        }
+        gainNodes.current.set(stem.id, gain);
+        return;
       }
-      
+
       const buffer = buffers.current.get(stem.id);
       if (!buffer) return;
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      
+
       const gain = ctx.createGain();
       gain.gain.value = isMuted ? 0 : stem.volume;
 
       source.connect(gain);
-      
-      if (routingMode === 'StereoInEar' || routingMode === 'StereoSplit') {
+
+      if (effectiveMode === 'StereoInEar' || effectiveMode === 'StereoSplit') {
         const panner = ctx.createStereoPanner();
-        panner.pan.value = stem.pan || 0;
+        panner.pan.value = effectiveMode === 'StereoSplit'
+          ? (isClickOrCue ? -1 : 1)
+          : (stem.pan || 0);
         gain.connect(panner);
         panner.connect(globalMasterGainNode.current!);
         pannerNodes.current.set(stem.id, panner);
-      } else if (routingMode === 'MultiChannel' && mergerNode.current) {
-        const targetOutput = stem.targetOutputChannel ?? 0;
-        gain.connect(mergerNode.current, 0, targetOutput);
+      } else if (effectiveMode === 'MultiChannel' && mergerNode.current) {
+        if (isClickOrCue) {
+          const defaultCueCh = stem.type === 'Cues' && maxChannels >= 4 ? 3 : 2;
+          const targetOutput = stem.targetOutputChannel && stem.targetOutputChannel >= 2
+            ? Math.min(stem.targetOutputChannel, maxChannels - 1)
+            : Math.min(defaultCueCh, maxChannels - 1);
+          gain.connect(mergerNode.current, 0, targetOutput);
+        } else if (stem.targetOutputChannel && stem.targetOutputChannel > 0) {
+          const clampedOut = Math.min(stem.targetOutputChannel, maxChannels - 1);
+          gain.connect(mergerNode.current, 0, clampedOut);
+        } else {
+          // Instrumento estéreo nativo: Split L -> Salida 1 (idx 0), R -> Salida 2 (idx 1)
+          const stemSplitter = ctx.createChannelSplitter(2);
+          gain.connect(stemSplitter);
+          stemSplitter.connect(mergerNode.current, 0, 0);
+          stemSplitter.connect(mergerNode.current, 1, 1);
+        }
       }
 
       sourceNodes.current.set(stem.id, source);
