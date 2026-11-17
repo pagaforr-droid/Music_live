@@ -19,6 +19,7 @@ interface SliceToolbarProps {
   selectedRegion: SampleRegion | null;
   projectTracks: ProjectAudioTrackItem[];
   snapMode: SnapMode;
+  patternBpm?: number;
   showBpmGrid: boolean;
   isRecordingMic: boolean;
   isBusy: boolean;
@@ -41,6 +42,7 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
   selectedRegion,
   projectTracks,
   snapMode,
+  patternBpm,
   showBpmGrid,
   isRecordingMic,
   isBusy,
@@ -167,13 +169,35 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
             value={source?.bpm ?? 120}
             onChange={(e) => onUpdateSourceBpm(Number(e.target.value) || 120)}
             className="w-11 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-mono text-white text-center"
-            title="BPM de la fuente"
+            title="BPM original de la fuente de audio"
           />
+          {source && (
+            <>
+              <button
+                type="button"
+                onClick={() => onUpdateSourceBpm(Math.max(40, Math.round((source.bpm * 0.5) * 10) / 10))}
+                className="px-1 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[9.5px] font-mono text-slate-300 cursor-pointer"
+                title="Dividir tempo ÷2"
+              >
+                ÷2
+              </button>
+              <button
+                type="button"
+                onClick={() => onUpdateSourceBpm(Math.min(220, Math.round((source.bpm * 2) * 10) / 10))}
+                className="px-1 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[9.5px] font-mono text-slate-300 cursor-pointer"
+                title="Multiplicar tempo ×2"
+              >
+                ×2
+              </button>
+            </>
+          )}
           <select
             value={gridDiv}
             onChange={(e) => setGridDiv(e.target.value as GridDivision)}
             className="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-mono text-slate-200"
           >
+            <option value="1bar">1 Compás</option>
+            <option value="1/2">1/2</option>
             <option value="1/4">1/4</option>
             <option value="1/8">1/8</option>
             <option value="1/16">1/16</option>
@@ -187,6 +211,14 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
           >
             Rejilla
           </button>
+          {source && patternBpm && Math.abs(patternBpm - source.bpm) >= 0.5 && (
+            <span
+              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[9.5px] font-mono"
+              title="Los pads con Sync Tempo activo estiran la duración de forma transparente"
+            >
+              Sync {source.bpm}→{patternBpm}
+            </span>
+          )}
 
           {onAutoSliceChords && source?.preAnalysis?.chords && source.preAnalysis.chords.length > 0 && (
             <button

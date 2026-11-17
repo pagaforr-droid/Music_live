@@ -563,6 +563,7 @@ export const SampleLabPanel: React.FC = () => {
         selectedRegion={s.selectedRegion}
         projectTracks={projectTracks}
         snapMode={s.snapMode}
+        patternBpm={s.pattern.bpm}
         showBpmGrid={showBpmGrid}
         isRecordingMic={s.isRecordingMic}
         isBusy={s.isBusy}
@@ -580,12 +581,7 @@ export const SampleLabPanel: React.FC = () => {
         onAutoSliceChords={s.autoSliceByChords}
         onUpdateSourceBpm={(bpm) => {
           if (!s.activeSource) return;
-          s.setSources((prev) =>
-            prev.map((src) =>
-              src.id === s.activeSource?.id ? { ...src, bpm } : src
-            )
-          );
-          s.setPattern((prev) => ({ ...prev, bpm }));
+          s.updateSourceBpm(s.activeSource.id, bpm, true);
         }}
         onChangeSnapMode={s.setSnapMode}
         onToggleBpmGrid={() => setShowBpmGrid((prev) => !prev)}
@@ -767,6 +763,16 @@ export const SampleLabPanel: React.FC = () => {
         <div className="lg:col-span-6">
           <PadInspector
             pad={s.selectedPad}
+            sourceBpm={
+              s.selectedPad.regionId
+                ? s.sources.find(
+                    (src) =>
+                      src.id ===
+                      s.regions.find((r) => r.id === s.selectedPad.regionId)?.sourceId
+                  )?.bpm ?? s.activeSource?.bpm
+                : s.activeSource?.bpm
+            }
+            patternBpm={s.pattern.bpm}
             onUpdateParams={(patch) => s.updatePadParams(s.selectedPadIndex, patch)}
             onUpdateLabel={(label) =>
               s.updatePadLabelAndChoke(s.selectedPadIndex, label)

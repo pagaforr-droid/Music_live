@@ -11,6 +11,7 @@ import {
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,
   inferStemModeFromName,
+  quantizeNoteEventsToTempo,
 } from '../engine/FullStemAnalyzer';
 import {
   analyzeAudioBufferFirst,
@@ -47,6 +48,7 @@ import type {
   SongStemEntry,
   SongWithStemsFolder,
   StemAnalysisMode,
+  StemQuantizeMode,
   StemReplaceMixOptions,
 } from '../types/sampler.types';
 import SamplerAnalysisWorker from '../workers/samplerAnalysis.worker.ts?worker';
@@ -132,6 +134,9 @@ export function useStemReplacer() {
 
   const [stemMode, setStemMode] = useState<StemAnalysisMode>('drums');
   const [bassFocusMode, setBassFocusMode] = useState<boolean>(false);
+  const [quantizeMode, setQuantizeMode] = useState<StemQuantizeMode>('soft');
+  const quantizeModeRef = useRef<StemQuantizeMode>(quantizeMode);
+  quantizeModeRef.current = quantizeMode;
   const [sensitivity, setSensitivity] = useState<number>(0.62);
   const [maxPolyphony, setMaxPolyphony] = useState<number>(5);
   const [importedMemory, setImportedMemory] = useState<ImportedAudioMemoryAnalysis | null>(null);
@@ -401,7 +406,8 @@ export function useStemReplacer() {
       bpmHint?: number,
       bassFocus = bassFocusMode,
       memoryOverride?: ImportedAudioMemoryAnalysis | null,
-      polyOverride?: FullStemAnalysisResult | null
+      polyOverride?: FullStemAnalysisResult | null,
+      quantizeOverride?: StemQuantizeMode
     ) => {
       setIsAnalyzing(true);
       try {
@@ -413,6 +419,7 @@ export function useStemReplacer() {
               : importedPolyRef.current
             : undefined;
         const effectiveBpm = activeMem?.bpm ?? bpmHint;
+        const qMode = quantizeOverride ?? quantizeModeRef.current;
 
         const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
         const runSyncFallback = (): FullStemAnalysisResult => {
@@ -424,6 +431,7 @@ export function useStemReplacer() {
               musicalKey: activeMem?.musicalKey,
               detectedChords: activeMem?.chords,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              quantizeMode: qMode,
             });
           }
           if (mode === 'polyphonic' && bassFocus) {
@@ -435,6 +443,7 @@ export function useStemReplacer() {
               precomputedChords: activeMem?.chords,
               musicalKey: activeMem?.musicalKey,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              quantizeMode: qMode,
             });
           }
           if (mode === 'monophonic') {
@@ -446,15 +455,27 @@ export function useStemReplacer() {
               musicalKey: activeMem?.musicalKey,
               detectedChords: activeMem?.chords,
               beatOffsetSec: activeMem?.beatOffsetSec,
+              quantizeMode: qMode,
             });
           }
           if (activePoly && !bassFocus) {
+            const targetBpm = activeMem?.bpm ?? activePoly.bpm;
+            const qNotes = quantizeNoteEventsToTempo(
+              activePoly.noteEvents,
+              targetBpm,
+              activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec ?? 0,
+              buf.duration,
+              qMode,
+              false
+            );
             return {
               ...activePoly,
-              bpm: activeMem?.bpm ?? activePoly.bpm,
+              quantizeMode: qMode,
+              bpm: targetBpm,
               musicalKey: activeMem?.musicalKey ?? activePoly.musicalKey,
               detectedChords: activeMem?.chords ?? activePoly.detectedChords,
               beatOffsetSec: activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec,
+              noteEvents: qNotes,
             };
           }
           return analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
@@ -465,6 +486,7 @@ export function useStemReplacer() {
             musicalKey: activeMem?.musicalKey,
             detectedChords: activeMem?.chords,
             beatOffsetSec: activeMem?.beatOffsetSec,
+            quantizeMode: qMode,
           });
         };
 
@@ -511,6 +533,7 @@ export function useStemReplacer() {
                 sensitivity: sens,
                 stemMode: mode,
                 bassFocus,
+                quantizeMode: qMode,
                 bpmHint: effectiveBpm,
                 lockedBpm: activeMem?.bpm,
                 maxPolyphony: poly,
@@ -983,6 +1006,60 @@ export function useStemReplacer() {
     selectedSong?.bpm,
     bassFocusMode,
   ]);
+
+  const changeQuantizeModeAndReanalyze = useCallback(
+    async (nextMode: StemQuantizeMode) => {
+      setQuantizeMode(nextMode);
+      quantizeModeRef.current = nextMode;
+      if (originalBuffer) {
+        await runAnalysis(
+          originalBuffer,
+          stemMode,
+          sensitivity,
+          maxPolyphony,
+          importedMemoryRef.current?.bpm ?? selectedSong?.bpm,
+          bassFocusMode,
+          importedMemoryRef.current,
+          importedPolyRef.current,
+          nextMode
+        );
+      }
+    },
+    [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, selectedSong?.bpm, bassFocusMode]
+  );
+
+  const updateImportedTempo = useCallback(
+    async (rawBpm: number) => {
+      const clamped = Math.max(40, Math.min(220, Math.round(rawBpm * 10) / 10));
+      const curMem = importedMemoryRef.current;
+      if (curMem) {
+        const updatedMem: ImportedAudioMemoryAnalysis = {
+          ...curMem,
+          bpm: clamped,
+        };
+        const updatedPoly = importedPolyRef.current
+          ? { ...importedPolyRef.current, bpm: clamped }
+          : null;
+        importedMemoryRef.current = updatedMem;
+        importedPolyRef.current = updatedPoly;
+        setImportedMemory(updatedMem);
+        registerPreImportMemoryEntry(updatedMem, updatedPoly ?? undefined);
+      }
+      if (originalBuffer) {
+        await runAnalysis(
+          originalBuffer,
+          stemMode,
+          sensitivity,
+          maxPolyphony,
+          clamped,
+          bassFocusMode,
+          importedMemoryRef.current,
+          importedPolyRef.current
+        );
+      }
+    },
+    [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, bassFocusMode]
+  );
 
   const updateDrumSlot = useCallback(
     (role: DrumPieceRole, patch: Partial<ReplacementSlotConfig>) => {
@@ -1514,6 +1591,9 @@ export function useStemReplacer() {
     stemMode,
     bassFocusMode,
     toggleBassFocusMode,
+    quantizeMode,
+    changeQuantizeModeAndReanalyze,
+    updateImportedTempo,
     sensitivity,
     setSensitivity,
     maxPolyphony,

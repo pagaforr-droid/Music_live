@@ -78,7 +78,7 @@ export function sliceByTransients(
   return regions;
 }
 
-export type GridDivision = '1/4' | '1/8' | '1/16' | '1/8T';
+export type GridDivision = '1bar' | '1/2' | '1/4' | '1/8' | '1/16' | '1/8T';
 
 export function sliceByBpmGrid(
   sourceId: string,
@@ -86,12 +86,17 @@ export function sliceByBpmGrid(
   rangeEndSec: number,
   bpm: number,
   division: GridDivision,
-  maxSlices = 32
+  maxSlices = 32,
+  beatOffsetSec = 0
 ): SampleRegion[] {
   const safeBpm = Math.max(40, Math.min(240, bpm || 120));
   const beatSec = 60 / safeBpm;
   const stepSec =
-    division === '1/4'
+    division === '1bar'
+      ? beatSec * 4
+      : division === '1/2'
+      ? beatSec * 2
+      : division === '1/4'
       ? beatSec
       : division === '1/8'
       ? beatSec * 0.5
@@ -99,8 +104,18 @@ export function sliceByBpmGrid(
       ? beatSec * 0.25
       : beatSec / 3;
 
-  const regions: SampleRegion[] = [];
+  // Phase-align cuts to the detected beatOffsetSec when chopping whole bars/tracks
+  const beatMod = ((beatOffsetSec % stepSec) + stepSec) % stepSec;
   let cursor = rangeStartSec;
+  if (beatMod > 0.01 && Math.abs(rangeStartSec - beatOffsetSec) > 0.01) {
+    const k = Math.ceil((rangeStartSec - beatOffsetSec - 0.005) / stepSec);
+    const alignedStart = beatOffsetSec + k * stepSec;
+    if (alignedStart >= rangeStartSec && alignedStart < rangeEndSec - 0.03) {
+      cursor = alignedStart;
+    }
+  }
+
+  const regions: SampleRegion[] = [];
   let idx = 0;
 
   while (cursor < rangeEndSec - 0.015 && idx < maxSlices) {
@@ -139,6 +154,8 @@ export function assignSlicesToPads(
         ? '#F59E0B'
         : DEFAULT_PAD_COLORS[i % DEFAULT_PAD_COLORS.length];
 
+    const sliceDur = r.endSec - r.startSec;
+    const baseWarp = next[i].params.warp ?? createDefaultPadParams().warp;
     next[i] = {
       ...next[i],
       regionId: r.id,
@@ -148,6 +165,10 @@ export function assignSlicesToPads(
         ...createDefaultPadParams(),
         ...next[i].params,
         chokeGroup: r.classification === 'hat' ? 1 : next[i].params.chokeGroup,
+        warp: {
+          ...baseWarp,
+          syncToBpm: sliceDur >= 0.42,
+        },
       },
     };
   }

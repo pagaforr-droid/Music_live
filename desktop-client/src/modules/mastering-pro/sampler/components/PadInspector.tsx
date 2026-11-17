@@ -10,6 +10,8 @@ import type {
 
 interface PadInspectorProps {
   pad: SamplePad;
+  sourceBpm?: number;
+  patternBpm?: number;
   onUpdateParams: (patch: Partial<PadVoiceParams>) => void;
   onUpdateLabel: (label: string) => void;
   onApplyTexturePreset: (presetId: TexturePresetId) => void;
@@ -19,6 +21,8 @@ interface PadInspectorProps {
 
 export const PadInspector: React.FC<PadInspectorProps> = ({
   pad,
+  sourceBpm,
+  patternBpm,
   onUpdateParams,
   onUpdateLabel,
   onApplyTexturePreset,
@@ -414,13 +418,35 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={onAutoTuneToRoot}
-              className="px-2 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 text-[10px] font-bold cursor-pointer"
-            >
-              Auto-Afinar (YIN)
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateParams({
+                    warp: { ...p.warp, syncToBpm: !p.warp.syncToBpm },
+                  })
+                }
+                className={`px-2 py-1 rounded-lg border text-[10px] font-bold cursor-pointer transition-colors ${
+                  p.warp.syncToBpm
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                }`}
+                title="Adapta la velocidad/duración del audio al BPM del proyecto preservando el tono"
+              >
+                {p.warp.syncToBpm
+                  ? sourceBpm && patternBpm && Math.abs(sourceBpm - patternBpm) >= 0.5
+                    ? `Sync BPM: ${sourceBpm}→${patternBpm} (${(sourceBpm / patternBpm).toFixed(2)}x)`
+                    : 'Sync BPM: ON'
+                  : 'Sync BPM: OFF'}
+              </button>
+              <button
+                type="button"
+                onClick={onAutoTuneToRoot}
+                className="px-2 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 text-[10px] font-bold cursor-pointer"
+              >
+                Auto-Afinar (YIN)
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

@@ -100,6 +100,7 @@ export interface PadVoiceParams {
   };
   warp: {
     mode: WarpMode;
+    syncToBpm?: boolean;
     targetBpm?: number;
     timeStretchRatio: number; // 0.25..4.0
     formantPreserve: boolean;
@@ -184,6 +185,8 @@ export interface SongFolderItem {
 }
 
 export type StemAnalysisMode = 'drums' | 'monophonic' | 'polyphonic';
+
+export type StemQuantizeMode = 'off' | 'soft' | 'grid-16' | 'grid-8';
 export type DrumPieceRole = 'kick' | 'snare' | 'hat' | 'tom';
 
 export type DefaultDrumPresetId =
@@ -238,6 +241,7 @@ export interface StemNoteEvent {
 export interface FullStemAnalysisResult {
   mode: StemAnalysisMode;
   bassFocusApplied?: boolean;
+  quantizeMode?: StemQuantizeMode;
   bpm: number;
   musicalKey?: string;
   detectedChords?: DetectedChordSegment[];

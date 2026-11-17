@@ -5,12 +5,14 @@ import {
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,
+  quantizeNoteEventsToTempo,
 } from '../engine/FullStemAnalyzer';
 import { analyzeImportedAudioFirst } from '../engine/PreImportAnalyzer';
 import type {
   DetectedChordSegment,
   FullStemAnalysisResult,
   StemAnalysisMode,
+  StemQuantizeMode,
 } from '../types/sampler.types';
 
 export interface SamplerAnalysisRequest {
@@ -25,6 +27,7 @@ export interface SamplerAnalysisRequest {
   minSpacingMs?: number;
   stemMode?: StemAnalysisMode;
   bassFocus?: boolean;
+  quantizeMode?: StemQuantizeMode;
   bpmHint?: number;
   lockedBpm?: number;
   maxPolyphony?: number;
@@ -64,6 +67,8 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
       const mode = req.stemMode ?? 'drums';
       const bassFocus = Boolean(req.bassFocus);
       const effectiveBpm = req.lockedBpm ?? req.bpmHint;
+      const qMode: StemQuantizeMode = req.quantizeMode ?? (req.lockedBpm ? 'soft' : 'off');
+      const durSec = req.mono.length / req.sampleRate;
       const result =
         mode === 'drums'
           ? analyzeDrumStemFull(req.mono, req.sampleRate, {
@@ -74,6 +79,7 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               musicalKey: req.musicalKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              quantizeMode: qMode,
             })
           : mode === 'polyphonic' && bassFocus
           ? analyzeBassProgressionFull(req.mono, req.sampleRate, {
@@ -84,6 +90,7 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               precomputedChords: req.detectedChords,
               musicalKey: req.musicalKey,
               beatOffsetSec: req.beatOffsetSec,
+              quantizeMode: qMode,
             })
           : mode === 'monophonic'
           ? analyzeMonophonicStemNotesFull(req.mono, req.sampleRate, {
@@ -94,15 +101,29 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               musicalKey: req.musicalKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              quantizeMode: qMode,
             })
           : req.precomputedPoly && !bassFocus
-          ? {
-              ...req.precomputedPoly,
-              bpm: req.lockedBpm ?? req.precomputedPoly.bpm,
-              musicalKey: req.musicalKey ?? req.precomputedPoly.musicalKey,
-              detectedChords: req.detectedChords ?? req.precomputedPoly.detectedChords,
-              beatOffsetSec: req.beatOffsetSec ?? req.precomputedPoly.beatOffsetSec,
-            }
+          ? (() => {
+              const targetBpm = req.lockedBpm ?? req.precomputedPoly.bpm;
+              const qNotes = quantizeNoteEventsToTempo(
+                req.precomputedPoly.noteEvents,
+                targetBpm,
+                req.beatOffsetSec ?? req.precomputedPoly.beatOffsetSec ?? 0,
+                durSec,
+                qMode,
+                false
+              );
+              return {
+                ...req.precomputedPoly,
+                quantizeMode: qMode,
+                bpm: targetBpm,
+                musicalKey: req.musicalKey ?? req.precomputedPoly.musicalKey,
+                detectedChords: req.detectedChords ?? req.precomputedPoly.detectedChords,
+                beatOffsetSec: req.beatOffsetSec ?? req.precomputedPoly.beatOffsetSec,
+                noteEvents: qNotes,
+              };
+            })()
           : analyzePolyphonicStemNotesFull(req.mono, req.sampleRate, {
               sensitivity: req.sensitivity,
               maxPolyphony: req.maxPolyphony,
@@ -111,6 +132,7 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               musicalKey: req.musicalKey,
               detectedChords: req.detectedChords,
               beatOffsetSec: req.beatOffsetSec,
+              quantizeMode: qMode,
             });
 
       self.postMessage({ id: req.id, success: true, kind: req.kind, result });

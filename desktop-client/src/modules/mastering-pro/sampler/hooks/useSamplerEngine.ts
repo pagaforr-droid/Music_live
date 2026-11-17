@@ -75,6 +75,8 @@ export function useSamplerEngine() {
   );
   const [kitName, setKitName] = useState<string>('Mi Kit de Sampleo');
   const [sources, setSources] = useState<SampleSource[]>([]);
+  const sourcesRef = useRef<SampleSource[]>(sources);
+  sourcesRef.current = sources;
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [regions, setRegions] = useState<SampleRegion[]>([]);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
@@ -303,16 +305,26 @@ export function useSamplerEngine() {
         sliceSource: 'manual',
       };
 
+      const isFirstOrHandoff =
+        sourcesRef.current.length === 0 ||
+        provenance?.stemRole === 'replacer-handoff' ||
+        origin === 'mastering-buffer';
+
       setSources((prev) => [...prev, newSource]);
       setActiveSourceId(srcId);
       setRegions((prev) => [...prev, defaultRegion]);
       setSelectedRegionId(defaultRegion.id);
       setLastPitchEstimate(pitch);
-      setPattern((prev) => ({ ...prev, bpm }));
+      if (isFirstOrHandoff) {
+        setPattern((prev) => ({ ...prev, bpm }));
+      }
 
       const memorySummary = resolvedPre?.isTonal
         ? ` · Tono ${resolvedPre.musicalKey}${resolvedPre.chords.length > 0 ? ` (${resolvedPre.chordProgressionSummary})` : ''}`
         : '';
+      const autoSyncOnPad =
+        (origin === 'file' || origin === 'stem' || origin === 'recording' || origin === 'sampler-bounce') &&
+        buffer.duration >= 0.45;
 
       if (targetPadIndex !== undefined && targetPadIndex >= 0 && targetPadIndex < 16) {
         setPads((prev) => {
@@ -321,6 +333,13 @@ export function useSamplerEngine() {
             ...next[targetPadIndex],
             regionId: defaultRegion.id,
             label: cleanBase.slice(0, 20),
+            params: {
+              ...next[targetPadIndex].params,
+              warp: {
+                ...next[targetPadIndex].params.warp,
+                syncToBpm: autoSyncOnPad,
+              },
+            },
           };
           return next;
         });
@@ -343,6 +362,13 @@ export function useSamplerEngine() {
                     ...p,
                     regionId: defaultRegion.id,
                     label: cleanBase.slice(0, 18),
+                    params: {
+                      ...p.params,
+                      warp: {
+                        ...p.params.warp,
+                        syncToBpm: autoSyncOnPad,
+                      },
+                    },
                   }
                 : p
             )
@@ -442,7 +468,7 @@ export function useSamplerEngine() {
           buffer,
           title,
           'file',
-          { fileName: title },
+          { fileName: title, stemRole: 'replacer-handoff' },
           undefined,
           preAnalysis
         );
@@ -454,7 +480,7 @@ export function useSamplerEngine() {
           buffer,
           title,
           'file',
-          { fileName: title },
+          { fileName: title, stemRole: 'replacer-handoff' },
           undefined,
           cached.memory
         );
@@ -468,7 +494,7 @@ export function useSamplerEngine() {
             buffer,
             title,
             'file',
-            { fileName: title },
+            { fileName: title, stemRole: 'replacer-handoff' },
             undefined,
             pre
           );
@@ -966,18 +992,42 @@ export function useSamplerEngine() {
     }
   };
 
+  const updateSourceBpm = useCallback(
+    (sourceId: string, rawBpm: number, alsoSyncPattern = true) => {
+      const clamped = Math.max(40, Math.min(220, Math.round(rawBpm * 10) / 10));
+      setSources((prev) =>
+        prev.map((src) => {
+          if (src.id !== sourceId) return src;
+          const updatedPre = src.preAnalysis
+            ? { ...src.preAnalysis, bpm: clamped }
+            : undefined;
+          if (updatedPre) registerPreImportMemoryEntry(updatedPre);
+          return { ...src, bpm: clamped, preAnalysis: updatedPre };
+        })
+      );
+      if (alsoSyncPattern) {
+        setPattern((prev) => ({ ...prev, bpm: clamped }));
+      }
+      setStatusMessage(`Tempo ajustado a ${clamped} BPM (Memoria y Sync actualizados).`);
+    },
+    []
+  );
+
   const autoSliceByGrid = (division: GridDivision) => {
     if (!activeSource) return;
     const startSec = selectedRegion ? selectedRegion.startSec : 0;
     const endSec = selectedRegion
       ? selectedRegion.endSec
       : activeSource.buffer.duration;
+    const beatOffsetSec = activeSource.preAnalysis?.beatOffsetSec ?? 0;
     const sliced = sliceByBpmGrid(
       activeSource.id,
       startSec,
       endSec,
       activeSource.bpm,
-      division
+      division,
+      32,
+      beatOffsetSec
     );
     if (sliced.length > 0) {
       setRegions((prev) => [
@@ -987,7 +1037,7 @@ export function useSamplerEngine() {
       setSelectedRegionId(sliced[0].id);
       setPads((prev) => assignSlicesToPads(prev, sliced));
       setStatusMessage(
-        `Corte por rejilla (${division} @ ${activeSource.bpm} BPM): ${sliced.length} slices asignados.`
+        `Corte por rejilla (${division} @ ${activeSource.bpm} BPM${beatOffsetSec > 0 ? ` · fase ${beatOffsetSec.toFixed(2)}s` : ''}): ${sliced.length} slices asignados.`
       );
     }
   };
@@ -1281,6 +1331,7 @@ export function useSamplerEngine() {
     autoSliceByTransients,
     autoSliceByGrid,
     autoSliceByChords,
+    updateSourceBpm,
     assignRegionToPad,
     updatePadParams,
     updatePadLabelAndChoke,

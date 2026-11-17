@@ -48,6 +48,7 @@ export class SamplerEngine {
 
   private auditionSource: AudioBufferSourceNode | null = null;
   private readonly voicePool = new VoicePool(32);
+  private pattern: SamplerPattern;
   private scheduler: SamplerScheduler;
 
   private mediaStream: MediaStream | null = null;
@@ -61,6 +62,7 @@ export class SamplerEngine {
     onActivePadsChange?: (pads: Set<number>) => void
   ) {
     this.pads = initialPads;
+    this.pattern = initialPattern;
     if (onActivePadsChange) {
       this.voicePool.setOnCountChange(onActivePadsChange);
     }
@@ -206,6 +208,7 @@ export class SamplerEngine {
     for (const r of regions) this.regions.set(r.id, r);
 
     this.pads = pads;
+    this.pattern = pattern;
     this.scheduler.updatePattern(pattern);
 
     // Sync delay time to quarter/dotted-eighth BPM
@@ -235,13 +238,34 @@ export class SamplerEngine {
     return ctx.decodeAudioData(raw.slice(0));
   }
 
+  private computeTempoSyncScale(
+    src: SampleSource,
+    params: PadVoiceParams,
+    patternOverride?: SamplerPattern
+  ): number {
+    if (!params.warp.syncToBpm) return 1.0;
+    const srcBpm = src.bpm;
+    const targetBpm = params.warp.targetBpm ?? (patternOverride ?? this.pattern).bpm ?? srcBpm;
+    if (!srcBpm || !targetBpm || srcBpm < 30 || targetBpm < 30) return 1.0;
+    return Math.max(0.25, Math.min(4.0, srcBpm / targetBpm));
+  }
+
   public getProcessedBufferForPad(
     ctx: BaseAudioContext,
     region: SampleRegion,
-    params: PadVoiceParams
+    params: PadVoiceParams,
+    patternOverride?: SamplerPattern
   ): AudioBuffer | null {
     const src = this.sources.get(region.sourceId);
     if (!src) return null;
+
+    const tempoStretchScale =
+      params.warp.mode === 'varispeed'
+        ? 1.0
+        : this.computeTempoSyncScale(src, params, patternOverride);
+    const activeTargetBpm = params.warp.syncToBpm
+      ? (params.warp.targetBpm ?? (patternOverride ?? this.pattern).bpm ?? src.bpm)
+      : 0;
 
     const cacheSig = [
       region.id,
@@ -254,7 +278,10 @@ export class SamplerEngine {
       params.fadeOutMs,
       params.playMode,
       params.warp.mode,
-      params.warp.timeStretchRatio.toFixed(2),
+      params.warp.syncToBpm ? 1 : 0,
+      src.bpm.toFixed(2),
+      activeTargetBpm.toFixed(2),
+      params.warp.timeStretchRatio.toFixed(3),
       params.pitchSemis,
       params.fineCents,
       params.granular.stretchFactor.toFixed(1),
@@ -293,14 +320,17 @@ export class SamplerEngine {
       reverseStereoInPlace(left, right);
     }
 
-    // Apply time-stretch / sound-design mode (identical math in Live AND Offline bounce!)
-    const stretch = params.warp.timeStretchRatio || 1.0;
+    // Apply time-stretch / BPM Tempo Sync / sound-design mode (identical math in Live AND Offline bounce!)
+    const stretch = (params.warp.timeStretchRatio || 1.0) * tempoStretchScale;
     const pitchRatio = Math.pow(2, (params.pitchSemis + params.fineCents / 100) / 12);
 
-    if (params.warp.mode === 'wsola') {
+    if (
+      params.warp.mode === 'wsola' ||
+      (params.warp.mode === 'off' && Math.abs(stretch - 1.0) > 0.008)
+    ) {
       const stretched = stretchAudioWsola(left, right, sampleRate, stretch);
-      // To shift pitch independently with WSOLA: stretch by pitchRatio first or resample
-      if (Math.abs(pitchRatio - 1.0) > 0.005) {
+      // To shift pitch independently with WSOLA mode: stretch by pitchRatio
+      if (params.warp.mode === 'wsola' && Math.abs(pitchRatio - 1.0) > 0.005) {
         const resampled = resampleCubicStereo(stretched.left, stretched.right, pitchRatio);
         const restoredLen = stretchAudioWsola(resampled.left, resampled.right, sampleRate, pitchRatio);
         left = restoredLen.left;
@@ -368,15 +398,22 @@ export class SamplerEngine {
 
     this.voicePool.prepareForTrigger(pad.params.chokeGroup, whenSec);
 
+    const src = this.sources.get(region.sourceId);
+    const varispeedSync =
+      pad.params.warp.mode === 'varispeed' && pad.params.warp.syncToBpm && src
+        ? (pad.params.warp.targetBpm ?? this.pattern.bpm ?? src.bpm) / Math.max(30, src.bpm)
+        : 1.0;
+
     // If warp is already pre-pitch-shifted (wsola/phasevocoder), playbackRate stays 1.0!
     const usePlaybackRate =
       pad.params.warp.mode === 'off' ||
       pad.params.warp.mode === 'varispeed' ||
       pad.params.warp.mode === 'granular' ||
       pad.params.warp.mode === 'paulstretch';
-    const rate = usePlaybackRate
-      ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
-      : 1.0;
+    const rate =
+      (usePlaybackRate
+        ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
+        : 1.0) * varispeedSync;
 
     const voice = new SampleVoice({
       ctx,
@@ -581,14 +618,21 @@ export class SamplerEngine {
 
     const tailSec =
       pad.params.sends.reverb > 0.05 || pad.params.sends.delay > 0.05 ? 1.5 : 0.1;
+    const src = this.sources.get(region.sourceId);
+    const varispeedSync =
+      pad.params.warp.mode === 'varispeed' && pad.params.warp.syncToBpm && src
+        ? (pad.params.warp.targetBpm ?? this.pattern.bpm ?? src.bpm) / Math.max(30, src.bpm)
+        : 1.0;
+
     const useRate =
       pad.params.warp.mode === 'off' ||
       pad.params.warp.mode === 'varispeed' ||
       pad.params.warp.mode === 'granular' ||
       pad.params.warp.mode === 'paulstretch';
-    const rate = useRate
-      ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
-      : 1.0;
+    const rate =
+      (useRate
+        ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
+        : 1.0) * varispeedSync;
 
     const totalDur = procBuf.duration / rate + tailSec;
     const offlineCtx = new OfflineAudioContext(2, Math.max(256, Math.ceil(totalDur * sr)), sr);
@@ -667,7 +711,7 @@ export class SamplerEngine {
       if (!pad || !pad.regionId) continue;
       const region = this.regions.get(pad.regionId);
       if (!region) continue;
-      const buf = this.getProcessedBufferForPad(offlineCtx, region, pad.params);
+      const buf = this.getProcessedBufferForPad(offlineCtx, region, pad.params, pattern);
       if (!buf) continue;
 
       if (pad.params.chokeGroup !== null) {
@@ -678,14 +722,21 @@ export class SamplerEngine {
         activeByChoke.set(pad.params.chokeGroup, []);
       }
 
+      const src = this.sources.get(region.sourceId);
+      const varispeedSync =
+        pad.params.warp.mode === 'varispeed' && pad.params.warp.syncToBpm && src
+          ? (pad.params.warp.targetBpm ?? pattern.bpm ?? src.bpm) / Math.max(30, src.bpm)
+          : 1.0;
+
       const useRate =
         pad.params.warp.mode === 'off' ||
         pad.params.warp.mode === 'varispeed' ||
         pad.params.warp.mode === 'granular' ||
         pad.params.warp.mode === 'paulstretch';
-      const rate = useRate
-        ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
-        : 1.0;
+      const rate =
+        (useRate
+          ? Math.pow(2, (pad.params.pitchSemis + pad.params.fineCents / 100) / 12)
+          : 1.0) * varispeedSync;
 
       const voice = new SampleVoice({
         ctx: offlineCtx,
