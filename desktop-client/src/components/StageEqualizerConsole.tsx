@@ -8,7 +8,6 @@ import {
   Cpu,
   Sparkles,
   Check,
-  AlertTriangle,
   X,
   Music,
   Globe,
@@ -30,8 +29,12 @@ import {
   ConsoleTargetAssignment,
   StemBusGroupId,
   DEFAULT_18_GAINS,
+  analyzeStagePatch,
   computeEqAutoHeadroomGain,
+  resolveStemConsoleTarget,
 } from '../utils/liveConsoleDSP';
+import { StageIoAlertsBanner } from './StageIoAlertsBanner';
+import { detectInstrumentCategory } from '../utils/instrumentIcons';
 
 export interface LoadedStemSummary {
   id: string;
@@ -55,8 +58,10 @@ interface StageEqualizerConsoleProps {
   hardwareMaxChannels: number;
   audioOutputs: MediaDeviceInfo[];
   fohAnalyser: AnalyserNode | null;
-  fohMeterLevel: number;
-  cueMeterLevel: number;
+  cueAnalyser?: AnalyserNode | null;
+  fohMeterLevel?: number;
+  cueMeterLevel?: number;
+  sinkSwitchError?: boolean;
   loadedStems: LoadedStemSummary[];
   isLoadingStems: boolean;
   onOpenSoundcheck?: () => void;
@@ -87,16 +92,21 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
   hardwareMaxChannels,
   audioOutputs,
   fohAnalyser,
-  fohMeterLevel,
-  cueMeterLevel,
+  cueAnalyser,
+  fohMeterLevel = 0,
+  cueMeterLevel = 0,
+  sinkSwitchError = false,
   loadedStems,
   isLoadingStems,
   onOpenSoundcheck,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fohMeterBarRef = useRef<HTMLDivElement | null>(null);
+  const cueMeterBarRef = useRef<HTMLDivElement | null>(null);
+  const meterHoldRef = useRef<{ foh: number; cue: number }>({ foh: 0, cue: 0 });
   const [showStemOverrides, setShowStemOverrides] = useState(false);
 
-  // Dibujar espectro FFT en vivo + curva de respuesta de las 18 bandas
+  // Dibujar espectro FFT en vivo + curva de respuesta + medidores VU zero-re-render
   useEffect(() => {
     if (!isOpen || !canvasRef.current) return;
     let rafId = 0;
@@ -105,8 +115,38 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
     if (!ctx) return;
 
     const freqData = new Uint8Array(fohAnalyser ? fohAnalyser.frequencyBinCount : 256);
+    const fohTimeData = fohAnalyser ? new Uint8Array(fohAnalyser.fftSize) : null;
+    const cueTimeData = cueAnalyser ? new Uint8Array(cueAnalyser.fftSize) : null;
 
     const render = () => {
+      // Actualizar barras VU directamente por ref DOM (0 re-renders en React)
+      if (fohAnalyser && fohTimeData && fohMeterBarRef.current) {
+        fohAnalyser.getByteTimeDomainData(fohTimeData);
+        let peak = 0;
+        for (let i = 0; i < fohTimeData.length; i += 2) {
+          const v = Math.abs((fohTimeData[i] - 128) / 128);
+          if (v > peak) peak = v;
+        }
+        meterHoldRef.current.foh =
+          peak > meterHoldRef.current.foh
+            ? peak
+            : meterHoldRef.current.foh * 0.85 + peak * 0.15;
+        fohMeterBarRef.current.style.width = `${Math.min(100, Math.round(meterHoldRef.current.foh * 100))}%`;
+      }
+      if (cueAnalyser && cueTimeData && cueMeterBarRef.current) {
+        cueAnalyser.getByteTimeDomainData(cueTimeData);
+        let peak = 0;
+        for (let i = 0; i < cueTimeData.length; i++) {
+          const v = Math.abs((cueTimeData[i] - 128) / 128);
+          if (v > peak) peak = v;
+        }
+        meterHoldRef.current.cue =
+          peak > meterHoldRef.current.cue
+            ? peak
+            : meterHoldRef.current.cue * 0.85 + peak * 0.15;
+        cueMeterBarRef.current.style.width = `${Math.min(100, Math.round(meterHoldRef.current.cue * 100))}%`;
+      }
+
       const w = canvas.width;
       const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
@@ -204,9 +244,46 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
 
     rafId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(rafId);
-  }, [isOpen, fohAnalyser, profile]);
+  }, [isOpen, fohAnalyser, cueAnalyser, profile]);
 
   if (!isOpen) return null;
+
+  const selectedOutputDevice = audioOutputs.find((d) => d.deviceId === multiChannelPatch.sinkId);
+  const activeOutputLabel =
+    selectedOutputDevice?.label ||
+    audioOutputs.find((d) => d.deviceId === 'default')?.label ||
+    audioOutputs[0]?.label ||
+    multiChannelPatch.sinkLabel ||
+    'Predeterminado del Sistema';
+  const isSavedSinkMissing = Boolean(
+    multiChannelPatch.sinkId &&
+      multiChannelPatch.sinkId !== 'default' &&
+      audioOutputs.length > 0 &&
+      !selectedOutputDevice
+  );
+  const modalSinkStatus: 'ok' | 'missing' | 'rejected' = sinkSwitchError
+    ? 'rejected'
+    : isSavedSinkMissing
+    ? 'missing'
+    : 'ok';
+
+  const stemsForAnalysis = loadedStems.map((st) => ({
+    id: st.id,
+    name: st.name,
+    group: st.group,
+    category: detectInstrumentCategory(st.name),
+  }));
+
+  const patchAnalysis = analyzeStagePatch(
+    routingMode,
+    multiChannelPatch,
+    hardwareMaxChannels,
+    stemsForAnalysis,
+    {
+      activeDeviceLabel: activeOutputLabel,
+      sinkMissingOrRejected: modalSinkStatus !== 'ok',
+    }
+  );
 
   const autoTrimGain = computeEqAutoHeadroomGain(profile.gains, profile.limiterEnabled);
   const autoTrimDb = 20 * Math.log10(autoTrimGain);
@@ -731,15 +808,16 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
               </div>
 
               <div className="flex items-center gap-2.5">
-                {/* Medidores VU en Tiempo Real */}
+                {/* Medidores VU en Tiempo Real (Zero-Re-Render vía ref cuando hay Analyser) */}
                 <div className="flex items-center gap-4 bg-zinc-50 px-3.5 py-2 rounded-xl border border-zinc-200">
                   <div className="flex items-center gap-2">
                     <Volume2 size={13} className="text-[#e11d48]" />
                     <span className="text-[9.5px] font-bold uppercase text-zinc-700">FOH OUT</span>
                     <div className="w-20 h-2 bg-zinc-200 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-[#e11d48] transition-all duration-75"
-                        style={{ width: `${Math.min(100, Math.round(fohMeterLevel * 100))}%` }}
+                        ref={fohMeterBarRef}
+                        className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-[#e11d48]"
+                        style={{ width: fohAnalyser ? '0%' : `${Math.min(100, Math.round(fohMeterLevel * 100))}%` }}
                       />
                     </div>
                   </div>
@@ -749,8 +827,9 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
                     <span className="text-[9.5px] font-bold uppercase text-zinc-700">CUE OUT</span>
                     <div className="w-20 h-2 bg-zinc-200 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-gradient-to-r from-emerald-500 to-amber-500 transition-all duration-75"
-                        style={{ width: `${Math.min(100, Math.round(cueMeterLevel * 100))}%` }}
+                        ref={cueMeterBarRef}
+                        className="h-full bg-gradient-to-r from-emerald-500 to-amber-500"
+                        style={{ width: cueAnalyser ? '0%' : `${Math.min(100, Math.round(cueMeterLevel * 100))}%` }}
                       />
                     </div>
                   </div>
@@ -1022,6 +1101,10 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
                   <div className="pt-2 border-t border-zinc-200 grid grid-cols-3 gap-2">
                     {loadedStems.map((st) => {
                       const overrideVal = multiChannelPatch.stemOverrides?.[st.id] || '';
+                      const inherited = resolveStemConsoleTarget(
+                        { id: st.id, name: st.name, group: st.group, category: detectInstrumentCategory(st.name) },
+                        { ...multiChannelPatch, stemOverrides: {} }
+                      );
                       return (
                         <div
                           key={st.id}
@@ -1043,7 +1126,9 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
                             }}
                             className="bg-zinc-50 border border-zinc-300 rounded-lg px-1.5 py-1 text-[10px] font-mono font-bold text-zinc-900 outline-none max-w-[135px]"
                           >
-                            <option value="">Heredar grupo ({multiChannelPatch.stemGroupTargets[st.group]})</option>
+                            <option value="">
+                              {inherited.source === 'role_rule' ? 'Regla' : 'Grupo'} ({inherited.target})
+                            </option>
                             {ALL_CONSOLE_TARGET_OPTIONS.map((opt) => (
                               <option key={opt.value} value={opt.value}>
                                 {opt.label}
@@ -1058,17 +1143,92 @@ export const StageEqualizerConsole: React.FC<StageEqualizerConsoleProps> = ({
               </div>
             )}
 
-            {/* Banner Informativo de Seguridad de Escenario */}
-            {routingMode === 'MultiChannel' && hardwareMaxChannels < 4 ? (
-              <div className="px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] flex items-center gap-2">
-                <AlertTriangle size={14} className="text-amber-600 shrink-0" />
-                <span>
-                  <strong>Protección Activa de Escenario:</strong> Tu tarjeta de audio actual reporta{' '}
-                  <strong>{hardwareMaxChannels} canales</strong>. Para evitar que el Click salga hacia el público, la consola activó automáticamente{' '}
-                  <strong>Split Seguro L/R (Izquierda = Músicos, Derecha = Público FOH con EQ 18 Bandas)</strong>. Selecciona tu interfaz USB de 4+ canales (o configura Windows/ASIO en modo multicanal) para desbloquear todas las salidas discretas.
+            {/* Balance CUE (Click vs Guía) & Polaridad R */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-zinc-50 px-3 py-2 rounded-xl border border-zinc-200 flex items-center justify-between gap-3">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-zinc-700 shrink-0">
+                  Mix CUE (Click ↔ Guía):
+                </span>
+                <input
+                  type="range"
+                  min="-1"
+                  max="1"
+                  step="0.1"
+                  value={multiChannelPatch.cueBalance || 0}
+                  onChange={(e) =>
+                    onChangeMultiChannelPatch((prev) => ({
+                      ...prev,
+                      cueBalance: parseFloat(e.target.value),
+                    }))
+                  }
+                  className="flex-1 h-1.5 accent-amber-600 cursor-pointer"
+                />
+                <span className="text-[10px] font-mono font-bold text-amber-800 w-12 text-right">
+                  {(multiChannelPatch.cueBalance || 0) === 0
+                    ? '50/50'
+                    : (multiChannelPatch.cueBalance || 0) < 0
+                    ? '+Click'
+                    : '+Guía'}
                 </span>
               </div>
-            ) : (
+
+              <div className="bg-zinc-50 px-3 py-2 rounded-xl border border-zinc-200 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-zinc-700">
+                  Polaridad Canal Derecho (R):
+                </span>
+                <button
+                  type="button"
+                  disabled={routingMode === 'StereoSplit' || (routingMode === 'MultiChannel' && hardwareMaxChannels < 4)}
+                  onClick={() =>
+                    onChangeMultiChannelPatch((prev) => ({
+                      ...prev,
+                      fohPolarityInvertR: !prev.fohPolarityInvertR,
+                    }))
+                  }
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold border cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                    multiChannelPatch.fohPolarityInvertR
+                      ? 'bg-violet-600 text-white border-violet-700'
+                      : 'bg-white text-zinc-700 border-zinc-300'
+                  }`}
+                  title={
+                    routingMode === 'StereoSplit' || (routingMode === 'MultiChannel' && hardwareMaxChannels < 4)
+                      ? 'Disponible en salidas estéreo/multicanal (deshabilitado en Split L/R para evitar cancelación L+R)'
+                      : 'Invierte la polaridad del canal Derecho (R) durante el show'
+                  }
+                >
+                  {multiChannelPatch.fohPolarityInvertR ? '-Φ INVERTIDA' : '+Φ Normal'}
+                </button>
+              </div>
+            </div>
+
+            {/* Alertas unificadas (Colisiones CUE/FOH, BT, Fuera de Rango, Desconexión, Fallback Split) */}
+            <StageIoAlertsBanner
+              compact
+              analysis={patchAnalysis}
+              detectedMaxChannels={hardwareMaxChannels}
+              fohPairLabel={multiChannelPatch.fohPair}
+              activeDeviceLabel={activeOutputLabel}
+              sinkStatus={modalSinkStatus}
+              savedSinkLabel={multiChannelPatch.sinkLabel}
+              onResetToDefaultSink={() =>
+                onChangeMultiChannelPatch((prev) => ({
+                  ...prev,
+                  sinkId: '',
+                  sinkLabel: audioOutputs[0]?.label || '',
+                }))
+              }
+              onTrustWiredDevice={(label) =>
+                onChangeMultiChannelPatch((prev) => ({
+                  ...prev,
+                  trustedWiredDeviceLabels: Array.from(
+                    new Set([...(prev.trustedWiredDeviceLabels || []), label])
+                  ),
+                }))
+              }
+            />
+
+            {/* Estado final cuando todo está en orden */}
+            {patchAnalysis.preflightLevel === 'ready' && !patchAnalysis.isFallbackSplit && (
               <div className="px-3.5 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-900 text-[11px] flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Check size={14} className="text-emerald-600 shrink-0" />

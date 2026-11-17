@@ -86,10 +86,20 @@ export type ConsoleTargetAssignment = ConsoleStereoPair | ConsoleMonoChannel;
 
 export type CueRoutingTarget =
   | ConsoleStereoPair
+  | '1-mono'
+  | '2-mono'
   | '3-mono'
   | '4-mono'
+  | '5-mono'
+  | '6-mono'
   | '7-mono'
   | '8-mono'
+  | '9-mono'
+  | '10-mono'
+  | '11-mono'
+  | '12-mono'
+  | '13-mono'
+  | '14-mono'
   | '15-mono'
   | '16-mono'
   | ConsoleMonoChannel;
@@ -128,14 +138,26 @@ export const CUE_ROUTING_OPTIONS: { value: CueRoutingTarget; label: string; minC
   { value: '3-mono', label: 'Salida 3 Mono (Click+Guía)', minChannels: 3 },
   { value: '4-mono', label: 'Salida 4 Mono (Click+Guía)', minChannels: 4 },
   { value: '5-6', label: 'Salidas 5–6 (5=Click, 6=Guía)', minChannels: 6 },
+  { value: '5-mono', label: 'Salida 5 Mono (Click+Guía)', minChannels: 5 },
+  { value: '6-mono', label: 'Salida 6 Mono (Click+Guía)', minChannels: 6 },
   { value: '7-8', label: 'Salidas 7–8 (7=Click, 8=Guía)', minChannels: 8 },
   { value: '7-mono', label: 'Salida 7 Mono (Click+Guía)', minChannels: 7 },
   { value: '8-mono', label: 'Salida 8 Mono (Click+Guía)', minChannels: 8 },
-  { value: '9-10', label: 'Salidas 9–10 (Estéreo CUE)', minChannels: 10 },
+  { value: '9-10', label: 'Salidas 9–10 (9=Click, 10=Guía)', minChannels: 10 },
+  { value: '9-mono', label: 'Salida 9 Mono (Click+Guía)', minChannels: 9 },
+  { value: '10-mono', label: 'Salida 10 Mono (Click+Guía)', minChannels: 10 },
   { value: '11-12', label: 'Salidas 11–12 (Estéreo CUE)', minChannels: 12 },
+  { value: '11-mono', label: 'Salida 11 Mono (Click+Guía)', minChannels: 11 },
+  { value: '12-mono', label: 'Salida 12 Mono (Click+Guía)', minChannels: 12 },
   { value: '13-14', label: 'Salidas 13–14 (Estéreo CUE)', minChannels: 14 },
+  { value: '13-mono', label: 'Salida 13 Mono (Click+Guía)', minChannels: 13 },
+  { value: '14-mono', label: 'Salida 14 Mono (Click+Guía)', minChannels: 14 },
   { value: '15-16', label: 'Salidas 15–16 (15=Click, 16=Guía)', minChannels: 16 },
+  { value: '15-mono', label: 'Salida 15 Mono (Click+Guía)', minChannels: 15 },
+  { value: '16-mono', label: 'Salida 16 Mono (Click+Guía)', minChannels: 16 },
   { value: '1-2', label: 'Salidas 1–2 (Monitoreo)', minChannels: 2 },
+  { value: '1-mono', label: 'Salida 1 Mono (Click+Guía)', minChannels: 1 },
+  { value: '2-mono', label: 'Salida 2 Mono (Click+Guía)', minChannels: 2 },
 ];
 
 export type StemBusGroupId =
@@ -181,6 +203,39 @@ export function mapInstrumentCategoryToBusGroup(category: InstrumentCategory): S
   }
 }
 
+export type StemRuleKey =
+  | 'kick'
+  | 'snare'
+  | 'percussion'
+  | 'bass'
+  | 'piano'
+  | 'synth_pad'
+  | 'electric_guitar'
+  | 'acoustic_guitar'
+  | 'brass_winds'
+  | 'vocals'
+  | 'fx';
+
+export interface StemRoleRuleSpec {
+  key: StemRuleKey;
+  label: string;
+  group: StemBusGroupId;
+}
+
+export const STEM_ROLE_RULES: StemRoleRuleSpec[] = [
+  { key: 'kick',            label: 'Bombo (Kick)',        group: 'drums_perc' },
+  { key: 'snare',           label: 'Caja / Redoblante',   group: 'drums_perc' },
+  { key: 'percussion',      label: 'Toms / OH / Perc.',   group: 'drums_perc' },
+  { key: 'bass',            label: 'Bajo / Sub Bass',     group: 'bass' },
+  { key: 'piano',           label: 'Piano / Teclados',    group: 'keys_synth' },
+  { key: 'synth_pad',       label: 'Pads / Synth / Strings', group: 'keys_synth' },
+  { key: 'electric_guitar', label: 'Guitarra Eléctrica',  group: 'guitars' },
+  { key: 'acoustic_guitar', label: 'Guitarra Acústica',   group: 'guitars' },
+  { key: 'brass_winds',     label: 'Metales / Brass',     group: 'vocals_other' },
+  { key: 'vocals',          label: 'Voces / Coros',       group: 'vocals_other' },
+  { key: 'fx',              label: 'FX / Ambientes',      group: 'vocals_other' },
+];
+
 export interface MultiChannelPatchConfig {
   consoleBusMode: ConsoleBusMode;
   fohPair: ConsoleStereoPair;
@@ -188,7 +243,12 @@ export interface MultiChannelPatchConfig {
   sinkId: string;
   sinkLabel?: string;
   applyEqToStems: boolean;
+  fohPolarityInvertR?: boolean;
+  cueBalance?: number; // -1 (Solo Click L) .. 0 (50/50) .. +1 (Solo Guía R)
+  trustedWiredDeviceLabels?: string[];
+  syncOffsetMs?: number;
   stemGroupTargets: Record<StemBusGroupId, ConsoleTargetAssignment>;
+  stemRoleRules?: Partial<Record<StemRuleKey, ConsoleTargetAssignment>>;
   stemOverrides: Record<string, ConsoleTargetAssignment>;
 }
 
@@ -281,6 +341,10 @@ export const DEFAULT_MULTICHANNEL_PATCH: MultiChannelPatchConfig = {
   sinkId: '',
   sinkLabel: '',
   applyEqToStems: true,
+  fohPolarityInvertR: false,
+  cueBalance: 0,
+  trustedWiredDeviceLabels: [],
+  syncOffsetMs: 0,
   stemGroupTargets: {
     drums_perc: '1-2',
     bass: 'ch-3',
@@ -288,6 +352,7 @@ export const DEFAULT_MULTICHANNEL_PATCH: MultiChannelPatchConfig = {
     guitars: 'ch-5',
     vocals_other: 'ch-6',
   },
+  stemRoleRules: {},
   stemOverrides: {},
 };
 
@@ -311,22 +376,45 @@ export function loadStoredJson<T>(key: string, fallback: T): T {
   }
 }
 
-export function loadNormalizedMultiChannelPatch(): MultiChannelPatchConfig {
-  const loaded = loadStoredJson<MultiChannelPatchConfig>(
-    LIVE_STORAGE_KEYS.MC_PATCH,
-    DEFAULT_MULTICHANNEL_PATCH
-  );
+export function normalizeMultiChannelPatch(
+  raw?: Partial<MultiChannelPatchConfig> | null
+): MultiChannelPatchConfig {
+  const loaded = raw || {};
+  const rawBalance = typeof loaded.cueBalance === 'number' && Number.isFinite(loaded.cueBalance)
+    ? Math.max(-1, Math.min(1, loaded.cueBalance))
+    : 0;
+  const rawSyncOffset = typeof loaded.syncOffsetMs === 'number' && Number.isFinite(loaded.syncOffsetMs)
+    ? Math.max(-300, Math.min(500, Math.round(loaded.syncOffsetMs)))
+    : 0;
+
   return {
     ...DEFAULT_MULTICHANNEL_PATCH,
     ...loaded,
+    fohPolarityInvertR: Boolean(loaded.fohPolarityInvertR),
+    cueBalance: rawBalance,
+    trustedWiredDeviceLabels: Array.isArray(loaded.trustedWiredDeviceLabels)
+      ? loaded.trustedWiredDeviceLabels.filter((x): x is string => typeof x === 'string')
+      : [],
+    syncOffsetMs: rawSyncOffset,
     stemGroupTargets: {
       ...DEFAULT_MULTICHANNEL_PATCH.stemGroupTargets,
       ...(loaded.stemGroupTargets || {}),
+    },
+    stemRoleRules: {
+      ...(loaded.stemRoleRules || {}),
     },
     stemOverrides: {
       ...(loaded.stemOverrides || {}),
     },
   };
+}
+
+export function loadNormalizedMultiChannelPatch(): MultiChannelPatchConfig {
+  const loaded = loadStoredJson<MultiChannelPatchConfig>(
+    LIVE_STORAGE_KEYS.MC_PATCH,
+    DEFAULT_MULTICHANNEL_PATCH
+  );
+  return normalizeMultiChannelPatch(loaded);
 }
 
 export function loadStoredRoutingMode(): RoutingMode {
@@ -337,6 +425,14 @@ export function loadStoredRoutingMode(): RoutingMode {
     }
   } catch {}
   return 'StereoInEar';
+}
+
+export function loadStoredEqScope(): EqMemoryScope {
+  try {
+    const saved = localStorage.getItem(LIVE_STORAGE_KEYS.EQ_SCOPE);
+    return saved === 'per_song' ? 'per_song' : 'global';
+  } catch {}
+  return 'global';
 }
 
 export function loadVenueProfiles(): VenueRigProfile[] {
@@ -356,6 +452,47 @@ export function saveVenueProfiles(profiles: VenueRigProfile[]): void {
   } catch {}
 }
 
+export function serializeVenueProfilesJson(profiles: VenueRigProfile[]): string {
+  return JSON.stringify(
+    {
+      schema: 'tandu_venue_rig_profiles_v1',
+      exportedAt: new Date().toISOString(),
+      profiles,
+    },
+    null,
+    2
+  );
+}
+
+export function parseImportedVenueProfilesJson(rawJson: string): VenueRigProfile[] {
+  const parsed = JSON.parse(rawJson);
+  const candidateList: unknown[] = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as any).profiles)
+    ? (parsed as any).profiles
+    : [];
+
+  if (!Array.isArray(candidateList) || candidateList.length === 0) {
+    throw new Error('El archivo no contiene perfiles de consola válidos.');
+  }
+
+  return candidateList
+    .filter((item): item is Record<string, any> => Boolean(item && typeof item === 'object' && typeof (item as any).name === 'string'))
+    .map((item, idx) => ({
+      id: typeof item.id === 'string' && item.id ? item.id : `rig_imp_${Date.now()}_${idx}`,
+      name: item.name.trim(),
+      deviceLabel: typeof item.deviceLabel === 'string' ? item.deviceLabel : 'Predeterminado',
+      sinkId: typeof item.sinkId === 'string' ? item.sinkId : '',
+      routingMode:
+        item.routingMode === 'StereoSplit' || item.routingMode === 'MultiChannel'
+          ? item.routingMode
+          : 'StereoInEar',
+      patch: normalizeMultiChannelPatch(item.patch),
+      eqPresetId: typeof item.eqPresetId === 'string' ? item.eqPresetId : undefined,
+      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
+    }));
+}
+
 const STAGE_IO_CHANNEL = 'tandu_stage_io_sync';
 const STAGE_IO_DOM_EVENT = 'tandu-stage-io-updated';
 
@@ -372,15 +509,30 @@ export function notifyStageIoUpdated(source: string): void {
   } catch {}
 }
 
-export function subscribeStageIoUpdates(onUpdate: () => void): () => void {
-  const handleDom = () => onUpdate();
+export function subscribeStageIoUpdates(
+  onUpdate: (source: string) => void,
+  options?: { ignoreSource?: string }
+): () => void {
+  const ignoreSource = options?.ignoreSource;
+  const dispatchIfExternal = (src: unknown) => {
+    const source = typeof src === 'string' ? src : 'unknown';
+    if (ignoreSource && source === ignoreSource) return;
+    onUpdate(source);
+  };
+
+  const handleDom = (ev: Event) => {
+    const detail = (ev as CustomEvent<{ source?: string }>)?.detail;
+    dispatchIfExternal(detail?.source);
+  };
   window.addEventListener(STAGE_IO_DOM_EVENT, handleDom);
 
   let bc: BroadcastChannel | null = null;
   if (typeof BroadcastChannel !== 'undefined') {
     bc = new BroadcastChannel(STAGE_IO_CHANNEL);
     bc.onmessage = (ev) => {
-      if (ev.data?.type === 'STAGE_IO_UPDATED') onUpdate();
+      if (ev.data?.type === 'STAGE_IO_UPDATED') {
+        dispatchIfExternal(ev.data.source);
+      }
     };
   }
 
@@ -488,27 +640,143 @@ export function resolveCueIndices(
   return resolveConsoleTarget(cueRouting as ConsoleTargetAssignment, safeMax);
 }
 
+export interface StageStemInput {
+  id: string;
+  name?: string;
+  group: StemBusGroupId;
+  category?: InstrumentCategory;
+}
+
+function normalizeMatchText(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Clasifica un stem en un rol semántico reutilizable entre canciones del repertorio.
+ */
+export function detectStemRuleKey(
+  stemName: string,
+  category?: InstrumentCategory
+): StemRuleKey | null {
+  const n = normalizeMatchText(stemName || '');
+
+  if (/\b(kick|bombo|bd|bass\s*drum)\b/.test(n)) return 'kick';
+  if (/\b(snare|redoblante|tarola|caja|sd|rim)\b/.test(n)) return 'snare';
+  if (
+    category === 'percussion' ||
+    category === 'drums' ||
+    /\b(perc|shaker|conga|bongo|timbal|pander|tambourine|toms?|hi.?hat|hh|overhead|oh|cymbal|platillo|drum|bat)\b/.test(n)
+  ) {
+    return 'percussion';
+  }
+  if (category === 'bass' || /\b(bass|bajo|sub\s*bass|808)\b/.test(n)) return 'bass';
+  if (category === 'electric_guitar' || /\b(electric\s*(gtr|guitar)|guit\.?\s*electrica|eg\b)/.test(n)) {
+    return 'electric_guitar';
+  }
+  if (category === 'acoustic_guitar' || /\b(acoustic\s*(gtr|guitar)|guit\.?\s*acustica|ag\b|nylon)\b/.test(n)) {
+    return 'acoustic_guitar';
+  }
+  if (category === 'guitar' || /\b(guitar|guit|gtr)\b/.test(n)) return 'electric_guitar';
+  if (category === 'piano' || category === 'accordion' || /\b(piano|keys?|teclad|rhodes|wurlitzer|organ|hammond|acordeon)\b/.test(n)) {
+    return 'piano';
+  }
+  if (category === 'synth' || category === 'strings' || /\b(synth|pad|sinte|string|cuerda|arp|lead|atmos|shimmer)\b/.test(n)) {
+    return 'synth_pad';
+  }
+  if (category === 'brass' || /\b(brass|metal|trumpet|trompeta|sax|trombone|horn)\b/.test(n)) {
+    return 'brass_winds';
+  }
+  if (category === 'voice' || category === 'vocals' || /\b(voc|vox|coro|choir|bgv|backing|voz)\b/.test(n)) {
+    return 'vocals';
+  }
+  if (/\b(fx|sfx|riser|impact|sweep|efecto)\b/.test(n)) return 'fx';
+
+  return null;
+}
+
+/**
+ * Resuelve el destino físico exacto de un stem aplicando precedencia única:
+ * 1) Excepción específica por ID de pista (stemOverrides)
+ * 2) Regla global por instrumento/rol (stemRoleRules)
+ * 3) Destino de grupo general (stemGroupTargets)
+ */
+export function resolveStemConsoleTarget(
+  stem: StageStemInput,
+  patch: MultiChannelPatchConfig
+): { target: ConsoleTargetAssignment; source: 'stem_override' | 'role_rule' | 'group' } {
+  const override = patch.stemOverrides?.[stem.id];
+  if (override) {
+    return { target: override, source: 'stem_override' };
+  }
+  const ruleKey = detectStemRuleKey(stem.name || '', stem.category);
+  if (ruleKey && patch.stemRoleRules?.[ruleKey]) {
+    return { target: patch.stemRoleRules[ruleKey]!, source: 'role_rule' };
+  }
+  return {
+    target: patch.stemGroupTargets[stem.group] || '1-2',
+    source: 'group',
+  };
+}
+
+/**
+ * Calcula ganancia izquierda/derecha del bus CUE según balance Click (L) vs Guía (R).
+ */
+export function computeCueBalanceGains(cueBalance = 0): { leftGain: number; rightGain: number } {
+  const b = Number.isFinite(cueBalance) ? Math.max(-1, Math.min(1, cueBalance)) : 0;
+  return {
+    leftGain: b > 0 ? Math.max(0, 1 - b) : 1,
+    rightGain: b < 0 ? Math.max(0, 1 + b) : 1,
+  };
+}
+
+function isStageStemObjectArray(
+  items?: (string | StageStemInput)[]
+): items is StageStemInput[] {
+  return Array.isArray(items) && items.length > 0 && typeof items[0] === 'object' && items[0] !== null;
+}
+
 /**
  * Calcula la cantidad mínima de canales del ChannelMergerNode según el parcheo actual
  */
 export function computeRequiredMergerChannels(
   patch: MultiChannelPatchConfig,
   maxHardwareChannels: number,
-  activeStemIds?: string[]
+  activeStems?: (string | StageStemInput)[]
 ): number {
   const cueReq = resolveCueIndices(patch.cueRouting, maxHardwareChannels).requiredChannels;
   if (patch.consoleBusMode === 'stereo_bus') {
     const fohReq = resolveConsoleTarget(patch.fohPair, maxHardwareChannels).requiredChannels;
     return Math.min(maxHardwareChannels, Math.max(4, fohReq, cueReq));
   }
+
   let maxStemReq = 4;
+  if (Array.isArray(activeStems) && activeStems.length === 0) {
+    // Canción sin stems separados -> LiveConcert usa Bus FOH estéreo como respaldo
+    const fohReq = resolveConsoleTarget(patch.fohPair, maxHardwareChannels).requiredChannels;
+    return Math.min(maxHardwareChannels, Math.max(4, fohReq, cueReq));
+  }
+
+  if (isStageStemObjectArray(activeStems)) {
+    activeStems.forEach((st) => {
+      const { target } = resolveStemConsoleTarget(st, patch);
+      const req = resolveConsoleTarget(target, maxHardwareChannels).requiredChannels;
+      if (req > maxStemReq) maxStemReq = req;
+    });
+    return Math.min(maxHardwareChannels, Math.max(4, maxStemReq, cueReq));
+  }
+
+  // Modo heredado (IDs de string o sin info de canción cargada)
+  const activeIds = Array.isArray(activeStems) ? activeStems : undefined;
   (Object.values(patch.stemGroupTargets) as ConsoleTargetAssignment[]).forEach((t) => {
     const req = resolveConsoleTarget(t, maxHardwareChannels).requiredChannels;
     if (req > maxStemReq) maxStemReq = req;
   });
-  const overrideEntries = Object.entries(patch.stemOverrides || {});
-  overrideEntries.forEach(([stemId, target]) => {
-    if (activeStemIds && !activeStemIds.includes(stemId)) return;
+  Object.entries(patch.stemOverrides || {}).forEach(([stemId, target]) => {
+    if (activeIds && !activeIds.includes(stemId)) return;
     const req = resolveConsoleTarget(target, maxHardwareChannels).requiredChannels;
     if (req > maxStemReq) maxStemReq = req;
   });
@@ -521,6 +789,13 @@ export interface OutOfRangeAssignment {
   requiredChannels: number;
 }
 
+function getTargetRequiredChannelCount(target: string): number {
+  if (target.endsWith('-mono')) return parseInt(target.split('-')[0], 10) || 3;
+  if (target.startsWith('ch-')) return parseInt(target.replace('ch-', ''), 10) || 1;
+  const parts = target.split('-').map((n) => parseInt(n, 10));
+  return Number.isFinite(parts[1]) ? parts[1] : 2;
+}
+
 /**
  * Detecta asignaciones cuyo canal excede la capacidad real de la interfaz conectada
  * (evita recortes silenciosos o colisiones ocultas).
@@ -529,46 +804,232 @@ export function detectOutOfRangeAssignments(
   routingMode: RoutingMode,
   patch: MultiChannelPatchConfig,
   maxHardwareChannels: number,
-  activeStemIds?: string[]
+  activeStems?: (string | StageStemInput)[]
 ): OutOfRangeAssignment[] {
   if (routingMode !== 'MultiChannel' || maxHardwareChannels < 4) return [];
   const issues: OutOfRangeAssignment[] = [];
 
-  const getReq = (target: string): number => {
-    if (target.endsWith('-mono')) return parseInt(target.split('-')[0], 10) || 3;
-    if (target.startsWith('ch-')) return parseInt(target.replace('ch-', ''), 10) || 1;
-    const parts = target.split('-').map((n) => parseInt(n, 10));
-    return Number.isFinite(parts[1]) ? parts[1] : 2;
-  };
-
-  const cueReq = getReq(patch.cueRouting);
+  const cueReq = getTargetRequiredChannelCount(patch.cueRouting);
   if (cueReq > maxHardwareChannels) {
     issues.push({ busLabel: 'Bus MÚSICOS (CUE)', target: patch.cueRouting, requiredChannels: cueReq });
   }
 
   if (patch.consoleBusMode === 'stereo_bus') {
-    const fohReq = getReq(patch.fohPair);
+    const fohReq = getTargetRequiredChannelCount(patch.fohPair);
     if (fohReq > maxHardwareChannels) {
       issues.push({ busLabel: 'Bus PÚBLICO (FOH)', target: patch.fohPair, requiredChannels: fohReq });
     }
-  } else {
-    STEM_BUS_GROUPS.forEach((grp) => {
-      const target = patch.stemGroupTargets[grp.id];
-      const req = getReq(target);
-      if (req > maxHardwareChannels) {
-        issues.push({ busLabel: grp.label, target, requiredChannels: req });
-      }
-    });
-    Object.entries(patch.stemOverrides || {}).forEach(([stemId, target]) => {
-      if (activeStemIds && !activeStemIds.includes(stemId)) return;
-      const req = getReq(target);
-      if (req > maxHardwareChannels) {
-        issues.push({ busLabel: `Pista (${stemId.slice(0, 6)})`, target, requiredChannels: req });
-      }
-    });
+    return issues;
   }
 
+  if (Array.isArray(activeStems) && activeStems.length === 0) {
+    const fohReq = getTargetRequiredChannelCount(patch.fohPair);
+    if (fohReq > maxHardwareChannels) {
+      issues.push({ busLabel: 'Bus Respaldo FOH', target: patch.fohPair, requiredChannels: fohReq });
+    }
+    return issues;
+  }
+
+  if (isStageStemObjectArray(activeStems)) {
+    const seenKeys = new Set<string>();
+    activeStems.forEach((st) => {
+      const resolved = resolveStemConsoleTarget(st, patch);
+      const req = getTargetRequiredChannelCount(resolved.target);
+      if (req > maxHardwareChannels) {
+        const busLabel =
+          resolved.source === 'group'
+            ? STEM_BUS_GROUPS.find((g) => g.id === st.group)?.label || st.group
+            : st.name || st.id.slice(0, 6);
+        const dedupeKey = `${busLabel}::${resolved.target}`;
+        if (!seenKeys.has(dedupeKey)) {
+          seenKeys.add(dedupeKey);
+          issues.push({ busLabel, target: resolved.target, requiredChannels: req });
+        }
+      }
+    });
+    return issues;
+  }
+
+  const activeIds = Array.isArray(activeStems) ? activeStems : undefined;
+  STEM_BUS_GROUPS.forEach((grp) => {
+    const target = patch.stemGroupTargets[grp.id];
+    const req = getTargetRequiredChannelCount(target);
+    if (req > maxHardwareChannels) {
+      issues.push({ busLabel: grp.label, target, requiredChannels: req });
+    }
+  });
+  Object.entries(patch.stemOverrides || {}).forEach(([stemId, target]) => {
+    if (activeIds && !activeIds.includes(stemId)) return;
+    const req = getTargetRequiredChannelCount(target);
+    if (req > maxHardwareChannels) {
+      issues.push({ busLabel: `Pista (${stemId.slice(0, 6)})`, target, requiredChannels: req });
+    }
+  });
+
   return issues;
+}
+
+export interface ChannelRoleBadge {
+  label: string;
+  kind: 'foh' | 'cue' | 'stem';
+}
+
+export interface CueFohConflict {
+  chNum: number;
+  cueLabels: string[];
+  musicLabels: string[];
+}
+
+export interface StagePatchAnalysis {
+  effectiveRoutingMode: RoutingMode;
+  isFallbackSplit: boolean;
+  isMultitrackFallbackToFoh: boolean;
+  channelCountToDisplay: number;
+  channelAssignments: { roles: ChannelRoleBadge[] }[];
+  cueFohConflicts: CueFohConflict[];
+  outOfRangeIssues: OutOfRangeAssignment[];
+  isBluetoothRisk: boolean;
+  preflightLevel: 'ready' | 'warning' | 'critical';
+}
+
+/**
+ * Fuente única de verdad para validar conflictos, rango hardware y mapa de canales
+ * entre StageSoundcheck, StageEqualizerConsole y LiveConcert.
+ */
+export function analyzeStagePatch(
+  routingMode: RoutingMode,
+  patch: MultiChannelPatchConfig,
+  maxHardwareChannels: number,
+  stems?: StageStemInput[],
+  options?: {
+    activeDeviceLabel?: string;
+    activeDeviceLatencyMs?: number;
+    sinkMissingOrRejected?: boolean;
+  }
+): StagePatchAnalysis {
+  const safeMaxCh = Math.max(2, maxHardwareChannels || 2);
+  const isFallbackSplit = routingMode === 'MultiChannel' && safeMaxCh < 4;
+  const effectiveRoutingMode: RoutingMode = isFallbackSplit ? 'StereoSplit' : routingMode;
+
+  const channelCountToDisplay = Math.max(4, Math.min(16, safeMaxCh >= 4 ? safeMaxCh : 4));
+  const channelAssignments: { roles: ChannelRoleBadge[] }[] = Array.from(
+    { length: channelCountToDisplay },
+    () => ({ roles: [] })
+  );
+
+  const hasKnownStemsList = Array.isArray(stems);
+  const isMultitrackFallbackToFoh =
+    routingMode === 'MultiChannel' &&
+    safeMaxCh >= 4 &&
+    patch.consoleBusMode === 'multitrack_stems' &&
+    hasKnownStemsList &&
+    stems.length === 0;
+
+  if (effectiveRoutingMode === 'StereoInEar') {
+    channelAssignments[0].roles.push({ label: 'FOH L + CUE', kind: 'foh' });
+    channelAssignments[1].roles.push({ label: 'FOH R + CUE', kind: 'foh' });
+  } else if (effectiveRoutingMode === 'StereoSplit') {
+    channelAssignments[0].roles.push({ label: 'MÚSICOS (Click/Guía)', kind: 'cue' });
+    channelAssignments[1].roles.push({ label: 'PÚBLICO (FOH Mono)', kind: 'foh' });
+  } else {
+    const cuePos = resolveCueIndices(patch.cueRouting, channelCountToDisplay);
+    if (cuePos.isMono) {
+      channelAssignments[cuePos.leftIdx]?.roles.push({ label: 'CUE (Click+Guía)', kind: 'cue' });
+    } else {
+      channelAssignments[cuePos.leftIdx]?.roles.push({ label: 'CUE L (Click)', kind: 'cue' });
+      channelAssignments[cuePos.rightIdx]?.roles.push({ label: 'CUE R (Guía)', kind: 'cue' });
+    }
+
+    if (patch.consoleBusMode === 'stereo_bus' || isMultitrackFallbackToFoh) {
+      const [fL, fR] = resolvePairIndices(patch.fohPair, channelCountToDisplay);
+      channelAssignments[fL]?.roles.push({ label: 'FOH Público L', kind: 'foh' });
+      channelAssignments[fR]?.roles.push({ label: 'FOH Público R', kind: 'foh' });
+    } else if (hasKnownStemsList && stems.length > 0) {
+      // Evaluar exclusivamente destinos con stems activos en esta canción (sin falsos positivos de grupos vacíos u ocultos)
+      const groupBuckets = new Map<string, string>();
+      const pushBadge = (target: ConsoleTargetAssignment, label: string) => {
+        const res = resolveConsoleTarget(target, channelCountToDisplay);
+        if (res.isMono) {
+          channelAssignments[res.leftIdx]?.roles.push({ label, kind: 'stem' });
+        } else {
+          channelAssignments[res.leftIdx]?.roles.push({ label: `${label} (L)`, kind: 'stem' });
+          channelAssignments[res.rightIdx]?.roles.push({ label: `${label} (R)`, kind: 'stem' });
+        }
+      };
+
+      stems.forEach((st) => {
+        const resolved = resolveStemConsoleTarget(st, patch);
+        if (resolved.source === 'group') {
+          const grpLabel = STEM_BUS_GROUPS.find((g) => g.id === st.group)?.label || st.group;
+          const bucketKey = `${st.group}::${resolved.target}`;
+          if (!groupBuckets.has(bucketKey)) {
+            groupBuckets.set(bucketKey, grpLabel);
+            pushBadge(resolved.target, grpLabel);
+          }
+        } else {
+          const suffix = resolved.source === 'role_rule' ? 'Regla' : 'Solo';
+          pushBadge(resolved.target, `${st.name || st.group} (${suffix})`);
+        }
+      });
+    } else {
+      // Sin lista de stems cargada aún: mostrar mapa general de grupos
+      STEM_BUS_GROUPS.forEach((grp) => {
+        const res = resolveConsoleTarget(patch.stemGroupTargets[grp.id], channelCountToDisplay);
+        if (res.isMono) {
+          channelAssignments[res.leftIdx]?.roles.push({ label: grp.label, kind: 'stem' });
+        } else {
+          channelAssignments[res.leftIdx]?.roles.push({ label: `${grp.label} (L)`, kind: 'stem' });
+          channelAssignments[res.rightIdx]?.roles.push({ label: `${grp.label} (R)`, kind: 'stem' });
+        }
+      });
+    }
+  }
+
+  const cueFohConflicts: CueFohConflict[] =
+    effectiveRoutingMode === 'MultiChannel'
+      ? channelAssignments
+          .map((ch, idx) => {
+            const cueLabels = ch.roles.filter((r) => r.kind === 'cue').map((r) => r.label);
+            const musicLabels = ch.roles.filter((r) => r.kind === 'foh' || r.kind === 'stem').map((r) => r.label);
+            return { chNum: idx + 1, cueLabels, musicLabels };
+          })
+          .filter((c) => c.cueLabels.length > 0 && c.musicLabels.length > 0)
+      : [];
+
+  const stemsInputForRange = hasKnownStemsList ? stems : undefined;
+  const outOfRangeIssues = detectOutOfRangeAssignments(
+    routingMode,
+    patch,
+    safeMaxCh,
+    stemsInputForRange
+  );
+
+  const isBluetoothRisk = options?.activeDeviceLabel
+    ? isDeviceBluetoothSuspect(
+        options.activeDeviceLabel,
+        options.activeDeviceLatencyMs || 0,
+        patch.trustedWiredDeviceLabels
+      )
+    : false;
+
+  let preflightLevel: 'ready' | 'warning' | 'critical' = 'ready';
+  if (cueFohConflicts.length > 0 || options?.sinkMissingOrRejected) {
+    preflightLevel = 'critical';
+  } else if (isFallbackSplit || outOfRangeIssues.length > 0 || isBluetoothRisk) {
+    preflightLevel = 'warning';
+  }
+
+  return {
+    effectiveRoutingMode,
+    isFallbackSplit,
+    isMultitrackFallbackToFoh,
+    channelCountToDisplay,
+    channelAssignments,
+    cueFohConflicts,
+    outOfRangeIssues,
+    isBluetoothRisk,
+    preflightLevel,
+  };
 }
 
 /**
@@ -641,7 +1102,81 @@ export function applyProfileToStageBusDspNodes(
 }
 
 export function isBluetoothAudioLabel(label: string): boolean {
-  return /bluetooth|airpods|galaxy buds|headset|hands-free|a2dp|wh-1000|bose qc|\bbt\b/i.test(label);
+  if (/bluetooth|airpods|galaxy buds|hands-free|a2dp|wh-1000|bose qc|\bbt\b|wireless/i.test(label)) {
+    return true;
+  }
+  // Evita falso positivo en diademas/auriculares cableados por USB ("USB Headset Earphone")
+  if (/\bheadset\b/i.test(label) && !/\b(usb|type-c|wired|xlr)\b/i.test(label)) {
+    return true;
+  }
+  return false;
+}
+
+export function isDeviceBluetoothSuspect(
+  label: string,
+  latencyMs: number,
+  trustedWiredLabels?: string[]
+): boolean {
+  if (
+    trustedWiredLabels &&
+    trustedWiredLabels.some((trusted) => trusted.toLowerCase() === label.toLowerCase())
+  ) {
+    return false;
+  }
+  return isBluetoothAudioLabel(label) || latencyMs >= 95;
+}
+
+/**
+ * Extrae el grupo padre final entre paréntesis respetando paréntesis internos
+ * (ej. "Altavoces (Realtek(R) Audio)" -> "Realtek(R) Audio").
+ */
+export function extractTrailingParenGroup(label: string): string | null {
+  const trimmed = label.trim();
+  if (!trimmed.endsWith(')')) return null;
+
+  let depth = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const ch = trimmed[i];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      depth--;
+      if (depth === 0) {
+        const inner = trimmed.slice(i + 1, trimmed.length - 1).trim();
+        return inner || null;
+      }
+    }
+  }
+  return null;
+}
+
+export function detectWdmPairGroups(
+  physicalEndpoints: Pick<ProbedAudioDevice, 'label' | 'groupId'>[]
+): string[] {
+  const buckets = new Map<string, Pick<ProbedAudioDevice, 'label' | 'groupId'>[]>();
+  physicalEndpoints.forEach((d) => {
+    const parentName = extractTrailingParenGroup(d.label);
+    if (!parentName) return;
+    if (/\b(hdmi|display\s*audio|nvidia high definition|amd high definition)\b/i.test(parentName)) {
+      return;
+    }
+    const list = buckets.get(parentName) || [];
+    list.push(d);
+    buckets.set(parentName, list);
+  });
+
+  const wdmGroups: string[] = [];
+  buckets.forEach((items, parentName) => {
+    if (items.length < 2) return;
+    const hasPairHints = items.some((it) =>
+      /(\b\d+\s*[-/]\s*\d+\b|\bline\b|\bout(put)?\b|\bmain\b|\baux\b|\badat\b|\bch(annel)?\s*\d)/i.test(it.label)
+    );
+    const sameNonEmptyGroupId =
+      Boolean(items[0].groupId) && items.every((it) => it.groupId === items[0].groupId);
+    if (hasPairHints || sameNonEmptyGroupId) {
+      wdmGroups.push(parentName);
+    }
+  });
+  return wdmGroups;
 }
 
 /**
@@ -684,7 +1219,10 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
     }
   }
 
-  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  const AudioContextClass =
+    (typeof window !== 'undefined' && (window.AudioContext || (window as any).webkitAudioContext)) ||
+    (globalThis as any).AudioContext ||
+    (globalThis as any).webkitAudioContext;
   const probeCtx = new AudioContextClass();
   if (probeCtx.state === 'suspended') {
     try {
@@ -775,17 +1313,7 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
   const physicalEndpoints = probedDevices.filter(
     (d) => d.deviceId !== 'default' && d.deviceId !== 'communications'
   );
-  const parenGroups = new Map<string, number>();
-  physicalEndpoints.forEach((d) => {
-    const match = d.label.match(/\(([^)]+)\)\s*$/);
-    if (match && match[1]) {
-      const parentName = match[1].trim();
-      parenGroups.set(parentName, (parenGroups.get(parentName) || 0) + 1);
-    }
-  });
-  const wdmPairGroups = Array.from(parenGroups.entries())
-    .filter(([, count]) => count >= 2)
-    .map(([name]) => name);
+  const wdmPairGroups = detectWdmPairGroups(physicalEndpoints);
 
   let rigTier: RigHardwareTier = 'stereo_universal';
   if (bestMaxChannels >= 4) {
@@ -818,6 +1346,12 @@ export async function probeAudioHardware(options?: { unlockLabels?: boolean }): 
   };
 }
 
+function normalizeHardwareAlias(label: string): string {
+  const parent = extractTrailingParenGroup(label);
+  const base = (parent || label).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return base;
+}
+
 /**
  * Busca si existe un perfil de lugar guardado que coincida con algún dispositivo físico conectado
  * y sea diferente a la configuración actualmente activa.
@@ -835,14 +1369,26 @@ export function findMatchingVenueProfile(
 
   for (const prof of profiles) {
     if (!prof.deviceLabel) continue;
-    const matchDev = physicalDevices.find(
+    let matchDev = physicalDevices.find(
       (d) => d.label.toLowerCase() === prof.deviceLabel.toLowerCase()
     );
+    if (!matchDev) {
+      const profNorm = normalizeHardwareAlias(prof.deviceLabel);
+      if (profNorm.length >= 4) {
+        const aliasMatches = physicalDevices.filter(
+          (d) => normalizeHardwareAlias(d.label) === profNorm
+        );
+        if (aliasMatches.length === 1) {
+          matchDev = aliasMatches[0];
+        }
+      }
+    }
     if (!matchDev) continue;
 
     const alreadyActive =
       currentRoutingMode === prof.routingMode &&
       (currentPatch.sinkLabel?.toLowerCase() === prof.deviceLabel.toLowerCase() ||
+        currentPatch.sinkLabel?.toLowerCase() === matchDev.label.toLowerCase() ||
         currentPatch.sinkId === matchDev.deviceId);
     if (!alreadyActive) {
       return { profile: prof, device: matchDev };

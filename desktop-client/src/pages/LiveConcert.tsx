@@ -6,7 +6,7 @@ import { LyricVisualizer } from '../components/LyricVisualizer';
 import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 import { StageEqualizerConsole, LoadedStemSummary } from '../components/StageEqualizerConsole';
-import { detectInstrumentCategory } from '../utils/instrumentIcons';
+import { detectInstrumentCategory, InstrumentCategory } from '../utils/instrumentIcons';
 import {
   STAGE_EQ_18_BANDS,
   StageEqProfile,
@@ -16,17 +16,20 @@ import {
   StemBusGroupId,
   LIVE_STORAGE_KEYS,
   DEFAULT_STAGE_EQ_PROFILE,
+  analyzeStagePatch,
+  computeCueBalanceGains,
   createStageSafetySoftClipCurve,
   createStageBusDspNodes,
   applyProfileToStageBusDspNodes,
   resolveConsoleTarget,
   resolvePairIndices,
   resolveCueIndices,
+  resolveStemConsoleTarget,
   computeRequiredMergerChannels,
-  detectOutOfRangeAssignments,
   mapInstrumentCategoryToBusGroup,
   loadStoredJson,
   loadNormalizedMultiChannelPatch,
+  loadStoredEqScope,
   loadStoredRoutingMode,
   notifyStageIoUpdated,
   subscribeStageIoUpdates,
@@ -35,6 +38,7 @@ import {
 interface DecodedStemBuffer {
   id: string;
   name: string;
+  category: InstrumentCategory;
   group: StemBusGroupId;
   volume: number;
   pan: number;
@@ -115,17 +119,11 @@ export default function LiveConcert() {
   const isEqDrawerOpenRef = useRef<boolean>(false);
   useEffect(() => { isEqDrawerOpenRef.current = isEqDrawerOpen; }, [isEqDrawerOpen]);
 
-  const [eqMemoryScope, setEqMemoryScope] = useState<EqMemoryScope>(() => {
-    try {
-      const saved = localStorage.getItem(LIVE_STORAGE_KEYS.EQ_SCOPE);
-      return saved === 'per_song' ? 'per_song' : 'global';
-    } catch {
-      return 'global';
-    }
-  });
+  const [eqMemoryScope, setEqMemoryScope] = useState<EqMemoryScope>(() => loadStoredEqScope());
   const handleChangeMemoryScope = (scope: EqMemoryScope) => {
     setEqMemoryScope(scope);
     try { localStorage.setItem(LIVE_STORAGE_KEYS.EQ_SCOPE, scope); } catch {}
+    notifyStageIoUpdated('live_concert');
   };
 
   const [globalEqProfile, setGlobalEqProfile] = useState<StageEqProfile>(() =>
@@ -155,6 +153,7 @@ export default function LiveConcert() {
         const next = updater(base);
         const updatedMap = { ...prevMap, [songId]: next };
         try { localStorage.setItem(LIVE_STORAGE_KEYS.EQ_SONGS, JSON.stringify(updatedMap)); } catch {}
+        notifyStageIoUpdated('live_concert');
         return updatedMap;
       });
     } else {
@@ -179,24 +178,32 @@ export default function LiveConcert() {
     }
   }, [multiChannelPatch]);
 
-  // Escuchar cambios en vivo desde el módulo StageSoundcheck (/soundcheck)
+  // Escuchar cambios externos (StageSoundcheck u otra ventana) evitando auto-eco
   useEffect(() => {
     if (isProjectorWindow) return;
-    return subscribeStageIoUpdates(() => {
-      isApplyingExternalIoSyncRef.current = true;
-      setRoutingMode(loadStoredRoutingMode());
-      setMultiChannelPatch(loadNormalizedMultiChannelPatch());
-      setGlobalEqProfile(loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE));
-      window.setTimeout(() => {
-        isApplyingExternalIoSyncRef.current = false;
-      }, 0);
-    });
+    return subscribeStageIoUpdates(
+      () => {
+        isApplyingExternalIoSyncRef.current = true;
+        setRoutingMode(loadStoredRoutingMode());
+        setMultiChannelPatch(loadNormalizedMultiChannelPatch());
+        setEqMemoryScope(loadStoredEqScope());
+        setGlobalEqProfile(loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE));
+        try {
+          const rawSongsEq = localStorage.getItem(LIVE_STORAGE_KEYS.EQ_SONGS);
+          if (rawSongsEq) setSongEqProfiles(JSON.parse(rawSongsEq));
+        } catch {}
+        window.setTimeout(() => {
+          isApplyingExternalIoSyncRef.current = false;
+        }, 0);
+      },
+      { ignoreSource: 'live_concert' }
+    );
   }, [isProjectorWindow]);
 
   const [hardwareMaxChannels, setHardwareMaxChannels] = useState<number>(2);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
-  const [fohMeterLevel, setFohMeterLevel] = useState<number>(0);
-  const [cueMeterLevel, setCueMeterLevel] = useState<number>(0);
+  const [sinkSwitchError, setSinkSwitchError] = useState<boolean>(false);
+  const hardwareLatencyMsRef = useRef<number>(0);
   const [loadedStemsSummary, setLoadedStemsSummary] = useState<LoadedStemSummary[]>([]);
   const [isLoadingStems, setIsLoadingStems] = useState<boolean>(false);
 
@@ -276,7 +283,7 @@ export default function LiveConcert() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const fohSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const cueSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const stemSourcesRef = useRef<{ id: string; source: AudioBufferSourceNode; gainNode: GainNode; baseVolume: number; group: StemBusGroupId }[]>([]);
+  const stemSourcesRef = useRef<{ id: string; name: string; category: InstrumentCategory; source: AudioBufferSourceNode; gainNode: GainNode; baseVolume: number; group: StemBusGroupId }[]>([]);
 
   // Buffers loaded in RAM
   const fohBufferRef = useRef<AudioBuffer | null>(null);
@@ -462,6 +469,8 @@ export default function LiveConcert() {
     const ctx = audioCtxRef.current;
     if (ctx) {
       setHardwareMaxChannels(ctx.destination.maxChannelCount || 2);
+      const rawLat = ((ctx as any).baseLatency || 0) + ((ctx as any).outputLatency || 0);
+      hardwareLatencyMsRef.current = Math.round(rawLat * 1000);
     }
     try {
       if (navigator.mediaDevices?.enumerateDevices) {
@@ -492,13 +501,19 @@ export default function LiveConcert() {
     applyAllDspParams(activeEqProfileRef.current);
     refreshHardwareDevices();
 
+    let deviceChangeTimer: number | null = null;
     const handleDeviceChange = () => {
-      refreshHardwareDevices();
-      buildRoutingGraph();
+      if (deviceChangeTimer) window.clearTimeout(deviceChangeTimer);
+      deviceChangeTimer = window.setTimeout(() => {
+        deviceChangeTimer = null;
+        refreshHardwareDevices();
+        buildRoutingGraph();
+      }, 350);
     };
     navigator.mediaDevices?.addEventListener('devicechange', handleDeviceChange);
 
     return () => {
+      if (deviceChangeTimer) window.clearTimeout(deviceChangeTimer);
       navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
       pause();
       if (audioCtxRef.current) audioCtxRef.current.close();
@@ -514,12 +529,18 @@ export default function LiveConcert() {
     ctx
       .setSinkId(targetSink)
       .then(() => {
+        setSinkSwitchError(false);
         if (audioCtxRef.current) {
           setHardwareMaxChannels(audioCtxRef.current.destination.maxChannelCount || 2);
+          const rawLat =
+            ((audioCtxRef.current as any).baseLatency || 0) +
+            ((audioCtxRef.current as any).outputLatency || 0);
+          hardwareLatencyMsRef.current = Math.round(rawLat * 1000);
           buildRoutingGraph();
         }
       })
       .catch((err: any) => {
+        setSinkSwitchError(true);
         console.warn('[LiveConcert] setSinkId no disponible o rechazado:', err);
       });
   }, [multiChannelPatch.sinkId, isProjectorWindow]);
@@ -583,48 +604,55 @@ export default function LiveConcert() {
     }
   }, [cueVolume, muteCueEmergency]);
 
+  const headerFohMeterRef = useRef<HTMLDivElement | null>(null);
+  const headerCueMeterRef = useRef<HTMLDivElement | null>(null);
+
   // Reconstruir matriz de ruteo en vivo al cambiar modo o parche multicanal
   useEffect(() => {
     if (isProjectorWindow) return;
     buildRoutingGraph();
   }, [routingMode, multiChannelPatch, hardwareMaxChannels, isProjectorWindow]);
 
-  // Medidores VU en tiempo real (solo activos cuando está sonando o el Rack DSP está abierto)
+  // Mini medidores VU de barra superior sin re-renders en React (0 setState en 60 FPS)
   useEffect(() => {
-    if (isProjectorWindow || (!isPlaying && !isEqDrawerOpen)) {
-      setFohMeterLevel(0);
-      setCueMeterLevel(0);
+    if (isProjectorWindow || !isPlaying) {
+      if (headerFohMeterRef.current) headerFohMeterRef.current.style.width = '0%';
+      if (headerCueMeterRef.current) headerCueMeterRef.current.style.width = '0%';
       return;
     }
     let rafId = 0;
+    let fohHold = 0;
+    let cueHold = 0;
     const fohBuf = new Uint8Array(1024);
     const cueBuf = new Uint8Array(256);
 
-    const tickMeters = () => {
-      if (fohAnalyserRef.current) {
+    const tickHeaderMeters = () => {
+      if (fohAnalyserRef.current && headerFohMeterRef.current) {
         fohAnalyserRef.current.getByteTimeDomainData(fohBuf);
         let peak = 0;
         for (let i = 0; i < fohBuf.length; i += 2) {
           const v = Math.abs((fohBuf[i] - 128) / 128);
           if (v > peak) peak = v;
         }
-        setFohMeterLevel((prev) => peak > prev ? peak : prev * 0.85 + peak * 0.15);
+        fohHold = peak > fohHold ? peak : fohHold * 0.85 + peak * 0.15;
+        headerFohMeterRef.current.style.width = `${Math.min(100, Math.round(fohHold * 100))}%`;
       }
-      if (cueAnalyserRef.current) {
+      if (cueAnalyserRef.current && headerCueMeterRef.current) {
         cueAnalyserRef.current.getByteTimeDomainData(cueBuf);
         let peak = 0;
         for (let i = 0; i < cueBuf.length; i++) {
           const v = Math.abs((cueBuf[i] - 128) / 128);
           if (v > peak) peak = v;
         }
-        setCueMeterLevel((prev) => peak > prev ? peak : prev * 0.85 + peak * 0.15);
+        cueHold = peak > cueHold ? peak : cueHold * 0.85 + peak * 0.15;
+        headerCueMeterRef.current.style.width = `${Math.min(100, Math.round(cueHold * 100))}%`;
       }
-      rafId = requestAnimationFrame(tickMeters);
+      rafId = requestAnimationFrame(tickHeaderMeters);
     };
 
-    rafId = requestAnimationFrame(tickMeters);
+    rafId = requestAnimationFrame(tickHeaderMeters);
     return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, isEqDrawerOpen, isProjectorWindow]);
+  }, [isPlaying, isProjectorWindow]);
 
   // Sincronizar con ventana de Proyector Externo HDMI (Envía audioTime para sincronía exacta de letras)
   useEffect(() => {
@@ -842,6 +870,7 @@ export default function LiveConcert() {
               decodedList.push({
                 id: row.id,
                 name: row.name,
+                category: cat,
                 group,
                 volume: row.metadata?.volume !== undefined ? Number(row.metadata.volume) : 0.8,
                 pan: row.metadata?.pan !== undefined ? Number(row.metadata.pan) : 0,
@@ -1082,7 +1111,7 @@ export default function LiveConcert() {
       const targetChannels = computeRequiredMergerChannels(
         patch,
         maxChannels,
-        activeStemsRef.current.map((s) => s.id)
+        activeStemsRef.current
       );
 
       try {
@@ -1105,28 +1134,58 @@ export default function LiveConcert() {
       mergerRef.current.channelInterpretation = 'discrete';
       mergerRef.current.connect(masterGainRef.current!);
 
-      // 1. Conectar Bus MÚSICOS (CUE = Click + Guía) de forma discreta
+      // 1. Conectar Bus MÚSICOS (CUE = Click + Guía) con Balance L/R independiente
       cueSplitterRef.current = ctx.createChannelSplitter(2);
       cueAnalyserRef.current!.connect(cueSplitterRef.current);
+      const { leftGain: cueLVol, rightGain: cueRVol } = computeCueBalanceGains(patch.cueBalance);
+      const cueBalL = ctx.createGain();
+      cueBalL.gain.value = cueLVol;
+      const cueBalR = ctx.createGain();
+      cueBalR.gain.value = cueRVol;
+      stemTailNodesRef.current.push(cueBalL, cueBalR);
+      cueSplitterRef.current.connect(cueBalL, 0);
+      cueSplitterRef.current.connect(cueBalR, 1);
+
       const cuePatch = resolveCueIndices(patch.cueRouting, targetChannels);
       if (cuePatch.isMono) {
         cueMonoSumGainRef.current = ctx.createGain();
         cueMonoSumGainRef.current.gain.value = 0.707;
-        cueSplitterRef.current.connect(cueMonoSumGainRef.current, 0);
-        cueSplitterRef.current.connect(cueMonoSumGainRef.current, 1);
+        cueBalL.connect(cueMonoSumGainRef.current);
+        cueBalR.connect(cueMonoSumGainRef.current);
         cueMonoSumGainRef.current.connect(mergerRef.current, 0, cuePatch.leftIdx);
       } else {
-        cueSplitterRef.current.connect(mergerRef.current, 0, cuePatch.leftIdx);
-        cueSplitterRef.current.connect(mergerRef.current, 1, cuePatch.rightIdx);
+        cueBalL.connect(mergerRef.current, 0, cuePatch.leftIdx);
+        cueBalR.connect(mergerRef.current, 0, cuePatch.rightIdx);
       }
+
+      const connectStereoPairWithPolarity = (
+        splitter: ChannelSplitterNode,
+        leftIdx: number,
+        rightIdx: number,
+        invertR: boolean
+      ) => {
+        splitter.connect(mergerRef.current!, 0, leftIdx);
+        if (invertR) {
+          const invGain = ctx.createGain();
+          invGain.gain.value = -1;
+          splitter.connect(invGain, 1);
+          invGain.connect(mergerRef.current!, 0, rightIdx);
+          stemTailNodesRef.current.push(invGain);
+        } else {
+          splitter.connect(mergerRef.current!, 1, rightIdx);
+        }
+      };
 
       // 2. Conectar Música hacia Consola (Multitrack Stems Separados OR Bus Estéreo FOH)
       if (patch.consoleBusMode === 'multitrack_stems' && stemSourcesRef.current.length > 0) {
-        // Agrupar stems por destino físico para compartir una sola cadena EQ por bus
+        // Agrupar stems por destino físico (reglas globales + overrides + grupo)
         const targetBusInputs = new Map<string, GainNode>();
 
         stemSourcesRef.current.forEach((entry) => {
-          const target = patch.stemOverrides?.[entry.id] || patch.stemGroupTargets[entry.group] || '1-2';
+          const { target } = resolveStemConsoleTarget(
+            { id: entry.id, name: entry.name, group: entry.group, category: entry.category },
+            patch
+          );
           let busInput = targetBusInputs.get(target);
           if (!busInput) {
             busInput = ctx.createGain();
@@ -1165,8 +1224,12 @@ export default function LiveConcert() {
               monoSum.connect(mergerRef.current!, 0, resolved.leftIdx);
               stemTailNodesRef.current.push(monoSum);
             } else {
-              splitter.connect(mergerRef.current!, 0, resolved.leftIdx);
-              splitter.connect(mergerRef.current!, 1, resolved.rightIdx);
+              connectStereoPairWithPolarity(
+                splitter,
+                resolved.leftIdx,
+                resolved.rightIdx,
+                Boolean(patch.fohPolarityInvertR)
+              );
             }
           }
           entry.gainNode.connect(busInput);
@@ -1176,8 +1239,12 @@ export default function LiveConcert() {
         fohSplitterRef.current = ctx.createChannelSplitter(2);
         fohAnalyserRef.current!.connect(fohSplitterRef.current);
         const [fohL, fohR] = resolvePairIndices(patch.fohPair, targetChannels);
-        fohSplitterRef.current.connect(mergerRef.current, 0, fohL);
-        fohSplitterRef.current.connect(mergerRef.current, 1, fohR);
+        connectStereoPairWithPolarity(
+          fohSplitterRef.current,
+          fohL,
+          fohR,
+          Boolean(patch.fohPolarityInvertR)
+        );
       }
       return;
     }
@@ -1199,12 +1266,42 @@ export default function LiveConcert() {
 
     fohPannerRef.current = ctx.createStereoPanner();
     fohPannerRef.current.pan.value = actualRoutingMode === 'StereoSplit' ? 1 : 0;
-    fohAnalyserRef.current!.connect(fohPannerRef.current);
+    if (patch.fohPolarityInvertR && actualRoutingMode === 'StereoInEar') {
+      const fSp = ctx.createChannelSplitter(2);
+      const fMg = ctx.createChannelMerger(2);
+      const invR = ctx.createGain();
+      invR.gain.value = -1;
+      fohAnalyserRef.current!.connect(fSp);
+      fSp.connect(fMg, 0, 0);
+      fSp.connect(invR, 1);
+      invR.connect(fMg, 0, 1);
+      fMg.connect(fohPannerRef.current);
+      stemTailNodesRef.current.push(fSp, fMg, invR);
+    } else {
+      fohAnalyserRef.current!.connect(fohPannerRef.current);
+    }
     fohPannerRef.current.connect(masterGainRef.current!);
 
     cuePannerRef.current = ctx.createStereoPanner();
     cuePannerRef.current.pan.value = actualRoutingMode === 'StereoSplit' ? -1 : 0;
-    cueAnalyserRef.current!.connect(cuePannerRef.current);
+    if (patch.cueBalance && Math.abs(patch.cueBalance) > 0.01) {
+      const { leftGain, rightGain } = computeCueBalanceGains(patch.cueBalance);
+      const cSp = ctx.createChannelSplitter(2);
+      const cMg = ctx.createChannelMerger(2);
+      const gL = ctx.createGain();
+      gL.gain.value = leftGain;
+      const gR = ctx.createGain();
+      gR.gain.value = rightGain;
+      cueAnalyserRef.current!.connect(cSp);
+      cSp.connect(gL, 0);
+      cSp.connect(gR, 1);
+      gL.connect(cMg, 0, 0);
+      gR.connect(cMg, 0, 1);
+      cMg.connect(cuePannerRef.current);
+      stemTailNodesRef.current.push(cSp, cMg, gL, gR);
+    } else {
+      cueAnalyserRef.current!.connect(cuePannerRef.current);
+    }
     cuePannerRef.current.connect(masterGainRef.current!);
   };
 
@@ -1246,6 +1343,8 @@ export default function LiveConcert() {
         src.connect(gainNode);
         return {
           id: stem.id,
+          name: stem.name,
+          category: stem.category,
           source: src,
           gainNode,
           baseVolume: stem.volume,
@@ -1280,7 +1379,10 @@ export default function LiveConcert() {
     cueSourceRef.current.start(startAudioContextTime, offset);
 
     if (broadcastEnabled) {
-      broadcast({ type: 'PLAY', startAt: T_start, offset: offset });
+      const syncCompMs = Math.round(
+        (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+      );
+      broadcast({ type: 'PLAY', startAt: T_start + syncCompMs, offset: offset });
     }
 
     startTimeRef.current = startAudioContextTime - offset;
@@ -1733,8 +1835,9 @@ export default function LiveConcert() {
             />
             <div className="w-full h-[3px] bg-zinc-200 rounded-full overflow-hidden mt-1">
               <div
-                className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-[#e11d48] transition-all duration-75"
-                style={{ width: `${Math.min(100, Math.round(fohMeterLevel * 100))}%` }}
+                ref={headerFohMeterRef}
+                className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-[#e11d48]"
+                style={{ width: '0%' }}
               />
             </div>
           </div>
@@ -1775,8 +1878,9 @@ export default function LiveConcert() {
             />
             <div className="w-full h-[3px] bg-zinc-200 rounded-full overflow-hidden mt-1">
               <div
-                className="h-full bg-gradient-to-r from-emerald-500 to-amber-500 transition-all duration-75"
-                style={{ width: `${Math.min(100, Math.round(cueMeterLevel * 100))}%` }}
+                ref={headerCueMeterRef}
+                className="h-full bg-gradient-to-r from-emerald-500 to-amber-500"
+                style={{ width: '0%' }}
               />
             </div>
           </div>
@@ -1812,19 +1916,50 @@ export default function LiveConcert() {
 
           {/* Botón Semáforo Verificador Soundcheck & I/O */}
           {(() => {
-            const outOfRange = detectOutOfRangeAssignments(
+            const selectedOut = audioOutputs.find((d) => d.deviceId === multiChannelPatch.sinkId);
+            const sinkMissing = Boolean(
+              multiChannelPatch.sinkId &&
+                multiChannelPatch.sinkId !== 'default' &&
+                audioOutputs.length > 0 &&
+                !selectedOut
+            );
+            const activeOutLabel =
+              selectedOut?.label ||
+              audioOutputs.find((d) => d.deviceId === 'default')?.label ||
+              audioOutputs[0]?.label ||
+              multiChannelPatch.sinkLabel ||
+              '';
+
+            const iifeAnalysis = analyzeStagePatch(
               routingMode,
               multiChannelPatch,
               hardwareMaxChannels,
-              loadedStemsSummary.map((s) => s.id)
+              loadedStemsSummary.map((s) => ({
+                id: s.id,
+                name: s.name,
+                group: s.group,
+                category: detectInstrumentCategory(s.name),
+              })),
+              {
+                activeDeviceLabel: activeOutLabel,
+                activeDeviceLatencyMs: Math.round(hardwareLatencyMsRef.current),
+                sinkMissingOrRejected: sinkSwitchError || sinkMissing,
+              }
             );
-            const isFallbackSplit = routingMode === 'MultiChannel' && hardwareMaxChannels < 4;
-            const hasWarning = outOfRange.length > 0 || isFallbackSplit;
+
+            const isCritical = iifeAnalysis.preflightLevel === 'critical';
+            const isWarning = iifeAnalysis.preflightLevel === 'warning';
             const badgeText =
-              outOfRange.length > 0
+              sinkSwitchError || sinkMissing
+                ? 'I/O USB !'
+                : iifeAnalysis.cueFohConflicts.length > 0
+                ? 'I/O COLISIÓN'
+                : iifeAnalysis.outOfRangeIssues.length > 0
                 ? 'I/O !'
-                : isFallbackSplit
+                : iifeAnalysis.isFallbackSplit
                 ? 'I/O Split'
+                : iifeAnalysis.isBluetoothRisk
+                ? 'I/O BT !'
                 : routingMode === 'MultiChannel'
                 ? `I/O ${hardwareMaxChannels}ch`
                 : routingMode === 'StereoSplit'
@@ -1839,21 +1974,38 @@ export default function LiveConcert() {
                   navigate('/soundcheck');
                 }}
                 className={`px-2.5 py-2 rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider cursor-pointer border ${
-                  hasWarning
+                  isCritical
+                    ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100 animate-pulse'
+                    : isWarning
                     ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
                     : routingMode === 'MultiChannel'
                     ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
                     : 'bg-zinc-100 text-zinc-800 border-zinc-200 hover:bg-zinc-900 hover:text-white hover:border-zinc-900'
                 }`}
                 title={
-                  outOfRange.length > 0
-                    ? `Canales fuera de rango (${outOfRange.map((o) => `${o.busLabel} → ${o.target}`).join(', ')}). Clic para abrir Soundcheck & I/O.`
-                    : isFallbackSplit
+                  sinkSwitchError || sinkMissing
+                    ? 'Interfaz USB desconectada o rechazada. Clic para revisar en Soundcheck & I/O.'
+                    : iifeAnalysis.cueFohConflicts.length > 0
+                    ? `Colisión CUE/FOH en ${iifeAnalysis.cueFohConflicts.map((c) => `CH ${c.chNum}`).join(', ')}. Clic para corregir.`
+                    : iifeAnalysis.outOfRangeIssues.length > 0
+                    ? `Canales fuera de rango (${iifeAnalysis.outOfRangeIssues.map((o) => `${o.busLabel} → ${o.target}`).join(', ')}).`
+                    : iifeAnalysis.isFallbackSplit
                     ? 'Interfaz <4 canales: Protección Split L/R activa. Clic para abrir Soundcheck & I/O.'
                     : 'Abrir Verificador de Hardware & Soundcheck Canal por Canal (Pre-Show)'
                 }
               >
-                <Activity size={13} className={hasWarning ? 'text-amber-600' : routingMode === 'MultiChannel' ? 'text-emerald-600' : 'text-[#e11d48]'} />
+                <Activity
+                  size={13}
+                  className={
+                    isCritical
+                      ? 'text-rose-600'
+                      : isWarning
+                      ? 'text-amber-600'
+                      : routingMode === 'MultiChannel'
+                      ? 'text-emerald-600'
+                      : 'text-[#e11d48]'
+                  }
+                />
                 <span>{badgeText}</span>
               </button>
             );
@@ -2524,8 +2676,8 @@ export default function LiveConcert() {
         hardwareMaxChannels={hardwareMaxChannels}
         audioOutputs={audioOutputs}
         fohAnalyser={fohAnalyserRef.current}
-        fohMeterLevel={fohMeterLevel}
-        cueMeterLevel={cueMeterLevel}
+        cueAnalyser={cueAnalyserRef.current}
+        sinkSwitchError={sinkSwitchError}
         loadedStems={loadedStemsSummary}
         isLoadingStems={isLoadingStems}
         onOpenSoundcheck={() => {

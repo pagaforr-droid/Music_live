@@ -4,11 +4,11 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  Bluetooth,
   BookmarkCheck,
   Check,
   CheckCircle2,
   Cpu,
+  Download,
   Headphones,
   Layers,
   MonitorSpeaker,
@@ -17,7 +17,6 @@ import {
   Radio,
   RefreshCw,
   Save,
-  ShieldAlert,
   ShieldCheck,
   Sliders,
   Smartphone,
@@ -25,53 +24,68 @@ import {
   Square,
   Trash2,
   Unlock,
+  Upload,
   Volume2,
   Zap,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { detectInstrumentCategory } from '../utils/instrumentIcons';
+import { StageIoAlertsBanner } from '../components/StageIoAlertsBanner';
+import {
+  SignalGeneratorHandle,
+  TestSignalType,
+  startTestSignalGenerator,
+} from '../utils/soundcheckSynthesis';
 import {
   ALL_CONSOLE_TARGET_OPTIONS,
   CONSOLE_PAIR_OPTIONS,
   CUE_ROUTING_OPTIONS,
   ConsoleTargetAssignment,
-  DEFAULT_MULTICHANNEL_PATCH,
   DEFAULT_STAGE_EQ_PROFILE,
+  EqMemoryScope,
   HardwareProbeReport,
   LIVE_STORAGE_KEYS,
   MultiChannelPatchConfig,
   RoutingMode,
+  STAGE_EQ_18_BANDS,
   STAGE_EQ_PRESETS,
   STEM_BUS_GROUPS,
+  STEM_ROLE_RULES,
   StageBusDspNodes,
   StageEqProfile,
+  StageStemInput,
+  StemRuleKey,
   VenueRigProfile,
+  analyzeStagePatch,
   applyProfileToStageBusDspNodes,
   computeRequiredMergerChannels,
   createStageBusDspNodes,
   createStageSafetySoftClipCurve,
-  detectOutOfRangeAssignments,
   findMatchingVenueProfile,
+  isDeviceBluetoothSuspect,
   loadNormalizedMultiChannelPatch,
+  loadStoredEqScope,
   loadStoredJson,
   loadStoredRoutingMode,
   loadVenueProfiles,
   mapInstrumentCategoryToBusGroup,
+  normalizeMultiChannelPatch,
   notifyStageIoUpdated,
+  parseImportedVenueProfilesJson,
   probeAudioHardware,
   resolveConsoleTarget,
   resolveCueIndices,
-  resolvePairIndices,
+  resolveStemConsoleTarget,
   saveVenueProfiles,
+  serializeVenueProfilesJson,
   subscribeStageIoUpdates,
 } from '../utils/liveConsoleDSP';
 
-type TestSignalType = 'tone' | 'click' | 'pink' | 'sweep';
-
-interface SongStemRow {
+interface SongStemRow extends StageStemInput {
   id: string;
   name: string;
   group: ReturnType<typeof mapInstrumentCategoryToBusGroup>;
+  category: ReturnType<typeof detectInstrumentCategory>;
 }
 
 interface SongOption {
@@ -92,46 +106,87 @@ export default function StageSoundcheck() {
   const patchRef = useRef<MultiChannelPatchConfig>(patch);
   useEffect(() => { patchRef.current = patch; }, [patch]);
 
-  const [eqProfile, setEqProfile] = useState<StageEqProfile>(() =>
+  const [eqScope, setEqScope] = useState<EqMemoryScope>(() => loadStoredEqScope());
+  const eqScopeRef = useRef<EqMemoryScope>(eqScope);
+  useEffect(() => { eqScopeRef.current = eqScope; }, [eqScope]);
+
+  const [globalEqProfile, setGlobalEqProfile] = useState<StageEqProfile>(() =>
     loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE)
   );
-  const eqProfileRef = useRef<StageEqProfile>(eqProfile);
-  useEffect(() => { eqProfileRef.current = eqProfile; }, [eqProfile]);
-
-  const [probeReport, setProbeReport] = useState<HardwareProbeReport | null>(null);
-  const [isScanning, setIsScanning] = useState<boolean>(false);
-  const [ctxState, setCtxState] = useState<AudioContextState>('suspended');
-
-  // Test Signal State & Live Metering
-  const [signalType, setSignalType] = useState<TestSignalType>('tone');
-  const [activeTestTarget, setActiveTestTarget] = useState<string | null>(null);
-  const [testVolume, setTestVolume] = useState<number>(0.45);
-  const [polarityInvertR, setPolarityInvertR] = useState<boolean>(false);
-  const [testMeterPct, setTestMeterPct] = useState<number>(0);
-  const [testDbfs, setTestDbfs] = useState<number>(-90);
-
-  // Venue Profiles
-  const [venueProfiles, setVenueProfiles] = useState<VenueRigProfile[]>(() => loadVenueProfiles());
-  const [newProfileName, setNewProfileName] = useState<string>('');
-  const [statusToast, setStatusToast] = useState<string | null>(null);
-  const [dismissedMatchedRigId, setDismissedMatchedRigId] = useState<string | null>(null);
+  const [songEqProfiles, setSongEqProfiles] = useState<Record<string, StageEqProfile>>(() => {
+    try {
+      const raw = localStorage.getItem(LIVE_STORAGE_KEYS.EQ_SONGS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
 
   // Songs / Stems preview
   const [songs, setSongs] = useState<SongOption[]>([]);
   const [selectedSongId, setSelectedSongId] = useState<string>('');
   const [songStems, setSongStems] = useState<SongStemRow[]>([]);
+  const songStemsRef = useRef<SongStemRow[]>([]);
+  useEffect(() => { songStemsRef.current = songStems; }, [songStems]);
   const [isLoadingStems, setIsLoadingStems] = useState<boolean>(false);
 
+  const activeEqProfile: StageEqProfile =
+    eqScope === 'per_song' && selectedSongId && songEqProfiles[selectedSongId]
+      ? songEqProfiles[selectedSongId]
+      : globalEqProfile;
+  const eqProfileRef = useRef<StageEqProfile>(activeEqProfile);
+  useEffect(() => { eqProfileRef.current = activeEqProfile; }, [activeEqProfile]);
+
+  const [probeReport, setProbeReport] = useState<HardwareProbeReport | null>(null);
+  const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [ctxState, setCtxState] = useState<AudioContextState>('suspended');
+  const [sinkStatus, setSinkStatus] = useState<'idle' | 'ok' | 'missing' | 'rejected'>('idle');
+
+  // Test Signal State (meter values mutate via DOM refs for zero-re-render 60 FPS performance)
+  const [signalType, setSignalType] = useState<TestSignalType>('tone');
+  const [activeTestTarget, setActiveTestTarget] = useState<string | null>(null);
+  const [isWalkTestActive, setIsWalkTestActive] = useState<boolean>(false);
+  const [testVolume, setTestVolume] = useState<number>(0.45);
+  const [polarityInvertR, setPolarityInvertR] = useState<boolean>(false);
+
+  // Venue Profiles & UI subpanels
+  const [venueProfiles, setVenueProfiles] = useState<VenueRigProfile[]>(() => loadVenueProfiles());
+  const [newProfileName, setNewProfileName] = useState<string>('');
+  const [statusToast, setStatusToast] = useState<string | null>(null);
+  const [dismissedMatchedRigId, setDismissedMatchedRigId] = useState<string | null>(null);
+  const [showRoleRules, setShowRoleRules] = useState<boolean>(false);
+
+  // Audio & Real-Time Metering Refs
   const testCtxRef = useRef<AudioContext | null>(null);
   const masterTestGainRef = useRef<GainNode | null>(null);
   const fohRightPolarityGainRef = useRef<GainNode | null>(null);
   const testFohDspRef = useRef<StageBusDspNodes | null>(null);
   const testSafetyCurveRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const testAnalyserRef = useRef<AnalyserNode | null>(null);
+  const testLeftAnalyserRef = useRef<AnalyserNode | null>(null);
+  const testRightAnalyserRef = useRef<AnalyserNode | null>(null);
   const testMeterRafRef = useRef<number>(0);
   const testStopCleanupRef = useRef<(() => void) | null>(null);
-  const pulseIntervalRef = useRef<number | null>(null);
+  const activeGeneratorRef = useRef<SignalGeneratorHandle | null>(null);
+  const walkTestTimerRef = useRef<number | null>(null);
+  const activeChannelBarRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const toastTimerRef = useRef<number | null>(null);
+  const deviceChangeDebounceRef = useRef<number | null>(null);
+  const profileImportInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Zero-re-render DOM refs for live instrumentation
+  const meterBarRef = useRef<HTMLDivElement | null>(null);
+  const peakHoldBarRef = useRef<HTMLDivElement | null>(null);
+  const dbReadoutRef = useRef<HTMLSpanElement | null>(null);
+  const clipBadgeRef = useRef<HTMLButtonElement | null>(null);
+  const phaseBarRef = useRef<HTMLDivElement | null>(null);
+  const phaseTextRef = useRef<HTMLSpanElement | null>(null);
+  const rtaCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const peakHoldStateRef = useRef<{ pct: number; holdUntil: number; clipped: boolean }>({
+    pct: 0,
+    holdUntil: 0,
+    clipped: false,
+  });
 
   const showToast = (msg: string) => {
     if (toastTimerRef.current) {
@@ -141,13 +196,13 @@ export default function StageSoundcheck() {
     toastTimerRef.current = window.setTimeout(() => {
       setStatusToast(null);
       toastTimerRef.current = null;
-    }, 2600);
+    }, 2800);
   };
 
-  // Persist changes & broadcast immediately to Live Concert
+  // Persist changes cleanly outside React updater callbacks & ignore self-echoes
   const commitRoutingMode = (next: RoutingMode) => {
-    setRoutingMode(next);
     routingModeRef.current = next;
+    setRoutingMode(next);
     try {
       localStorage.setItem(LIVE_STORAGE_KEYS.ROUTING_MODE, next);
     } catch {}
@@ -155,59 +210,90 @@ export default function StageSoundcheck() {
   };
 
   const commitPatch = (updater: (prev: MultiChannelPatchConfig) => MultiChannelPatchConfig) => {
-    setPatch((prev) => {
-      const next = updater(prev);
-      patchRef.current = next;
-      try {
-        localStorage.setItem(LIVE_STORAGE_KEYS.MC_PATCH, JSON.stringify(next));
-      } catch {}
-      notifyStageIoUpdated('soundcheck');
-      return next;
-    });
+    const next = normalizeMultiChannelPatch(updater(patchRef.current));
+    patchRef.current = next;
+    setPatch(next);
+    try {
+      localStorage.setItem(LIVE_STORAGE_KEYS.MC_PATCH, JSON.stringify(next));
+    } catch {}
+    notifyStageIoUpdated('soundcheck');
+  };
+
+  const commitEqScope = (nextScope: EqMemoryScope) => {
+    eqScopeRef.current = nextScope;
+    setEqScope(nextScope);
+    try {
+      localStorage.setItem(LIVE_STORAGE_KEYS.EQ_SCOPE, nextScope);
+    } catch {}
+    notifyStageIoUpdated('soundcheck');
   };
 
   const commitEqPreset = (presetId: string) => {
     const found = STAGE_EQ_PRESETS.find((p) => p.id === presetId);
     if (!found) return;
-    setEqProfile((prev) => {
-      const next: StageEqProfile = {
-        ...prev,
-        enabled: true,
-        presetId: found.id,
-        hpfFreq: found.hpfFreq,
-        gains: [...found.gains],
-      };
-      eqProfileRef.current = next;
+    const base = eqProfileRef.current;
+    const next: StageEqProfile = {
+      ...base,
+      enabled: true,
+      presetId: found.id,
+      hpfFreq: found.hpfFreq,
+      gains: [...found.gains],
+    };
+    eqProfileRef.current = next;
+
+    if (eqScopeRef.current === 'per_song' && selectedSongId) {
+      const updatedMap = { ...songEqProfiles, [selectedSongId]: next };
+      setSongEqProfiles(updatedMap);
+      try {
+        localStorage.setItem(LIVE_STORAGE_KEYS.EQ_SONGS, JSON.stringify(updatedMap));
+      } catch {}
+    } else {
+      setGlobalEqProfile(next);
       try {
         localStorage.setItem(LIVE_STORAGE_KEYS.EQ_GLOBAL, JSON.stringify(next));
       } catch {}
-      notifyStageIoUpdated('soundcheck');
-      return next;
-    });
+    }
+    notifyStageIoUpdated('soundcheck');
     showToast(`Preset EQ "${found.name}" aplicado para Live Concert`);
   };
 
-  // Listen to updates from LiveConcert if edited in another tab/view
+  // Listen strictly to external updates (LiveConcert u otra ventana) evitando auto-eco síncrono
   useEffect(() => {
-    return subscribeStageIoUpdates(() => {
-      const nextMode = loadStoredRoutingMode();
-      const nextPatch = loadNormalizedMultiChannelPatch();
-      const nextEq = loadStoredJson<StageEqProfile>(LIVE_STORAGE_KEYS.EQ_GLOBAL, DEFAULT_STAGE_EQ_PROFILE);
-      routingModeRef.current = nextMode;
-      patchRef.current = nextPatch;
-      eqProfileRef.current = nextEq;
-      setRoutingMode(nextMode);
-      setPatch(nextPatch);
-      setEqProfile(nextEq);
-    });
+    return subscribeStageIoUpdates(
+      () => {
+        const nextMode = loadStoredRoutingMode();
+        const nextPatch = loadNormalizedMultiChannelPatch();
+        const nextScope = loadStoredEqScope();
+        const nextGlobalEq = loadStoredJson<StageEqProfile>(
+          LIVE_STORAGE_KEYS.EQ_GLOBAL,
+          DEFAULT_STAGE_EQ_PROFILE
+        );
+        let nextSongMap: Record<string, StageEqProfile> = {};
+        try {
+          const raw = localStorage.getItem(LIVE_STORAGE_KEYS.EQ_SONGS);
+          nextSongMap = raw ? JSON.parse(raw) : {};
+        } catch {}
+
+        routingModeRef.current = nextMode;
+        patchRef.current = nextPatch;
+        eqScopeRef.current = nextScope;
+        setRoutingMode(nextMode);
+        setPatch(nextPatch);
+        setEqScope(nextScope);
+        setGlobalEqProfile(nextGlobalEq);
+        setSongEqProfiles(nextSongMap);
+      },
+      { ignoreSource: 'soundcheck' }
+    );
   }, []);
 
   // Sincronizar nivel de prueba y polaridad R en tiempo real sin cortar el audio
   useEffect(() => {
     if (masterTestGainRef.current && testCtxRef.current && testCtxRef.current.state !== 'closed') {
-      masterTestGainRef.current.gain.setTargetAtTime(testVolume, testCtxRef.current.currentTime, 0.02);
+      const targetGain = signalType === 'cal_minus18' ? 1.0 : testVolume;
+      masterTestGainRef.current.gain.setTargetAtTime(targetGain, testCtxRef.current.currentTime, 0.02);
     }
-  }, [testVolume]);
+  }, [testVolume, signalType]);
 
   useEffect(() => {
     if (fohRightPolarityGainRef.current && testCtxRef.current && testCtxRef.current.state !== 'closed') {
@@ -228,13 +314,13 @@ export default function StageSoundcheck() {
       applyProfileToStageBusDspNodes(
         testCtxRef.current,
         testFohDspRef.current,
-        eqProfile,
+        activeEqProfile,
         testSafetyCurveRef.current
       );
     }
-  }, [eqProfile]);
+  }, [activeEqProfile]);
 
-  const ensureTestContext = async (): Promise<AudioContext> => {
+  const ensureTestContext = async (): Promise<{ ctx: AudioContext; sinkApplied: boolean }> => {
     if (!testCtxRef.current || testCtxRef.current.state === 'closed') {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const newCtx = new AudioContextClass();
@@ -250,23 +336,50 @@ export default function StageSoundcheck() {
       } catch {}
     }
     const sinkId = patchRef.current.sinkId;
+    let sinkApplied = true;
     if (typeof (ctx as any).setSinkId === 'function' && sinkId !== undefined) {
       try {
         await (ctx as any).setSinkId(sinkId === 'default' ? '' : sinkId);
-      } catch {}
+        setSinkStatus(sinkId ? 'ok' : 'idle');
+      } catch {
+        sinkApplied = false;
+        setSinkStatus('rejected');
+      }
     }
     setCtxState(ctx.state);
-    return ctx;
+    return { ctx, sinkApplied };
   };
 
-  const stopTestSignal = () => {
+  const resetMeterDom = () => {
+    peakHoldStateRef.current = { pct: 0, holdUntil: 0, clipped: false };
+    if (meterBarRef.current) meterBarRef.current.style.width = '0%';
+    if (peakHoldBarRef.current) peakHoldBarRef.current.style.left = '0%';
+    if (dbReadoutRef.current) dbReadoutRef.current.textContent = '-∞ dBFS';
+    if (clipBadgeRef.current) {
+      clipBadgeRef.current.dataset.clipped = 'false';
+      clipBadgeRef.current.classList.remove('bg-rose-600', 'text-white', 'border-rose-500');
+      clipBadgeRef.current.classList.add('bg-zinc-800', 'text-zinc-500', 'border-zinc-700');
+    }
+    if (phaseBarRef.current) phaseBarRef.current.style.left = '50%';
+    if (phaseTextRef.current) phaseTextRef.current.textContent = '+1.00';
+    Object.values(activeChannelBarRefs.current).forEach((el) => {
+      if (el) el.style.width = '0%';
+    });
+  };
+
+  const stopTestSignal = (keepWalkTest = false) => {
+    if (!keepWalkTest && walkTestTimerRef.current) {
+      window.clearTimeout(walkTestTimerRef.current);
+      walkTestTimerRef.current = null;
+      setIsWalkTestActive(false);
+    }
     if (testMeterRafRef.current) {
       cancelAnimationFrame(testMeterRafRef.current);
       testMeterRafRef.current = 0;
     }
-    if (pulseIntervalRef.current) {
-      window.clearInterval(pulseIntervalRef.current);
-      pulseIntervalRef.current = null;
+    if (activeGeneratorRef.current) {
+      try { activeGeneratorRef.current.stop(); } catch {}
+      activeGeneratorRef.current = null;
     }
     if (testStopCleanupRef.current) {
       try {
@@ -278,9 +391,10 @@ export default function StageSoundcheck() {
     fohRightPolarityGainRef.current = null;
     testFohDspRef.current = null;
     testAnalyserRef.current = null;
+    testLeftAnalyserRef.current = null;
+    testRightAnalyserRef.current = null;
     setActiveTestTarget(null);
-    setTestMeterPct(0);
-    setTestDbfs(-90);
+    resetMeterDom();
   };
 
   const runHardwareScan = async (unlockLabels = false) => {
@@ -299,13 +413,25 @@ export default function StageSoundcheck() {
       } catch {}
 
       const currentPatch = patchRef.current;
-      if (currentPatch.sinkLabel) {
-        const byLabel = report.devices.find(
-          (d) => d.label && d.label.toLowerCase() === currentPatch.sinkLabel?.toLowerCase()
-        );
-        if (byLabel && byLabel.deviceId !== currentPatch.sinkId) {
-          commitPatch((prev) => ({ ...prev, sinkId: byLabel.deviceId }));
+      if (currentPatch.sinkId && currentPatch.sinkId !== 'default') {
+        const existsById = report.devices.some((d) => d.deviceId === currentPatch.sinkId);
+        if (existsById) {
+          setSinkStatus('ok');
+        } else if (currentPatch.sinkLabel) {
+          const byLabel = report.devices.find(
+            (d) => d.label && d.label.toLowerCase() === currentPatch.sinkLabel?.toLowerCase()
+          );
+          if (byLabel) {
+            commitPatch((prev) => ({ ...prev, sinkId: byLabel.deviceId }));
+            setSinkStatus('ok');
+          } else {
+            setSinkStatus('missing');
+          }
+        } else {
+          setSinkStatus('missing');
         }
+      } else {
+        setSinkStatus('idle');
       }
     } finally {
       setIsScanning(false);
@@ -317,12 +443,19 @@ export default function StageSoundcheck() {
     fetchAvailableSongs();
 
     const onDeviceChange = () => {
-      runHardwareScan(false);
+      if (deviceChangeDebounceRef.current) {
+        window.clearTimeout(deviceChangeDebounceRef.current);
+      }
+      deviceChangeDebounceRef.current = window.setTimeout(() => {
+        deviceChangeDebounceRef.current = null;
+        runHardwareScan(false);
+      }, 350);
     };
     navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
 
     return () => {
       navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
+      if (deviceChangeDebounceRef.current) window.clearTimeout(deviceChangeDebounceRef.current);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
       stopTestSignal();
       if (testCtxRef.current && testCtxRef.current.state !== 'closed') {
@@ -390,13 +523,15 @@ export default function StageSoundcheck() {
             if (r.metadata?.muted === true) return false;
             return true;
           })
-          .map((r: any) => ({
-            id: r.id,
-            name: r.name,
-            group: mapInstrumentCategoryToBusGroup(
-              detectInstrumentCategory(r.name || '', r.metadata?.instrument_icon)
-            ),
-          }));
+          .map((r: any) => {
+            const category = detectInstrumentCategory(r.name || '', r.metadata?.instrument_icon);
+            return {
+              id: r.id,
+              name: r.name,
+              category,
+              group: mapInstrumentCategoryToBusGroup(category),
+            };
+          });
         setSongStems(filtered);
       } finally {
         if (!cancelled) setIsLoadingStems(false);
@@ -407,14 +542,25 @@ export default function StageSoundcheck() {
     };
   }, [selectedSongId]);
 
+  const savedDeviceFound =
+    !patch.sinkId ||
+    patch.sinkId === 'default' ||
+    Boolean(probeReport?.devices.some((d) => d.deviceId === patch.sinkId));
+
   const activeDevice =
     probeReport?.devices.find((d) => d.deviceId === patch.sinkId) ||
     probeReport?.devices.find((d) => d.isDefault) ||
     probeReport?.devices[0];
   const detectedMaxChannels = activeDevice?.maxChannels || 2;
+  const effectiveSinkStatus: 'idle' | 'ok' | 'missing' | 'rejected' =
+    sinkStatus === 'rejected'
+      ? 'rejected'
+      : patch.sinkId && patch.sinkId !== 'default' && probeReport && !savedDeviceFound
+      ? 'missing'
+      : sinkStatus;
 
   const unlockAudioDeviceNow = async () => {
-    const ctx = await ensureTestContext();
+    const { ctx } = await ensureTestContext();
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     g.gain.value = 0.0001;
@@ -427,56 +573,162 @@ export default function StageSoundcheck() {
   };
 
   /**
-   * Inicia lectura real dBFS y nivel visual desde AnalyserNode
+   * Medición 60 FPS sin re-render de React: dBFS + Peak-Hold + Clip Latch + Correlación L/R + RTA 18B
    */
-  const startRealMeterLoop = (analyser: AnalyserNode) => {
-    const buf = new Float32Array(analyser.fftSize);
+  const startRealMeterLoop = (
+    analyser: AnalyserNode,
+    targetKey: string,
+    leftAnalyser?: AnalyserNode | null,
+    rightAnalyser?: AnalyserNode | null
+  ) => {
+    const timeBuf = new Float32Array(analyser.fftSize);
+    const freqBuf = new Uint8Array(analyser.frequencyBinCount);
+    const leftBuf = leftAnalyser ? new Float32Array(leftAnalyser.fftSize) : null;
+    const rightBuf = rightAnalyser ? new Float32Array(rightAnalyser.fftSize) : null;
+
     const tick = () => {
-      analyser.getFloatTimeDomainData(buf);
+      analyser.getFloatTimeDomainData(timeBuf);
       let peak = 0;
-      for (let i = 0; i < buf.length; i++) {
-        const a = Math.abs(buf[i]);
+      for (let i = 0; i < timeBuf.length; i++) {
+        const a = Math.abs(timeBuf[i]);
         if (a > peak) peak = a;
       }
+
       const db = peak > 0.00003 ? Math.max(-90, 20 * Math.log10(peak)) : -90;
       const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
-      setTestDbfs(Math.round(db * 10) / 10);
-      setTestMeterPct(Math.round(pct));
+      const nowMs = performance.now();
+
+      const ph = peakHoldStateRef.current;
+      if (pct >= ph.pct || nowMs > ph.holdUntil) {
+        ph.pct = pct >= ph.pct ? pct : Math.max(0, ph.pct - 1.2);
+        if (pct >= ph.pct) ph.holdUntil = nowMs + 1400;
+      }
+      if (db >= -0.15) ph.clipped = true;
+
+      if (meterBarRef.current) {
+        meterBarRef.current.style.width = `${pct.toFixed(1)}%`;
+      }
+      if (peakHoldBarRef.current) {
+        peakHoldBarRef.current.style.left = `${Math.min(99, ph.pct).toFixed(1)}%`;
+      }
+      if (dbReadoutRef.current) {
+        dbReadoutRef.current.textContent = db <= -89 ? '-∞ dBFS' : `${db.toFixed(1)} dBFS`;
+        dbReadoutRef.current.classList.toggle('text-rose-400', db >= -1);
+        dbReadoutRef.current.classList.toggle('text-emerald-400', db < -1);
+      }
+      if (clipBadgeRef.current && ph.clipped && clipBadgeRef.current.dataset.clipped !== 'true') {
+        clipBadgeRef.current.dataset.clipped = 'true';
+        clipBadgeRef.current.classList.remove('bg-zinc-800', 'text-zinc-500', 'border-zinc-700');
+        clipBadgeRef.current.classList.add('bg-rose-600', 'text-white', 'border-rose-500');
+      }
+
+      const cardBar = activeChannelBarRefs.current[targetKey];
+      if (cardBar) {
+        cardBar.style.width = `${pct.toFixed(1)}%`;
+      }
+
+      // Medidor de Correlación de Fase Estéreo (+1 a -1)
+      if (leftAnalyser && rightAnalyser && leftBuf && rightBuf && phaseBarRef.current && phaseTextRef.current) {
+        leftAnalyser.getFloatTimeDomainData(leftBuf);
+        rightAnalyser.getFloatTimeDomainData(rightBuf);
+        let sumLR = 0;
+        let sumL2 = 0;
+        let sumR2 = 0;
+        for (let i = 0; i < leftBuf.length; i++) {
+          const l = leftBuf[i];
+          const r = rightBuf[i];
+          sumLR += l * r;
+          sumL2 += l * l;
+          sumR2 += r * r;
+        }
+        const denom = Math.sqrt(sumL2 * sumR2);
+        const corr = denom > 1e-8 ? Math.max(-1, Math.min(1, sumLR / denom)) : 1;
+        const leftPosPct = ((corr + 1) / 2) * 100;
+        phaseBarRef.current.style.left = `${Math.max(4, Math.min(96, leftPosPct)).toFixed(1)}%`;
+        phaseTextRef.current.textContent = `${corr >= 0 ? '+' : ''}${corr.toFixed(2)}`;
+        phaseTextRef.current.classList.toggle('text-violet-400', corr < -0.2);
+        phaseTextRef.current.classList.toggle('text-emerald-400', corr >= -0.2);
+      }
+
+      // Mini RTA 18 Bandas en vivo
+      const canvas = rtaCanvasRef.current;
+      if (canvas) {
+        const c2d = canvas.getContext('2d');
+        if (c2d) {
+          analyser.getByteFrequencyData(freqBuf);
+          const w = canvas.width;
+          const h = canvas.height;
+          c2d.clearRect(0, 0, w, h);
+
+          c2d.strokeStyle = 'rgba(255,255,255,0.08)';
+          c2d.lineWidth = 1;
+          c2d.beginPath();
+          c2d.moveTo(0, h * 0.5);
+          c2d.lineTo(w, h * 0.5);
+          c2d.stroke();
+
+          const sampleRate = analyser.context.sampleRate || 48000;
+          const binCount = analyser.frequencyBinCount;
+          const colW = w / STAGE_EQ_18_BANDS.length;
+          STAGE_EQ_18_BANDS.forEach((b, idx) => {
+            const bin = Math.min(binCount - 1, Math.max(1, Math.round((b.freq * binCount * 2) / sampleRate)));
+            const v = freqBuf[bin] / 255;
+            const barH = Math.max(2, v * (h - 6));
+            c2d.fillStyle = v > 0.78 ? '#fb7185' : '#34d399';
+            c2d.fillRect(idx * colW + 2, h - barH, Math.max(3, colW - 4), barH);
+          });
+        }
+      }
+
       testMeterRafRef.current = requestAnimationFrame(tick);
     };
     testMeterRafRef.current = requestAnimationFrame(tick);
   };
 
   /**
-   * Genera señal de prueba quirúrgica (Tono, Click, Ruido Rosa o Barrido 40Hz-10kHz)
-   * hacia canales discretos exactos o a través del Bus FOH + EQ 18B.
+   * Genera señal de prueba quirúrgica hacia canales discretos exactos o Bus FOH + EQ 18B.
    */
   const playDiscreteTestSignal = async (
     targetKey: string,
     mode: 'single_channel' | 'cue_isolation' | 'foh_dsp',
-    channelIdx0 = 0
-  ) => {
-    if (activeTestTarget === targetKey) {
+    channelIdx0 = 0,
+    opts?: { preserveWalkTest?: boolean; includeChannelIdPips?: boolean; overrideSignal?: TestSignalType }
+  ): Promise<boolean> => {
+    if (!opts?.preserveWalkTest && activeTestTarget === targetKey) {
       stopTestSignal();
-      return;
+      return false;
     }
-    stopTestSignal();
+    stopTestSignal(Boolean(opts?.preserveWalkTest));
 
-    const ctx = await ensureTestContext();
+    const { ctx, sinkApplied } = await ensureTestContext();
     const maxCh = ctx.destination.maxChannelCount || 2;
+    if (mode === 'single_channel' && channelIdx0 >= maxCh) {
+      showToast(
+        sinkApplied
+          ? `Hardware actual limitado a ${maxCh} canales (CH ${channelIdx0 + 1} no disponible)`
+          : `No se pudo abrir ${channelIdx0 + 1}ch: hardware limitado a ${maxCh}ch`
+      );
+      return false;
+    }
+
+    const chosenSignal: TestSignalType =
+      opts?.overrideSignal || (mode === 'cue_isolation' ? 'click' : signalType);
 
     const masterTestGain = ctx.createGain();
-    masterTestGain.gain.value = testVolume;
+    masterTestGain.gain.value = chosenSignal === 'cal_minus18' ? 1.0 : testVolume;
     masterTestGainRef.current = masterTestGain;
 
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.72;
     testAnalyserRef.current = analyser;
 
     let merger: ChannelMergerNode | null = null;
     let panner: StereoPannerNode | null = null;
     let fohRightPol: GainNode | null = null;
     let fohDspNodes: StageBusDspNodes | null = null;
+    let leftAnalyser: AnalyserNode | null = null;
+    let rightAnalyser: AnalyserNode | null = null;
     const extraCleanupNodes: AudioNode[] = [];
 
     const currentPatch = patchRef.current;
@@ -488,7 +740,7 @@ export default function StageSoundcheck() {
       if (currentRouting === 'MultiChannel' && maxCh >= 4) {
         const reqCh = Math.min(
           maxCh,
-          computeRequiredMergerChannels(currentPatch, maxCh, songStems.map((s) => s.id))
+          computeRequiredMergerChannels(currentPatch, maxCh, songStemsRef.current)
         );
         try {
           ctx.destination.channelInterpretation = 'discrete';
@@ -516,7 +768,6 @@ export default function StageSoundcheck() {
         panner.connect(ctx.destination);
       }
     } else if (mode === 'foh_dsp') {
-      // Test del Bus FOH pasando exactamente por HPF + EQ 18 Bandas + Safety Limiter + Check Polaridad R
       if (!testSafetyCurveRef.current) {
         testSafetyCurveRef.current = createStageSafetySoftClipCurve(-0.3);
       }
@@ -534,18 +785,26 @@ export default function StageSoundcheck() {
       const leftPass = ctx.createGain();
       leftPass.gain.value = 1;
       const stereoMerger = ctx.createChannelMerger(2);
-      extraCleanupNodes.push(leftPass, stereoMerger);
 
-      // Alimentamos señal idéntica a L y a R (R pasa por inversor de polaridad si está activo)
+      leftAnalyser = ctx.createAnalyser();
+      leftAnalyser.fftSize = 512;
+      rightAnalyser = ctx.createAnalyser();
+      rightAnalyser.fftSize = 512;
+      testLeftAnalyserRef.current = leftAnalyser;
+      testRightAnalyserRef.current = rightAnalyser;
+      extraCleanupNodes.push(leftPass, stereoMerger, leftAnalyser, rightAnalyser);
+
       analyser.connect(leftPass);
       analyser.connect(fohRightPol);
+      leftPass.connect(leftAnalyser);
+      fohRightPol.connect(rightAnalyser);
       leftPass.connect(stereoMerger, 0, 0);
       fohRightPol.connect(stereoMerger, 0, 1);
 
       if (currentRouting === 'MultiChannel' && maxCh >= 4) {
         const reqCh = Math.min(
           maxCh,
-          computeRequiredMergerChannels(currentPatch, maxCh, songStems.map((s) => s.id))
+          computeRequiredMergerChannels(currentPatch, maxCh, songStemsRef.current)
         );
         try {
           ctx.destination.channelInterpretation = 'discrete';
@@ -560,9 +819,23 @@ export default function StageSoundcheck() {
         stereoMerger.connect(splitter);
         extraCleanupNodes.push(splitter);
 
-        const [fohL, fohR] = resolvePairIndices(currentPatch.fohPair, reqCh);
-        splitter.connect(merger, 0, fohL);
-        splitter.connect(merger, 1, fohR);
+        const fohTestTarget: ConsoleTargetAssignment =
+          currentPatch.consoleBusMode === 'multitrack_stems' && songStemsRef.current.length > 0
+            ? resolveStemConsoleTarget(songStemsRef.current[0], currentPatch).target
+            : currentPatch.fohPair;
+
+        const resolvedFoh = resolveConsoleTarget(fohTestTarget, reqCh);
+        if (resolvedFoh.isMono) {
+          const monoSum = ctx.createGain();
+          monoSum.gain.value = 0.707;
+          splitter.connect(monoSum, 0);
+          splitter.connect(monoSum, 1);
+          monoSum.connect(merger, 0, resolvedFoh.leftIdx);
+          extraCleanupNodes.push(monoSum);
+        } else {
+          splitter.connect(merger, 0, resolvedFoh.leftIdx);
+          splitter.connect(merger, 1, resolvedFoh.rightIdx);
+        }
       } else {
         try {
           ctx.destination.channelInterpretation = 'speakers';
@@ -575,7 +848,6 @@ export default function StageSoundcheck() {
         panner.connect(ctx.destination);
       }
     } else {
-      // Prueba de un solo canal físico discreto (CH 1..N)
       masterTestGain.connect(analyser);
       if (maxCh >= 4) {
         const reqCh = Math.min(maxCh, Math.max(4, channelIdx0 + 1));
@@ -601,100 +873,17 @@ export default function StageSoundcheck() {
       }
     }
 
-    const activeStopFns: (() => void)[] = [];
-    const chosenSignal: TestSignalType = mode === 'cue_isolation' ? 'click' : signalType;
+    const genHandle = startTestSignalGenerator(ctx, masterTestGain, chosenSignal, {
+      channelNumber: channelIdx0 + 1,
+      includeChannelIdPips: opts?.includeChannelIdPips,
+      isActive: () => Boolean(testCtxRef.current && testCtxRef.current.state === 'running'),
+    });
+    activeGeneratorRef.current = genHandle;
 
-    if (chosenSignal === 'pink') {
-      const len = ctx.sampleRate * 2;
-      const noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const data = noiseBuf.getChannelData(0);
-      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-      for (let i = 0; i < len; i++) {
-        const white = Math.random() * 2 - 1;
-        b0 = 0.99886 * b0 + white * 0.0555179;
-        b1 = 0.99332 * b1 + white * 0.0750759;
-        b2 = 0.96900 * b2 + white * 0.1538520;
-        b3 = 0.86650 * b3 + white * 0.3104856;
-        b4 = 0.55000 * b4 + white * 0.5329522;
-        b5 = -0.7616 * b5 - white * 0.0168980;
-        data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.045;
-        b6 = white * 0.115926;
-      }
-      const src = ctx.createBufferSource();
-      src.buffer = noiseBuf;
-      src.loop = true;
-      src.connect(masterTestGain);
-      src.start();
-      activeStopFns.push(() => {
-        try { src.stop(); src.disconnect(); } catch {}
-      });
-    } else if (chosenSignal === 'sweep') {
-      // Barrido logarítmico continuo 40 Hz -> 10 kHz en 5.5s para detectar resonancias del salón
-      const fireSweep = () => {
-        if (!testCtxRef.current || testCtxRef.current.state !== 'running') return;
-        const now = ctx.currentTime;
-        const osc = ctx.createOscillator();
-        const env = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(40, now);
-        osc.frequency.exponentialRampToValueAtTime(10000, now + 5.2);
-
-        env.gain.setValueAtTime(0.0001, now);
-        env.gain.linearRampToValueAtTime(0.32, now + 0.15);
-        env.gain.setValueAtTime(0.32, now + 5.0);
-        env.gain.exponentialRampToValueAtTime(0.0001, now + 5.35);
-
-        osc.connect(env);
-        env.connect(masterTestGain);
-        osc.start(now);
-        osc.stop(now + 5.4);
-      };
-      fireSweep();
-      pulseIntervalRef.current = window.setInterval(fireSweep, 5700);
-    } else {
-      let beatStep = 0;
-      const firePulse = () => {
-        if (!testCtxRef.current || testCtxRef.current.state !== 'running') return;
-        const now = ctx.currentTime;
-        const osc = ctx.createOscillator();
-        const env = ctx.createGain();
-
-        if (chosenSignal === 'click') {
-          const isDownbeat = beatStep % 4 === 0;
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(isDownbeat ? 1200 : 800, now);
-          env.gain.setValueAtTime(0.0001, now);
-          env.gain.exponentialRampToValueAtTime(isDownbeat ? 0.65 : 0.42, now + 0.004);
-          env.gain.exponentialRampToValueAtTime(0.0001, now + 0.065);
-          osc.connect(env);
-          env.connect(masterTestGain);
-          osc.start(now);
-          osc.stop(now + 0.075);
-          beatStep++;
-        } else {
-          const freqs = [440, 554.37, 659.25, 554.37];
-          const f = freqs[beatStep % freqs.length];
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(f, now);
-          env.gain.setValueAtTime(0.0001, now);
-          env.gain.linearRampToValueAtTime(0.45, now + 0.025);
-          env.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-          osc.connect(env);
-          env.connect(masterTestGain);
-          osc.start(now);
-          osc.stop(now + 0.48);
-          beatStep++;
-        }
-      };
-
-      firePulse();
-      pulseIntervalRef.current = window.setInterval(firePulse, chosenSignal === 'click' ? 500 : 650);
-    }
-
-    startRealMeterLoop(analyser);
+    startRealMeterLoop(analyser, targetKey, leftAnalyser, rightAnalyser);
 
     testStopCleanupRef.current = () => {
-      activeStopFns.forEach((fn) => fn());
+      try { genHandle.stop(); } catch {}
       try { masterTestGain.disconnect(); } catch {}
       try { analyser.disconnect(); } catch {}
       try { fohRightPol?.disconnect(); } catch {}
@@ -713,6 +902,45 @@ export default function StageSoundcheck() {
       });
     };
     setActiveTestTarget(targetKey);
+    return true;
+  };
+
+  /**
+   * Walk-Test Secuencial Automático (CH 1..N) con pips identificadores dentro del canal discreto
+   */
+  const toggleWalkTest = async () => {
+    if (isWalkTestActive) {
+      stopTestSignal();
+      showToast('Walk-Test detenido');
+      return;
+    }
+
+    const totalCh = Math.max(2, Math.min(16, detectedMaxChannels));
+    setIsWalkTestActive(true);
+    let stepIdx = 0;
+
+    const advanceWalkStep = async () => {
+      const key = `ch-${stepIdx}`;
+      const chNumber = stepIdx + 1;
+      const started = await playDiscreteTestSignal(key, 'single_channel', stepIdx, {
+        preserveWalkTest: true,
+        includeChannelIdPips: true,
+        overrideSignal: signalType === 'sweep' ? 'pink' : signalType,
+      });
+
+      if (!started) {
+        stopTestSignal();
+        return;
+      }
+
+      stepIdx = (stepIdx + 1) % totalCh;
+      walkTestTimerRef.current = window.setTimeout(() => {
+        advanceWalkStep();
+      }, 3600);
+      showToast(`Walk-Test: Probando Canal Físico CH ${chNumber} de ${totalCh}`);
+    };
+
+    await advanceWalkStep();
   };
 
   // Asistente de 4 Escenarios Universales (adaptado a 4ch, 6ch u 8+ ch)
@@ -778,76 +1006,26 @@ export default function StageSoundcheck() {
     }
   };
 
-  // Mapeo inverso: qué roles salen por cada canal físico (1..16) + detección de conflictos y fuera de rango
-  const channelCountToDisplay = Math.max(4, Math.min(16, detectedMaxChannels >= 4 ? detectedMaxChannels : 4));
-  const channelAssignments: { roles: { label: string; kind: 'foh' | 'cue' | 'stem' }[] }[] = Array.from(
-    { length: channelCountToDisplay },
-    () => ({ roles: [] })
-  );
-
-  const isMultitrackFallbackToFoh =
-    routingMode === 'MultiChannel' &&
-    detectedMaxChannels >= 4 &&
-    patch.consoleBusMode === 'multitrack_stems' &&
-    songStems.length === 0;
-
-  if (routingMode === 'StereoInEar') {
-    channelAssignments[0].roles.push({ label: 'FOH L + CUE', kind: 'foh' });
-    channelAssignments[1].roles.push({ label: 'FOH R + CUE', kind: 'foh' });
-  } else if (routingMode === 'StereoSplit' || (routingMode === 'MultiChannel' && detectedMaxChannels < 4)) {
-    channelAssignments[0].roles.push({ label: 'MÚSICOS (Click/Guía)', kind: 'cue' });
-    channelAssignments[1].roles.push({ label: 'PÚBLICO (FOH Mono)', kind: 'foh' });
-  } else {
-    const cuePos = resolveCueIndices(patch.cueRouting, channelCountToDisplay);
-    if (cuePos.isMono) {
-      channelAssignments[cuePos.leftIdx]?.roles.push({ label: 'CUE (Click+Guía)', kind: 'cue' });
-    } else {
-      channelAssignments[cuePos.leftIdx]?.roles.push({ label: 'CUE L (Click)', kind: 'cue' });
-      channelAssignments[cuePos.rightIdx]?.roles.push({ label: 'CUE R (Guía)', kind: 'cue' });
-    }
-
-    if (patch.consoleBusMode === 'stereo_bus' || isMultitrackFallbackToFoh) {
-      const [fL, fR] = resolvePairIndices(patch.fohPair, channelCountToDisplay);
-      channelAssignments[fL]?.roles.push({ label: 'FOH Público L', kind: 'foh' });
-      channelAssignments[fR]?.roles.push({ label: 'FOH Público R', kind: 'foh' });
-    } else {
-      STEM_BUS_GROUPS.forEach((grp) => {
-        const res = resolveConsoleTarget(patch.stemGroupTargets[grp.id], channelCountToDisplay);
-        if (res.isMono) {
-          channelAssignments[res.leftIdx]?.roles.push({ label: grp.label, kind: 'stem' });
-        } else {
-          channelAssignments[res.leftIdx]?.roles.push({ label: `${grp.label} (L)`, kind: 'stem' });
-          channelAssignments[res.rightIdx]?.roles.push({ label: `${grp.label} (R)`, kind: 'stem' });
-        }
-      });
-      songStems.forEach((st) => {
-        const override = patch.stemOverrides?.[st.id];
-        if (!override) return;
-        const res = resolveConsoleTarget(override, channelCountToDisplay);
-        if (res.isMono) {
-          channelAssignments[res.leftIdx]?.roles.push({ label: `${st.name} (Solo)`, kind: 'stem' });
-        } else {
-          channelAssignments[res.leftIdx]?.roles.push({ label: `${st.name} (L)`, kind: 'stem' });
-          channelAssignments[res.rightIdx]?.roles.push({ label: `${st.name} (R)`, kind: 'stem' });
-        }
-      });
-    }
-  }
-
-  const cueFohConflicts = channelAssignments
-    .map((ch, idx) => ({
-      chNum: idx + 1,
-      hasCue: ch.roles.some((r) => r.kind === 'cue'),
-      hasMusic: ch.roles.some((r) => r.kind === 'foh' || r.kind === 'stem'),
-    }))
-    .filter((c) => c.hasCue && c.hasMusic);
-
-  const outOfRangeIssues = detectOutOfRangeAssignments(
+  // Análisis unificado de canales, colisiones CUE/FOH, fuera de rango y BT
+  const patchAnalysis = analyzeStagePatch(
     routingMode,
     patch,
     detectedMaxChannels,
-    songStems.map((s) => s.id)
+    songStems,
+    {
+      activeDeviceLabel: activeDevice?.label,
+      activeDeviceLatencyMs: activeDevice?.latencyMs,
+      sinkMissingOrRejected: effectiveSinkStatus === 'missing' || effectiveSinkStatus === 'rejected',
+    }
   );
+  const {
+    isFallbackSplit: isFallbackSplitActive,
+    isMultitrackFallbackToFoh,
+    channelAssignments,
+    cueFohConflicts,
+    outOfRangeIssues,
+    isBluetoothRisk,
+  } = patchAnalysis;
 
   const matchedRigSuggestion = findMatchingVenueProfile(
     probeReport,
@@ -856,7 +1034,7 @@ export default function StageSoundcheck() {
     routingMode
   );
 
-  // Perfiles de Lugar
+  // Perfiles de Lugar (Local + Export / Import JSON portable)
   const handleSaveVenueProfile = () => {
     const cleanName = newProfileName.trim() || `${activeDevice?.label || 'Escenario'} (${routingMode})`;
     const nextProfile: VenueRigProfile = {
@@ -866,7 +1044,7 @@ export default function StageSoundcheck() {
       sinkId: patch.sinkId,
       routingMode,
       patch,
-      eqPresetId: eqProfile.presetId,
+      eqPresetId: activeEqProfile.presetId,
       updatedAt: new Date().toISOString(),
     };
     const nextList = [nextProfile, ...venueProfiles.filter((p) => p.name !== cleanName)].slice(0, 12);
@@ -878,16 +1056,21 @@ export default function StageSoundcheck() {
 
   const handleApplyVenueProfile = (prof: VenueRigProfile) => {
     stopTestSignal();
-    const matchedDev = probeReport?.devices.find(
-      (d) => d.label && prof.deviceLabel && d.label.toLowerCase() === prof.deviceLabel.toLowerCase()
-    );
+    const suggestionMatch =
+      matchedRigSuggestion?.profile.id === prof.id ? matchedRigSuggestion.device : null;
+    const matchedDev =
+      suggestionMatch ||
+      probeReport?.devices.find(
+        (d) => d.label && prof.deviceLabel && d.label.toLowerCase() === prof.deviceLabel.toLowerCase()
+      );
     commitRoutingMode(prof.routingMode);
-    commitPatch(() => ({
-      ...DEFAULT_MULTICHANNEL_PATCH,
-      ...prof.patch,
-      sinkId: matchedDev ? matchedDev.deviceId : prof.sinkId,
-      sinkLabel: matchedDev ? matchedDev.label : prof.deviceLabel,
-    }));
+    commitPatch(() =>
+      normalizeMultiChannelPatch({
+        ...prof.patch,
+        sinkId: matchedDev ? matchedDev.deviceId : prof.sinkId,
+        sinkLabel: matchedDev ? matchedDev.label : prof.deviceLabel,
+      })
+    );
     if (prof.eqPresetId) {
       commitEqPreset(prof.eqPresetId);
     }
@@ -900,7 +1083,49 @@ export default function StageSoundcheck() {
     saveVenueProfiles(nextList);
   };
 
-  const isFallbackSplitActive = routingMode === 'MultiChannel' && detectedMaxChannels < 4;
+  const handleExportVenueProfiles = () => {
+    if (venueProfiles.length === 0) {
+      showToast('No hay perfiles guardados para exportar');
+      return;
+    }
+    const json = serializeVenueProfilesJson(venueProfiles);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tandu-stage-rigs-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`${venueProfiles.length} perfil(es) exportado(s)`);
+  };
+
+  const handleImportVenueProfiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const imported = parseImportedVenueProfilesJson(text);
+      const merged = [
+        ...imported,
+        ...venueProfiles.filter((ex) => !imported.some((imp) => imp.name === ex.name)),
+      ].slice(0, 16);
+      setVenueProfiles(merged);
+      saveVenueProfiles(merged);
+      showToast(`${imported.length} perfil(es) importado(s)`);
+    } catch (err: any) {
+      showToast(err?.message || 'Archivo de perfiles inválido');
+    }
+  };
+
+  const fohTestDestinationLabel =
+    routingMode === 'MultiChannel' && detectedMaxChannels >= 4
+      ? patch.consoleBusMode === 'multitrack_stems' && songStems.length > 0
+        ? resolveStemConsoleTarget(songStems[0], patch).target
+        : patch.fohPair
+      : routingMode === 'StereoSplit'
+      ? 'CH 2 (R)'
+      : 'L/R';
 
   return (
     <div className="h-screen bg-[#f8fafc] text-zinc-900 flex flex-col font-sans overflow-hidden select-none">
@@ -1017,18 +1242,24 @@ export default function StageSoundcheck() {
               </span>
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-                  isFallbackSplitActive ||
-                  (routingMode === 'MultiChannel' && (cueFohConflicts.length > 0 || outOfRangeIssues.length > 0)) ||
-                  activeDevice?.isBluetoothSuspect
+                  effectiveSinkStatus === 'missing' ||
+                  effectiveSinkStatus === 'rejected' ||
+                  cueFohConflicts.length > 0
+                    ? 'bg-rose-50 text-rose-800 border-rose-300'
+                    : isFallbackSplitActive || outOfRangeIssues.length > 0 || isBluetoothRisk
                     ? 'bg-amber-50 text-amber-800 border-amber-300'
                     : 'bg-emerald-50 text-emerald-700 border-emerald-300'
                 }`}
               >
-                {activeDevice?.isBluetoothSuspect
+                {effectiveSinkStatus === 'missing' || effectiveSinkStatus === 'rejected'
+                  ? 'INTERFAZ DESCONECTADA'
+                  : cueFohConflicts.length > 0
+                  ? 'COLISIÓN CUE ↔ FOH'
+                  : isBluetoothRisk
                   ? 'LATENCIA BLUETOOTH'
                   : isFallbackSplitActive
                   ? 'PROTECCIÓN SPLIT L/R'
-                  : routingMode === 'MultiChannel' && (cueFohConflicts.length > 0 || outOfRangeIssues.length > 0)
+                  : outOfRangeIssues.length > 0
                   ? 'REVISAR CANALES'
                   : 'LISTO PARA ESCENARIO'}
               </span>
@@ -1037,8 +1268,15 @@ export default function StageSoundcheck() {
             <div className="space-y-2 text-xs">
               <div className="flex items-center justify-between py-1.5 border-b border-zinc-100">
                 <span className="text-zinc-500">Interfaz Activa:</span>
-                <span className="font-bold text-zinc-900 truncate max-w-[200px]" title={activeDevice?.label}>
-                  {activeDevice?.label || 'Sistema Predeterminado'}
+                <span
+                  className={`font-bold truncate max-w-[200px] ${
+                    effectiveSinkStatus === 'missing' ? 'text-rose-700' : 'text-zinc-900'
+                  }`}
+                  title={activeDevice?.label}
+                >
+                  {effectiveSinkStatus === 'missing'
+                    ? `Fallback: ${activeDevice?.label || 'Sistema'}`
+                    : activeDevice?.label || 'Sistema Predeterminado'}
                 </span>
               </div>
               <div className="flex items-center justify-between py-1.5 border-b border-zinc-100">
@@ -1064,10 +1302,11 @@ export default function StageSoundcheck() {
                 </span>
               </div>
               <div className="flex items-center justify-between py-1.5">
-                <span className="text-zinc-500">EQ 18B + Safety Limiter:</span>
+                <span className="text-zinc-500">EQ 18B ({eqScope === 'per_song' ? 'Tema' : 'Global'}):</span>
                 <span className="font-mono font-bold text-zinc-800">
-                  {eqProfile.enabled ? eqProfile.presetId.toUpperCase() : 'BYPASS'} &bull;{' '}
-                  {eqProfile.limiterEnabled ? 'Limiter ON (-0.3 dBFS)' : 'Limiter OFF'}
+                  {activeEqProfile.enabled ? activeEqProfile.presetId.toUpperCase() : 'BYPASS'} &bull;{' '}
+                  {activeEqProfile.limiterEnabled ? 'Limiter ON' : 'Limiter OFF'}
+                  {patch.fohPolarityInvertR ? ' • R -Φ' : ''}
                 </span>
               </div>
             </div>
@@ -1224,16 +1463,6 @@ export default function StageSoundcheck() {
             </div>
           </div>
 
-          {/* Alerta Bluetooth / Alta Latencia */}
-          {activeDevice?.isBluetoothSuspect && (
-            <div className="px-4 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-center gap-2.5">
-              <Bluetooth size={16} className="text-[#e11d48] shrink-0" />
-              <span>
-                <strong>Advertencia de Latencia Bluetooth (~{activeDevice.latencyMs} ms):</strong> La salida seleccionada parece ser inalámbrica/Bluetooth. Para tocar en vivo con Click y evitar retraso entre la pista y los músicos, usa cable USB o salida Jack física.
-              </span>
-            </div>
-          )}
-
           {/* Diagnóstico inteligente del hardware */}
           {probeReport && (
             <div
@@ -1273,6 +1502,11 @@ export default function StageSoundcheck() {
             {(probeReport?.devices || []).map((dev, idx) => {
               const isSelected =
                 (patch.sinkId === '' && dev.isDefault) || patch.sinkId === dev.deviceId;
+              const devBtSuspect = isDeviceBluetoothSuspect(
+                dev.label,
+                dev.latencyMs,
+                patch.trustedWiredDeviceLabels
+              );
               return (
                 <div
                   key={`${dev.deviceId}-${idx}`}
@@ -1283,6 +1517,7 @@ export default function StageSoundcheck() {
                       sinkId: dev.deviceId === 'default' ? '' : dev.deviceId,
                       sinkLabel: dev.label,
                     }));
+                    setSinkStatus('ok');
                     showToast(`Interfaz activa: ${dev.label}`);
                   }}
                   className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-2 ${
@@ -1297,7 +1532,7 @@ export default function StageSoundcheck() {
                         <span className="text-xs font-bold text-zinc-900 truncate" title={dev.label}>
                           {dev.label}
                         </span>
-                        {dev.isBluetoothSuspect && (
+                        {devBtSuspect && (
                           <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold shrink-0">
                             BT
                           </span>
@@ -1332,7 +1567,7 @@ export default function StageSoundcheck() {
           </div>
         </div>
 
-        {/* FILA 3: PROBADOR FÍSICO CANAL POR CANAL + BUS FOH EQ 18B + CHECK POLARIDAD */}
+        {/* FILA 3: PROBADOR FÍSICO CANAL POR CANAL + BUS FOH EQ 18B + RTA + CHECK POLARIDAD */}
         <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-2xs space-y-4">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-2.5">
@@ -1344,17 +1579,18 @@ export default function StageSoundcheck() {
                   2. Probador Físico Canal por Canal, Bus FOH (EQ 18B) & Check Anti-Fuga
                 </h2>
                 <p className="text-[11px] text-zinc-500">
-                  Envía Tono, Click, Ruido Rosa o Barrido 40Hz–10kHz con lectura real en dBFS y verificación de fase
+                  Calibración 0 VU (-18 dBFS), Walk-Test Secuencial con ID acústico y RTA/Fase sin latencia UI
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               {/* Selector de tipo de señal */}
               <div className="flex items-center bg-zinc-100 p-1 rounded-xl border border-zinc-200">
                 {(
                   [
                     { id: 'tone', label: 'Tono' },
+                    { id: 'cal_minus18', label: '-18 dBFS (0 VU)' },
                     { id: 'click', label: 'Click' },
                     { id: 'pink', label: 'Ruido Rosa' },
                     { id: 'sweep', label: 'Barrido Sala' },
@@ -1386,14 +1622,30 @@ export default function StageSoundcheck() {
                   min="0.05"
                   max="0.95"
                   step="0.05"
+                  disabled={signalType === 'cal_minus18'}
                   value={testVolume}
                   onChange={(e) => setTestVolume(parseFloat(e.target.value))}
-                  className="w-20 h-1.5 accent-[#e11d48] cursor-pointer"
+                  className="w-20 h-1.5 accent-[#e11d48] cursor-pointer disabled:opacity-40"
                 />
                 <span className="text-[10px] font-mono font-bold text-zinc-800 tabular-nums">
-                  {Math.round(testVolume * 100)}%
+                  {signalType === 'cal_minus18' ? '-18 dBFS' : `${Math.round(testVolume * 100)}%`}
                 </span>
               </div>
+
+              {/* Walk-Test Secuencial Automático */}
+              <button
+                type="button"
+                onClick={toggleWalkTest}
+                className={`px-3 py-2 rounded-xl text-[10.5px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer border transition-all ${
+                  isWalkTestActive
+                    ? 'bg-zinc-950 text-white border-zinc-950 shadow-sm'
+                    : 'bg-zinc-50 text-zinc-800 border-zinc-300 hover:bg-zinc-100'
+                }`}
+                title="Recorre automáticamente CH 1 → CH N enviando tonos codificados de identificación para chequear cables desde la consola"
+              >
+                <Radio size={13} className={isWalkTestActive ? 'text-[#e11d48] animate-pulse' : ''} />
+                <span>{isWalkTestActive ? 'Detener Walk-Test' : `Walk-Test CH 1→${detectedMaxChannels}`}</span>
+              </button>
 
               {/* Invertir Fase R (Check Polaridad Estéreo) */}
               <button
@@ -1404,9 +1656,13 @@ export default function StageSoundcheck() {
                     ? 'bg-violet-600 text-white border-violet-700 shadow-xs'
                     : 'bg-zinc-50 text-zinc-700 border-zinc-200 hover:bg-zinc-100'
                 }`}
-                title="Invierte la polaridad del canal Derecho (R) durante 'Probar Bus FOH' para detectar cables mal cableados o cancelaciones en mono"
+                title={
+                  routingMode === 'StereoSplit' || isFallbackSplitActive
+                    ? 'En Split L/R (suma L+R a R), invertir R cancela la señal a -∞ dBFS como prueba de mono-compatibilidad'
+                    : 'Invierte la polaridad del canal Derecho (R) durante Probar Bus FOH'
+                }
               >
-                Fase R: {polarityInvertR ? 'INVERTIDA (-Φ)' : 'Normal (+Φ)'}
+                Fase R (Test): {polarityInvertR ? '-Φ' : '+Φ'}
               </button>
 
               {/* Probar Bus FOH (con EQ 18 Bandas) */}
@@ -1418,10 +1674,14 @@ export default function StageSoundcheck() {
                     ? 'bg-[#e11d48] text-white border-[#e11d48] shadow-sm'
                     : 'bg-rose-50 text-[#e11d48] border-rose-300 hover:bg-rose-100'
                 }`}
-                title="Prueba el Bus FOH pasando por el Ecualizador de 18 Bandas y el Safety Limiter configurados"
+                title={`Prueba el EQ de 18 Bandas + Safety Limiter hacia ${fohTestDestinationLabel}`}
               >
                 <Sliders size={13} />
-                <span>{activeTestTarget === 'foh-dsp' ? 'Detener Bus FOH' : 'Probar Bus FOH (EQ 18B)'}</span>
+                <span>
+                  {activeTestTarget === 'foh-dsp'
+                    ? 'Detener Bus FOH'
+                    : `Probar EQ 18B (${fohTestDestinationLabel})`}
+                </span>
               </button>
 
               {/* Botón Prueba Anti-Fuga */}
@@ -1442,7 +1702,7 @@ export default function StageSoundcheck() {
               {activeTestTarget && (
                 <button
                   type="button"
-                  onClick={stopTestSignal}
+                  onClick={() => stopTestSignal()}
                   className="px-3 py-2 rounded-xl bg-zinc-950 text-white text-[10.5px] font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   <Square size={12} fill="currentColor" />
@@ -1452,72 +1712,128 @@ export default function StageSoundcheck() {
             </div>
           </div>
 
-          {/* Medidor Peak dBFS Real en Vivo cuando hay prueba sonando */}
-          {activeTestTarget && (
-            <div className="px-4 py-2.5 rounded-xl bg-zinc-950 text-white flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2.5 text-xs">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48] animate-ping" />
-                <span className="font-bold uppercase tracking-wider">
-                  Señal Activa:{' '}
-                  {activeTestTarget === 'foh-dsp'
-                    ? `Bus FOH + EQ 18B (${polarityInvertR ? 'Fase R Invertida' : 'Fase Normal'})`
-                    : activeTestTarget === 'cue-isolation'
-                    ? 'Solo Músicos (CUE Anti-Fuga)'
-                    : activeTestTarget.toUpperCase()}
-                </span>
+          {/* Aviso explicativo si Fase R invertida está probándose en modo Split */}
+          {polarityInvertR &&
+            (routingMode === 'StereoSplit' || isFallbackSplitActive) &&
+            activeTestTarget === 'foh-dsp' && (
+              <div className="px-3.5 py-2 rounded-xl bg-violet-50 border border-violet-300 text-violet-900 text-xs">
+                <strong>Nota de Prueba de Fase en Split L/R:</strong> Al sumar `L` (+Φ) y `R` (-Φ) hacia una salida mono derecha, la señal se anula intencionalmente (`-∞ dBFS`). Usa `+Φ` normal para auditar nivel en Cable Y.
               </div>
-              <div className="flex items-center gap-3 flex-1 max-w-md">
-                <div className="flex-1 h-2.5 bg-zinc-800 rounded-full overflow-hidden">
+            )}
+
+          {/* Consola de Instrumentación Zero-Re-Render: Peak Hold, Clip Latch, Correlación Fase & RTA */}
+          {activeTestTarget && (
+            <div className="p-3.5 rounded-xl bg-zinc-950 text-white grid grid-cols-12 gap-4 items-center">
+              <div className="col-span-5 space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48] animate-ping" />
+                    <span className="font-bold uppercase tracking-wider truncate">
+                      {activeTestTarget === 'foh-dsp'
+                        ? `Bus FOH + EQ 18B (${fohTestDestinationLabel})`
+                        : activeTestTarget === 'cue-isolation'
+                        ? 'Solo Músicos (CUE Anti-Fuga)'
+                        : activeTestTarget.toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span ref={dbReadoutRef} className="font-mono font-bold tabular-nums text-emerald-400">
+                      -∞ dBFS
+                    </span>
+                    <button
+                      ref={clipBadgeRef}
+                      type="button"
+                      data-clipped="false"
+                      onClick={() => {
+                        peakHoldStateRef.current.clipped = false;
+                        if (clipBadgeRef.current) {
+                          clipBadgeRef.current.dataset.clipped = 'false';
+                          clipBadgeRef.current.classList.remove('bg-rose-600', 'text-white', 'border-rose-500');
+                          clipBadgeRef.current.classList.add('bg-zinc-800', 'text-zinc-500', 'border-zinc-700');
+                        }
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border bg-zinc-800 text-zinc-500 border-zinc-700 cursor-pointer"
+                      title="Indicador de saturación (> -0.15 dBFS). Clic para limpiar"
+                    >
+                      CLIP
+                    </button>
+                  </div>
+                </div>
+
+                <div className="relative h-2.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
-                    className={`h-full transition-all duration-75 ${
-                      testDbfs >= -1 ? 'bg-rose-500' : 'bg-gradient-to-r from-emerald-400 via-amber-400 to-[#e11d48]'
-                    }`}
-                    style={{ width: `${testMeterPct}%` }}
+                    ref={meterBarRef}
+                    className="h-full bg-gradient-to-r from-emerald-400 via-amber-400 to-[#e11d48]"
+                    style={{ width: '0%' }}
+                  />
+                  <div
+                    ref={peakHoldBarRef}
+                    className="absolute top-0 bottom-0 w-0.5 bg-white/90"
+                    style={{ left: '0%' }}
                   />
                 </div>
-                <span
-                  className={`text-xs font-mono font-bold tabular-nums w-20 text-right ${
-                    testDbfs >= -1 ? 'text-rose-400' : 'text-emerald-400'
-                  }`}
-                >
-                  {testDbfs <= -89 ? '-∞ dBFS' : `${testDbfs.toFixed(1)} dBFS`}
-                </span>
+
+                {activeTestTarget === 'foh-dsp' && (
+                  <div className="flex items-center gap-2.5 pt-0.5 text-[10px] font-mono">
+                    <span className="text-zinc-400 uppercase">Correlación L/R:</span>
+                    <div className="relative flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-zinc-600" />
+                      <div
+                        ref={phaseBarRef}
+                        className="absolute top-0 bottom-0 w-2 -ml-1 rounded-full bg-emerald-400"
+                        style={{ left: '50%' }}
+                      />
+                    </div>
+                    <span ref={phaseTextRef} className="w-11 text-right font-bold text-emerald-400">
+                      +1.00
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="col-span-7 flex flex-col gap-1">
+                <div className="flex items-center justify-between text-[9.5px] font-mono text-zinc-400">
+                  <span>ANALIZADOR RTA 18 BANDAS (31 Hz – 16 kHz)</span>
+                  <span>{activeEqProfile.enabled ? `EQ: ${activeEqProfile.presetId.toUpperCase()}` : 'BYPASS'}</span>
+                </div>
+                <canvas
+                  ref={rtaCanvasRef}
+                  width={540}
+                  height={48}
+                  className="w-full h-12 rounded-lg bg-zinc-900/90 border border-zinc-800"
+                />
               </div>
             </div>
           )}
 
-          {/* Alerta de Conflictos CUE vs FOH */}
-          {cueFohConflicts.length > 0 && routingMode === 'MultiChannel' && detectedMaxChannels >= 4 && (
-            <div className="px-4 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-center gap-2">
-              <ShieldAlert size={16} className="text-[#e11d48] shrink-0" />
-              <span>
-                <strong>¡Alerta de Conflicto de Canal!</strong> El Click/Guía (CUE) y la Música comparten salida en:{' '}
-                <strong>{cueFohConflicts.map((c) => `CH ${c.chNum}`).join(', ')}</strong>. Cambia el canal de CUE o del instrumento abajo para aislarlos antes del concierto.
-              </span>
-            </div>
-          )}
-
-          {/* Alerta de Canales Asignados Fuera de Rango */}
-          {outOfRangeIssues.length > 0 && (
-            <div className="px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-2">
-              <AlertTriangle size={16} className="text-amber-600 shrink-0" />
-              <span>
-                <strong>Canales fuera de rango para esta interfaz ({detectedMaxChannels} Ch):</strong>{' '}
-                {outOfRangeIssues.map((iss) => `${iss.busLabel} → ${iss.target}`).join(' · ')}.{' '}
-                Live Concert ajustará esas salidas al límite del hardware hasta que las reasignes dentro de 1–{detectedMaxChannels}.
-              </span>
-            </div>
-          )}
-
-          {/* Aviso si Stems Separados está activo pero la canción no tiene stems */}
-          {isMultitrackFallbackToFoh && (
-            <div className="px-4 py-2 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-xs flex items-center gap-2">
-              <Music size={15} className="text-sky-600 shrink-0" />
-              <span>
-                La canción seleccionada aún no tiene stems separados; en Live Concert la música saldrá automáticamente por el respaldo <strong>FOH Estéreo ({patch.fohPair})</strong>.
-              </span>
-            </div>
-          )}
+          {/* Banner unificado de Alertas de Escenario */}
+          <StageIoAlertsBanner
+            analysis={patchAnalysis}
+            detectedMaxChannels={detectedMaxChannels}
+            fohPairLabel={patch.fohPair}
+            activeDeviceLabel={activeDevice?.label}
+            activeDeviceLatencyMs={activeDevice?.latencyMs}
+            sinkStatus={effectiveSinkStatus}
+            savedSinkLabel={patch.sinkLabel}
+            onResetToDefaultSink={() => {
+              commitPatch((prev) => ({
+                ...prev,
+                sinkId: '',
+                sinkLabel: activeDevice?.label || '',
+              }));
+              setSinkStatus('idle');
+              showToast('Salida restablecida al dispositivo predeterminado');
+            }}
+            onTrustWiredDevice={(label) => {
+              commitPatch((prev) => ({
+                ...prev,
+                trustedWiredDeviceLabels: Array.from(
+                  new Set([...(prev.trustedWiredDeviceLabels || []), label])
+                ),
+              }));
+              showToast(`"${label}" marcado como dispositivo cableado confiable`);
+            }}
+          />
 
           {/* Grid de Canales Físicos CH 1..N */}
           <div className="grid grid-cols-4 md:grid-cols-8 gap-2.5">
@@ -1574,11 +1890,14 @@ export default function StageSoundcheck() {
                     )}
                   </div>
 
-                  {/* Barra real de dBFS en el canal activo */}
+                  {/* Barra real de dBFS en el canal activo (DOM ref sin re-render) */}
                   <div className="w-full h-1.5 bg-zinc-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-[#e11d48] transition-all duration-75"
-                      style={{ width: isTestingThis ? `${testMeterPct}%` : '0%' }}
+                      ref={(el) => {
+                        activeChannelBarRefs.current[key] = el;
+                      }}
+                      className="h-full bg-[#e11d48]"
+                      style={{ width: '0%' }}
                     />
                   </div>
 
@@ -1606,7 +1925,7 @@ export default function StageSoundcheck() {
           </div>
         </div>
 
-        {/* FILA 4: PATCHBAY DETALLADO (GRUPOS + STEMS INDIVIDUALES) + PERFILES DE LUGAR */}
+        {/* FILA 4: PATCHBAY DETALLADO (GRUPOS, REGLAS GLOBALES Y STEMS) + PERFILES DE LUGAR */}
         <div className="grid grid-cols-12 gap-4">
           {/* Patchbay Detallado (8 cols) */}
           <div className="col-span-8 bg-white rounded-2xl border border-zinc-200 p-5 shadow-2xs space-y-4">
@@ -1616,11 +1935,11 @@ export default function StageSoundcheck() {
                   3. Asignación de Canales a Consola & Pistas de Canción
                 </h2>
                 <p className="text-[11px] text-zinc-500">
-                  Todo lo que ajustes aquí se sincroniza en tiempo real con Live Concert
+                  Todo ajuste se sincroniza en tiempo real con Live Concert sin cortar el audio
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <select
                   value={routingMode}
                   onChange={(e) => {
@@ -1653,6 +1972,16 @@ export default function StageSoundcheck() {
                     ))}
                   </select>
                 )}
+
+                <select
+                  value={eqScope}
+                  onChange={(e) => commitEqScope(e.target.value as EqMemoryScope)}
+                  className="bg-zinc-50 border border-zinc-300 rounded-xl px-2.5 py-1.5 text-[11px] font-bold text-zinc-800 outline-none"
+                  title="Define si el EQ 18B aplica igual a todo el show o se guarda por canción"
+                >
+                  <option value="global">EQ: Global Show</option>
+                  <option value="per_song">EQ: Por Canción</option>
+                </select>
               </div>
             </div>
 
@@ -1686,6 +2015,45 @@ export default function StageSoundcheck() {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[10.5px] font-extrabold uppercase tracking-wider text-zinc-700">
+                      Grupos de Stems hacia Salidas Físicas
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowRoleRules((v) => !v)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border cursor-pointer ${
+                          showRoleRules || Object.keys(patch.stemRoleRules || {}).length > 0
+                            ? 'bg-zinc-900 text-white border-zinc-900'
+                            : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+                        }`}
+                      >
+                        Reglas Multi-Repertorio ({Object.keys(patch.stemRoleRules || {}).length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          commitPatch((prev) => ({
+                            ...prev,
+                            applyEqToStems: !prev.applyEqToStems,
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border cursor-pointer transition-all ${
+                          patch.applyEqToStems
+                            ? 'bg-[#e11d48] text-white border-[#e11d48]'
+                            : 'bg-white text-zinc-700 border-zinc-300 hover:border-zinc-400'
+                        }`}
+                        title="Elige si los stems pasan por el EQ de 18 Bandas + Safety Limiter o salen en Direct Out crudo hacia consola"
+                      >
+                        {patch.applyEqToStems
+                          ? 'EQ 18B + Limiter: ACTIVO EN STEMS'
+                          : 'DIRECT OUT PURO (Sin EQ)'}
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-5 gap-2">
                     {STEM_BUS_GROUPS.map((grp) => (
                       <div
@@ -1717,6 +2085,68 @@ export default function StageSoundcheck() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Reglas globales por rol de instrumento (aplica a todo el setlist sin depender de UUIDs) */}
+                  {showRoleRules && (
+                    <div className="p-3.5 rounded-xl bg-zinc-50 border border-zinc-200 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-zinc-800 block">
+                            Reglas Declarativas por Rol (Todo el Repertorio)
+                          </span>
+                          <span className="text-[10.5px] text-zinc-500">
+                            Se aplican automáticamente en cualquier canción según el nombre del stem (ej. Bombo, Bajo, Piano).
+                          </span>
+                        </div>
+                        {Object.keys(patch.stemRoleRules || {}).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              commitPatch((prev) => ({ ...prev, stemRoleRules: {} }))
+                            }
+                            className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                          >
+                            Limpiar Reglas
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {STEM_ROLE_RULES.map((rule) => {
+                          const curVal = patch.stemRoleRules?.[rule.key] || '';
+                          return (
+                            <div
+                              key={rule.key}
+                              className="bg-white px-2.5 py-1.5 rounded-xl border border-zinc-200 flex items-center justify-between gap-2"
+                            >
+                              <span className="text-[10.5px] font-semibold text-zinc-800 truncate">
+                                {rule.label}
+                              </span>
+                              <select
+                                value={curVal}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  commitPatch((prev) => {
+                                    const nextRules = { ...(prev.stemRoleRules || {}) };
+                                    if (!val) delete nextRules[rule.key as StemRuleKey];
+                                    else nextRules[rule.key as StemRuleKey] = val as ConsoleTargetAssignment;
+                                    return { ...prev, stemRoleRules: nextRules };
+                                  });
+                                }}
+                                className="bg-zinc-50 border border-zinc-300 rounded-lg px-1.5 py-1 text-[10px] font-mono font-bold text-zinc-900 outline-none max-w-[125px]"
+                              >
+                                <option value="">Grupo ({patch.stemGroupTargets[rule.group]})</option>
+                                {ALL_CONSOLE_TARGET_OPTIONS.map((opt) => (
+                                  <option key={opt.value} value={opt.value}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Overrides por stem individual de una canción del repertorio */}
                   <div className="p-3.5 rounded-xl bg-zinc-50 border border-zinc-200 space-y-2.5">
@@ -1750,6 +2180,10 @@ export default function StageSoundcheck() {
                       <div className="grid grid-cols-3 gap-2">
                         {songStems.map((st) => {
                           const overrideVal = patch.stemOverrides?.[st.id] || '';
+                          const inherited = resolveStemConsoleTarget(
+                            { id: st.id, name: st.name, group: st.group, category: st.category },
+                            { ...patch, stemOverrides: {} }
+                          );
                           return (
                             <div
                               key={st.id}
@@ -1771,7 +2205,9 @@ export default function StageSoundcheck() {
                                 }}
                                 className="bg-zinc-50 border border-zinc-300 rounded-lg px-1.5 py-1 text-[10px] font-mono font-bold text-zinc-900 outline-none max-w-[130px]"
                               >
-                                <option value="">Grupo ({patch.stemGroupTargets[st.group]})</option>
+                                <option value="">
+                                  {inherited.source === 'role_rule' ? 'Regla' : 'Grupo'} ({inherited.target})
+                                </option>
                                 {ALL_CONSOLE_TARGET_OPTIONS.map((opt) => (
                                   <option key={opt.value} value={opt.value}>
                                     {opt.label}
@@ -1793,19 +2229,123 @@ export default function StageSoundcheck() {
                   : 'Modo In-Ear Estéreo activo: Tanto la música FOH como el Click/Guía salen centrados en tus audífonos L/R (ideal para ensayos).'}
               </div>
             )}
+
+            {/* Barra de Calibración Live: Balance Click vs Guía, Polaridad Show & Offset Wi-Fi Sync */}
+            <div className="grid grid-cols-3 gap-3 pt-2 border-t border-zinc-100">
+              <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-200 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-zinc-700">
+                  <span>Balance CUE (Click ↔ Guía)</span>
+                  <span className="font-mono text-amber-800">
+                    {(patch.cueBalance || 0) === 0
+                      ? '50/50'
+                      : (patch.cueBalance || 0) < 0
+                      ? `+Click`
+                      : `+Guía`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="-1"
+                  max="1"
+                  step="0.1"
+                  value={patch.cueBalance || 0}
+                  onChange={(e) =>
+                    commitPatch((prev) => ({ ...prev, cueBalance: parseFloat(e.target.value) }))
+                  }
+                  className="w-full h-1.5 accent-amber-600 cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-200 space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase text-zinc-700">
+                  <span>Compensación Wi-Fi Sync</span>
+                  <span className="font-mono text-zinc-900">
+                    {Math.round((activeDevice?.latencyMs || 0) + (patch.syncOffsetMs || 0))} ms total
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="-150"
+                  max="250"
+                  step="5"
+                  value={patch.syncOffsetMs || 0}
+                  onChange={(e) =>
+                    commitPatch((prev) => ({
+                      ...prev,
+                      syncOffsetMs: parseInt(e.target.value, 10) || 0,
+                    }))
+                  }
+                  className="w-full h-1.5 accent-zinc-900 cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-200 flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-zinc-700 block">
+                    Polaridad R en Show
+                  </span>
+                  <span className="text-[10px] text-zinc-500">
+                    Corrige cable XLR invertido en vivo
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    commitPatch((prev) => ({
+                      ...prev,
+                      fohPolarityInvertR: !prev.fohPolarityInvertR,
+                    }))
+                  }
+                  className={`px-2.5 py-1.5 rounded-lg text-[10px] font-mono font-bold border cursor-pointer ${
+                    patch.fohPolarityInvertR
+                      ? 'bg-violet-600 text-white border-violet-700'
+                      : 'bg-white text-zinc-700 border-zinc-300'
+                  }`}
+                >
+                  {patch.fohPolarityInvertR ? '-Φ INV' : '+Φ NORM'}
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Perfiles Guardados por Lugar / Consola (4 cols) */}
           <div className="col-span-4 bg-white rounded-2xl border border-zinc-200 p-5 shadow-2xs flex flex-col justify-between gap-3">
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <BookmarkCheck size={16} className="text-[#e11d48]" />
-                <h2 className="text-xs font-extrabold uppercase tracking-wider text-zinc-900">
-                  4. Perfiles de Lugar / Rig
-                </h2>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <BookmarkCheck size={16} className="text-[#e11d48]" />
+                  <h2 className="text-xs font-extrabold uppercase tracking-wider text-zinc-900">
+                    4. Perfiles de Lugar / Rig
+                  </h2>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleExportVenueProfiles}
+                    className="p-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-700 cursor-pointer"
+                    title="Exportar perfiles (.json) para respaldo USB u otro portátil"
+                  >
+                    <Download size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => profileImportInputRef.current?.click()}
+                    className="p-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-700 cursor-pointer"
+                    title="Importar perfiles (.json)"
+                  >
+                    <Upload size={13} />
+                  </button>
+                  <input
+                    ref={profileImportInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={handleImportVenueProfiles}
+                    className="hidden"
+                  />
+                </div>
               </div>
               <p className="text-[11px] text-zinc-500">
-                Guarda la configuración de tu iglesia, auditorio o ensayo para aplicarla en 1 clic la próxima vez.
+                Guarda o exporta la configuración de tu iglesia, auditorio o ensayo para aplicarla en 1 clic.
               </p>
 
               <div className="flex gap-2">
@@ -1826,7 +2366,7 @@ export default function StageSoundcheck() {
                 </button>
               </div>
 
-              <div className="space-y-2 max-h-[210px] overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
                 {venueProfiles.length === 0 ? (
                   <div className="p-4 rounded-xl border border-dashed border-zinc-200 text-center text-[11px] text-zinc-400">
                     Aún no tienes perfiles guardados en este dispositivo.
