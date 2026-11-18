@@ -83,28 +83,28 @@ export const MidSideSurgicalControls: React.FC<
       className="rounded-2xl mastering-surface overflow-hidden"
     >
       {/* Header Bar */}
-      <div className="px-5 py-3.5 bg-white/[0.02] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3">
+      <div className="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={() => setIsOpen((v) => !v)}
             className="flex items-center gap-2.5 text-left cursor-pointer group"
           >
-            <div className="w-8 h-8 rounded-xl bg-[#00E5FF]/12 border border-[#00E5FF]/30 flex items-center justify-center text-[#00E5FF]">
+            <div className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-center text-sky-600">
               <Sliders size={15} />
             </div>
-            <span className="text-[14px] font-semibold tracking-tight text-white group-hover:text-[#00E5FF] transition-colors">
+            <span className="text-[14px] font-semibold tracking-tight text-slate-900 group-hover:text-sky-700 transition-colors">
               Consola Quirúrgica Mid/Side & Stem Bus
             </span>
             {isOpen ? (
-              <ChevronUp size={16} className="text-zinc-400" />
+              <ChevronUp size={16} className="text-slate-500" />
             ) : (
-              <ChevronDown size={16} className="text-zinc-400" />
+              <ChevronDown size={16} className="text-slate-500" />
             )}
           </button>
 
           {/* Mode Tabs with Spring Sliding Pill */}
-          <div className="flex items-center bg-[#05070b] border border-white/[0.07] rounded-xl p-1 ml-1">
+          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 ml-1">
             <button
               type="button"
               onClick={() => {
@@ -113,15 +113,15 @@ export const MidSideSurgicalControls: React.FC<
               }}
               className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                 activeTab === 'surgical'
-                  ? 'text-slate-950 font-semibold'
-                  : 'text-zinc-400 hover:text-white'
+                  ? 'text-white font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               {activeTab === 'surgical' && (
                 <motion.span
                   layoutId="surgical-console-mode-pill"
                   transition={SPRING_TAB}
-                  className="absolute inset-0 rounded-lg bg-[#FF6B00] shadow-[0_2px_10px_rgba(255,107,0,0.35)] -z-10"
+                  className="absolute inset-0 rounded-lg bg-[#0284c7] shadow-xs -z-10"
                 />
               )}
               Cirugía Mid/Side + Analog
@@ -134,15 +134,15 @@ export const MidSideSurgicalControls: React.FC<
               }}
               className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                 activeTab === 'stems'
-                  ? 'text-slate-950 font-semibold'
-                  : 'text-zinc-400 hover:text-white'
+                  ? 'text-white font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               {activeTab === 'stems' && (
                 <motion.span
                   layoutId="surgical-console-mode-pill"
                   transition={SPRING_TAB}
-                  className="absolute inset-0 rounded-lg bg-[#00E5FF] shadow-[0_2px_10px_rgba(0,229,255,0.35)] -z-10"
+                  className="absolute inset-0 rounded-lg bg-[#0ea5e9] shadow-xs -z-10"
                 />
               )}
               <Layers size={12} />
@@ -155,7 +155,7 @@ export const MidSideSurgicalControls: React.FC<
           type="button"
           whileTap={{ scale: 0.96 }}
           onClick={onResetToPreset}
-          className="h-9 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-zinc-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+          className="h-9 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 hover:text-slate-900 flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
           title="Restaurar parámetros originales del preset activo"
         >
           <RotateCcw size={12} />
@@ -175,12 +175,12 @@ export const MidSideSurgicalControls: React.FC<
           >
             {/* Column 1: Mid/Side Matrix & Mono Maker */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3.5">
-              <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                <span className="text-xs font-semibold uppercase tracking-wider text-[#FF6B00] flex items-center gap-1.5">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-blue-700 flex items-center gap-1.5">
                   <Radio size={13} />
                   1. Matriz Mid/Side & Mono Maker
                 </span>
-                <span className="text-[10px] font-mono text-zinc-500">
+                <span className="text-[10px] font-mono text-slate-500">
                   Butterworth Q=0.7071
                 </span>
               </div>
@@ -188,8 +188,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Mono Maker Freq */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Mono Maker (Corte Side)</span>
-                  <span className="text-[#FF6B00] font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Mono Maker (Corte Side)</span>
+                  <span className="text-blue-700 font-bold">
                     {overrides.monoMakerFreq} Hz
                   </span>
                 </div>
@@ -204,7 +204,7 @@ export const MidSideSurgicalControls: React.FC<
                   }
                   className="mastering-fader"
                 />
-                <div className="text-[10.5px] text-zinc-500 mt-1">
+                <div className="text-[10.5px] text-slate-500 mt-1">
                   Centra el 100% del sub-bajo y bombo en Mono por debajo de{' '}
                   {overrides.monoMakerFreq}Hz.
                 </div>
@@ -213,8 +213,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Mid Sub Punch */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Mid Sub-Bass Punch</span>
-                  <span className="text-[#FF6B00] font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Mid Sub-Bass Punch</span>
+                  <span className="text-blue-700 font-bold">
                     {formatSignedDb(overrides.midLowPunchDb)}
                   </span>
                 </div>
@@ -234,8 +234,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Mid Vocal Presence */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Mid Vocal Focus (Centro)</span>
-                  <span className="text-[#FF6B00] font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Mid Vocal Focus (Centro)</span>
+                  <span className="text-blue-700 font-bold">
                     {formatSignedDb(overrides.midPresenceDb)}
                   </span>
                 </div>
@@ -255,8 +255,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Side Air Shelf Boost */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Side Air Boost (12k–15kHz)</span>
-                  <span className="text-[#00E5FF] font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Side Air Boost (12k–15kHz)</span>
+                  <span className="text-sky-700 font-bold">
                     {formatSignedDb(overrides.sideAirBoostDb)}
                   </span>
                 </div>
@@ -276,8 +276,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Stereo Width % */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Apertura Estéreo (Side Gain)</span>
-                  <span className="text-[#00E5FF] font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Apertura Estéreo (Side Gain)</span>
+                  <span className="text-sky-700 font-bold">
                     {overrides.stereoWidthPct}%
                   </span>
                 </div>
@@ -297,12 +297,12 @@ export const MidSideSurgicalControls: React.FC<
 
             {/* Column 2: Surgical De-AI & Anti-Mud EQ */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3.5">
-              <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                  <Zap size={13} />
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                  <Zap size={13} className="text-sky-600" />
                   2. Cirugía Sustractiva ("De-AI" & Anti-Mud)
                 </span>
-                <span className="text-[10px] font-mono text-zinc-500">
+                <span className="text-[10px] font-mono text-slate-500">
                   High-Q Notches
                 </span>
               </div>
@@ -310,8 +310,8 @@ export const MidSideSurgicalControls: React.FC<
               {/* Anti-Mud 280-320Hz */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">Anti-Mud Cut (250–320Hz)</span>
-                  <span className="text-emerald-400 font-bold">
+                  <span className="text-slate-700 font-sans font-medium">Anti-Mud Cut (250–320Hz)</span>
+                  <span className="text-sky-700 font-bold">
                     {formatSignedDb(overrides.stereoMudCutDb)}
                   </span>
                 </div>
@@ -331,10 +331,10 @@ export const MidSideSurgicalControls: React.FC<
               {/* De-Harshness 3.8kHz */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">
+                  <span className="text-slate-700 font-sans font-medium">
                     De-Harshness (3.8kHz Metálico IA)
                   </span>
-                  <span className="text-emerald-400 font-bold">
+                  <span className="text-sky-700 font-bold">
                     {formatSignedDb(overrides.deHarshnessCutDb)}
                   </span>
                 </div>
@@ -349,7 +349,7 @@ export const MidSideSurgicalControls: React.FC<
                   }
                   className="mastering-fader fader-emerald"
                 />
-                <div className="text-[10.5px] text-zinc-500 mt-1">
+                <div className="text-[10.5px] text-slate-500 mt-1">
                   Limpia la aspereza sintética típica de pistas generadas con IA (Suno/Udio).
                 </div>
               </div>
@@ -357,11 +357,11 @@ export const MidSideSurgicalControls: React.FC<
               {/* De-Sibilance dinámico */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">
+                  <span className="text-slate-700 font-sans font-medium">
                     De-Sibilance / Aliasing (
                     {((overrides.sibilanceFreqHz || 6200) / 1000).toFixed(1)}kHz)
                   </span>
-                  <span className="text-emerald-400 font-bold">
+                  <span className="text-sky-700 font-bold">
                     {formatSignedDb(overrides.sibilanceCutDb)}
                   </span>
                 </div>
@@ -379,12 +379,12 @@ export const MidSideSurgicalControls: React.FC<
               </div>
 
               {/* Bus Glue Compressor Controls */}
-              <div className="pt-3 border-t border-white/[0.06] grid grid-cols-3 gap-3">
+              <div className="pt-3 border-t border-slate-200 grid grid-cols-3 gap-3">
                 <div>
-                  <div className="text-[10px] font-medium text-zinc-400">
+                  <div className="text-[10px] font-medium text-slate-500">
                     Comp Thresh
                   </div>
-                  <div className="text-xs font-mono font-bold text-white mb-1.5">
+                  <div className="text-xs font-mono font-bold text-slate-900 mb-1.5">
                     {overrides.compressorThresholdDb} dB
                   </div>
                   <input
@@ -404,10 +404,10 @@ export const MidSideSurgicalControls: React.FC<
                 </div>
 
                 <div>
-                  <div className="text-[10px] font-medium text-zinc-400">
+                  <div className="text-[10px] font-medium text-slate-500">
                     SSL Ratio
                   </div>
-                  <div className="text-xs font-mono font-bold text-white mb-1.5">
+                  <div className="text-xs font-mono font-bold text-slate-900 mb-1.5">
                     {overrides.compressorRatio.toFixed(1)}:1
                   </div>
                   <input
@@ -424,10 +424,10 @@ export const MidSideSurgicalControls: React.FC<
                 </div>
 
                 <div>
-                  <div className="text-[10px] font-medium text-zinc-400">
+                  <div className="text-[10px] font-medium text-slate-500">
                     Parallel Glue
                   </div>
-                  <div className="text-xs font-mono font-bold text-[#00E5FF] mb-1.5">
+                  <div className="text-xs font-mono font-bold text-sky-700 mb-1.5">
                     {overrides.compressorGlueMixPct}%
                   </div>
                   <input
@@ -450,12 +450,12 @@ export const MidSideSurgicalControls: React.FC<
 
             {/* Column 3: Analog Saturation 4x & True Peak Brickwall Ceiling */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3.5">
-              <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                <span className="text-xs font-semibold uppercase tracking-wider text-[#00E5FF] flex items-center gap-1.5">
-                  <Flame size={13} className="text-[#FF6B00]" />
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-sky-700 flex items-center gap-1.5">
+                  <Flame size={13} className="text-sky-600" />
                   3. Saturación Analógica 4x & Limiter
                 </span>
-                <span className="text-[10px] font-mono text-zinc-500">
+                <span className="text-[10px] font-mono text-slate-500">
                   DC Blocker 18Hz
                 </span>
               </div>
@@ -471,14 +471,14 @@ export const MidSideSurgicalControls: React.FC<
                       onClick={() => onChangeOverride('saturationType', mode.id)}
                       className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
                         active
-                          ? 'bg-[#FF6B00]/15 border-[#FF6B00]/80 text-white shadow-[0_0_16px_rgba(255,107,0,0.18)]'
-                          : 'bg-white/[0.03] hover:bg-white/[0.06] border-white/[0.07] text-zinc-400 hover:text-zinc-200'
+                          ? 'bg-sky-50 border-sky-400 text-slate-900 shadow-xs'
+                          : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      <div className="text-xs font-semibold">
+                      <div className={`text-xs font-semibold ${active ? 'text-sky-800' : ''}`}>
                         {mode.label}
                       </div>
-                      <div className="text-[10px] text-zinc-400 truncate mt-0.5">
+                      <div className="text-[10px] text-slate-500 truncate mt-0.5">
                         {mode.desc}
                       </div>
                     </button>
@@ -489,10 +489,10 @@ export const MidSideSurgicalControls: React.FC<
               {/* Tape / Harmonic Drive (%) */}
               <div>
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">
+                  <span className="text-slate-700 font-sans font-medium">
                     Analog Drive (Oversampling 4x)
                   </span>
-                  <span className="text-[#FF6B00] font-bold">
+                  <span className="text-sky-700 font-bold">
                     {overrides.tapeDrivePct}%
                   </span>
                 </div>
@@ -510,12 +510,12 @@ export const MidSideSurgicalControls: React.FC<
               </div>
 
               {/* Target Loudness LUFS */}
-              <div className="pt-2.5 border-t border-white/[0.06]">
+              <div className="pt-2.5 border-t border-slate-200">
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">
+                  <span className="text-slate-700 font-sans font-medium">
                     Target Loudness (Maximizer Push)
                   </span>
-                  <span className="text-[#FF6B00] font-bold">
+                  <span className="text-blue-700 font-bold">
                     {overrides.targetLufs.toFixed(1)} LUFS
                   </span>
                 </div>
@@ -533,12 +533,12 @@ export const MidSideSurgicalControls: React.FC<
               </div>
 
               {/* True Peak Ceiling dBTP */}
-              <div className="pt-2.5 border-t border-white/[0.06]">
+              <div className="pt-2.5 border-t border-slate-200">
                 <div className="flex justify-between text-xs font-mono mb-1.5">
-                  <span className="text-zinc-300 font-sans">
+                  <span className="text-slate-700 font-sans font-medium">
                     Brickwall Ceiling (True Peak)
                   </span>
-                  <span className="text-[#00E5FF] font-bold">
+                  <span className="text-sky-700 font-bold">
                     {overrides.ceilingDbTp.toFixed(1)} dBTP
                   </span>
                 </div>
@@ -553,7 +553,7 @@ export const MidSideSurgicalControls: React.FC<
                   }
                   className="mastering-fader fader-cyan"
                 />
-                <div className="flex justify-between text-[10px] font-mono text-zinc-500 mt-1.5">
+                <div className="flex justify-between text-[10px] font-mono text-slate-500 mt-1.5">
                   <span>-1.0 dBTP (Estándar Spotify/Apple)</span>
                   <span>Lookahead 5.0ms 4x FIR</span>
                 </div>
@@ -573,10 +573,10 @@ export const MidSideSurgicalControls: React.FC<
           >
             <div className="flex flex-wrap items-center justify-between gap-3 mastering-subpanel rounded-xl p-4">
               <div>
-                <div className="text-xs font-semibold text-[#00E5FF] uppercase tracking-wider">
+                <div className="text-xs font-semibold text-sky-700 uppercase tracking-wider">
                   Masterización por Stems con Sidechain Dinámico Bombo → Bajo
                 </div>
-                <p className="text-xs text-zinc-400 mt-0.5">
+                <p className="text-xs text-slate-600 mt-0.5">
                   Carga tus buses por separado (Batería, Bajo, Voces y Guitarras/Otros). El motor aplicará ducking inteligente en 40–120Hz y enviará la suma al procesador Mid/Side.
                 </p>
               </div>
@@ -587,8 +587,8 @@ export const MidSideSurgicalControls: React.FC<
                   onClick={onToggleKickBassSidechain}
                   className={`px-3.5 py-2 rounded-xl border text-xs font-mono font-semibold transition-colors cursor-pointer ${
                     kickBassSidechain
-                      ? 'bg-[#FF6B00]/15 border-[#FF6B00]/60 text-[#FF6B00]'
-                      : 'bg-white/[0.03] border-white/[0.07] text-zinc-400'
+                      ? 'bg-sky-50 border-sky-300 text-sky-700'
+                      : 'bg-white border-slate-200 text-slate-600'
                   }`}
                 >
                   Sidechain Bombo/Bajo: {kickBassSidechain ? 'ACTIVO' : 'OFF'}
@@ -598,7 +598,7 @@ export const MidSideSurgicalControls: React.FC<
                   type="button"
                   onClick={onMixStemsToMaster}
                   disabled={isMixingStems}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950 font-bold text-xs shadow-lg disabled:opacity-40 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#0284c7] to-[#38bdf8] text-white font-semibold text-xs shadow-sm disabled:opacity-40 cursor-pointer"
                 >
                   {isMixingStems
                     ? 'Mezclando Stems...'
@@ -614,7 +614,7 @@ export const MidSideSurgicalControls: React.FC<
                   className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-white">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-900">
                       {stem.label}
                     </span>
                     <div className="flex items-center gap-1">
@@ -625,8 +625,8 @@ export const MidSideSurgicalControls: React.FC<
                         }
                         className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border cursor-pointer ${
                           stem.muted
-                            ? 'bg-rose-500/20 border-rose-500 text-rose-400'
-                            : 'bg-white/[0.04] border-white/[0.08] text-zinc-400'
+                            ? 'bg-rose-50 border-rose-300 text-rose-700'
+                            : 'bg-white border-slate-200 text-slate-500'
                         }`}
                       >
                         M
@@ -638,8 +638,8 @@ export const MidSideSurgicalControls: React.FC<
                         }
                         className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border cursor-pointer ${
                           stem.solo
-                            ? 'bg-amber-400/20 border-amber-400 text-amber-300'
-                            : 'bg-white/[0.04] border-white/[0.08] text-zinc-400'
+                            ? 'bg-sky-100 border-sky-400 text-sky-800'
+                            : 'bg-white border-slate-200 text-slate-500'
                         }`}
                       >
                         S
@@ -647,11 +647,11 @@ export const MidSideSurgicalControls: React.FC<
                     </div>
                   </div>
 
-                  <label className="cursor-pointer rounded-xl border border-dashed border-white/[0.14] hover:border-[#00E5FF]/60 bg-white/[0.03] px-3 py-2 flex items-center justify-between text-xs text-zinc-300 transition-colors">
+                  <label className="cursor-pointer rounded-xl border border-dashed border-slate-300 hover:border-sky-400 bg-white px-3 py-2 flex items-center justify-between text-xs text-slate-700 transition-colors">
                     <span className="truncate max-w-[160px] font-mono text-[11px]">
                       {stem.fileName || `Subir ${stem.label}...`}
                     </span>
-                    <Upload size={13} className="text-[#00E5FF] shrink-0" />
+                    <Upload size={13} className="text-sky-600 shrink-0" />
                     <input
                       type="file"
                       accept="audio/*"
@@ -664,9 +664,9 @@ export const MidSideSurgicalControls: React.FC<
                   </label>
 
                   <div>
-                    <div className="flex justify-between text-[10.5px] font-mono text-zinc-400 mb-1">
+                    <div className="flex justify-between text-[10.5px] font-mono text-slate-500 mb-1">
                       <span>Nivel Bus</span>
-                      <span className="text-white font-semibold">
+                      <span className="text-slate-900 font-semibold">
                         {formatSignedDb(stem.gainDb)}
                       </span>
                     </div>
@@ -686,9 +686,9 @@ export const MidSideSurgicalControls: React.FC<
                   </div>
 
                   <div>
-                    <div className="flex justify-between text-[10.5px] font-mono text-zinc-400 mb-1">
+                    <div className="flex justify-between text-[10.5px] font-mono text-slate-500 mb-1">
                       <span>Paneo (L / R)</span>
-                      <span className="text-[#00E5FF] font-semibold">
+                      <span className="text-sky-700 font-semibold">
                         {Math.abs(stem.pan) < 0.03
                           ? 'C'
                           : stem.pan < 0

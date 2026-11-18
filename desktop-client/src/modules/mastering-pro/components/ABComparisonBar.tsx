@@ -127,7 +127,7 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3.5">
-        {/* Left: Transport + Apple Logic LCD Readout + Drag & Drop Load */}
+        {/* Left: Transport + Apple Logic Light LCD Readout + Drag & Drop Load */}
         <div className="flex flex-wrap items-center gap-2.5 min-w-[280px]">
           <motion.button
             type="button"
@@ -136,10 +136,10 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             disabled={!hasAudio}
             className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors border ${
               !hasAudio
-                ? 'bg-white/[0.03] border-white/[0.06] text-zinc-600 cursor-not-allowed'
+                ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                 : isPlaying
-                ? 'bg-gradient-to-b from-[#ff7a1a] to-[#FF6B00] border-[#ff8c3a] text-slate-950 shadow-[0_0_24px_rgba(255,107,0,0.4)] cursor-pointer'
-                : 'bg-white/[0.06] hover:bg-white/[0.11] border-white/[0.12] text-white cursor-pointer'
+                ? 'bg-gradient-to-b from-[#38bdf8] to-[#0284c7] border-[#0284c7] text-white shadow-[0_4px_16px_rgba(14,165,233,0.35)] cursor-pointer'
+                : 'bg-slate-900 hover:bg-slate-800 border-slate-900 text-white shadow-sm cursor-pointer'
             }`}
             title={isPlaying ? 'Pausar (Espacio)' : 'Reproducir (Espacio)'}
           >
@@ -155,32 +155,32 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             whileTap={hasAudio ? { scale: 0.94 } : undefined}
             onClick={onStop}
             disabled={!hasAudio}
-            className="w-10 h-11 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] flex items-center justify-center text-zinc-300 hover:text-white disabled:opacity-35 transition-colors cursor-pointer"
+            className="w-10 h-11 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 flex items-center justify-center text-slate-600 hover:text-slate-900 disabled:opacity-40 transition-colors cursor-pointer"
             title="Volver al inicio"
           >
             <RotateCcw size={15} />
           </motion.button>
 
-          {/* Timecode + Track Info Apple LCD Display */}
-          <div className="px-3.5 py-1.5 rounded-xl bg-[#07090e]/95 border border-white/[0.07] shadow-[inset_0_1px_3px_rgba(0,0,0,0.75)] flex items-center gap-3 min-w-[210px] sm:min-w-[245px]">
+          {/* Timecode + Track Info Light Ice LCD Display */}
+          <div className="px-3.5 py-1.5 rounded-xl bg-[#f0f7ff] border border-sky-200/80 shadow-inner flex items-center gap-3 min-w-[210px] sm:min-w-[245px]">
             <div className="w-full">
-              <div className="text-[11px] font-medium tracking-tight text-zinc-400 flex items-center gap-1.5">
+              <div className="text-[11px] font-medium tracking-tight text-slate-600 flex items-center gap-1.5">
                 <Radio
                   size={11}
                   className={
                     isPlaying
-                      ? 'text-[#00E5FF] animate-pulse shrink-0'
-                      : 'text-zinc-600 shrink-0'
+                      ? 'text-sky-500 animate-pulse shrink-0'
+                      : 'text-slate-400 shrink-0'
                   }
                 />
-                <span className="truncate max-w-[185px] sm:max-w-[230px] text-zinc-100 font-semibold">
+                <span className="truncate max-w-[185px] sm:max-w-[230px] text-slate-900 font-semibold">
                   {trackTitle || 'Sin pista cargada'}
                 </span>
               </div>
-              <div className="text-xs font-mono text-[#00E5FF] tracking-wider mt-0.5">
+              <div className="text-xs font-mono font-bold text-sky-700 tracking-wider mt-0.5">
                 {formatTimeMmSs(currentTimeSec)}{' '}
-                <span className="text-zinc-600">/</span>{' '}
-                <span className="text-zinc-400">
+                <span className="text-slate-300">/</span>{' '}
+                <span className="text-slate-500 font-normal">
                   {formatTimeMmSs(durationSec)}
                 </span>
               </div>
@@ -191,10 +191,10 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             type="button"
             whileTap={{ scale: 0.97 }}
             onClick={() => fileInputRef.current?.click()}
-            className="h-10 px-3.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] hover:border-[#00E5FF]/40 text-xs font-medium text-zinc-100 flex items-center gap-2 transition-colors cursor-pointer"
+            className="h-10 px-3.5 rounded-xl bg-white hover:bg-sky-50 border border-slate-200 hover:border-sky-300 text-xs font-medium text-slate-700 hover:text-sky-800 flex items-center gap-2 shadow-2xs transition-colors cursor-pointer"
             title="Subir archivo WAV, FLAC o MP3 (o arrastra aquí)"
           >
-            <Upload size={13.5} className="text-[#00E5FF]" />
+            <Upload size={13.5} className="text-sky-600" />
             <span>Cargar Audio</span>
           </motion.button>
 
@@ -202,10 +202,10 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             type="button"
             whileTap={{ scale: 0.97 }}
             onClick={onLoadDemoTrack}
-            className="h-10 px-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] text-xs font-medium text-zinc-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="h-10 px-3 rounded-xl bg-slate-100 hover:bg-slate-200/80 border border-slate-200 text-xs font-medium text-slate-700 hover:text-slate-900 flex items-center gap-1.5 transition-colors cursor-pointer"
             title="Generar pista de referencia de estudio en 32-bit para probar el rack"
           >
-            <Disc3 size={13.5} className="text-[#FF6B00]" />
+            <Disc3 size={13.5} className="text-sky-600" />
             <span>Demo Track</span>
           </motion.button>
         </div>
@@ -213,21 +213,21 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
         {/* Center: A/B Hardware Switch + Gain-Match + AI Auto-Analyze */}
         <div className="flex flex-wrap items-center gap-2">
           {/* A / B Segmented Switch with Spring Layout Pill */}
-          <div className="relative flex items-center p-1 rounded-xl bg-[#07090e] border border-white/[0.07]">
+          <div className="relative flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
             <button
               type="button"
               onClick={() => onToggleBypass(true)}
               className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-mono font-semibold transition-colors cursor-pointer ${
                 isBypassed
-                  ? 'text-white'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'text-slate-900'
+                  : 'text-slate-500 hover:text-slate-800'
               }`}
             >
               {isBypassed && (
                 <motion.span
                   layoutId="ab-master-switch-pill"
                   transition={SPRING_PILL}
-                  className="absolute inset-0 rounded-lg bg-zinc-700/90 border border-white/15 shadow-sm -z-10"
+                  className="absolute inset-0 rounded-lg bg-white border border-slate-200 shadow-xs -z-10"
                 />
               )}
               A · ORIGINAL
@@ -237,15 +237,15 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
               onClick={() => onToggleBypass(false)}
               className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer ${
                 !isBypassed
-                  ? 'text-slate-950'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'text-white'
+                  : 'text-slate-500 hover:text-slate-800'
               }`}
             >
               {!isBypassed && (
                 <motion.span
                   layoutId="ab-master-switch-pill"
                   transition={SPRING_PILL}
-                  className="absolute inset-0 rounded-lg bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] shadow-[0_0_16px_rgba(0,229,255,0.28)] -z-10"
+                  className="absolute inset-0 rounded-lg bg-gradient-to-r from-[#0284c7] to-[#38bdf8] shadow-[0_2px_12px_rgba(14,165,233,0.3)] -z-10"
                 />
               )}
               B · MASTER PRO
@@ -259,8 +259,8 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             onClick={onToggleGainMatch}
             className={`h-9 px-3 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
               isGainMatch
-                ? 'bg-[#00E5FF]/12 border-[#00E5FF]/45 text-[#00E5FF]'
-                : 'bg-white/[0.03] border-white/[0.07] text-zinc-400 hover:text-zinc-200'
+                ? 'bg-sky-50 border-sky-300 text-sky-700'
+                : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900'
             }`}
             title="Iguala automáticamente el volumen del audio Original al del Master para comparar calidad real sin engaño de volumen"
           >
@@ -274,12 +274,12 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             whileTap={{ scale: 0.97 }}
             onClick={onRunAiAnalysis}
             disabled={!hasAudio || isAnalyzing}
-            className="h-9 px-3.5 rounded-xl bg-[#FF6B00]/12 hover:bg-[#FF6B00]/22 border border-[#FF6B00]/45 text-xs font-semibold text-[#FF6B00] flex items-center gap-1.5 disabled:opacity-40 transition-colors cursor-pointer"
+            className="h-9 px-3.5 rounded-xl bg-sky-100/80 hover:bg-sky-100 border border-sky-300 text-xs font-semibold text-sky-800 flex items-center gap-1.5 disabled:opacity-40 transition-colors cursor-pointer"
             title="Escanea el espectro ITU-R BS.1770-4 y recomienda el preset + curva adaptativa ideal"
           >
             <Sparkles
               size={13.5}
-              className={isAnalyzing ? 'animate-spin' : ''}
+              className={isAnalyzing ? 'animate-spin text-sky-600' : 'text-sky-600'}
             />
             <span>{isAnalyzing ? 'Escaneando...' : 'Auto-Analyze AI'}</span>
           </motion.button>
@@ -288,10 +288,10 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             type="button"
             whileTap={{ scale: 0.97 }}
             onClick={onToggleAutoAdapt}
-            className={`h-9 px-3 rounded-xl border text-[11px] font-mono font-medium transition-colors cursor-pointer ${
+            className={`h-9 px-3 rounded-xl border text-[11px] font-mono font-semibold transition-colors cursor-pointer ${
               autoAdaptEnabled
-                ? 'bg-emerald-500/12 border-emerald-500/40 text-emerald-300'
-                : 'bg-white/[0.03] border-white/[0.07] text-zinc-500'
+                ? 'bg-sky-50 border-sky-200 text-sky-700'
+                : 'bg-slate-100 border-slate-200 text-slate-500'
             }`}
             title="Activa/desactiva la corrección espectral adaptativa (deltaGain) sobre el preset"
           >
@@ -301,8 +301,8 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
 
         {/* Right: Target LUFS Selector + Export 24-Bit WAV + Cloud Save */}
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center bg-[#07090e] border border-white/[0.07] rounded-xl p-1 gap-0.5">
-            <Volume2 size={13} className="text-zinc-500 ml-2 mr-1 shrink-0" />
+          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-1 gap-0.5">
+            <Volume2 size={13} className="text-slate-500 ml-2 mr-1 shrink-0" />
             {TARGET_LUFS_OPTIONS.map((opt) => {
               const active = Math.abs(targetLufs - opt.lufs) < 0.3;
               return (
@@ -312,8 +312,8 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
                   onClick={() => onSelectTargetLufs(opt.lufs)}
                   className={`relative z-10 px-2.5 py-1 rounded-lg text-[10px] font-mono leading-tight transition-colors cursor-pointer ${
                     active
-                      ? 'text-slate-950 font-bold'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'text-white font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                   title={`${opt.label} (${opt.sub})`}
                 >
@@ -321,11 +321,11 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
                     <motion.span
                       layoutId="target-lufs-option-pill"
                       transition={SPRING_PILL}
-                      className="absolute inset-0 rounded-lg bg-[#FF6B00] shadow-[0_2px_10px_rgba(255,107,0,0.35)] -z-10"
+                      className="absolute inset-0 rounded-lg bg-[#0284c7] shadow-xs -z-10"
                     />
                   )}
                   <div>{opt.label}</div>
-                  <div className="text-[8.5px] opacity-80 font-sans">
+                  <div className="text-[8.5px] opacity-85 font-sans">
                     {opt.sub}
                   </div>
                 </button>
@@ -339,7 +339,7 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             whileTap={hasAudio && !isExporting ? { scale: 0.97 } : undefined}
             onClick={onExportWav24}
             disabled={!hasAudio || isExporting}
-            className="h-10 px-4 rounded-xl bg-gradient-to-b from-[#ff7b1a] to-[#FF6B00] hover:from-[#ff872e] hover:to-[#ff6b00] text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-[0_4px_20px_rgba(255,107,0,0.32)] disabled:opacity-40 transition-all cursor-pointer"
+            className="h-10 px-4 rounded-xl bg-gradient-to-b from-[#0ea5e9] to-[#0284c7] hover:from-[#38bdf8] hover:to-[#0ea5e9] text-white font-semibold text-xs flex items-center gap-1.5 shadow-[0_4px_16px_rgba(2,132,199,0.28)] disabled:opacity-40 transition-all cursor-pointer"
           >
             <Download size={14} />
             <span>
@@ -352,10 +352,10 @@ export const ABComparisonBar: React.FC<ABComparisonBarProps> = ({
             whileTap={hasAudio && !isSavingCloud ? { scale: 0.97 } : undefined}
             onClick={onSaveToCloud}
             disabled={!hasAudio || isSavingCloud}
-            className="h-10 px-3.5 rounded-xl bg-[#00E5FF]/12 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/40 text-[#00E5FF] font-semibold text-xs flex items-center gap-1.5 disabled:opacity-40 transition-colors cursor-pointer"
+            className="h-10 px-3.5 rounded-xl bg-white hover:bg-sky-50 border border-sky-300 text-sky-700 font-semibold text-xs flex items-center gap-1.5 shadow-2xs disabled:opacity-40 transition-colors cursor-pointer"
             title="Guardar Master WAV 24-Bit en Supabase Storage y registrar sesión"
           >
-            <CloudUpload size={14} />
+            <CloudUpload size={14} className="text-sky-600" />
             <span>{isSavingCloud ? 'Guardando...' : 'Guardar Cloud'}</span>
           </motion.button>
         </div>

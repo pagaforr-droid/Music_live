@@ -116,21 +116,21 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
             const postHalfH = Math.min(h * 0.46, preHalfH * postBoost);
             const isPlayed = i / numBars <= progress;
 
-            wfCtx.fillStyle = 'rgba(148, 163, 184, 0.22)';
+            wfCtx.fillStyle = 'rgba(148, 163, 184, 0.25)';
             wfCtx.fillRect(x, midY - preHalfH, barWidth, preHalfH * 2);
 
             if (isPlayed) {
-              wfCtx.fillStyle = bypassed ? '#94a3b8' : i % 2 === 0 ? '#FF6B00' : '#00E5FF';
+              wfCtx.fillStyle = bypassed ? '#64748b' : i % 2 === 0 ? '#0284c7' : '#38bdf8';
             } else {
               wfCtx.fillStyle = bypassed
                 ? 'rgba(148, 163, 184, 0.45)'
-                : 'rgba(0, 229, 255, 0.35)';
+                : 'rgba(56, 189, 248, 0.36)';
             }
             wfCtx.fillRect(x, midY - postHalfH, barWidth, postHalfH * 2);
           }
 
           const playheadX = progress * w;
-          wfCtx.strokeStyle = '#FF6B00';
+          wfCtx.strokeStyle = '#0284c7';
           wfCtx.lineWidth = 2;
           wfCtx.beginPath();
           wfCtx.moveTo(playheadX, 0);
@@ -160,15 +160,15 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           ctx.clearRect(0, 0, w, h);
 
-          // 1. Background Studio Grid (dB horizontal lines + logarithmic frequency vertical lines)
-          ctx.fillStyle = '#040711';
+          // 1. Background Studio Light Grid (Porcelain-Ice canvas + thin slate grid lines)
+          ctx.fillStyle = '#f8fbff';
           ctx.fillRect(0, 0, w, h);
 
           const dbLines = [-6, -12, -24, -36, -48];
-          ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
           ctx.lineWidth = 1;
           ctx.font = '10px monospace';
-          ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
+          ctx.fillStyle = 'rgba(100, 116, 139, 0.85)';
 
           for (const db of dbLines) {
             const y = (Math.abs(db) / 60) * (h - 24) + 8;
@@ -183,8 +183,8 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
             const x = freqToNormX(marker.freq) * w;
             ctx.strokeStyle =
               marker.freq === 3800 || marker.freq === 6200
-                ? 'rgba(16, 185, 129, 0.22)'
-                : 'rgba(51, 65, 85, 0.35)';
+                ? 'rgba(14, 165, 233, 0.28)'
+                : 'rgba(148, 163, 184, 0.25)';
             ctx.beginPath();
             ctx.moveTo(x, 0);
             ctx.lineTo(x, h - 18);
@@ -192,22 +192,22 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
 
             ctx.fillStyle =
               marker.freq === 3800 || marker.freq === 6200
-                ? 'rgba(52, 211, 153, 0.85)'
-                : 'rgba(148, 163, 184, 0.65)';
+                ? 'rgba(2, 132, 199, 0.92)'
+                : 'rgba(100, 116, 139, 0.85)';
             ctx.fillText(marker.label, x - 10, h - 5);
           }
 
           // 2. Mono Maker Sub-Bass Zone Shade + Vertical Cutoff Line
           const monoX = freqToNormX(chain.monoMakerFreq) * w;
           const monoGrad = ctx.createLinearGradient(0, 0, monoX, 0);
-          monoGrad.addColorStop(0, 'rgba(255, 107, 0, 0.14)');
-          monoGrad.addColorStop(1, 'rgba(255, 107, 0, 0.03)');
+          monoGrad.addColorStop(0, 'rgba(56, 189, 248, 0.16)');
+          monoGrad.addColorStop(1, 'rgba(56, 189, 248, 0.03)');
           ctx.fillStyle = monoGrad;
           ctx.fillRect(0, 0, monoX, h - 18);
 
           ctx.save();
           ctx.setLineDash([4, 4]);
-          ctx.strokeStyle = '#FF6B00';
+          ctx.strokeStyle = '#0284c7';
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.moveTo(monoX, 0);
@@ -215,7 +215,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           ctx.stroke();
           ctx.restore();
 
-          ctx.fillStyle = '#FF6B00';
+          ctx.fillStyle = '#0369a1';
           ctx.font = 'bold 10px monospace';
           ctx.fillText(
             `MONO MAKER ${chain.monoMakerFreq}Hz`,
@@ -267,7 +267,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           const prePts = computeCurvePoints(preBins, false);
           const postPts = computeCurvePoints(postBins, true);
 
-          // 4. Draw Pre-Master Curve (Translucent Slate/Cyan)
+          // 4. Draw Pre-Master Curve (Cool Slate Gray)
           ctx.beginPath();
           ctx.moveTo(0, usableHeight);
           for (const p of prePts) {
@@ -275,7 +275,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           }
           ctx.lineTo(w, usableHeight);
           ctx.closePath();
-          ctx.fillStyle = 'rgba(148, 163, 184, 0.12)';
+          ctx.fillStyle = 'rgba(148, 163, 184, 0.14)';
           ctx.fill();
 
           ctx.beginPath();
@@ -283,16 +283,16 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
             if (i === 0) ctx.moveTo(prePts[i].x, prePts[i].y);
             else ctx.lineTo(prePts[i].x, prePts[i].y);
           }
-          ctx.strokeStyle = 'rgba(148, 163, 184, 0.65)';
+          ctx.strokeStyle = 'rgba(100, 116, 139, 0.6)';
           ctx.lineWidth = 1.4;
           ctx.stroke();
 
-          // 5. Draw Post-Master Curve (Neon Orange #FF6B00 -> Cyan #00E5FF)
+          // 5. Draw Post-Master Curve (Azure #0284c7 -> Sky Blue #38bdf8)
           if (!bypassed) {
             const fillGrad = ctx.createLinearGradient(0, 0, w, usableHeight);
-            fillGrad.addColorStop(0, 'rgba(255, 107, 0, 0.28)');
-            fillGrad.addColorStop(0.55, 'rgba(0, 229, 255, 0.22)');
-            fillGrad.addColorStop(1, 'rgba(0, 229, 255, 0.04)');
+            fillGrad.addColorStop(0, 'rgba(2, 132, 199, 0.22)');
+            fillGrad.addColorStop(0.55, 'rgba(56, 189, 248, 0.18)');
+            fillGrad.addColorStop(1, 'rgba(186, 230, 253, 0.06)');
 
             ctx.beginPath();
             ctx.moveTo(0, usableHeight);
@@ -305,9 +305,9 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
             ctx.fill();
 
             const strokeGrad = ctx.createLinearGradient(0, 0, w, 0);
-            strokeGrad.addColorStop(0, '#FF6B00');
-            strokeGrad.addColorStop(0.5, '#fb923c');
-            strokeGrad.addColorStop(1, '#00E5FF');
+            strokeGrad.addColorStop(0, '#0369a1');
+            strokeGrad.addColorStop(0.5, '#0ea5e9');
+            strokeGrad.addColorStop(1, '#38bdf8');
 
             ctx.beginPath();
             for (let i = 0; i < postPts.length; i++) {
@@ -329,22 +329,22 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
             );
             const nodeColor =
               band.channel === 'mid'
-                ? '#FF6B00'
+                ? '#2563eb'
                 : band.channel === 'side'
-                ? '#00E5FF'
-                : '#10B981';
+                ? '#0ea5e9'
+                : '#475569';
 
             ctx.beginPath();
             ctx.arc(bx, by, 4.5, 0, Math.PI * 2);
             ctx.fillStyle = nodeColor;
             ctx.fill();
-            ctx.strokeStyle = '#020617';
-            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.6;
             ctx.stroke();
 
             if (Math.abs(band.gainDb) >= 0.4) {
               ctx.fillStyle = nodeColor;
-              ctx.font = '9px monospace';
+              ctx.font = 'bold 9px monospace';
               const sign = band.gainDb > 0 ? '+' : '';
               ctx.fillText(
                 `${band.channel.toUpperCase()} ${sign}${band.gainDb.toFixed(1)}dB`,
@@ -375,33 +375,33 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
       {/* Header Telemetry Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <span className="inline-block w-2 h-2 rounded-full bg-[#00E5FF] shadow-[0_0_8px_#00E5FF]" />
-          <span className="text-[13px] font-semibold tracking-tight text-white">
+          <span className="inline-block w-2 h-2 rounded-full bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.45)]" />
+          <span className="text-[13px] font-semibold tracking-tight text-slate-900">
             Dual FFT Real-Time Analyzer (60 FPS)
           </span>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#07090e] border border-white/[0.08] text-zinc-400">
-            PRE (Gris) vs POST (#FF6B00 → #00E5FF)
+          <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600">
+            PRE (Gris) vs POST (Azul Claro #0284c7 → #38bdf8)
           </span>
         </div>
 
         <div className="flex items-center gap-3.5 text-[10.5px] font-mono">
-          <span className="flex items-center gap-1.5 text-[#FF6B00]">
-            <span className="w-2 h-2 rounded-full bg-[#FF6B00]" />
+          <span className="flex items-center gap-1.5 text-blue-600 font-medium">
+            <span className="w-2 h-2 rounded-full bg-blue-600" />
             MID (Voz/Sub)
           </span>
-          <span className="flex items-center gap-1.5 text-[#00E5FF]">
-            <span className="w-2 h-2 rounded-full bg-[#00E5FF]" />
+          <span className="flex items-center gap-1.5 text-sky-600 font-medium">
+            <span className="w-2 h-2 rounded-full bg-sky-500" />
             SIDE (Aire/Width {dspChain.stereoWidth.widthPct}%)
           </span>
-          <span className="flex items-center gap-1.5 text-emerald-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span className="flex items-center gap-1.5 text-slate-600 font-medium">
+            <span className="w-2 h-2 rounded-full bg-slate-600" />
             SURGICAL STEREO
           </span>
         </div>
       </div>
 
       {/* Interactive Waveform Scrubber */}
-      <div className="relative w-full h-11 rounded-xl bg-[#05070b] border border-white/[0.07] shadow-inner overflow-hidden px-2 py-1">
+      <div className="relative w-full h-11 rounded-xl bg-[#f8fbff] border border-slate-200/90 shadow-inner overflow-hidden px-2 py-1">
         <canvas
           ref={waveformCanvasRef}
           onClick={handleWaveformClick}
@@ -411,7 +411,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
       </div>
 
       {/* Main 60fps FFT Spectrum Canvas */}
-      <div className="relative w-full h-60 2xl:h-64 rounded-xl bg-[#040711] border border-white/[0.07] shadow-inner overflow-hidden">
+      <div className="relative w-full h-60 2xl:h-64 rounded-xl bg-[#f8fbff] border border-slate-200/90 shadow-inner overflow-hidden">
         <canvas ref={spectrumCanvasRef} className="w-full h-full block" />
       </div>
     </div>

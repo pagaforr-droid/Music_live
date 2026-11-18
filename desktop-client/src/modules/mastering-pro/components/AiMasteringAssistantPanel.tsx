@@ -93,22 +93,22 @@ export const AiMasteringAssistantPanel: React.FC<
       className="rounded-2xl mastering-surface overflow-hidden"
     >
       {/* Top Header: AI Master Assistant Overview + 1-Click Full Apply */}
-      <div className="px-5 py-4 bg-white/[0.02] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-4">
+      <div className="px-5 py-4 bg-slate-50/70 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-10 h-10 rounded-xl bg-[#FF6B00]/15 border border-[#FF6B00]/40 flex items-center justify-center text-[#FF6B00] shadow-[0_0_20px_rgba(255,107,0,0.2)]">
+          <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-center text-sky-600 shadow-2xs">
             <Sparkles size={18} className={isAnalyzing ? 'animate-spin' : ''} />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <h3 className="text-[14px] font-semibold tracking-tight text-white">
+              <h3 className="text-[14px] font-semibold tracking-tight text-slate-900">
                 Asistente IA de Diagnóstico Quirúrgico & Personalización
               </h3>
-              <span className="text-[10.5px] font-mono px-2.5 py-0.5 rounded-full bg-[#00E5FF]/12 border border-[#00E5FF]/35 text-[#00E5FF] font-semibold">
+              <span className="text-[10.5px] font-mono px-2.5 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700 font-semibold">
                 Sibilancia: {report.sibilanceScore}% · Aspereza 3.8k:{' '}
                 {report.aiArtifactScore}%
               </span>
             </div>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-slate-500 mt-0.5">
               {report.recommendationReason}
             </p>
           </div>
@@ -122,7 +122,7 @@ export const AiMasteringAssistantPanel: React.FC<
             onRunFullAiOptimization();
             markApplied('all-ai');
           }}
-          className="h-10 px-4 rounded-xl bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950 font-bold text-xs flex items-center gap-2 shadow-[0_4px_22px_rgba(0,229,255,0.28)] cursor-pointer"
+          className="h-10 px-4 rounded-xl bg-gradient-to-r from-[#0284c7] to-[#38bdf8] text-white font-semibold text-xs flex items-center gap-2 shadow-[0_4px_16px_rgba(14,165,233,0.28)] cursor-pointer"
         >
           <Wand2 size={14} />
           <span>Aplicar Optimización Completa IA (EQ + De-Esser + Comp + Width)</span>
@@ -130,8 +130,8 @@ export const AiMasteringAssistantPanel: React.FC<
       </div>
 
       {/* Navigation Sub-Tabs with Apple Segmented Spring Pill */}
-      <div className="px-5 py-2.5 bg-[#07090e]/80 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-[#04060a] border border-white/[0.06]">
+      <div className="px-5 py-2.5 bg-slate-50/50 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 border border-slate-200">
           {[
             {
               id: 'critical-points' as const,
@@ -163,15 +163,15 @@ export const AiMasteringAssistantPanel: React.FC<
                 onClick={() => setActiveTab(tab.id)}
                 className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
                   active
-                    ? 'text-slate-950 font-semibold'
-                    : 'text-zinc-400 hover:text-zinc-100'
+                    ? 'text-white font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 {active && (
                   <motion.span
                     layoutId="ai-assistant-tab-pill"
                     transition={SPRING_TAB}
-                    className="absolute inset-0 rounded-lg bg-[#FF6B00] shadow-[0_2px_12px_rgba(255,107,0,0.35)] -z-10"
+                    className="absolute inset-0 rounded-lg bg-[#0284c7] shadow-xs -z-10"
                   />
                 )}
                 <Icon size={13} />
@@ -181,13 +181,13 @@ export const AiMasteringAssistantPanel: React.FC<
           })}
         </div>
 
-        <div className="flex items-center gap-2.5 text-[11px] font-mono text-zinc-400">
-          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.03] border border-white/[0.06]">
-            Crest: <strong className="text-zinc-200">{report.detectedCrestFactorDb} dB</strong>
+        <div className="flex items-center gap-2.5 text-[11px] font-mono text-slate-500">
+          <span className="px-2.5 py-0.5 rounded-full bg-white border border-slate-200">
+            Crest: <strong className="text-slate-800">{report.detectedCrestFactorDb} dB</strong>
           </span>
-          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.03] border border-white/[0.06]">
+          <span className="px-2.5 py-0.5 rounded-full bg-white border border-slate-200">
             Stereo Side:{' '}
-            <strong className="text-[#00E5FF]">
+            <strong className="text-sky-700">
               {report.stereoWidthSuggestion.detectedStereoEnergyPct}%
             </strong>
           </span>
@@ -207,12 +207,12 @@ export const AiMasteringAssistantPanel: React.FC<
           >
             {/* Left Column: Where to BOOST (Subir) */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                <div className="flex items-center gap-2 text-xs font-semibold tracking-tight text-[#00E5FF]">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <div className="flex items-center gap-2 text-xs font-semibold tracking-tight text-sky-700">
                   <TrendingUp size={15} />
                   <span>Puntos Donde Podemos SUBIR (Realce & Presencia)</span>
                 </div>
-                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-[#00E5FF]/12 border border-[#00E5FF]/30 text-[#00E5FF]">
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-sky-100 border border-sky-200 text-sky-700 font-semibold">
                   {boostPoints.length} zonas clave
                 </span>
               </div>
@@ -223,20 +223,20 @@ export const AiMasteringAssistantPanel: React.FC<
                   return (
                     <div
                       key={pt.id}
-                      className="rounded-xl bg-white/[0.025] hover:bg-white/[0.045] border border-white/[0.06] hover:border-[#00E5FF]/35 p-3.5 flex flex-col gap-2 transition-colors"
+                      className="rounded-xl bg-white hover:bg-sky-50/40 border border-slate-200 hover:border-sky-300 p-3.5 flex flex-col gap-2 transition-colors shadow-2xs"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-semibold text-white">
+                            <span className="text-xs font-semibold text-slate-900">
                               {pt.title}
                             </span>
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#05070b] border border-white/[0.08] text-[#00E5FF]">
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-sky-700 font-semibold">
                               {pt.freqHz} Hz · Q:{pt.recommendedQ} ·{' '}
                               {pt.channel.toUpperCase()}
                             </span>
                           </div>
-                          <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+                          <p className="text-[11px] text-slate-600 mt-1.5 leading-relaxed">
                             {pt.reason}
                           </p>
                         </div>
@@ -250,8 +250,8 @@ export const AiMasteringAssistantPanel: React.FC<
                           }}
                           className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold shrink-0 flex items-center gap-1 transition-colors cursor-pointer ${
                             isDone
-                              ? 'bg-emerald-500/15 border border-emerald-500/45 text-emerald-300'
-                              : 'bg-[#00E5FF] hover:bg-cyan-300 text-slate-950'
+                              ? 'bg-sky-100 border border-sky-300 text-sky-800'
+                              : 'bg-sky-600 hover:bg-sky-700 text-white shadow-2xs'
                           }`}
                         >
                           {isDone && <CheckCircle2 size={12} />}
@@ -268,12 +268,12 @@ export const AiMasteringAssistantPanel: React.FC<
 
             {/* Right Column: Where to CUT (Cortar / Limpiar) */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between border-b border-white/[0.07] pb-2.5">
-                <div className="flex items-center gap-2 text-xs font-semibold tracking-tight text-[#FF6B00]">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <div className="flex items-center gap-2 text-xs font-semibold tracking-tight text-blue-700">
                   <Scissors size={15} />
                   <span>Puntos Críticos Donde CORTAR (Barro, IA & Sibilancia)</span>
                 </div>
-                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-[#FF6B00]/12 border border-[#FF6B00]/30 text-[#FF6B00]">
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-semibold">
                   {cutPoints.length} resonancias
                 </span>
               </div>
@@ -284,24 +284,24 @@ export const AiMasteringAssistantPanel: React.FC<
                   return (
                     <div
                       key={pt.id}
-                      className="rounded-xl bg-white/[0.025] hover:bg-white/[0.045] border border-white/[0.06] hover:border-[#FF6B00]/35 p-3.5 flex flex-col gap-2 transition-colors"
+                      className="rounded-xl bg-white hover:bg-blue-50/35 border border-slate-200 hover:border-blue-300 p-3.5 flex flex-col gap-2 transition-colors shadow-2xs"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-semibold text-white">
+                            <span className="text-xs font-semibold text-slate-900">
                               {pt.title}
                             </span>
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#05070b] border border-white/[0.08] text-[#FF6B00]">
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-blue-700 font-semibold">
                               {pt.freqHz} Hz · Q:{pt.recommendedQ}
                             </span>
                             {pt.priority === 'critical' && (
-                              <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/35 text-rose-300">
+                              <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-700">
                                 CRÍTICO
                               </span>
                             )}
                           </div>
-                          <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+                          <p className="text-[11px] text-slate-600 mt-1.5 leading-relaxed">
                             {pt.reason}
                           </p>
                         </div>
@@ -315,8 +315,8 @@ export const AiMasteringAssistantPanel: React.FC<
                           }}
                           className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold shrink-0 flex items-center gap-1 transition-colors cursor-pointer ${
                             isDone
-                              ? 'bg-emerald-500/15 border border-emerald-500/45 text-emerald-300'
-                              : 'bg-[#FF6B00] hover:bg-orange-400 text-slate-950'
+                              ? 'bg-sky-100 border border-sky-300 text-sky-800'
+                              : 'bg-slate-800 hover:bg-slate-900 text-white shadow-2xs'
                           }`}
                         >
                           {isDone && <CheckCircle2 size={12} />}
@@ -344,25 +344,25 @@ export const AiMasteringAssistantPanel: React.FC<
             className="p-5 flex flex-col gap-4"
           >
             {/* Sub-panel: Spectral Line Killer Q=12 (Cazador de Líneas Horizontales RX) */}
-            <div className="rounded-xl mastering-subpanel border-rose-500/25 p-4 flex flex-col gap-3">
+            <div className="rounded-xl mastering-subpanel border-rose-200 p-4 flex flex-col gap-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/35 text-rose-300">
+                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded-full bg-rose-50 border border-rose-200 text-rose-700">
                       SPECTRAL LINE KILLER · BANCO NOTCH Q=12
                     </span>
-                    <span className="text-xs font-semibold text-white">
+                    <span className="text-xs font-semibold text-slate-900">
                       Supresor Quirúrgico de Líneas Horizontales & Silbidos Estacionarios
                     </span>
                   </div>
-                  <p className="text-[11px] text-zinc-400 mt-1">
+                  <p className="text-[11px] text-slate-600 mt-1">
                     Elimina líneas horizontales continuas del espectrograma con hasta 6 filtros Notch ultra-estrechos (Q=12). También puedes hacer clic directo sobre cualquier línea en el espectrograma RX.
                   </p>
                 </div>
 
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2.5 text-xs font-mono">
-                    <span className="text-zinc-400">Intensidad Line Killer:</span>
+                    <span className="text-slate-600">Intensidad Line Killer:</span>
                     <input
                       type="range"
                       min={0}
@@ -377,7 +377,7 @@ export const AiMasteringAssistantPanel: React.FC<
                       }
                       className="w-28 mastering-fader fader-rose"
                     />
-                    <span className="text-rose-400 font-bold w-10">
+                    <span className="text-rose-700 font-bold w-10">
                       {overrides.resonanceKillerPct}%
                     </span>
                   </div>
@@ -393,7 +393,7 @@ export const AiMasteringAssistantPanel: React.FC<
                         onChangeOverride('resonanceKillerPct', 100);
                         markApplied('spectral-line-killer');
                       }}
-                      className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500 text-rose-300 hover:text-slate-950 border border-rose-500/40 text-xs font-mono font-bold transition-colors cursor-pointer"
+                      className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 text-xs font-mono font-bold transition-colors cursor-pointer"
                     >
                       Cazar {report.detectedResonanceLines.length} Líneas IA
                     </button>
@@ -402,14 +402,14 @@ export const AiMasteringAssistantPanel: React.FC<
               </div>
 
               {overrides.resonanceNotches.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-white/[0.06]">
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200">
                   {overrides.resonanceNotches.map((notch) => (
                     <div
                       key={notch.id}
                       className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono flex items-center gap-2 ${
                         notch.enabled
-                          ? 'bg-rose-500/10 border-rose-500/35 text-rose-200'
-                          : 'bg-white/[0.02] border-white/[0.06] text-zinc-500'
+                          ? 'bg-white border-rose-200 text-rose-900 shadow-2xs'
+                          : 'bg-slate-100 border-slate-200 text-slate-400'
                       }`}
                     >
                       <input
@@ -425,12 +425,12 @@ export const AiMasteringAssistantPanel: React.FC<
                             )
                           )
                         }
-                        className="accent-rose-500 cursor-pointer"
+                        className="accent-rose-600 cursor-pointer"
                       />
-                      <span className="font-bold text-white">
+                      <span className="font-bold text-slate-900">
                         {notch.freqHz} Hz
                       </span>
-                      <span className="text-rose-400">
+                      <span className="text-rose-700">
                         {notch.gainCutDb.toFixed(1)} dB · Q:{notch.q}
                       </span>
                       <button
@@ -443,7 +443,7 @@ export const AiMasteringAssistantPanel: React.FC<
                             )
                           )
                         }
-                        className="text-zinc-400 hover:text-rose-400 ml-1 cursor-pointer"
+                        className="text-slate-400 hover:text-rose-600 ml-1 cursor-pointer"
                         title="Quitar este filtro Notch"
                       >
                         ×
@@ -452,7 +452,7 @@ export const AiMasteringAssistantPanel: React.FC<
                   ))}
                 </div>
               ) : (
-                <p className="text-[11px] font-mono text-zinc-500">
+                <p className="text-[11px] font-mono text-slate-500">
                   No hay filtros Notch Q=12 activos. Pulsa "Cazar Líneas IA" o haz clic sobre una línea horizontal en el espectrograma RX.
                 </p>
               )}
@@ -464,29 +464,29 @@ export const AiMasteringAssistantPanel: React.FC<
                 return (
                   <div
                     key={filter.id}
-                    className={`rounded-xl p-4 border flex flex-col justify-between gap-3 transition-colors ${
+                    className={`rounded-xl p-4 border flex flex-col justify-between gap-3 transition-colors bg-white shadow-2xs ${
                       filter.isRecommended
-                        ? 'mastering-subpanel border-[#00E5FF]/35'
-                        : 'mastering-subpanel'
+                        ? 'border-sky-300 bg-sky-50/30'
+                        : 'border-slate-200'
                     }`}
                   >
                     <div>
                       <div className="flex items-center justify-between gap-2 mb-2">
-                        <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded-full bg-[#FF6B00]/12 border border-[#FF6B00]/35 text-[#FF6B00]">
+                        <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
                           {filter.badge}
                         </span>
-                        <span className="text-[10px] font-mono text-emerald-400 font-semibold">
+                        <span className="text-[10px] font-mono text-sky-700 font-semibold">
                           Confianza IA: {filter.confidencePct}%
                         </span>
                       </div>
 
-                      <h4 className="text-xs font-semibold text-white">
+                      <h4 className="text-xs font-semibold text-slate-900">
                         {filter.name}
                       </h4>
-                      <p className="text-[11px] text-amber-300/90 font-mono mt-1">
+                      <p className="text-[11px] text-blue-700 font-mono mt-1">
                         Diagnóstico: {filter.detectedIssue}
                       </p>
-                      <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+                      <p className="text-[11px] text-slate-600 mt-1.5 leading-relaxed">
                         {filter.suggestionDetail}
                       </p>
                     </div>
@@ -499,8 +499,8 @@ export const AiMasteringAssistantPanel: React.FC<
                       }}
                       className={`w-full py-2 rounded-lg text-xs font-mono font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                         isDone
-                          ? 'bg-emerald-500/15 border border-emerald-500/45 text-emerald-300'
-                          : 'bg-white/[0.06] hover:bg-[#00E5FF] text-zinc-100 hover:text-slate-950 border border-white/[0.08]'
+                          ? 'bg-sky-100 border border-sky-300 text-sky-800'
+                          : 'bg-slate-100 hover:bg-sky-600 text-slate-800 hover:text-white border border-slate-200'
                       }`}
                     >
                       {isDone ? (
@@ -532,19 +532,19 @@ export const AiMasteringAssistantPanel: React.FC<
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             className="p-5 flex flex-col gap-3.5"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.07]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
               <div>
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[#00E5FF]">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-sky-700">
                   Ecualizador Paramétrico Personalizado Mid/Side & De-Esser
                 </h4>
-                <p className="text-[11px] text-zinc-400">
+                <p className="text-[11px] text-slate-500">
                   Ajusta frecuencia exacta (Hz), ganancia (dB), ancho de banda (Q), tipo de filtro y canal (`MID`, `SIDE`, `STEREO`) en tiempo real.
                 </p>
               </div>
               <div className="flex items-center gap-3 text-xs font-mono">
-                <span className="text-zinc-400">
+                <span className="text-slate-600">
                   Filtro Subsonic HPF:{' '}
-                  <strong className="text-[#FF6B00]">
+                  <strong className="text-sky-700">
                     {overrides.highPassFreq} Hz
                   </strong>
                 </span>
@@ -589,7 +589,7 @@ export const AiMasteringAssistantPanel: React.FC<
                     key={band.id}
                     className={`rounded-xl p-3.5 flex flex-col gap-3 ${
                       band.enabled === false
-                        ? 'mastering-subpanel opacity-50'
+                        ? 'mastering-subpanel opacity-55'
                         : 'mastering-subpanel'
                     }`}
                   >
@@ -603,9 +603,9 @@ export const AiMasteringAssistantPanel: React.FC<
                               enabled: e.target.checked,
                             })
                           }
-                          className="accent-[#00E5FF] cursor-pointer"
+                          className="accent-sky-600 cursor-pointer"
                         />
-                        <span className="text-xs font-semibold text-white">
+                        <span className="text-xs font-semibold text-slate-900">
                           {band.label}
                         </span>
                       </div>
@@ -618,21 +618,21 @@ export const AiMasteringAssistantPanel: React.FC<
                         }
                         className={`text-[10px] font-mono px-2 py-0.5 rounded-md uppercase font-bold border cursor-pointer ${
                           band.channel === 'mid'
-                            ? 'bg-[#FF6B00]/12 text-[#FF6B00] border-[#FF6B00]/35'
+                            ? 'bg-blue-50 text-blue-700 border-blue-200'
                             : band.channel === 'side'
-                            ? 'bg-[#00E5FF]/12 text-[#00E5FF] border-[#00E5FF]/35'
-                            : 'bg-emerald-500/12 text-emerald-400 border-emerald-500/35'
+                            ? 'bg-sky-50 text-sky-700 border-sky-200'
+                            : 'bg-slate-200/70 text-slate-700 border-slate-300'
                         }`}
                       >
-                        <option value="mid" className="bg-slate-900 text-white">
+                        <option value="mid" className="bg-white text-slate-900">
                           MID
                         </option>
-                        <option value="side" className="bg-slate-900 text-white">
+                        <option value="side" className="bg-white text-slate-900">
                           SIDE
                         </option>
                         <option
                           value="stereo"
-                          className="bg-slate-900 text-white"
+                          className="bg-white text-slate-900"
                         >
                           STEREO
                         </option>
@@ -641,9 +641,9 @@ export const AiMasteringAssistantPanel: React.FC<
 
                     {/* Frequency Slider */}
                     <div>
-                      <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                      <div className="flex justify-between text-[11px] font-mono text-slate-500 mb-1">
                         <span>Frecuencia</span>
-                        <span className="text-[#00E5FF] font-bold">
+                        <span className="text-sky-700 font-bold">
                           {freqVal} Hz
                         </span>
                       </div>
@@ -690,11 +690,11 @@ export const AiMasteringAssistantPanel: React.FC<
 
                     {/* Gain Slider */}
                     <div>
-                      <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                      <div className="flex justify-between text-[11px] font-mono text-slate-500 mb-1">
                         <span>Ganancia</span>
                         <span
                           className={`font-bold ${
-                            gainVal >= 0 ? 'text-[#FF6B00]' : 'text-emerald-400'
+                            gainVal >= 0 ? 'text-blue-700' : 'text-sky-700'
                           }`}
                         >
                           {formatSignedDb(gainVal)}
@@ -727,11 +727,11 @@ export const AiMasteringAssistantPanel: React.FC<
                     </div>
 
                     {/* Q Factor + Filter Shape */}
-                    <div className="flex items-center justify-between gap-2.5 pt-2 border-t border-white/[0.06]">
+                    <div className="flex items-center justify-between gap-2.5 pt-2 border-t border-slate-200">
                       <div className="flex-1">
-                        <div className="flex justify-between text-[10px] font-mono text-zinc-400 mb-1">
+                        <div className="flex justify-between text-[10px] font-mono text-slate-500 mb-1">
                           <span>Factor Q</span>
-                          <span className="text-white">{band.q.toFixed(2)}</span>
+                          <span className="text-slate-900 font-semibold">{band.q.toFixed(2)}</span>
                         </div>
                         <input
                           type="range"
@@ -755,7 +755,7 @@ export const AiMasteringAssistantPanel: React.FC<
                             type: e.target.value as BiquadFilterType,
                           })
                         }
-                        className="bg-[#05070b] border border-white/[0.08] rounded-lg px-2 py-1 text-[10px] font-mono text-zinc-200"
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[10px] font-mono text-slate-700"
                       >
                         <option value="peaking">Peaking (Bell)</option>
                         <option value="highshelf">High-Shelf</option>
@@ -783,10 +783,10 @@ export const AiMasteringAssistantPanel: React.FC<
             {/* Custom Compression Console */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col justify-between gap-3.5">
               <div>
-                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/[0.07]">
+                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
                   <div className="flex items-center gap-2">
-                    <Gauge size={15} className="text-[#FF6B00]" />
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-white">
+                    <Gauge size={15} className="text-sky-600" />
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-900">
                       Personalizar Compresión Bus Glue
                     </h4>
                   </div>
@@ -796,14 +796,14 @@ export const AiMasteringAssistantPanel: React.FC<
                       onApplyAiCompression();
                       markApplied('ai-comp');
                     }}
-                    className="px-3 py-1 rounded-lg bg-[#FF6B00]/15 hover:bg-[#FF6B00] text-[#FF6B00] hover:text-slate-950 border border-[#FF6B00]/40 text-[11px] font-mono font-bold transition-colors cursor-pointer"
+                    className="px-3 py-1 rounded-lg bg-sky-50 hover:bg-sky-600 text-sky-700 hover:text-white border border-sky-200 text-[11px] font-mono font-bold transition-colors cursor-pointer"
                   >
                     Aplicar Sugerencia IA ({report.compressionSuggestion.ratio}:1)
                   </button>
                 </div>
 
-                <p className="text-[11px] text-zinc-400 mt-2 leading-relaxed">
-                  <strong className="text-[#00E5FF] font-mono">
+                <p className="text-[11px] text-slate-600 mt-2 leading-relaxed">
+                  <strong className="text-sky-700 font-mono">
                     IA ({report.compressionSuggestion.profileName}):
                   </strong>{' '}
                   {report.compressionSuggestion.diagnosis}
@@ -855,7 +855,7 @@ export const AiMasteringAssistantPanel: React.FC<
                         onChangeOverride('compressorReleaseMs', preset.rel);
                         onChangeOverride('compressorGlueMixPct', preset.mix);
                       }}
-                      className="px-2 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.07] text-[10px] font-mono text-zinc-300 hover:text-[#00E5FF] transition-colors cursor-pointer"
+                      className="px-2 py-1.5 rounded-lg bg-white hover:bg-sky-50 border border-slate-200 hover:border-sky-300 text-[10px] font-mono text-slate-700 hover:text-sky-700 transition-colors cursor-pointer shadow-2xs"
                     >
                       {preset.label}
                     </button>
@@ -863,11 +863,11 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5 pt-2.5 border-t border-white/[0.06]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5 pt-2.5 border-t border-slate-200">
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Threshold</span>
-                    <span className="text-white font-bold">
+                    <span className="text-slate-900 font-bold">
                       {overrides.compressorThresholdDb} dB
                     </span>
                   </div>
@@ -888,9 +888,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Ratio</span>
-                    <span className="text-white font-bold">
+                    <span className="text-slate-900 font-bold">
                       {overrides.compressorRatio.toFixed(1)}:1
                     </span>
                   </div>
@@ -908,9 +908,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Attack</span>
-                    <span className="text-[#00E5FF] font-bold">
+                    <span className="text-sky-700 font-bold">
                       {overrides.compressorAttackMs} ms
                     </span>
                   </div>
@@ -931,9 +931,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Release</span>
-                    <span className="text-[#00E5FF] font-bold">
+                    <span className="text-sky-700 font-bold">
                       {overrides.compressorReleaseMs} ms
                     </span>
                   </div>
@@ -954,9 +954,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Soft Knee</span>
-                    <span className="text-white font-bold">
+                    <span className="text-slate-900 font-bold">
                       {overrides.compressorKneeDb} dB
                     </span>
                   </div>
@@ -974,9 +974,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Parallel Mix</span>
-                    <span className="text-[#FF6B00] font-bold">
+                    <span className="text-blue-700 font-bold">
                       {overrides.compressorGlueMixPct}%
                     </span>
                   </div>
@@ -1001,10 +1001,10 @@ export const AiMasteringAssistantPanel: React.FC<
             {/* Custom Stereo Width & Mid/Side Field Console */}
             <div className="rounded-xl mastering-subpanel p-4 flex flex-col justify-between gap-3.5">
               <div>
-                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/[0.07]">
+                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
                   <div className="flex items-center gap-2">
-                    <Radio size={15} className="text-[#00E5FF]" />
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-white">
+                    <Radio size={15} className="text-sky-600" />
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-900">
                       Personalizar Amplitud Estéreo 3D & Fase M/S
                     </h4>
                   </div>
@@ -1014,15 +1014,15 @@ export const AiMasteringAssistantPanel: React.FC<
                       onApplyAiStereoWidth();
                       markApplied('ai-stereo');
                     }}
-                    className="px-3 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-slate-950 border border-[#00E5FF]/40 text-[11px] font-mono font-bold transition-colors cursor-pointer"
+                    className="px-3 py-1 rounded-lg bg-sky-50 hover:bg-sky-600 text-sky-700 hover:text-white border border-sky-200 text-[11px] font-mono font-bold transition-colors cursor-pointer"
                   >
                     Aplicar Imagen IA (
                     {report.stereoWidthSuggestion.recommendedWidthPct}%)
                   </button>
                 </div>
 
-                <p className="text-[11px] text-zinc-400 mt-2 leading-relaxed">
-                  <strong className="text-[#00E5FF] font-mono">
+                <p className="text-[11px] text-slate-600 mt-2 leading-relaxed">
+                  <strong className="text-sky-700 font-mono">
                     Diagnóstico Espacial IA:
                   </strong>{' '}
                   {report.stereoWidthSuggestion.diagnosis}
@@ -1043,7 +1043,7 @@ export const AiMasteringAssistantPanel: React.FC<
                         onChangeOverride('stereoWidthPct', mode.w);
                         onChangeOverride('monoMakerFreq', mode.m);
                       }}
-                      className="px-2 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.07] text-[10px] font-mono text-zinc-300 hover:text-[#00E5FF] transition-colors cursor-pointer"
+                      className="px-2 py-1.5 rounded-lg bg-white hover:bg-sky-50 border border-slate-200 hover:border-sky-300 text-[10px] font-mono text-slate-700 hover:text-sky-700 transition-colors cursor-pointer shadow-2xs"
                     >
                       {mode.label}
                     </button>
@@ -1051,11 +1051,11 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2.5 border-t border-white/[0.06]">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2.5 border-t border-slate-200">
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Amplitud Estéreo</span>
-                    <span className="text-[#00E5FF] font-bold">
+                    <span className="text-sky-700 font-bold">
                       {overrides.stereoWidthPct}%
                     </span>
                   </div>
@@ -1073,9 +1073,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Mono Maker (Graves)</span>
-                    <span className="text-[#FF6B00] font-bold">
+                    <span className="text-blue-700 font-bold">
                       {overrides.monoMakerFreq} Hz
                     </span>
                   </div>
@@ -1093,9 +1093,9 @@ export const AiMasteringAssistantPanel: React.FC<
                 </div>
 
                 <div>
-                  <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-600 mb-1">
                     <span>Expansión Aire Side</span>
-                    <span className="text-[#00E5FF] font-bold">
+                    <span className="text-sky-700 font-bold">
                       {formatSignedDb(overrides.sideAirBoostDb)}
                     </span>
                   </div>
