@@ -4,8 +4,9 @@ import {
   scheduleSectionVoiceCues,
   resolveCueBufferName,
 } from '../cueEngine';
+import { detectChordsAndBeatsLocalDSP } from '../chordDetectorDSP';
 
-describe('Studio Prompter Engine & Cue Synchronization', () => {
+describe('Studio Prompter Engine & Cue Synchronization (Pasada 1 & Pasada 2)', () => {
   const mockCueBuffers: Record<string, any> = {
     intro: {},
     verso: {},
@@ -98,7 +99,6 @@ describe('Studio Prompter Engine & Cue Synchronization', () => {
       (bufName, beatIdx) => scheduled.push({ cue: bufName, beatIdx })
     );
 
-    // Song start is at t = 4.0s (beat index 8), so lead-in for INTRO is at beats 4, 5, 6, 7
     expect(scheduled.slice(0, 4)).toEqual([
       { cue: 'intro', beatIdx: 4 },
       { cue: '2', beatIdx: 5 },
@@ -106,7 +106,6 @@ describe('Studio Prompter Engine & Cue Synchronization', () => {
       { cue: '4', beatIdx: 7 },
     ]);
 
-    // VERSO 1 is at song time 4.0s -> global time 8.0s (beat index 16), so lead-in is at beats 12, 13, 14, 15
     expect(scheduled.slice(4, 8)).toEqual([
       { cue: 'verso', beatIdx: 12 },
       { cue: '2', beatIdx: 13 },
@@ -120,5 +119,58 @@ describe('Studio Prompter Engine & Cue Synchronization', () => {
     expect(resolveCueBufferName('Pre Chorus B', mockCueBuffers)).toBe('pre-coro');
     expect(resolveCueBufferName('CHORUS FINAL', mockCueBuffers)).toBe('coro');
     expect(resolveCueBufferName('Outro Instrumental', mockCueBuffers)).toBe('final');
+  });
+
+  it('6. detectChordsAndBeatsLocalDSP detects C -> Am -> F -> G progression and key in RAM without external server', () => {
+    const sr = 22050;
+    const durationSec = 8.0; // 4 bars at 120 BPM (2.0s per bar)
+    const length = sr * durationSec;
+    const ch0 = new Float32Array(length);
+
+    // Chords per bar (2.0s each): C (C4,E4,G4), Am (A3,C4,E4), F (F3,A3,C4), G (G3,B3,D4)
+    const progFreqs = [
+      [261.63, 329.63, 392.00], // C
+      [220.00, 261.63, 329.63], // Am
+      [174.61, 220.00, 261.63], // F
+      [196.00, 246.94, 293.66], // G
+    ];
+
+    for (let i = 0; i < length; i++) {
+      const t = i / sr;
+      const barIdx = Math.min(3, Math.floor(t / 2.0));
+      const freqs = progFreqs[barIdx];
+      let sample = 0;
+      for (const f of freqs) {
+        sample += 0.25 * Math.sin(2 * Math.PI * f * t);
+      }
+      // Añadir pulso percusivo cada 0.5s (120 BPM)
+      const beatPhase = t % 0.5;
+      if (beatPhase < 0.03) {
+        sample += 0.35 * Math.sin(2 * Math.PI * 80 * beatPhase) * Math.exp(-beatPhase * 90);
+      }
+      ch0[i] = sample;
+    }
+
+    const fakeAudioBuffer = {
+      sampleRate: sr,
+      length,
+      duration: durationSec,
+      numberOfChannels: 1,
+      getChannelData: () => ch0,
+    } as unknown as AudioBuffer;
+
+    const result = detectChordsAndBeatsLocalDSP(fakeAudioBuffer, {
+      bpm: 120,
+      timeSignature: '4/4',
+      firstBeatOffset: 0,
+      beatTimes: [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5],
+    });
+
+    expect(result.chords.length).toBeGreaterThanOrEqual(4);
+    const detectedNames = result.chords.map((c) => c.chord);
+    expect(detectedNames).toContain('C');
+    expect(detectedNames).toContain('Am');
+    expect(detectedNames).toContain('F');
+    expect(detectedNames).toContain('G');
   });
 });

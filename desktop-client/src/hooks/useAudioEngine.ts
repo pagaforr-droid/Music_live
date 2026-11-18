@@ -39,8 +39,17 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     }
   }, [masterVolume]);
   const [stems, setStems] = useState<StemTrack[]>(initialStems);
+  const stemsRef = useRef<StemTrack[]>(initialStems);
+  useEffect(() => {
+    stemsRef.current = stems;
+  }, [stems]);
+
   const [loadProgress, setLoadProgress] = useState({ loaded: 0, total: 0, currentFile: '' });
   const [totalDuration, setTotalDuration] = useState(0);
+  const totalDurationRef = useRef<number>(0);
+  useEffect(() => {
+    totalDurationRef.current = totalDuration;
+  }, [totalDuration]);
   
   const sourceNodes = useRef<Map<string, AudioBufferSourceNode>>(new Map());
   const gainNodes = useRef<Map<string, GainNode>>(new Map());
@@ -437,19 +446,21 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       if (!prompterData || !prompterData.bpm) return;
 
+      const currentStems = stemsRef.current;
+      const currentTotalDuration = totalDurationRef.current;
       const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
       const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
         prompterData,
         preRollDuration,
-        totalDuration,
+        currentTotalDuration,
         manualGridOffset
       );
 
       // A. Programar Clics conectados a gainNodes ('synthetic-click') para permitir Mute/Solo en vivo
       const clickGainNode = gainNodes.current.get('synthetic-click');
-      const clickStem = stems.find((s) => s.id === 'synthetic-click');
+      const clickStem = currentStems.find((s) => s.id === 'synthetic-click');
       const isClickMuted = clickStem
-        ? clickStem.muted || (stems.some((s) => s.solo) && !clickStem.solo)
+        ? clickStem.muted || (currentStems.some((s) => s.solo) && !clickStem.solo)
         : false;
 
       if (clickGainNode || !isClickMuted) {
@@ -482,9 +493,9 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       // B. Programar Voz Guía conectada a gainNodes ('synthetic-cues')
       const cueGainNode = gainNodes.current.get('synthetic-cues');
-      const cueStem = stems.find((s) => s.id === 'synthetic-cues');
+      const cueStem = currentStems.find((s) => s.id === 'synthetic-cues');
       const isCueMuted = cueStem
-        ? cueStem.muted || (stems.some((s) => s.solo) && !cueStem.solo)
+        ? cueStem.muted || (currentStems.some((s) => s.solo) && !cueStem.solo)
         : false;
 
       if (prompterData.sections && (cueGainNode || !isCueMuted)) {
@@ -522,7 +533,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         );
       }
     },
-    [stems, totalDuration]
+    []
   );
 
   // 4. Playback Controls
@@ -573,6 +584,45 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     isPlayingRef.current = false;
     cancelAnimationFrame(animationFrame.current);
   };
+
+  // Resetea completamente el reloj, el estado de reproducción y los nodos al cambiar de canción
+  const resetEngine = useCallback(() => {
+    if (seekTimeoutRef.current) clearTimeout(seekTimeoutRef.current);
+    cancelAnimationFrame(animationFrame.current);
+    sourceNodes.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {}
+    });
+    clickSources.current.forEach((src) => {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {}
+    });
+    cueSources.current.forEach((src) => {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {}
+    });
+    clickSources.current = [];
+    cueSources.current = [];
+    sourceNodes.current.clear();
+    gainNodes.current.clear();
+    pannerNodes.current.clear();
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    pauseTime.current = 0;
+    startTime.current = 0;
+    preRollDurationRef.current = 0;
+    manualGridOffsetRef.current = 0;
+    loopState.current = { isLooping: false, start: 0, end: 0 };
+    setCurrentTime(0);
+    setTotalDuration(0);
+    totalDurationRef.current = 0;
+  }, []);
 
   const updateTime = () => {
     if (!audioContext.current || !isPlayingRef.current) return;
@@ -1404,7 +1454,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     getBuffer,
     getCompositePeaks,
     previewVoiceCue,
-    syncPrompterData
+    syncPrompterData,
+    resetEngine
   };
 };
 

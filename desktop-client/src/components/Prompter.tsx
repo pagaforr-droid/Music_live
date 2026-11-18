@@ -57,6 +57,7 @@ export interface PrompterProps {
   isEditing?: boolean;
   onRemoveSection?: (index: number) => void;
   onEditChord?: (index: number, newChord: string) => void;
+  onAddChord?: (time: number, newChord: string) => void;
   onRemoveChord?: (index: number) => void;
   onSeek?: (time: number) => void;
   // Capacidades CapCut Studio Prompter (Opcionales y 100% retrocompatibles)
@@ -243,6 +244,7 @@ export const Prompter: React.FC<PrompterProps> = ({
   isEditing,
   onRemoveSection,
   onEditChord,
+  onAddChord,
   onRemoveChord,
   onSeek,
   totalDuration = 240,
@@ -282,8 +284,9 @@ export const Prompter: React.FC<PrompterProps> = ({
   // Ruler scrubbing state
   const isScrubbingRulerRef = useRef<boolean>(false);
 
-  // Chord quick editor state
+  // Chord quick editor / adder state
   const [editingChordIdx, setEditingChordIdx] = useState<number | null>(null);
+  const [addingChordTime, setAddingChordTime] = useState<number | null>(null);
   const [editingChordValue, setEditingChordValue] = useState<string>('');
 
   // Custom section name inline input
@@ -355,27 +358,40 @@ export const Prompter: React.FC<PrompterProps> = ({
 
   // Construir grilla musical de Beats y Downbeats (Compases) para Snap Magnético y Renderizado
   const beatGrid = useMemo(() => {
-    const effOffset =
-      (baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0) +
-      (gridOffset || 0);
+    const baseFirstBeat =
+      baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0;
+    const effOffset = baseFirstBeat + (gridOffset || 0);
 
     const points: { time: number; isDownbeat: boolean; bar: number; beat: number }[] = [];
 
     if (beatTimes && beatTimes.length > 1) {
-      let downbeatZeroIdx = beatTimes.findIndex(
-        (t) => Math.abs(t - (baseOffset || 0)) < 0.06
-      );
-      if (downbeatZeroIdx === -1) downbeatZeroIdx = 0;
+      const shiftedBeats = beatTimes.map((rawT) => rawT + (gridOffset || 0));
+      let unshiftedCount = 0;
+      let firstBeat = shiftedBeats[0];
+      while (firstBeat - beatDuration >= -0.001) {
+        firstBeat -= beatDuration;
+        shiftedBeats.unshift(Math.max(0, firstBeat));
+        unshiftedCount++;
+      }
+      let lastBeat = shiftedBeats[shiftedBeats.length - 1];
+      while (lastBeat + beatDuration <= effectiveTotalDuration + barDuration * 2) {
+        lastBeat += beatDuration;
+        shiftedBeats.push(lastBeat);
+      }
 
-      beatTimes.forEach((rawT, idx) => {
-        const t = rawT + (gridOffset || 0);
+      let downbeatZeroIdx = shiftedBeats.findIndex(
+        (t) => Math.abs(t - effOffset) < 0.06
+      );
+      if (downbeatZeroIdx === -1) downbeatZeroIdx = unshiftedCount;
+
+      shiftedBeats.forEach((t, idx) => {
         const relIdx = idx - downbeatZeroIdx;
         const beatInBar = (((relIdx % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
         const barNum = Math.floor(relIdx / beatsPerBar) + 1;
         points.push({
           time: t,
           isDownbeat: beatInBar === 1,
-          bar: barNum,
+          bar: Math.max(1, barNum),
           beat: beatInBar,
         });
       });
@@ -397,18 +413,30 @@ export const Prompter: React.FC<PrompterProps> = ({
       });
     }
     return points;
-  }, [beatTimes, baseOffset, gridOffset, chords, beatsPerBar, beatDuration, effectiveTotalDuration]);
+  }, [beatTimes, baseOffset, gridOffset, chords, beatsPerBar, beatDuration, barDuration, effectiveTotalDuration]);
 
-  // Calcular el número de compás para cualquier timestamp en segundos
+  // Calcular el número de compás para cualquier timestamp en segundos sincronizado 1:1 con beatGrid
   const getBarNumberAtTime = useCallback(
     (timeSec: number): number => {
+      if (beatGrid.length > 0) {
+        let bestBar = 1;
+        for (let i = 0; i < beatGrid.length; i++) {
+          const pt = beatGrid[i];
+          if (pt.time <= timeSec + 0.04) {
+            if (pt.bar >= 1) bestBar = pt.bar;
+          } else {
+            break;
+          }
+        }
+        return Math.max(1, bestBar);
+      }
       const effOffset =
         (baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0) +
         (gridOffset || 0);
       const rel = timeSec - effOffset;
       return Math.max(1, Math.floor((rel + 0.02) / barDuration) + 1);
     },
-    [baseOffset, gridOffset, chords, barDuration]
+    [beatGrid, baseOffset, gridOffset, chords, barDuration]
   );
 
   // Función de Imán Magnético Estilo CapCut (Compases, Pulsos, Bordes de Secciones y Playhead)
@@ -484,18 +512,40 @@ export const Prompter: React.FC<PrompterProps> = ({
     [snapEnabled, snapToDownbeatOnly, pixelsPerSecond, currentTime, beatGrid, barDuration]
   );
 
-  // Calcular compás y pulso actual para indicador visual de compás
+  // Calcular compás y pulso actual para indicador visual de compás sincronizado con beatGrid
   const currentBeatInfo = useMemo(() => {
-    const effOffset = (baseOffset || 0) + (gridOffset || 0);
+    const effOffset =
+      (baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0) +
+      (gridOffset || 0);
     const beatDur = 60 / activeBpm;
     const rel = currentTime - effOffset;
     const totalBeats = Math.floor(rel / beatDur);
-    const beatInBar = (((totalBeats % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
-    const barNumber = Math.floor(totalBeats / beatsPerBar) + 1;
-    const isPreRoll = rel < 0;
+    const isPreRoll = currentTime < 0;
     const preRollBarIndex = totalBeats < -beatsPerBar ? 1 : 2;
+
+    if (!isPreRoll && beatGrid.length > 0) {
+      let activePt = beatGrid[0];
+      for (let i = 0; i < beatGrid.length; i++) {
+        if (beatGrid[i].time <= currentTime + 0.025) {
+          activePt = beatGrid[i];
+        } else {
+          break;
+        }
+      }
+      if (activePt) {
+        return {
+          beatInBar: activePt.beat,
+          barNumber: Math.max(1, activePt.bar),
+          isPreRoll: false,
+          preRollBarIndex,
+        };
+      }
+    }
+
+    const beatInBar = (((totalBeats % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
+    const barNumber = Math.max(1, Math.floor(totalBeats / beatsPerBar) + 1);
     return { beatInBar, barNumber, isPreRoll, preRollBarIndex };
-  }, [currentTime, baseOffset, gridOffset, activeBpm, beatsPerBar]);
+  }, [currentTime, baseOffset, gridOffset, chords, activeBpm, beatsPerBar, beatGrid]);
 
   // Auto-scroll horizontal sincronizado con currentTime
   useEffect(() => {
@@ -574,11 +624,12 @@ export const Prompter: React.FC<PrompterProps> = ({
     let eighthGrid: number[] = [];
     if (useRealGrid) {
       eighthGrid = [];
-      for (let i = 0; i < beatTimes.length - 1; i++) {
-        eighthGrid.push(beatTimes[i]);
-        eighthGrid.push((beatTimes[i] + beatTimes[i + 1]) / 2);
+      const shifted = beatTimes.map((t) => t + (gridOffset || 0));
+      for (let i = 0; i < shifted.length - 1; i++) {
+        eighthGrid.push(shifted[i]);
+        eighthGrid.push((shifted[i] + shifted[i + 1]) / 2);
       }
-      eighthGrid.push(beatTimes[beatTimes.length - 1]);
+      eighthGrid.push(shifted[shifted.length - 1]);
     } else {
       for (let i = -16; i < 2000; i++) {
         eighthGrid.push(gridOffsetTime + i * eighthNoteDuration);
@@ -586,33 +637,35 @@ export const Prompter: React.FC<PrompterProps> = ({
       }
     }
 
-    const quantizedChords = chords.map((chord, originalIndex) => {
-      let qTime = chord.time;
-      if (useRealGrid && eighthGrid.length > 0) {
-        let closest = eighthGrid[0];
-        let minDiff = Math.abs(closest - chord.time);
-        for (let i = 1; i < eighthGrid.length; i++) {
-          const diff = Math.abs(eighthGrid[i] - chord.time);
-          if (diff < minDiff) {
-            minDiff = diff;
-            closest = eighthGrid[i];
+    const quantizedChords = chords
+      .map((chord, originalIndex) => {
+        let qTime = chord.time;
+        if (useRealGrid && eighthGrid.length > 0) {
+          let closest = eighthGrid[0];
+          let minDiff = Math.abs(closest - chord.time);
+          for (let i = 1; i < eighthGrid.length; i++) {
+            const diff = Math.abs(eighthGrid[i] - chord.time);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closest = eighthGrid[i];
+            }
+          }
+          if (minDiff < 0.25) {
+            qTime = closest;
+          }
+        } else {
+          if (activeBpm > 0 && chord.time !== gridOffsetTime) {
+            const timeFromOffset = chord.time - gridOffsetTime;
+            const eighthNotes = Math.round(timeFromOffset / eighthNoteDuration);
+            const snappedTime = gridOffsetTime + eighthNotes * eighthNoteDuration;
+            if (Math.abs(snappedTime - chord.time) < 0.25) {
+              qTime = snappedTime;
+            }
           }
         }
-        if (minDiff < 0.25) {
-          qTime = closest;
-        }
-      } else {
-        if (activeBpm > 0 && chord.time !== gridOffsetTime) {
-          const timeFromOffset = chord.time - gridOffsetTime;
-          const eighthNotes = Math.round(timeFromOffset / eighthNoteDuration);
-          const snappedTime = gridOffsetTime + eighthNotes * eighthNoteDuration;
-          if (Math.abs(snappedTime - chord.time) < 0.25) {
-            qTime = snappedTime;
-          }
-        }
-      }
-      return { ...chord, time: qTime, originalIndex };
-    });
+        return { ...chord, time: qTime, originalIndex };
+      })
+      .sort((a, b) => a.time - b.time);
 
     return quantizedChords.map((chord, index) => {
       const nextChord = quantizedChords[index + 1];
@@ -669,12 +722,16 @@ export const Prompter: React.FC<PrompterProps> = ({
   };
 
   const commitChordEdit = () => {
-    if (editingChordIdx !== null && editingChordValue.trim()) {
-      if (onEditChord) {
-        onEditChord(editingChordIdx, editingChordValue.trim());
+    const cleanVal = editingChordValue.trim();
+    if (cleanVal) {
+      if (addingChordTime !== null && onAddChord) {
+        onAddChord(addingChordTime, cleanVal);
+      } else if (editingChordIdx !== null && onEditChord) {
+        onEditChord(editingChordIdx, cleanVal);
       }
     }
     setEditingChordIdx(null);
+    setAddingChordTime(null);
   };
 
   // ============================================================================
@@ -885,7 +942,26 @@ export const Prompter: React.FC<PrompterProps> = ({
     };
 
     const handleWindowPointerUp = () => {
-      if (dragStateRef.current) {
+      const drag = dragStateRef.current;
+      if (drag) {
+        if (drag.mode === 'move' && drag.hasMoved) {
+          const sorted = [...sectionBlocksRef.current].sort((a, b) => a.time - b.time);
+          let hasOverlapTrim = false;
+          for (let i = 0; i < sorted.length - 1; i++) {
+            const cur = sorted[i];
+            const nxt = sorted[i + 1];
+            if (cur.time + cur.duration > nxt.time + 0.02) {
+              sorted[i] = {
+                ...cur,
+                duration: Math.max(beatDuration, nxt.time - cur.time),
+              };
+              hasOverlapTrim = true;
+            }
+          }
+          if (hasOverlapTrim) {
+            emitSectionsUpdate(sorted, false);
+          }
+        }
         dragStateRef.current = null;
         setActiveSnapTime(null);
         setDragHudInfo(null);
@@ -949,7 +1025,7 @@ export const Prompter: React.FC<PrompterProps> = ({
     setSelectedSectionIdx(selectedSectionIdx + 1);
   }, [selectedSectionIdx, sectionBlocks, beatDuration, currentTime, snapTimeSec, emitSectionsUpdate]);
 
-  // Duplicar Sección Seleccionada
+  // Duplicar Sección Seleccionada (con Ripple Shift automático para evitar solapamientos)
   const handleDuplicateSelectedSection = useCallback(() => {
     if (selectedSectionIdx === null || !sectionBlocks[selectedSectionIdx]) return;
     const target = sectionBlocks[selectedSectionIdx];
@@ -961,11 +1037,27 @@ export const Prompter: React.FC<PrompterProps> = ({
       id: `sec-dup-${Date.now()}`,
       time: snappedStart,
     };
-    const next = [...sectionBlocks];
+
+    const nextFollowing = sectionBlocks[selectedSectionIdx + 1];
+    const needsRipple = nextFollowing && nextFollowing.time < snappedStart + target.duration - 0.02;
+    const rippleShift = needsRipple
+      ? Math.max(beatDuration, snappedStart + target.duration - nextFollowing.time)
+      : 0;
+
+    const next = sectionBlocks.map((sec, idx) => {
+      if (idx > selectedSectionIdx && rippleShift > 0) {
+        return {
+          ...sec,
+          time: Number((sec.time + rippleShift).toFixed(3)),
+        };
+      }
+      return sec;
+    });
+
     next.splice(selectedSectionIdx + 1, 0, dup);
     emitSectionsUpdate(next, true);
     setSelectedSectionIdx(selectedSectionIdx + 1);
-  }, [selectedSectionIdx, sectionBlocks, snapTimeSec, emitSectionsUpdate]);
+  }, [selectedSectionIdx, sectionBlocks, beatDuration, snapTimeSec, emitSectionsUpdate]);
 
   // Cambiar nombre o tipo de Voz Guía de la sección seleccionada
   const handleUpdateSelectedSection = useCallback(
@@ -1312,21 +1404,40 @@ export const Prompter: React.FC<PrompterProps> = ({
               ))}
             </div>
 
-            {onSaveSections && (
-              <button
-                type="button"
-                onClick={onSaveSections}
-                className={`px-3.5 py-1.5 rounded-full text-[10.5px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer ${
-                  hasUnsavedChanges
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm ring-2 ring-emerald-500/30'
-                    : 'bg-zinc-900 hover:bg-zinc-800 text-white'
-                }`}
-                title="Guardar la estructura y Voz Guía en la nube"
-              >
-                <Check size={12} />
-                <span>{hasUnsavedChanges ? 'Guardar Cambios de Voz Guía' : 'Voz Guía Sincronizada'}</span>
-              </button>
-            )}
+              <div className="flex items-center gap-1.5">
+                {onAddChord && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const snapped = snapTimeSec(Math.max(0, currentTime));
+                      setEditingChordIdx(null);
+                      setAddingChordTime(snapped.time);
+                      setEditingChordValue('C');
+                    }}
+                    className="px-3 py-1.5 rounded-full bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300/90 text-[10.5px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                    title="Insertar un nuevo acorde en la posición del cabezal (También puedes hacer doble clic en el carril de acordes)"
+                  >
+                    <Plus size={12} className="text-amber-600" />
+                    <span>+ Acorde</span>
+                  </button>
+                )}
+
+                {onSaveSections && (
+                  <button
+                    type="button"
+                    onClick={onSaveSections}
+                    className={`px-3.5 py-1.5 rounded-full text-[10.5px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer ${
+                      hasUnsavedChanges
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm ring-2 ring-emerald-500/30'
+                        : 'bg-zinc-900 hover:bg-zinc-800 text-white'
+                    }`}
+                    title="Guardar la estructura y Voz Guía en la nube"
+                  >
+                    <Check size={12} />
+                    <span>{hasUnsavedChanges ? 'Guardar Cambios de Voz Guía' : 'Voz Guía Sincronizada'}</span>
+                  </button>
+                )}
+              </div>
           </div>
 
           {/* Fila B: Inspector Rápido CapCut cuando hay una sección seleccionada */}
@@ -1535,16 +1646,21 @@ export const Prompter: React.FC<PrompterProps> = ({
         </div>
       )}
 
-      {/* Modal / Popover de Edición Rápida de Acorde (Apple Studio Light) */}
-      {editingChordIdx !== null && (
+      {/* Modal / Popover de Edición o Inserción Rápida de Acorde (Apple Studio Light) */}
+      {(editingChordIdx !== null || addingChordTime !== null) && (
         <div className="bg-white/98 absolute top-20 left-36 z-50 border border-slate-200 rounded-2xl p-4 shadow-[0_24px_56px_-12px_rgba(15,23,42,0.22)] w-84 pointer-events-auto backdrop-blur-2xl ring-1 ring-amber-400/40">
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[10.5px] font-bold uppercase tracking-[0.14em] text-amber-600">
-              Editar Acorde #{editingChordIdx + 1}
+              {addingChordTime !== null
+                ? `Nuevo Acorde en ${formatMmSs(addingChordTime)} (C.${getBarNumberAtTime(addingChordTime)})`
+                : `Editar Acorde #${(editingChordIdx ?? 0) + 1}`}
             </span>
             <button
               type="button"
-              onClick={() => setEditingChordIdx(null)}
+              onClick={() => {
+                setEditingChordIdx(null);
+                setAddingChordTime(null);
+              }}
               className="w-6 h-6 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-900 text-xs font-bold flex items-center justify-center transition-colors cursor-pointer"
             >
               ✕
@@ -1557,7 +1673,10 @@ export const Prompter: React.FC<PrompterProps> = ({
               onChange={(e) => setEditingChordValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') commitChordEdit();
-                if (e.key === 'Escape') setEditingChordIdx(null);
+                if (e.key === 'Escape') {
+                  setEditingChordIdx(null);
+                  setAddingChordTime(null);
+                }
               }}
               autoFocus
               className="flex-1 bg-slate-50 border border-slate-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 rounded-xl px-3 py-1.5 text-lg font-black text-slate-900 outline-none"
@@ -1568,14 +1687,15 @@ export const Prompter: React.FC<PrompterProps> = ({
               onClick={commitChordEdit}
               className="px-3.5 py-2 rounded-full bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs uppercase tracking-wider shadow-xs cursor-pointer transition-colors"
             >
-              Guardar
+              {addingChordTime !== null ? 'Añadir' : 'Guardar'}
             </button>
-            {onRemoveChord && (
+            {editingChordIdx !== null && onRemoveChord && (
               <button
                 type="button"
                 onClick={() => {
                   onRemoveChord(editingChordIdx);
                   setEditingChordIdx(null);
+                  setAddingChordTime(null);
                 }}
                 className="px-2.5 py-2 rounded-full bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 font-bold text-xs transition-colors cursor-pointer"
                 title="Eliminar acorde"
@@ -1674,21 +1794,18 @@ export const Prompter: React.FC<PrompterProps> = ({
           />
         ) : (
           <div className="absolute inset-0 z-0 opacity-35 pointer-events-none">
-            {beatTimes
-              .filter((t) => t >= currentTime - 8 && t <= currentTime + 28)
-              .map((time, i) => {
-                const beatIdx = beatTimes.indexOf(time);
-                const isDownbeat = beatIdx % beatsPerBar === 0;
-                const adjustedTime = time + (gridOffset || 0);
+            {beatGrid
+              .filter((pt) => pt.time >= currentTime - 10 && pt.time <= currentTime + 30)
+              .map((pt, i) => {
                 return (
                   <div
-                    key={`beat-${i}`}
+                    key={`beat-${i}-${pt.time.toFixed(3)}`}
                     className={`absolute top-0 bottom-0 ${
-                      isDownbeat ? 'bg-zinc-400 w-[2px]' : 'bg-zinc-200 w-[1px]'
+                      pt.isDownbeat ? 'bg-zinc-400 w-[2px]' : 'bg-zinc-200 w-[1px]'
                     }`}
                     style={{
                       left: `calc(${PLAYHEAD_ANCHOR_X}px + ${
-                        (adjustedTime - currentTime) * pixelsPerSecond
+                        (pt.time - currentTime) * pixelsPerSecond
                       }px)`,
                     }}
                   />
@@ -1971,14 +2088,21 @@ export const Prompter: React.FC<PrompterProps> = ({
                             <span className="text-xs font-black uppercase tracking-wider truncate drop-shadow-xs">
                               {block.name}
                             </span>
-                            {!block.cueEnabled && (
+                            {!block.cueEnabled ? (
                               <span
                                 className="px-1 py-0.2 rounded bg-black/35 text-[8px] font-mono uppercase"
                                 title="Voz Guía silenciada en esta sección"
                               >
                                 🔕
                               </span>
-                            )}
+                            ) : leadInStartSec < -0.05 ? (
+                              <span
+                                className="px-1.5 py-0.2 rounded bg-black/30 border border-white/25 text-[8px] font-mono font-bold uppercase shrink-0"
+                                title="Voz Guía activa para el Pre-Roll / Inicio del Compás 1"
+                              >
+                                🗣️ PRE-ROLL
+                              </span>
+                            ) : null}
                             {isActive && (
                               <span className="px-1.5 py-0.2 rounded bg-white text-black text-[8.5px] font-black uppercase tracking-widest shrink-0 shadow-xs">
                                 EN VIVO
@@ -2070,6 +2194,21 @@ export const Prompter: React.FC<PrompterProps> = ({
               lyricBlocks.length > 0 ? 'h-28' : 'h-36'
             } w-full flex items-center`}
             style={{ width: `${Math.round(effectiveTotalDuration * pixelsPerSecond)}px` }}
+            onDoubleClick={(e) => {
+              if (!onAddChord) return;
+              if (e.target === e.currentTarget) {
+                const rawTime = clientXToSongTime(e.clientX);
+                const snapped = snapTimeSec(rawTime);
+                setEditingChordIdx(null);
+                setAddingChordTime(snapped.time);
+                setEditingChordValue('C');
+              }
+            }}
+            title={
+              onAddChord
+                ? 'Doble clic en cualquier espacio vacío para insertar un nuevo acorde en ese compás/pulso'
+                : undefined
+            }
           >
             {chordBlocks.map((block, i) => {
               const isPast = currentTime >= block.time + block.duration;
@@ -2091,8 +2230,10 @@ export const Prompter: React.FC<PrompterProps> = ({
                   onClick={() => {
                     if (!onEditChord && onSeek) onSeek(block.time);
                   }}
-                  onDoubleClick={() => {
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
                     if (onEditChord) {
+                      setAddingChordTime(null);
                       setEditingChordIdx(block.originalIndex);
                       setEditingChordValue(block.chord);
                     }
