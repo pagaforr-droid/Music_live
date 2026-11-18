@@ -3,7 +3,7 @@ import type {
   DrumKitStyle,
   DrumLayeringConfig,
 } from '../types/mastering.types';
-import { detectOnsetsSpectralFlux } from '../dsp-core/SpectralFftCore';
+import { detectFilteredDrumHitsFromMono } from '../dsp-core/SpectralFftCore';
 
 export type { DrumHitEvent, DrumKitStyle, DrumLayeringConfig };
 
@@ -30,7 +30,7 @@ export class DrumTransientReplacerDSP {
   private customKickName: string | null = null;
   private customSnareName: string | null = null;
   private synthCache = new Map<string, AudioBuffer>();
-  private activeScheduledNodes: AudioScheduledSourceNode[] = [];
+  private activeScheduledNodes: Array<{ node: AudioScheduledSourceNode; endTimeSec: number }> = [];
 
   public async loadCustomSample(
     type: 'kick' | 'snare',
@@ -107,36 +107,12 @@ export class DrumTransientReplacerDSP {
       mono[i] = 0.5 * (ch0[i] + ch1[i]);
     }
 
-    const avgSens = Math.max(
-      0.1,
-      Math.min(1.0, (config.kickSensitivity + config.snareSensitivity) * 0.5)
+    return detectFilteredDrumHitsFromMono(
+      mono,
+      sampleRate,
+      config.kickSensitivity,
+      config.snareSensitivity
     );
-    const res = detectOnsetsSpectralFlux(mono, sampleRate, {
-      sensitivity: avgSens,
-      minIntervalMs: 85,
-      snapToZeroCrossing: true,
-    });
-
-    const events: DrumHitEvent[] = [];
-    for (let i = 0; i < res.onsetTimesSec.length; i++) {
-      const cls = res.classifications[i];
-      if (cls === 'hat') continue;
-      // Filter by individual kick/snare sensitivity thresholds
-      const vel = res.velocities[i];
-      const minVelReq =
-        cls === 'kick'
-          ? 0.85 - config.kickSensitivity * 0.65
-          : 0.85 - config.snareSensitivity * 0.65;
-      if (vel < minVelReq * 0.75) continue;
-
-      events.push({
-        timeSec: res.onsetTimesSec[i],
-        type: cls,
-        velocity: vel,
-      });
-    }
-
-    return events;
   }
 
   public scheduleDrumLayers(
@@ -149,16 +125,24 @@ export class DrumTransientReplacerDSP {
     trackDurationSec = 0,
     loopCycles = 1,
     transientDuckHandles?: TransientDuckHandles,
-    playbackRate = 1.0
+    playbackRate = 1.0,
+    options: { clearExisting?: boolean; startCycle?: number } = {}
   ): void {
     const isOffline =
       typeof OfflineAudioContext !== 'undefined' &&
       ctx instanceof OfflineAudioContext;
+    const clearExisting = options.clearExisting !== false;
+    const startCycle = Math.max(0, options.startCycle ?? 0);
+
     if (!isOffline) {
-      this.stopScheduledLayers();
+      if (clearExisting) {
+        this.stopScheduledLayers();
+      } else {
+        this.pruneFinishedNodes(ctx.currentTime);
+      }
     }
 
-    if (transientDuckHandles) {
+    if (transientDuckHandles && clearExisting) {
       try {
         transientDuckHandles.kickDuckFilter.gain.cancelScheduledValues(0);
         transientDuckHandles.kickDuckFilter.gain.setValueAtTime(0, 0);
@@ -178,9 +162,9 @@ export class DrumTransientReplacerDSP {
       this.customSnareBuffer ||
       this.getOrSynthesizeSnareBuffer(ctx, config.drumStyle);
 
-    const cycles = Math.max(1, Math.min(16, loopCycles));
+    const endCycle = startCycle + Math.max(1, Math.min(16, loopCycles));
 
-    for (let cycle = 0; cycle < cycles; cycle++) {
+    for (let cycle = startCycle; cycle < endCycle; cycle++) {
       const cycleTimeOffset =
         cycle === 0 ? 0 : cycle * Math.max(0.1, trackDurationSec);
 
@@ -194,21 +178,22 @@ export class DrumTransientReplacerDSP {
         let triggerTime =
           audioStartContextTime +
           (hit.timeSec + cycleTimeOffset - playbackOffsetSec) / safeRate;
+        if (!isOffline && triggerTime < ctx.currentTime - 0.01) return;
 
-        // Ducking localizado y corto (14ms) para limpiar solapamiento de transientes sin ahuecar el resto
+        // Ducking localizado y corto (12-14ms) para limpiar solapamiento de transientes sin ahuecar voz/bajo
         if (
           transientDuckHandles &&
           config.duckOriginalTransients !== false &&
-          triggerTime >= 0.002
+          triggerTime >= 0
         ) {
           const duckParam = isKick
             ? transientDuckHandles.kickDuckFilter.gain
             : transientDuckHandles.snareDuckFilter.gain;
           const maxDuckDb =
-            -6.5 * Math.min(1, mixAmount * 1.2) * Math.max(0.45, hit.velocity);
+            -4.8 * Math.min(1, mixAmount * 1.15) * Math.max(0.45, hit.velocity);
           const preTime = Math.max(0, triggerTime - 0.0015);
-          const peakTime = triggerTime + 0.002;
-          const releaseTime = triggerTime + (isKick ? 0.016 : 0.013);
+          const peakTime = Math.max(preTime + 0.0005, triggerTime + 0.0015);
+          const releaseTime = peakTime + (isKick ? 0.013 : 0.010);
 
           duckParam.setValueAtTime(0, preTime);
           duckParam.linearRampToValueAtTime(maxDuckDb, peakTime);
@@ -216,11 +201,13 @@ export class DrumTransientReplacerDSP {
         }
 
         const source = ctx.createBufferSource();
-        source.buffer = isKick ? kickBuffer : snareBuffer;
+        const buf = isKick ? kickBuffer : snareBuffer;
+        source.buffer = buf;
 
         const hitGain = ctx.createGain();
         hitGain.gain.value = hit.velocity * mixAmount * 0.72;
 
+        let timbreFilter: BiquadFilterNode | null = null;
         if (config.humanizeRoundRobin) {
           const seedIdx = index + cycle * 997;
           const pseudoRand1 = Math.sin(seedIdx * 12.9898) * 43758.5453;
@@ -231,7 +218,7 @@ export class DrumTransientReplacerDSP {
           source.playbackRate.value = safeRate * (0.994 + frac1 * 0.012);
           triggerTime += (frac2 - 0.5) * 0.00025;
 
-          const timbreFilter = ctx.createBiquadFilter();
+          timbreFilter = ctx.createBiquadFilter();
           timbreFilter.type = 'peaking';
           timbreFilter.frequency.value = isKick
             ? 68 + frac1 * 20
@@ -251,22 +238,33 @@ export class DrumTransientReplacerDSP {
         source.onended = () => {
           try {
             source.disconnect();
+            timbreFilter?.disconnect();
             hitGain.disconnect();
           } catch {
             // ignore
           }
         };
 
-        source.start(Math.max(0, triggerTime));
+        const safeStart = Math.max(0, triggerTime);
+        source.start(safeStart);
         if (!isOffline) {
-          this.activeScheduledNodes.push(source);
+          this.activeScheduledNodes.push({
+            node: source,
+            endTimeSec: safeStart + buf.duration / safeRate + 0.05,
+          });
         }
       });
     }
   }
 
+  private pruneFinishedNodes(nowSec: number): void {
+    this.activeScheduledNodes = this.activeScheduledNodes.filter(
+      (entry) => entry.endTimeSec >= nowSec
+    );
+  }
+
   public stopScheduledLayers(): void {
-    this.activeScheduledNodes.forEach((node) => {
+    this.activeScheduledNodes.forEach(({ node }) => {
       try {
         node.stop();
         node.disconnect();

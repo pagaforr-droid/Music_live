@@ -31,6 +31,7 @@ export interface ControllableHumanizerHandles {
   inputNode: GainNode;
   outputNode: GainNode;
   updateConfig: (config: ForensicHumanizerConfig, now?: number) => void;
+  dispose: () => void;
 }
 
 /**
@@ -176,18 +177,23 @@ export class ForensicHumanizerDSP {
     sharedLfoGain.connect(tapeDelayR.delayTime);
     sharedTapeLfo.start(0);
 
-    // Subtle analog warmth parallel blend scaled by analogPhaseAndDrift
-    const analogWarmthShaper = ctx.createWaveShaper();
-    analogWarmthShaper.oversample = '4x';
-    analogWarmthShaper.curve = this.createHeadroomExciterCurve();
-    const analogWarmthIn = ctx.createGain();
-    analogWarmthIn.gain.value = 1 / SAT_HEADROOM_SCALE;
-    const analogWarmthBlend = ctx.createGain();
-    analogWarmthBlend.gain.value =
-      0.08 * SAT_HEADROOM_SCALE * initialConfig.analogPhaseAndDrift;
-    const analogWarmthLpf = ctx.createBiquadFilter();
-    analogWarmthLpf.type = 'lowpass';
-    analogWarmthLpf.frequency.value = 3200;
+    // Series Dual-WaveShaper Warmth stage (A/B crossfade -> ZERO parallel LPF comb-filtering & zero click!)
+    const warmthShaperIn = ctx.createGain();
+    warmthShaperIn.gain.value = 1 / SAT_HEADROOM_SCALE;
+    const warmthShaperOut = ctx.createGain();
+    warmthShaperOut.gain.value = SAT_HEADROOM_SCALE;
+
+    const analogWarmthShaperA = ctx.createWaveShaper();
+    analogWarmthShaperA.oversample = '4x';
+    const analogWarmthShaperB = ctx.createWaveShaper();
+    analogWarmthShaperB.oversample = '4x';
+
+    const warmthGainA = ctx.createGain();
+    const warmthGainB = ctx.createGain();
+    warmthGainA.gain.value = 1.0;
+    warmthGainB.gain.value = 0.0;
+    let activeWarmthSlot: 'A' | 'B' = 'A';
+    let lastWarmthQuantized = -1;
 
     formantSmooth2.connect(splitter);
 
@@ -205,10 +211,14 @@ export class ForensicHumanizerDSP {
     apChainR[apChainR.length - 1].connect(tapeDelayR);
     tapeDelayR.connect(merger, 0, 1);
 
-    merger.connect(analogWarmthIn);
-    analogWarmthIn.connect(analogWarmthShaper);
-    analogWarmthShaper.connect(analogWarmthLpf);
-    analogWarmthLpf.connect(analogWarmthBlend);
+    // Route strictly in series through warmth shaper crossfade -> linear bark notches -> LPF purge
+    merger.connect(warmthShaperIn);
+    warmthShaperIn.connect(analogWarmthShaperA);
+    warmthShaperIn.connect(analogWarmthShaperB);
+    analogWarmthShaperA.connect(warmthGainA);
+    analogWarmthShaperB.connect(warmthGainB);
+    warmthGainA.connect(warmthShaperOut);
+    warmthGainB.connect(warmthShaperOut);
 
     // =========================================================================
     // 3A. PURGA DE ALIASING ULTRASÓNICO (>19.2 kHz + Notches de anillo)
@@ -239,18 +249,20 @@ export class ForensicHumanizerDSP {
       initialConfig.sunoUltrasonicPurge !== false ? 19400 : 22000;
     ultrasonicPurgeLpf2.Q.value = Math.SQRT1_2;
 
-    merger.connect(barkNotch1);
+    warmthShaperOut.connect(barkNotch1);
     barkNotch1.connect(barkNotch2);
     barkNotch2.connect(ultrasonicPurgeLpf1);
     ultrasonicPurgeLpf1.connect(ultrasonicPurgeLpf2);
 
     // =========================================================================
-    // 3B. RECONSTRUCTOR DE ARMÓNICOS DE AIRE (11.5 kHz – 20 kHz, +8 dB Headroom)
+    // 3B. RECONSTRUCTOR DE ARMÓNICOS DE AIRE (12.5 kHz – 20 kHz, +8 dB Headroom)
+    //     Bandpass en 5.8 kHz (Q=1.6) genera 2º/3er armónico puro en 12-18 kHz
+    //     sin dejar pasar fundamental que produzca filtro peine en medios/agudos.
     // =========================================================================
     const exciterBandpass = ctx.createBiquadFilter();
     exciterBandpass.type = 'bandpass';
-    exciterBandpass.frequency.value = 8200;
-    exciterBandpass.Q.value = 0.9;
+    exciterBandpass.frequency.value = 5800;
+    exciterBandpass.Q.value = 1.6;
 
     const exciterPreTrim = ctx.createGain();
     exciterPreTrim.gain.value = 1 / SAT_HEADROOM_SCALE;
@@ -259,20 +271,26 @@ export class ForensicHumanizerDSP {
     harmonicGenerator.oversample = '4x';
     harmonicGenerator.curve = this.createHeadroomExciterCurve();
 
-    const postExciterHighpass = ctx.createBiquadFilter();
-    postExciterHighpass.type = 'highpass';
-    postExciterHighpass.frequency.value = 11800;
-    postExciterHighpass.Q.value = 0.75;
+    const postExciterHighpass1 = ctx.createBiquadFilter();
+    postExciterHighpass1.type = 'highpass';
+    postExciterHighpass1.frequency.value = 12400;
+    postExciterHighpass1.Q.value = Math.SQRT1_2;
+
+    const postExciterHighpass2 = ctx.createBiquadFilter();
+    postExciterHighpass2.type = 'highpass';
+    postExciterHighpass2.frequency.value = 12400;
+    postExciterHighpass2.Q.value = Math.SQRT1_2;
 
     const exciterMixGain = ctx.createGain();
     exciterMixGain.gain.value =
       0.16 * SAT_HEADROOM_SCALE * initialConfig.highFreqExciterAmount;
 
-    merger.connect(exciterBandpass);
+    warmthShaperOut.connect(exciterBandpass);
     exciterBandpass.connect(exciterPreTrim);
     exciterPreTrim.connect(harmonicGenerator);
-    harmonicGenerator.connect(postExciterHighpass);
-    postExciterHighpass.connect(exciterMixGain);
+    harmonicGenerator.connect(postExciterHighpass1);
+    postExciterHighpass1.connect(postExciterHighpass2);
+    postExciterHighpass2.connect(exciterMixGain);
 
     // =========================================================================
     // 4. MICRO-ACÚSTICA DE SALA DE ESTUDIO 100% BALANCEADA L/R
@@ -292,7 +310,6 @@ export class ForensicHumanizerDSP {
     sumBus.gain.value = 1.0;
 
     ultrasonicPurgeLpf2.connect(sumBus);
-    analogWarmthBlend.connect(sumBus);
     exciterMixGain.connect(sumBus);
     roomWetGain.connect(sumBus);
 
@@ -351,9 +368,35 @@ export class ForensicHumanizerDSP {
       sharedLfoGain.gain.value = depth;
       sharedLfoGain.gain.setTargetAtTime(depth, now, 0.012);
 
-      const warmthGain = 0.08 * SAT_HEADROOM_SCALE * drift;
-      analogWarmthBlend.gain.value = warmthGain;
-      analogWarmthBlend.gain.setTargetAtTime(warmthGain, now, 0.012);
+      const apQ = 0.35 + 0.55 * drift;
+      for (let i = 0; i < apChainL.length; i++) {
+        apChainL[i].Q.value = apQ;
+        apChainR[i].Q.value = apQ;
+        apChainL[i].Q.setTargetAtTime(apQ, now, 0.012);
+        apChainR[i].Q.setTargetAtTime(apQ, now, 0.012);
+      }
+
+      const quantizedDrift = Math.round(drift * 50);
+      if (quantizedDrift !== lastWarmthQuantized) {
+        const nextWarmthCurve = this.createSeriesWarmthCurve(drift);
+        if (lastWarmthQuantized === -1 || now <= 0.001) {
+          analogWarmthShaperA.curve = nextWarmthCurve;
+          warmthGainA.gain.value = 1.0;
+          warmthGainB.gain.value = 0.0;
+          activeWarmthSlot = 'A';
+        } else if (activeWarmthSlot === 'A') {
+          analogWarmthShaperB.curve = nextWarmthCurve;
+          warmthGainA.gain.setTargetAtTime(0.0, now, 0.004);
+          warmthGainB.gain.setTargetAtTime(1.0, now, 0.004);
+          activeWarmthSlot = 'B';
+        } else {
+          analogWarmthShaperA.curve = nextWarmthCurve;
+          warmthGainB.gain.setTargetAtTime(0.0, now, 0.004);
+          warmthGainA.gain.setTargetAtTime(1.0, now, 0.004);
+          activeWarmthSlot = 'A';
+        }
+        lastWarmthQuantized = quantizedDrift;
+      }
 
       const purgeActive = cfg.sunoUltrasonicPurge !== false;
       const notchGain = purgeActive ? -2.4 : 0;
@@ -395,6 +438,26 @@ export class ForensicHumanizerDSP {
       updateConfig: (nextConfig: ForensicHumanizerConfig, now?: number) => {
         applyRoutingState(nextConfig, now ?? ctx.currentTime);
       },
+      dispose: () => {
+        try {
+          sharedTapeLfo.stop();
+          sharedTapeLfo.disconnect();
+        } catch {
+          // ignore
+        }
+        try {
+          consoleNoiseSource.stop();
+          consoleNoiseSource.disconnect();
+        } catch {
+          // ignore
+        }
+        try {
+          inputNode.disconnect();
+          outputNode.disconnect();
+        } catch {
+          // ignore
+        }
+      },
     };
   }
 
@@ -416,6 +479,26 @@ export class ForensicHumanizerDSP {
    * Curva armónica con +8 dB de headroom interno y pendiente unitaria en 0
    * para generar 2º y 3er armónico limpio sin recortes digitales.
    */
+  private static createSeriesWarmthCurve(drift: number): Float32Array<ArrayBuffer> {
+    const samples = 65536;
+    const curve: Float32Array<ArrayBuffer> = new Float32Array(samples);
+    const d = Math.max(0, Math.min(1, drift));
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / (samples - 1) - 1;
+      if (d <= 0.001) {
+        curve[i] = x;
+      } else {
+        const u = x * SAT_HEADROOM_SCALE;
+        const k = 1 + 0.55 * d;
+        const even = (0.045 * d * (u * u)) / (1 + Math.abs(u));
+        const y = (Math.tanh(k * u) / k + even) / SAT_HEADROOM_SCALE;
+        curve[i] = Math.max(-0.9999, Math.min(0.9999, y));
+      }
+    }
+    curve[samples >> 1] = 0;
+    return curve;
+  }
+
   private static createHeadroomExciterCurve(): Float32Array<ArrayBuffer> {
     const samples = 65536;
     const curve: Float32Array<ArrayBuffer> = new Float32Array(samples);

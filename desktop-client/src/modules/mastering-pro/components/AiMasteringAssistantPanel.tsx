@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -23,6 +23,7 @@ interface AiMasteringAssistantPanelProps {
   report: SpectralAdaptationReport | null;
   overrides: SurgicalOverrides;
   isAnalyzing: boolean;
+  resetToken?: number;
   onRunFullAiOptimization: () => void;
   onApplyCriticalPoint: (point: AiCriticalEqPoint) => void;
   onApplyFilterSuggestion: (suggestion: AiFilterSuggestion) => void;
@@ -44,6 +45,7 @@ export const AiMasteringAssistantPanel: React.FC<
   report,
   overrides,
   isAnalyzing,
+  resetToken,
   onRunFullAiOptimization,
   onApplyCriticalPoint,
   onApplyFilterSuggestion,
@@ -56,6 +58,10 @@ export const AiMasteringAssistantPanel: React.FC<
     'critical-points' | 'filters' | 'custom-eq' | 'comp-stereo'
   >('critical-points');
   const [appliedIds, setAppliedIds] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setAppliedIds({});
+  }, [report, resetToken]);
 
   if (!report) return null;
 
@@ -307,7 +313,7 @@ export const AiMasteringAssistantPanel: React.FC<
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Elimina líneas horizontales continuas del espectrograma con hasta 4 filtros Notch ultra-estrechos (Q=12). También puedes hacer clic directo sobre cualquier línea en el espectrograma RX.
+                  Elimina líneas horizontales continuas del espectrograma con hasta 6 filtros Notch ultra-estrechos (Q=12). También puedes hacer clic directo sobre cualquier línea en el espectrograma RX.
                 </p>
               </div>
 

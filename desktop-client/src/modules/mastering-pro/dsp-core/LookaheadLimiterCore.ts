@@ -44,10 +44,11 @@ export class LookaheadLimiterCore {
   private dqTail = 0;
   private sampleCounter = 0;
 
-  private delaySamples = 240;
-  private lookaheadSamples = 235;
+  private delaySamples = 245;
+  private lookaheadSamples = 240;
   private driveLinear = 1.0;
-  private ceilingLinear = Math.pow(10, -1.03 / 20);
+  private ceilingLinear = Math.pow(10, -1.05 / 20);
+  private rawCeilingLinear = Math.pow(10, -1.0 / 20);
   private attackCoeff = 0.92;
   private releaseCoeffFast = 0.99;
   private releaseCoeffSlow = 0.999;
@@ -56,13 +57,6 @@ export class LookaheadLimiterCore {
   private fastReleaseState = 1.0;
   private slowReleaseState = 1.0;
   private lastMaxGrDb = 0;
-
-  private params: LookaheadLimiterParams = {
-    driveDb: 0,
-    ceilingDbTp: -1.0,
-    lookaheadMs: 5.0,
-    releaseMs: 65,
-  };
 
   constructor(sampleRate: number, initialParams?: Partial<LookaheadLimiterParams>) {
     this.sampleRate = Math.max(8000, sampleRate);
@@ -96,33 +90,24 @@ export class LookaheadLimiterCore {
     const clampedLookahead = Math.max(1.0, Math.min(15.0, next.lookaheadMs));
     const clampedRelease = Math.max(15, Math.min(500, next.releaseMs));
 
-    const lookaheadChanged =
-      Math.abs(clampedLookahead - this.params.lookaheadMs) > 0.1;
-
-    this.params = {
-      driveDb: clampedDrive,
-      ceilingDbTp: clampedCeiling,
-      lookaheadMs: clampedLookahead,
-      releaseMs: clampedRelease,
-    };
-
     this.driveLinear = Math.pow(10, clampedDrive / 20);
-    // 0.03 dB guard margin ensures strict adherence under 4x FIR reconstruction
-    this.ceilingLinear = Math.pow(10, (clampedCeiling - 0.03) / 20);
+    // 0.05 dB guard margin accounts for envelope curvature inside the 12-tap FIR stencil
+    // so zero hard-clipping is ever needed and 4x True Peak remains strictly <= ceilingDbTp.
+    this.ceilingLinear = Math.pow(10, (clampedCeiling - 0.05) / 20);
+    this.rawCeilingLinear = Math.pow(10, clampedCeiling / 20);
 
-    if (lookaheadChanged || this.lookaheadSamples === 235) {
-      this.lookaheadSamples = Math.max(
-        16,
-        Math.min(
-          MAX_DELAY_SAMPLES - TRUE_PEAK_FIR_GROUP_DELAY - 8,
-          Math.round((clampedLookahead / 1000) * this.sampleRate)
-        )
-      );
-      this.delaySamples = this.lookaheadSamples + TRUE_PEAK_FIR_GROUP_DELAY;
-    }
+    const targetLookaheadSamples = Math.max(
+      16,
+      Math.min(
+        MAX_DELAY_SAMPLES - TRUE_PEAK_FIR_GROUP_DELAY - 16,
+        Math.round((clampedLookahead / 1000) * this.sampleRate)
+      )
+    );
+    this.lookaheadSamples = targetLookaheadSamples;
+    this.delaySamples = this.lookaheadSamples + TRUE_PEAK_FIR_GROUP_DELAY;
 
-    // Attack time constant = lookahead / 5 so envelope reaches 99.3% of target before transient exits delay
-    const attackSamples = Math.max(4, this.lookaheadSamples / 5);
+    // Attack time constant = lookahead / 7.5 so envelope reaches >99.94% of target before peak exits
+    const attackSamples = Math.max(2, this.lookaheadSamples / 7.5);
     this.attackCoeff = Math.exp(-1 / attackSamples);
 
     const relSamples = Math.max(16, (clampedRelease / 1000) * this.sampleRate);
@@ -152,8 +137,9 @@ export class LookaheadLimiterCore {
     this.dequeIdx[this.dqTail] = idx;
     this.dqTail = (this.dqTail + 1) % MAX_DELAY_SAMPLES;
 
-    // Pop expired front elements outside lookahead window (+2 margin covers exact exit tap)
-    const minValidIdx = idx - (this.lookaheadSamples + 2) + 1;
+    // Keep lookahead window + half FIR kernel support (6 samples) so gain never jumps
+    // inside the reconstruction stencil immediately following a peak.
+    const minValidIdx = idx - (this.lookaheadSamples + TRUE_PEAK_FIR_GROUP_DELAY + 2) + 1;
     while (this.dqHead !== this.dqTail && this.dequeIdx[this.dqHead] < minValidIdx) {
       this.dqHead = (this.dqHead + 1) % MAX_DELAY_SAMPLES;
     }
@@ -169,33 +155,41 @@ export class LookaheadLimiterCore {
   ): number {
     const drive = this.driveLinear;
     const ceiling = this.ceilingLinear;
+    const rawCeiling = this.rawCeilingLinear;
     let minGainSeen = 1.0;
 
     for (let i = 0; i < length; i++) {
-      const l = inL[i] * drive;
-      const r = inR[i] * drive;
+      const rawInL = Number.isFinite(inL[i]) ? inL[i] : 0;
+      const rawInR = Number.isFinite(inR[i]) ? inR[i] : 0;
+      const l = rawInL * drive;
+      const r = rawInR * drive;
 
       // Write incoming audio into delay line
       this.delayL[this.writeIdx] = l;
       this.delayR[this.writeIdx] = r;
 
-      // 4x Polyphase FIR True Peak measurement (center tap is 5 samples delayed)
+      // 4x Polyphase FIR True Peak measurement (all 4 phases aligned at center tap: delay = 5)
       const tpLin = this.tpDetector.processSample(l, r);
       const reqGain = tpLin > ceiling ? ceiling / tpLin : 1.0;
 
-      // Also track exact required gain at the FIR center tap aligned with delaySamples
+      // Track exact required gain at the FIR center tap and its left neighbor
+      // (both endpoints participate in fractional phases 0.25, 0.5, 0.75)
       const firAlignedWriteIdx =
         (this.writeIdx - TRUE_PEAK_FIR_GROUP_DELAY + MAX_DELAY_SAMPLES) %
         MAX_DELAY_SAMPLES;
-      this.reqGainDelay[firAlignedWriteIdx] = Math.min(
-        this.reqGainDelay[firAlignedWriteIdx],
-        reqGain
-      );
+      const firPrevWriteIdx =
+        (firAlignedWriteIdx - 1 + MAX_DELAY_SAMPLES) % MAX_DELAY_SAMPLES;
+      if (reqGain < this.reqGainDelay[firAlignedWriteIdx]) {
+        this.reqGainDelay[firAlignedWriteIdx] = reqGain;
+      }
+      if (reqGain < this.reqGainDelay[firPrevWriteIdx]) {
+        this.reqGainDelay[firPrevWriteIdx] = reqGain;
+      }
 
       // Push into sliding lookahead window minimum
       const windowMinGain = this.pushMonotonicMin(this.sampleCounter, reqGain);
 
-      // Read audio exiting the delay line
+      // Read audio exiting the delay line (at delaySamples = lookaheadSamples + 5)
       const readIdx =
         (this.writeIdx - this.delaySamples + MAX_DELAY_SAMPLES) %
         MAX_DELAY_SAMPLES;
@@ -223,16 +217,23 @@ export class LookaheadLimiterCore {
           0.55 * this.fastReleaseState + 0.45 * this.slowReleaseState;
       }
 
-      // Hard safety guard guarantees zero sample or inter-sample overshoot
-      const appliedGain = Math.min(this.smoothedGain, exitReqGain);
+      let appliedGain = Math.min(this.smoothedGain, exitReqGain);
+      if (appliedGain < this.smoothedGain) {
+        this.smoothedGain = appliedGain;
+        this.fastReleaseState = Math.min(this.fastReleaseState, appliedGain);
+        this.slowReleaseState = Math.min(this.slowReleaseState, appliedGain);
+      }
+
+      // Live ceiling change protection without hard clipping waveform asymmetry
+      const maxExitSample = Math.max(Math.abs(outSampleL), Math.abs(outSampleR));
+      if (maxExitSample * appliedGain > rawCeiling && maxExitSample > 1e-6) {
+        appliedGain = rawCeiling / maxExitSample;
+      }
+
       if (appliedGain < minGainSeen) minGainSeen = appliedGain;
 
-      const scaledL = outSampleL * appliedGain;
-      const scaledR = outSampleR * appliedGain;
-      outL[i] =
-        scaledL > ceiling ? ceiling : scaledL < -ceiling ? -ceiling : scaledL;
-      outR[i] =
-        scaledR > ceiling ? ceiling : scaledR < -ceiling ? -ceiling : scaledR;
+      outL[i] = outSampleL * appliedGain;
+      outR[i] = outSampleR * appliedGain;
 
       this.writeIdx = (this.writeIdx + 1) % MAX_DELAY_SAMPLES;
       this.sampleCounter++;

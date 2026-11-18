@@ -90,13 +90,13 @@ export class StreamingTruePeakDetector {
     this.historyL[this.writePos] = l;
     this.historyR[this.writePos] = r;
 
-    // Integer sample peak at center tap (delay = 5 samples)
+    // Integer sample peak at center tap (delay = TRUE_PEAK_FIR_GROUP_DELAY = 5 samples)
+    // Evaluating all 4 polyphase outputs at the exact same group delay guarantees
+    // sample-synchronized True Peak detection without early 0-delay jitter.
     const centerIdx = (this.writePos + TAPS_PER_PHASE - (HALF_TAPS - 1)) % TAPS_PER_PHASE;
     let peak = Math.max(
       Math.abs(this.historyL[centerIdx]),
-      Math.abs(this.historyR[centerIdx]),
-      Math.abs(l),
-      Math.abs(r)
+      Math.abs(this.historyR[centerIdx])
     );
 
     const p1 = POLYPHASE_4X_COEFFS[1];

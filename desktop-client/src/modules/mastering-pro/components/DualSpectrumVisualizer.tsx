@@ -6,12 +6,14 @@ interface DualSpectrumVisualizerProps {
     preBins: Uint8Array;
     postBins: Uint8Array;
     waveformPeaks: Float32Array;
+    sampleRate?: number;
   };
   dspChain: MasteringDspChain;
   isPlaying: boolean;
   isBypassed: boolean;
   currentTimeSec: number;
   durationSec: number;
+  getCurrentTimeSec?: () => number;
   onSeek: (sec: number) => void;
 }
 
@@ -42,74 +44,102 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
   isBypassed,
   currentTimeSec,
   durationSec,
+  getCurrentTimeSec,
   onSeek,
 }) => {
   const spectrumCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const waveformCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Draw Waveform Scrubbing Bar
-  useEffect(() => {
-    const canvas = waveformCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  // Keep dynamic props in refs so 60fps canvas rAF loop never tears down/re-mounts on slider drags
+  const stateRef = useRef({
+    dspChain,
+    isPlaying,
+    isBypassed,
+    currentTimeSec,
+    durationSec,
+    getCurrentTimeSec,
+  });
+  stateRef.current = {
+    dspChain,
+    isPlaying,
+    isBypassed,
+    currentTimeSec,
+    durationSec,
+    getCurrentTimeSec,
+  };
 
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(300, rect.width);
-    const h = Math.max(38, rect.height);
-    if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    const { waveformPeaks } = getVisualSnapshot();
-    const numBars = waveformPeaks.length || 1;
-    const progress = durationSec > 0 ? Math.max(0, Math.min(1, currentTimeSec / durationSec)) : 0;
-    const barGap = 1.5;
-    const barWidth = Math.max(1.2, (w - numBars * barGap) / numBars);
-    const midY = h / 2;
-
-    for (let i = 0; i < numBars; i++) {
-      const x = i * (barWidth + barGap);
-      const norm = waveformPeaks[i] || 0.08;
-      const preHalfH = Math.max(2, norm * (h * 0.36));
-      const postBoost = isBypassed ? 1.0 : 1.18;
-      const postHalfH = Math.min(h * 0.46, preHalfH * postBoost);
-      const isPlayed = i / numBars <= progress;
-
-      // Pre silhouette
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.22)';
-      ctx.fillRect(x, midY - preHalfH, barWidth, preHalfH * 2);
-
-      // Post active bar
-      if (isPlayed) {
-        ctx.fillStyle = isBypassed ? '#94a3b8' : i % 2 === 0 ? '#FF6B00' : '#00E5FF';
-      } else {
-        ctx.fillStyle = isBypassed
-          ? 'rgba(148, 163, 184, 0.45)'
-          : 'rgba(0, 229, 255, 0.35)';
-      }
-      ctx.fillRect(x, midY - postHalfH, barWidth, postHalfH * 2);
-    }
-
-    // Playhead cursor
-    const playheadX = progress * w;
-    ctx.strokeStyle = '#FF6B00';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(playheadX, 0);
-    ctx.lineTo(playheadX, h);
-    ctx.stroke();
-  }, [getVisualSnapshot, currentTimeSec, durationSec, isBypassed]);
-
-  // 60fps Dual FFT Spectrum + EQ Transfer Curve + Mono Maker Boundary
+  // Unified 60fps Canvas Loop (Waveform Scrubber Playhead + Dual FFT Spectrum + EQ Curve)
   useEffect(() => {
     let rafId = 0;
 
     const renderFrame = () => {
+      const {
+        dspChain: chain,
+        isPlaying: playing,
+        isBypassed: bypassed,
+        currentTimeSec: stateTimeSec,
+        durationSec: totalDurSec,
+        getCurrentTimeSec: getLiveTime,
+      } = stateRef.current;
+
+      const snapshot = getVisualSnapshot();
+      const liveTime = getLiveTime ? getLiveTime() : stateTimeSec;
+
+      // A. Draw Waveform Scrubbing Bar smoothly at 60fps
+      const wfCanvas = waveformCanvasRef.current;
+      if (wfCanvas) {
+        const wfCtx = wfCanvas.getContext('2d');
+        if (wfCtx) {
+          const dpr = window.devicePixelRatio || 1;
+          const rect = wfCanvas.getBoundingClientRect();
+          const w = Math.max(300, rect.width);
+          const h = Math.max(38, rect.height);
+          if (wfCanvas.width !== Math.floor(w * dpr) || wfCanvas.height !== Math.floor(h * dpr)) {
+            wfCanvas.width = Math.floor(w * dpr);
+            wfCanvas.height = Math.floor(h * dpr);
+          }
+          wfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          wfCtx.clearRect(0, 0, w, h);
+
+          const { waveformPeaks } = snapshot;
+          const numBars = waveformPeaks.length || 1;
+          const progress = totalDurSec > 0 ? Math.max(0, Math.min(1, liveTime / totalDurSec)) : 0;
+          const barGap = 1.5;
+          const barWidth = Math.max(1.2, (w - numBars * barGap) / numBars);
+          const midY = h / 2;
+
+          for (let i = 0; i < numBars; i++) {
+            const x = i * (barWidth + barGap);
+            const norm = waveformPeaks[i] || 0.08;
+            const preHalfH = Math.max(2, norm * (h * 0.36));
+            const postBoost = bypassed ? 1.0 : 1.18;
+            const postHalfH = Math.min(h * 0.46, preHalfH * postBoost);
+            const isPlayed = i / numBars <= progress;
+
+            wfCtx.fillStyle = 'rgba(148, 163, 184, 0.22)';
+            wfCtx.fillRect(x, midY - preHalfH, barWidth, preHalfH * 2);
+
+            if (isPlayed) {
+              wfCtx.fillStyle = bypassed ? '#94a3b8' : i % 2 === 0 ? '#FF6B00' : '#00E5FF';
+            } else {
+              wfCtx.fillStyle = bypassed
+                ? 'rgba(148, 163, 184, 0.45)'
+                : 'rgba(0, 229, 255, 0.35)';
+            }
+            wfCtx.fillRect(x, midY - postHalfH, barWidth, postHalfH * 2);
+          }
+
+          const playheadX = progress * w;
+          wfCtx.strokeStyle = '#FF6B00';
+          wfCtx.lineWidth = 2;
+          wfCtx.beginPath();
+          wfCtx.moveTo(playheadX, 0);
+          wfCtx.lineTo(playheadX, h);
+          wfCtx.stroke();
+        }
+      }
+
+      // B. Draw Dual FFT Spectrum + EQ Transfer Curve + Mono Maker Boundary
       const canvas = spectrumCanvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
@@ -141,7 +171,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
 
           for (const db of dbLines) {
-            const y = ((Math.abs(db) / 60) * (h - 24)) + 8;
+            const y = (Math.abs(db) / 60) * (h - 24) + 8;
             ctx.beginPath();
             ctx.moveTo(0, y);
             ctx.lineTo(w, y);
@@ -168,7 +198,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           }
 
           // 2. Mono Maker Sub-Bass Zone Shade + Vertical Cutoff Line
-          const monoX = freqToNormX(dspChain.monoMakerFreq) * w;
+          const monoX = freqToNormX(chain.monoMakerFreq) * w;
           const monoGrad = ctx.createLinearGradient(0, 0, monoX, 0);
           monoGrad.addColorStop(0, 'rgba(255, 107, 0, 0.14)');
           monoGrad.addColorStop(1, 'rgba(255, 107, 0, 0.03)');
@@ -188,15 +218,15 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           ctx.fillStyle = '#FF6B00';
           ctx.font = 'bold 10px monospace';
           ctx.fillText(
-            `MONO MAKER ${dspChain.monoMakerFreq}Hz`,
+            `MONO MAKER ${chain.monoMakerFreq}Hz`,
             Math.max(8, Math.min(w - 135, monoX + 6)),
             16
           );
 
           // 3. Sample Pre & Post FFT Bins (or draw idle ambient floor when paused)
-          const { preBins, postBins } = getVisualSnapshot();
+          const { preBins, postBins, sampleRate } = snapshot;
           const numPoints = 128;
-          const nyquist = 24000;
+          const nyquist = (sampleRate || 48000) / 2;
           const usableHeight = h - 24;
 
           const computeCurvePoints = (
@@ -213,11 +243,10 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
               const frac = binFloat - idx0;
               let val = (bins[idx0] * (1 - frac) + bins[idx1] * frac) / 255;
 
-              if (!isPlaying && val < 0.02) {
-                // Static studio reference preview curve when paused
+              if (!playing && val < 0.02) {
                 const tilt = 0.58 - normX * 0.26;
                 const eqInfluence = isPost
-                  ? dspChain.eqBands.reduce((acc, b) => {
+                  ? chain.eqBands.reduce((acc, b) => {
                       const distOct = Math.log2(freq / Math.max(20, b.freq));
                       return (
                         acc +
@@ -259,7 +288,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
           ctx.stroke();
 
           // 5. Draw Post-Master Curve (Neon Orange #FF6B00 -> Cyan #00E5FF)
-          if (!isBypassed) {
+          if (!bypassed) {
             const fillGrad = ctx.createLinearGradient(0, 0, w, usableHeight);
             fillGrad.addColorStop(0, 'rgba(255, 107, 0, 0.28)');
             fillGrad.addColorStop(0.55, 'rgba(0, 229, 255, 0.22)');
@@ -292,7 +321,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
 
           // 6. Draw Surgical EQ Nodes Overlay
           const zeroDbY = usableHeight * 0.48;
-          for (const band of dspChain.eqBands) {
+          for (const band of chain.eqBands) {
             const bx = freqToNormX(band.freq) * w;
             const by = Math.max(
               14,
@@ -332,7 +361,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
 
     rafId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(rafId);
-  }, [getVisualSnapshot, dspChain, isPlaying, isBypassed]);
+  }, [getVisualSnapshot]);
 
   const handleWaveformClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (durationSec <= 0) return;

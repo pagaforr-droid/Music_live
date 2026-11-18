@@ -60,6 +60,72 @@ function deepCloneChain(chain: MasteringDspChain): MasteringDspChain {
   return JSON.parse(JSON.stringify(chain)) as MasteringDspChain;
 }
 
+/**
+ * Surgical Kick -> Bass stem sidechain ducking in pure float arrays.
+ * Detects low-passed (<115 Hz) kick energy from drums L/R and attenuates ONLY the bass stem arrays,
+ * leaving drums, vocals, and instruments 100% untouched.
+ */
+export function applyKickBassSidechainToBassArrays(
+  drumsL: Float32Array,
+  drumsR: Float32Array,
+  bassL: Float32Array,
+  bassR: Float32Array,
+  sampleRate: number,
+  drumsLinearGain = 1.0
+): void {
+  const n = Math.min(bassL.length, bassR.length);
+  const drumLen = Math.min(drumsL.length, drumsR.length);
+  if (n === 0 || drumLen === 0) return;
+
+  // 115 Hz low-pass detector so hi-hats/cymbals on the drum bus never pump the bass
+  const lpAlpha = (2 * Math.PI * 115) / (sampleRate + 2 * Math.PI * 115);
+  const atkCoeff = Math.exp(-1 / Math.max(1, 0.004 * sampleRate)); // 4ms attack
+  const relCoeff = Math.exp(-1 / Math.max(1, 0.095 * sampleRate)); // 95ms musical recovery
+
+  let lpL = 0;
+  let lpR = 0;
+  let maxDrumLowPeak = 0;
+  const detectLen = Math.min(n, drumLen);
+  for (let i = 0; i < detectLen; i++) {
+    lpL += lpAlpha * (drumsL[i] * drumsLinearGain - lpL);
+    lpR += lpAlpha * (drumsR[i] * drumsLinearGain - lpR);
+    const pk = Math.max(Math.abs(lpL), Math.abs(lpR));
+    if (pk > maxDrumLowPeak) maxDrumLowPeak = pk;
+  }
+
+  if (maxDrumLowPeak < 0.015) return; // Silent drum bus -> zero ducking
+
+  const threshold = Math.max(0.06, maxDrumLowPeak * 0.28);
+  const headroomSpan = Math.max(0.08, maxDrumLowPeak - threshold);
+
+  lpL = 0;
+  lpR = 0;
+  let env = 0;
+
+  for (let i = 0; i < n; i++) {
+    if (i < drumLen) {
+      lpL += lpAlpha * (drumsL[i] * drumsLinearGain - lpL);
+      lpR += lpAlpha * (drumsR[i] * drumsLinearGain - lpR);
+    } else {
+      lpL *= 0.995;
+      lpR *= 0.995;
+    }
+    const kickLevel = Math.max(Math.abs(lpL), Math.abs(lpR));
+    if (kickLevel > env) {
+      env = atkCoeff * env + (1 - atkCoeff) * kickLevel;
+    } else {
+      env = relCoeff * env + (1 - relCoeff) * kickLevel;
+    }
+
+    if (env > threshold) {
+      const ratio = Math.min(1, (env - threshold) / headroomSpan);
+      const duckGain = 1 - ratio * 0.34; // Up to ~3.6 dB tight kick pocket on Bass stem ONLY
+      bassL[i] *= duckGain;
+      bassR[i] *= duckGain;
+    }
+  }
+}
+
 export class WebAudioMasteringEngine {
   private ctx: AudioContext | null = null;
   private contextInitPromise: Promise<AudioContext> | null = null;
@@ -86,6 +152,7 @@ export class WebAudioMasteringEngine {
   private lastSensitivitySig = '';
   private drumRescheduleTimer: ReturnType<typeof setInterval> | null = null;
   private lastLoopCycleScheduled = 0;
+  private drumCycleOriginCtxTime = 0;
 
   private activeChain: MasteringDspChain;
   private calibratedLiveDriveDb = 0;
@@ -158,6 +225,7 @@ export class WebAudioMasteringEngine {
   private rebuildLiveRoutingGraph(meteringReady: boolean): void {
     if (!this.ctx) return;
     try {
+      this.graphHandles?.dispose();
       this.preAnalyser?.disconnect();
       this.postAnalyser?.disconnect();
       this.preMeterNode?.disconnect();
@@ -165,7 +233,6 @@ export class WebAudioMasteringEngine {
       this.bypassLatencyAlignDelay?.disconnect();
       this.bypassGainNode?.disconnect();
       this.masterGainNode?.disconnect();
-      this.graphHandles?.outputNode.disconnect();
     } catch {
       // ignore
     }
@@ -365,7 +432,14 @@ export class WebAudioMasteringEngine {
     this.pauseOffsetSec = 0;
 
     this.computeWaveformOverview(decoded);
-    const report = await analyzeTrackAndComputeAdaptationAsync(decoded);
+    const drumCfg = this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    this.lastSensitivitySig = `${drumCfg.kickSensitivity.toFixed(2)}:${drumCfg.snareSensitivity.toFixed(2)}`;
+    const report = await analyzeTrackAndComputeAdaptationAsync(
+      decoded,
+      undefined,
+      drumCfg.kickSensitivity,
+      drumCfg.snareSensitivity
+    );
     this.adaptationReport = report;
     this.detectedDrumHits = report.detectedDrumHits;
 
@@ -416,7 +490,14 @@ export class WebAudioMasteringEngine {
     this.pauseOffsetSec = 0;
 
     this.computeWaveformOverview(decoded);
-    const report = await analyzeTrackAndComputeAdaptationAsync(decoded);
+    const drumCfg = this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    this.lastSensitivitySig = `${drumCfg.kickSensitivity.toFixed(2)}:${drumCfg.snareSensitivity.toFixed(2)}`;
+    const report = await analyzeTrackAndComputeAdaptationAsync(
+      decoded,
+      undefined,
+      drumCfg.kickSensitivity,
+      drumCfg.snareSensitivity
+    );
     this.adaptationReport = report;
     this.detectedDrumHits = report.detectedDrumHits;
 
@@ -461,58 +542,63 @@ export class WebAudioMasteringEngine {
     );
     const totalLength = Math.max(1, Math.ceil(maxDuration * sampleRate));
 
-    const offlineCtx = new OfflineAudioContext(2, totalLength, sampleRate);
     const drumsStem = audibleStems.find(
       (s) => s.role === 'drums' && s.audioBuffer
     );
+    const bassStems = audibleStems.filter((s) => s.role === 'bass');
+    const nonBassStems = audibleStems.filter((s) => s.role !== 'bass');
 
-    for (const stem of audibleStems) {
-      const buf = stem.audioBuffer!;
-      const source = offlineCtx.createBufferSource();
-      source.buffer = buf;
+    const renderStemGroup = async (
+      group: StemTrackState[]
+    ): Promise<AudioBuffer> => {
+      const oCtx = new OfflineAudioContext(2, totalLength, sampleRate);
+      for (const stem of group) {
+        const buf = stem.audioBuffer!;
+        const source = oCtx.createBufferSource();
+        source.buffer = buf;
 
-      const gainNode = offlineCtx.createGain();
-      gainNode.gain.value = Math.pow(10, stem.gainDb / 20);
+        const gainNode = oCtx.createGain();
+        gainNode.gain.value = Math.pow(10, stem.gainDb / 20);
 
-      const panner = offlineCtx.createStereoPanner();
-      panner.pan.value = Math.max(-1, Math.min(1, stem.pan));
+        const panner = oCtx.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, stem.pan));
 
-      source.connect(gainNode);
-      gainNode.connect(panner);
-      panner.connect(offlineCtx.destination);
-      source.start(0);
-    }
-
-    const mixedBuffer = await offlineCtx.startRendering();
-
-    if (
-      enableKickBassSidechain &&
-      drumsStem?.audioBuffer &&
-      audibleStems.some((s) => s.role === 'bass')
-    ) {
-      const drumData = drumsStem.audioBuffer.getChannelData(0);
-      const outL = mixedBuffer.getChannelData(0);
-      const outR = mixedBuffer.getChannelData(1);
-      const ratio = drumsStem.audioBuffer.sampleRate / sampleRate;
-      let env = 0;
-
-      for (let i = 0; i < mixedBuffer.length; i++) {
-        const dIdx = Math.min(
-          drumData.length - 1,
-          Math.floor(i * ratio)
-        );
-        const kickTransient = Math.abs(drumData[dIdx]);
-        if (kickTransient > env) {
-          env = 0.85 * env + 0.15 * kickTransient;
-        } else {
-          env = 0.9985 * env;
-        }
-        if (env > 0.35) {
-          const duck = 1 - Math.min(0.16, (env - 0.35) * 0.28);
-          outL[i] *= duck;
-          outR[i] *= duck;
-        }
+        source.connect(gainNode);
+        gainNode.connect(panner);
+        panner.connect(oCtx.destination);
+        source.start(0);
       }
+      return oCtx.startRendering();
+    };
+
+    let mixedBuffer: AudioBuffer;
+
+    if (enableKickBassSidechain && drumsStem?.audioBuffer && bassStems.length > 0) {
+      // Render non-bass stems & bass stems separately so kick sidechain ducks ONLY the bass bus!
+      const [nonBassBuffer, bassBuffer, drumsRenderedBuffer] = await Promise.all([
+        nonBassStems.length > 0
+          ? renderStemGroup(nonBassStems)
+          : new OfflineAudioContext(2, totalLength, sampleRate).startRendering(),
+        renderStemGroup(bassStems),
+        renderStemGroup([drumsStem]),
+      ]);
+
+      const bassL = bassBuffer.getChannelData(0);
+      const bassR = bassBuffer.getChannelData(1);
+      const drumsL = drumsRenderedBuffer.getChannelData(0);
+      const drumsR = drumsRenderedBuffer.getChannelData(1);
+
+      applyKickBassSidechainToBassArrays(drumsL, drumsR, bassL, bassR, sampleRate, 1.0);
+
+      const nonBassL = nonBassBuffer.getChannelData(0);
+      const nonBassR = nonBassBuffer.getChannelData(1);
+      for (let i = 0; i < totalLength; i++) {
+        nonBassL[i] += bassL[i];
+        nonBassR[i] += bassR[i];
+      }
+      mixedBuffer = nonBassBuffer;
+    } else {
+      mixedBuffer = await renderStemGroup(audibleStems);
     }
 
     this.stop();
@@ -521,9 +607,20 @@ export class WebAudioMasteringEngine {
     this.pauseOffsetSec = 0;
     this.computeWaveformOverview(mixedBuffer);
 
-    const report = await analyzeTrackAndComputeAdaptationAsync(mixedBuffer);
+    const drumCfg = this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    this.lastSensitivitySig = `${drumCfg.kickSensitivity.toFixed(2)}:${drumCfg.snareSensitivity.toFixed(2)}`;
+    const report = await analyzeTrackAndComputeAdaptationAsync(
+      mixedBuffer,
+      undefined,
+      drumCfg.kickSensitivity,
+      drumCfg.snareSensitivity
+    );
     this.adaptationReport = report;
     this.detectedDrumHits = report.detectedDrumHits;
+    this.calibratedLiveDriveDb = Math.max(
+      -12,
+      Math.min(16, this.activeChain.limiter.targetLufs - report.detectedInputLufs)
+    );
     await this.runLiveGainCalibration(this.activeChain);
     this.applyDspChain(this.activeChain);
 
@@ -635,9 +732,20 @@ export class WebAudioMasteringEngine {
     this.pauseOffsetSec = 0;
     this.computeWaveformOverview(buffer);
 
-    const report = await analyzeTrackAndComputeAdaptationAsync(buffer);
+    const drumCfg = this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG;
+    this.lastSensitivitySig = `${drumCfg.kickSensitivity.toFixed(2)}:${drumCfg.snareSensitivity.toFixed(2)}`;
+    const report = await analyzeTrackAndComputeAdaptationAsync(
+      buffer,
+      undefined,
+      drumCfg.kickSensitivity,
+      drumCfg.snareSensitivity
+    );
     this.adaptationReport = report;
     this.detectedDrumHits = report.detectedDrumHits;
+    this.calibratedLiveDriveDb = Math.max(
+      -12,
+      Math.min(16, this.activeChain.limiter.targetLufs - report.detectedInputLufs)
+    );
     await this.runLiveGainCalibration(this.activeChain);
     this.applyDspChain(this.activeChain);
 
@@ -760,8 +868,12 @@ export class WebAudioMasteringEngine {
     postStages.outputNode.connect(ctx1B.destination);
     src1B.start(0);
 
-    const postBuffer = await ctx1B.startRendering();
-    return { buffer: postBuffer, maxCompressorGrDb };
+    try {
+      const postBuffer = await ctx1B.startRendering();
+      return { buffer: postBuffer, maxCompressorGrDb };
+    } finally {
+      postStages.dispose();
+    }
   }
 
   /**
@@ -917,20 +1029,28 @@ export class WebAudioMasteringEngine {
     const drumSig = `${drumCfg.enabled}:${drumCfg.kickMix.toFixed(2)}:${drumCfg.snareMix.toFixed(2)}:${drumCfg.drumStyle}:${drumCfg.humanizeRoundRobin}:${drumCfg.duckOriginalTransients !== false}:${sensSig}:${nextRate.toFixed(4)}`;
     if (drumSig !== this.lastDrumConfigSig) {
       this.lastDrumConfigSig = drumSig;
-      if (this.isPlaying && this.audioBuffer) {
+      if (this.isPlaying && this.audioBuffer && this.ctx && this.graphHandles) {
         const currentOffset = this.getCurrentTimeSec();
+        const now = this.ctx.currentTime;
+        this.drumCycleOriginCtxTime = now - currentOffset / Math.max(0.5, nextRate);
         this.drumReplacer.scheduleDrumLayers(
           this.ctx,
           this.graphHandles.drumLayerBusInput,
           this.detectedDrumHits,
           drumCfg,
-          this.ctx.currentTime,
+          now,
           currentOffset,
           this.audioBuffer.duration,
-          this.loopEnabled ? 8 : 1,
+          this.loopEnabled ? 3 : 1,
           this.graphHandles.transientDuckHandles,
           nextRate
         );
+        this.lastLoopCycleScheduled = this.loopEnabled ? 2 : 0;
+        if (this.loopEnabled && drumCfg.enabled) {
+          this.startDrumRescheduler();
+        } else {
+          this.stopDrumRescheduler();
+        }
       }
     }
 
@@ -1020,6 +1140,7 @@ export class WebAudioMasteringEngine {
     source.start(startCtxTime, offset);
     this.sourceNode = source;
     this.startTimestamp = startCtxTime - offset / playbackRate;
+    this.drumCycleOriginCtxTime = this.startTimestamp;
     this.isPlaying = true;
     this.lastLoopCycleScheduled = 0;
 
@@ -1034,10 +1155,11 @@ export class WebAudioMasteringEngine {
         startCtxTime,
         offset,
         this.audioBuffer.duration,
-        this.loopEnabled ? 8 : 1,
+        this.loopEnabled ? 3 : 1,
         this.graphHandles.transientDuckHandles,
         playbackRate
       );
+      this.lastLoopCycleScheduled = this.loopEnabled ? 2 : 0;
       if (this.loopEnabled && drumCfg.enabled) {
         this.startDrumRescheduler();
       }
@@ -1058,26 +1180,28 @@ export class WebAudioMasteringEngine {
       }
       const drumCfg = this.activeChain.drumLayering;
       if (!drumCfg?.enabled) return;
-      const elapsedTrack =
-        (this.ctx.currentTime - this.startTimestamp) * this.activePlaybackRate;
-      const cycle = Math.floor(elapsedTrack / Math.max(0.1, this.audioBuffer.duration));
-      if (cycle >= this.lastLoopCycleScheduled + 5) {
-        this.lastLoopCycleScheduled = cycle;
-        const offset = elapsedTrack % this.audioBuffer.duration;
+      const elapsedDrumTrack =
+        (this.ctx.currentTime - this.drumCycleOriginCtxTime) * this.activePlaybackRate;
+      const dur = Math.max(0.1, this.audioBuffer.duration);
+      const currentCycle = Math.floor(elapsedDrumTrack / dur);
+      if (currentCycle >= this.lastLoopCycleScheduled - 1) {
+        const nextCycle = this.lastLoopCycleScheduled + 1;
+        this.lastLoopCycleScheduled = nextCycle;
         this.drumReplacer.scheduleDrumLayers(
           this.ctx,
           this.graphHandles.drumLayerBusInput,
           this.detectedDrumHits,
           drumCfg,
-          this.ctx.currentTime,
-          offset,
-          this.audioBuffer.duration,
-          8,
+          this.drumCycleOriginCtxTime,
+          0,
+          dur,
+          1,
           this.graphHandles.transientDuckHandles,
-          this.activePlaybackRate
+          this.activePlaybackRate,
+          { clearExisting: false, startCycle: nextCycle }
         );
       }
-    }, 1000);
+    }, 500);
   }
 
   private stopDrumRescheduler(): void {
@@ -1180,18 +1304,21 @@ export class WebAudioMasteringEngine {
     if (this.isPlaying && this.audioBuffer && this.graphHandles && this.ctx) {
       const currentOffset = this.getCurrentTimeSec();
       const rate = this.getTargetPlaybackRate(this.activeChain);
+      const now = this.ctx.currentTime;
+      this.drumCycleOriginCtxTime = now - currentOffset / Math.max(0.5, rate);
       this.drumReplacer.scheduleDrumLayers(
         this.ctx,
         this.graphHandles.drumLayerBusInput,
         this.detectedDrumHits,
         this.activeChain.drumLayering ?? DEFAULT_DRUM_LAYERING_CONFIG,
-        this.ctx.currentTime,
+        now,
         currentOffset,
         this.audioBuffer.duration,
-        this.loopEnabled ? 8 : 1,
+        this.loopEnabled ? 3 : 1,
         this.graphHandles.transientDuckHandles,
         rate
       );
+      this.lastLoopCycleScheduled = this.loopEnabled ? 2 : 0;
     }
   }
 
@@ -1252,10 +1379,21 @@ export class WebAudioMasteringEngine {
     };
   }
 
+  public getAnalyserNodesReadOnly(): {
+    preAnalyser: AnalyserNode | null;
+    postAnalyser: AnalyserNode | null;
+  } {
+    return {
+      preAnalyser: this.preAnalyser,
+      postAnalyser: this.postAnalyser,
+    };
+  }
+
   public getVisualSnapshot(): {
     preBins: Uint8Array;
     postBins: Uint8Array;
     waveformPeaks: Float32Array;
+    sampleRate: number;
   } {
     if (this.preAnalyser && this.postAnalyser && this.isPlaying) {
       this.preAnalyser.getByteFrequencyData(this.preFreqBins);
@@ -1265,6 +1403,7 @@ export class WebAudioMasteringEngine {
       preBins: this.preFreqBins,
       postBins: this.postFreqBins,
       waveformPeaks: this.waveformOverview,
+      sampleRate: this.ctx?.sampleRate ?? 48000,
     };
   }
 
@@ -1528,6 +1667,11 @@ export class WebAudioMasteringEngine {
       this.calibrationTimer = null;
     }
     this.stop();
+    try {
+      this.graphHandles?.dispose();
+    } catch {
+      // ignore
+    }
     if (this.ctx && this.ctx.state !== 'closed') {
       void this.ctx.close();
     }

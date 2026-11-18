@@ -180,6 +180,11 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const [visualizerView, setVisualizerView] = useState<
     'both' | 'fft' | 'heatmap'
   >('both');
+  const [aiResetToken, setAiResetToken] = useState<number>(0);
+  const [analyserNodes, setAnalyserNodes] = useState<{
+    preAnalyser: AnalyserNode | null;
+    postAnalyser: AnalyserNode | null;
+  }>({ preAnalyser: null, postAnalyser: null });
   const configFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedPreset = useMemo(
@@ -208,6 +213,18 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const [liveMetrics, setLiveMetrics] = useState<AudioMetrics>(() =>
     engineRef.current!.getLiveMetrics()
   );
+
+  const syncAnalyserNodes = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const nodes = engine.getAnalyserNodesReadOnly();
+    setAnalyserNodes((prev) =>
+      prev.preAnalyser === nodes.preAnalyser &&
+      prev.postAnalyser === nodes.postAnalyser
+        ? prev
+        : nodes
+    );
+  }, []);
 
   const buildCurrentConfigSnapshot = useCallback((): MasteringConfigurationFile => {
     const engine = engineRef.current;
@@ -313,6 +330,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           setAdaptationReport(rep);
           setDetectedDrumHits(rep.detectedDrumHits);
           setLiveMetrics(engine.getLiveMetrics());
+          syncAnalyserNodes();
           setStatusBanner({
             type: 'success',
             message: `"${pendingBounce.title}" recibido desde Sample Lab (${rep.detectedInputLufs} LUFS).`,
@@ -339,19 +357,19 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 60fps UI Telemetry Loop
+  // Throttled UI Telemetry Loop (~15Hz state updates while canvas renders 60fps directly via refs)
   useEffect(() => {
     let rafId = 0;
     let frameCount = 0;
 
     const tick = () => {
       const engine = engineRef.current;
+      frameCount++;
       if (engine) {
-        if (engine.getIsPlaying()) {
+        if (engine.getIsPlaying() && frameCount % 4 === 0) {
           setCurrentTimeSec(engine.getCurrentTimeSec());
         }
-        frameCount++;
-        if (frameCount % 3 === 0) {
+        if (frameCount % 5 === 0) {
           setLiveMetrics(engine.getLiveMetrics());
         }
       }
@@ -362,21 +380,23 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     return () => cancelAnimationFrame(rafId);
   }, []);
 
-  // Keyboard shortcuts (Space = Play/Pause, B = Bypass toggle)
+  const togglePlayRef = useRef<() => void>(() => {});
+
+  // Keyboard shortcuts (Space = Play/Pause, B = Bypass toggle) - bound strictly ONCE on mount
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.code === 'Space') {
         e.preventDefault();
-        handleTogglePlay();
+        togglePlayRef.current();
       } else if (e.key === 'b' || e.key === 'B') {
         setIsBypassed((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  });
+  }, []);
 
   const applyPresetSelection = useCallback(
     (presetId: string, currentReport?: SpectralAdaptationReport | null) => {
@@ -409,6 +429,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDetectedDrumHits(report.detectedDrumHits);
       setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
+      syncAnalyserNodes();
       setStatusBanner({
         type: 'success',
         message: `Análisis completado (${report.detectedInputLufs} LUFS, ${report.detectedTruePeakDb} dBTP). Preset recomendado: ${getPresetById(report.recommendedPresetId).name}.`,
@@ -444,6 +465,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDetectedDrumHits(report.detectedDrumHits);
       setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
+      syncAnalyserNodes();
       setStatusBanner({
         type: 'success',
         message: `"${title}" lista en el rack (${report.detectedInputLufs} LUFS).`,
@@ -475,6 +497,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setDetectedDrumHits(report.detectedDrumHits);
       setLastExportQa(null);
       setLiveMetrics(engine.getLiveMetrics());
+      syncAnalyserNodes();
       if (!silent) {
         setStatusBanner({
           type: 'success',
@@ -495,10 +518,12 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setIsPlaying(false);
     } else {
       void engine.play().then(() => {
+        syncAnalyserNodes();
         setIsPlaying(true);
       });
     }
   };
+  togglePlayRef.current = handleTogglePlay;
 
   const handleStop = () => {
     const engine = engineRef.current;
@@ -788,7 +813,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       };
 
       const nextList = [...prev.resonanceNotches, newNode]
-        .slice(-4)
+        .slice(-6)
         .sort((a, b) => a.freqHz - b.freqHz);
 
       setStatusBanner({
@@ -859,6 +884,8 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       setCurrentTimeSec(0);
       setAdaptationReport(report);
       setLastExportQa(null);
+      setLiveMetrics(engine.getLiveMetrics());
+      syncAnalyserNodes();
       setStatusBanner({
         type: 'success',
         message:
@@ -1053,17 +1080,13 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         preBins: new Uint8Array(2048),
         postBins: new Uint8Array(2048),
         waveformPeaks: new Float32Array(240),
+        sampleRate: 48000,
       }
     );
   }, []);
 
-  const analyserNodes = useMemo(() => {
-    return (
-      engineRef.current?.getAnalyserNodes() ?? {
-        preAnalyser: null,
-        postAnalyser: null,
-      }
-    );
+  const getLiveCurrentTimeSec = useCallback(() => {
+    return engineRef.current?.getCurrentTimeSec() ?? 0;
   }, []);
 
   const aiFixMarkers = useMemo<ActiveFixMarker[]>(() => {
@@ -1321,6 +1344,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 isBypassed={isBypassed}
                 currentTimeSec={currentTimeSec}
                 durationSec={durationSec}
+                getCurrentTimeSec={getLiveCurrentTimeSec}
                 onSeek={handleSeek}
               />
             )}
@@ -1359,6 +1383,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           report={adaptationReport}
           overrides={overrides}
           isAnalyzing={isAnalyzing}
+          resetToken={aiResetToken}
           onRunFullAiOptimization={() => void handleRunAiAnalysis()}
           onApplyCriticalPoint={handleApplyCriticalPoint}
           onApplyFilterSuggestion={handleApplyFilterSuggestion}
@@ -1413,9 +1438,10 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           kickBassSidechain={kickBassSidechain}
           isMixingStems={isMixingStems}
           onChangeOverride={handleChangeOverride}
-          onResetToPreset={() =>
-            setOverrides(extractSurgicalOverridesFromPreset(selectedPreset))
-          }
+          onResetToPreset={() => {
+            setOverrides(extractSurgicalOverridesFromPreset(selectedPreset));
+            setAiResetToken((t) => t + 1);
+          }}
           onLoadStemFile={(role, file) => void handleLoadStemFile(role, file)}
           onUpdateStemState={handleUpdateStemState}
           onToggleKickBassSidechain={() => setKickBassSidechain((v) => !v)}

@@ -410,6 +410,7 @@ export function detectOnsetsSpectralFlux(
   const re = new Float32Array(fftSize);
   const im = new Float32Array(fftSize);
   const prevLogMag = new Float32Array(halfBins);
+  const prevPower = new Float32Array(halfBins);
 
   const numFrames = Math.floor((len - fftSize) / hopSize) + 1;
   const flux = new Float32Array(numFrames);
@@ -418,8 +419,9 @@ export function detectOnsetsSpectralFlux(
   const highFlux = new Float32Array(numFrames);
 
   const binHz = sampleRate / fftSize;
-  const lowEndBin = Math.min(halfBins - 1, Math.ceil(160 / binHz));
+  const lowEndBin = Math.min(halfBins - 1, Math.ceil(165 / binHz));
   const midEndBin = Math.min(halfBins - 1, Math.ceil(3200 / binHz));
+  const highMaxBin = Math.min(halfBins - 1, Math.ceil(16000 / binHz));
 
   for (let f = 0; f < numFrames; f++) {
     const start = f * hopSize;
@@ -435,16 +437,25 @@ export function detectOnsetsSpectralFlux(
     let fHigh = 0;
 
     for (let k = 1; k < halfBins; k++) {
-      const mag = Math.hypot(re[k], im[k]);
+      const magSq = re[k] * re[k] + im[k] * im[k];
+      const mag = Math.sqrt(magSq);
       const logMag = Math.log(1 + 12 * mag);
       const diff = logMag - prevLogMag[k];
       if (diff > 0) {
         fTotal += diff;
-        if (k <= lowEndBin) fLow += diff;
-        else if (k <= midEndBin) fMid += diff;
-        else fHigh += diff;
       }
       prevLogMag[k] = logMag;
+
+      if (k <= highMaxBin) {
+        // Parseval-invariant linear power flux eliminates FFT bin-count bias (4 low bins vs 300+ high bins)
+        const pDiff = magSq - prevPower[k];
+        if (pDiff > 0) {
+          if (k <= lowEndBin) fLow += pDiff;
+          else if (k <= midEndBin) fMid += pDiff;
+          else fHigh += pDiff;
+        }
+        prevPower[k] = magSq;
+      }
     }
 
     flux[f] = fTotal;
@@ -570,9 +581,9 @@ export function detectOnsetsSpectralFlux(
       const mf = midFlux[f];
       const hf = highFlux[f];
       let cls: 'kick' | 'snare' | 'hat' = 'snare';
-      if (lf > mf * 0.48 && lf > hf * 0.65) {
+      if (lf > mf * 0.45 && lf > hf * 0.85) {
         cls = 'kick';
-      } else if (hf > (lf + mf) * 0.72) {
+      } else if (hf > (lf + mf) * 1.15) {
         cls = 'hat';
       }
 
@@ -583,4 +594,60 @@ export function detectOnsetsSpectralFlux(
   }
 
   return { onsetTimesSec, velocities, classifications };
+}
+
+export interface UnifiedDrumHit {
+  timeSec: number;
+  type: 'kick' | 'snare';
+  velocity: number;
+}
+
+/**
+ * Shared single-source drum hit filter used identically by:
+ *  - spectralAnalyzer.worker.ts
+ *  - DrumTransientReplacerDSP.detectDrumTransients
+ *  - WebAudioMasteringEngine (Live & Export 24-bit WAV)
+ * Guarantees 1:1 parity between live drum triggering and offline export.
+ */
+export function filterSpectralFluxDrumHits(
+  fluxOnsets: SpectralFluxOnsetResult,
+  kickSensitivity: number,
+  snareSensitivity: number
+): UnifiedDrumHit[] {
+  const kickMinVel = (0.85 - Math.max(0.1, Math.min(1.0, kickSensitivity)) * 0.65) * 0.75;
+  const snareMinVel = (0.85 - Math.max(0.1, Math.min(1.0, snareSensitivity)) * 0.65) * 0.75;
+
+  const events: UnifiedDrumHit[] = [];
+  for (let i = 0; i < fluxOnsets.onsetTimesSec.length; i++) {
+    const cls = fluxOnsets.classifications[i];
+    if (cls === 'hat') continue;
+    const vel = fluxOnsets.velocities[i];
+    const minVel = cls === 'kick' ? kickMinVel : snareMinVel;
+    if (vel < minVel) continue;
+    events.push({
+      timeSec: fluxOnsets.onsetTimesSec[i],
+      type: cls,
+      velocity: vel,
+    });
+  }
+  return events;
+}
+
+export function detectFilteredDrumHitsFromMono(
+  monoSamples: Float32Array,
+  sampleRate: number,
+  kickSensitivity: number,
+  snareSensitivity: number
+): UnifiedDrumHit[] {
+  if (monoSamples.length === 0) return [];
+  const avgSens = Math.max(
+    0.1,
+    Math.min(1.0, (kickSensitivity + snareSensitivity) * 0.5)
+  );
+  const res = detectOnsetsSpectralFlux(monoSamples, sampleRate, {
+    sensitivity: avgSens,
+    minIntervalMs: 85,
+    snapToZeroCrossing: true,
+  });
+  return filterSpectralFluxDrumHits(res, kickSensitivity, snareSensitivity);
 }

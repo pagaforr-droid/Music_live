@@ -15,7 +15,10 @@ export {
   type SpectrogramHeatmapProps,
 } from './components/SpectrogramHeatmapVisualizer';
 
-export { WebAudioMasteringEngine } from './engine/WebAudioMasteringEngine';
+export {
+  WebAudioMasteringEngine,
+  applyKickBassSidechainToBassArrays,
+} from './engine/WebAudioMasteringEngine';
 export { buildMasteringDspGraph } from './engine/MasteringGraphBuilder';
 export { createMidSideMatrix } from './engine/MidSideMatrix';
 export {

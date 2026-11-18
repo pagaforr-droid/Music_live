@@ -329,6 +329,7 @@ export interface SpectralAdaptationReport {
   aiArtifactScore: number;
   /** 0 to 100 score estimating vocal sibilance & high-frequency harshness (5.5kHz - 8.5kHz) */
   sibilanceScore: number;
+  subRumbleDb?: number;
   deltaAdjustments: {
     subDeltaDb: number;
     lowMidDeltaDb: number;

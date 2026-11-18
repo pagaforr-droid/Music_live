@@ -29,10 +29,9 @@ export class BusCompressorCore {
   private scLx1 = 0; private scLx2 = 0; private scLy1 = 0; private scLy2 = 0;
   private scRx1 = 0; private scRx2 = 0; private scRy1 = 0; private scRy2 = 0;
 
-  // Envelope detector state (in dB domain for musical SSL-style log response)
-  private envDb = -90;
+  // Envelope detector state (positive GR in dB domain >= 0; must start at 0 so first transient is never delayed!)
+  private envDb = 0;
   private rmsSq = 0;
-  private fastEnvLin = 0;
   private lastGainReductionDb = 0;
 
   // Cached coefficients
@@ -65,9 +64,8 @@ export class BusCompressorCore {
   public reset(): void {
     this.scLx1 = this.scLx2 = this.scLy1 = this.scLy2 = 0;
     this.scRx1 = this.scRx2 = this.scRy1 = this.scRy2 = 0;
-    this.envDb = -90;
+    this.envDb = 0;
     this.rmsSq = 0;
-    this.fastEnvLin = 0;
     this.lastGainReductionDb = 0;
   }
 
@@ -168,7 +166,6 @@ export class BusCompressorCore {
       const sqEnergy = 0.5 * (scL * scL + scR * scR);
       this.rmsSq = this.rmsCoeff * this.rmsSq + (1 - this.rmsCoeff) * sqEnergy;
       const rmsLin = Math.sqrt(Math.max(0, this.rmsSq));
-      this.fastEnvLin = Math.max(peakLin, 0.992 * this.fastEnvLin);
 
       const detLin = Math.max(1e-6, 0.55 * peakLin + 0.45 * rmsLin);
       const detDb = 20 * Math.log10(detLin);

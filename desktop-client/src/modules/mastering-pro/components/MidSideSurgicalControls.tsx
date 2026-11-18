@@ -638,6 +638,32 @@ export const MidSideSurgicalControls: React.FC<
                     className="w-full accent-[#FF6B00] h-1 bg-slate-800 rounded cursor-pointer"
                   />
                 </div>
+
+                <div>
+                  <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                    <span>Paneo (L / R)</span>
+                    <span className="text-[#00E5FF]">
+                      {Math.abs(stem.pan) < 0.03
+                        ? 'C'
+                        : stem.pan < 0
+                        ? `L ${Math.round(Math.abs(stem.pan) * 100)}%`
+                        : `R ${Math.round(stem.pan * 100)}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    value={stem.pan}
+                    onChange={(e) =>
+                      onUpdateStemState(stem.role, {
+                        pan: Number(e.target.value),
+                      })
+                    }
+                    className="w-full accent-[#00E5FF] h-1 bg-slate-800 rounded cursor-pointer"
+                  />
+                </div>
               </div>
             ))}
           </div>

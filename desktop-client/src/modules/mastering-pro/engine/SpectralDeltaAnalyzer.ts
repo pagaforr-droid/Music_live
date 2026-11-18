@@ -28,6 +28,7 @@ import {
 } from '../dsp-core/KWeightingLufs';
 import {
   analyzeFullBandwidthSpectrum,
+  filterSpectralFluxDrumHits,
   type SpectralFluxOnsetResult,
   type WelchSpectralMetrics,
 } from '../dsp-core/SpectralFftCore';
@@ -140,21 +141,44 @@ function buildDiagnosticSuggestions(
   const { profile } = scan;
   const target = targetPreset.targetSpectralProfile;
 
-  const subBoostNeeded = Number(
-    Math.max(0.5, Math.min(2.8, (target.sub - profile.sub) * 0.55 + 1.2)).toFixed(1)
-  );
-  const vocalBoostNeeded = Number(
-    Math.max(
-      0.5,
-      Math.min(2.4, (target.presence - profile.presence) * 0.55 + 1.0)
-    ).toFixed(1)
-  );
-  const airBoostNeeded = Number(
-    Math.max(0.8, Math.min(2.8, (target.air - profile.air) * 0.55 + 1.5)).toFixed(1)
-  );
+  const findPresetBandGain = (id: string, fallback: number) =>
+    targetPreset.dspChain.eqBands.find((b) => b.id === id)?.gainDb ?? fallback;
+
+  const subGap = target.sub - profile.sub;
+  const subExcess = subGap < -0.9;
+  const subRecommendedGain = subExcess
+    ? Number(Math.max(-3.0, Math.min(-0.4, subGap * 0.55)).toFixed(1))
+    : Number(
+        Math.max(
+          0.2,
+          Math.min(2.8, findPresetBandGain('mid-sub-punch', 1.8) * 0.45 + subGap * 0.55)
+        ).toFixed(1)
+      );
+
+  const presGap = target.presence - profile.presence;
+  const presExcess = presGap < -0.9;
+  const vocalRecommendedGain = presExcess
+    ? Number(Math.max(-2.6, Math.min(-0.4, presGap * 0.5)).toFixed(1))
+    : Number(
+        Math.max(
+          0.2,
+          Math.min(2.4, findPresetBandGain('mid-vocal-bite', 1.2) * 0.45 + presGap * 0.55)
+        ).toFixed(1)
+      );
+
+  const airGap = target.air - profile.air;
+  const airExcess = airGap < -1.0 && scan.highFreqCutoffHz >= 18000;
+  const airRecommendedGain = airExcess
+    ? Number(Math.max(-2.8, Math.min(-0.4, airGap * 0.45)).toFixed(1))
+    : Number(
+        Math.max(
+          0.2,
+          Math.min(3.0, findPresetBandGain('side-air-shelf', 2.0) * 0.45 + airGap * 0.55)
+        ).toFixed(1)
+      );
 
   const mudCutRecommended = Number(
-    Math.max(-3.2, Math.min(-0.8, -1.4 - Math.max(0, scan.mudExcessDb * 0.5))).toFixed(1)
+    Math.max(-3.2, Math.min(-0.6, -1.2 - Math.max(0, scan.mudExcessDb * 0.5))).toFixed(1)
   );
   const harshCutRecommended = Number(
     Math.max(
@@ -172,58 +196,67 @@ function buildDiagnosticSuggestions(
   const criticalEqPoints: AiCriticalEqPoint[] = [
     {
       id: 'boost-mid-sub',
-      action: 'boost',
-      title: 'Subir Pegada de Sub-Graves (Mid)',
+      action: subExcess ? 'cut' : 'boost',
+      title: subExcess
+        ? 'Controlar Exceso de Sub-Graves (Mid)'
+        : 'Subir Pegada de Sub-Graves (Mid)',
       zoneName: '55 Hz – 65 Hz · Canal MID',
-      reason:
-        profile.sub < target.sub
-          ? `Déficit medido de ${(target.sub - profile.sub).toFixed(1)} dB en fundamentales de bombo y bajo respecto a ${targetPreset.name}.`
-          : 'Refuerzo controlado en el centro para dar peso sin ensuciar los lados.',
+      reason: subExcess
+        ? `Exceso medido de +${Math.abs(subGap).toFixed(1)} dB en sub-graves frente al objetivo de ${targetPreset.name}. Atenuar limpia headroom.`
+        : subGap > 0
+        ? `Déficit medido de ${subGap.toFixed(1)} dB en fundamentales de bombo y bajo respecto a ${targetPreset.name}.`
+        : 'Refuerzo controlado en el centro para dar peso sin ensuciar los lados.',
       freqHz:
         targetPreset.dspChain.eqBands.find((b) => b.id === 'mid-sub-punch')
           ?.freq ?? 58,
-      recommendedGainDb: subBoostNeeded,
+      recommendedGainDb: subRecommendedGain,
       recommendedQ: 0.9,
       channel: 'mid',
       filterType: 'peaking',
       bandId: 'mid-sub-punch',
-      priority: profile.sub < target.sub - 1.5 ? 'critical' : 'opportunity',
+      priority: Math.abs(subGap) > 1.5 ? 'critical' : 'opportunity',
     },
     {
       id: 'boost-mid-vocal',
-      action: 'boost',
-      title: 'Subir Claridad y Presencia Vocal (Mid)',
+      action: presExcess ? 'cut' : 'boost',
+      title: presExcess
+        ? 'Suavizar Exceso de Presencia Media (Mid)'
+        : 'Subir Claridad y Presencia Vocal (Mid)',
       zoneName: '1.8 kHz – 3.2 kHz · Canal MID',
-      reason:
-        'Realza la inteligibilidad de la voz líder e instrumentos principales en el centro sin fatiga.',
+      reason: presExcess
+        ? `La mezcla supera en +${Math.abs(presGap).toFixed(1)} dB la referencia tonal de ${targetPreset.name}. Controlar evita fatiga.`
+        : 'Realza la inteligibilidad de la voz líder e instrumentos principales en el centro sin fatiga.',
       freqHz:
         targetPreset.dspChain.eqBands.find((b) => b.id === 'mid-vocal-bite')
           ?.freq ?? 2400,
-      recommendedGainDb: vocalBoostNeeded,
+      recommendedGainDb: vocalRecommendedGain,
       recommendedQ: 1.15,
       channel: 'mid',
       filterType: 'peaking',
       bandId: 'mid-vocal-bite',
-      priority: 'recommended',
+      priority: Math.abs(presGap) > 1.4 ? 'critical' : 'recommended',
     },
     {
       id: 'boost-side-air',
-      action: 'boost',
-      title: 'Subir Brillo y Aire Tridimensional (Side)',
+      action: airExcess ? 'cut' : 'boost',
+      title: airExcess
+        ? 'Domar Exceso de Brillo Lateral (Side)'
+        : 'Subir Brillo y Aire Tridimensional (Side)',
       zoneName: '12 kHz – 15 kHz · Canal SIDE',
-      reason:
-        scan.highFreqCutoffHz < 17500
-          ? `Ancho de banda detectado hasta ${(scan.highFreqCutoffHz / 1000).toFixed(1)} kHz. Realzar aire en Side aporta apertura sin afectar el centro.`
-          : 'Abre el escenario estéreo con un High-Shelf sedoso solo en los lados.',
+      reason: airExcess
+        ? `Brillo superior excedido (+${Math.abs(airGap).toFixed(1)} dB sobre ${targetPreset.name}). Suavizar en Side evita aspereza.`
+        : scan.highFreqCutoffHz < 17500
+        ? `Ancho de banda detectado hasta ${(scan.highFreqCutoffHz / 1000).toFixed(1)} kHz. Realzar aire en Side aporta apertura sin afectar el centro.`
+        : 'Abre el escenario estéreo con un High-Shelf sedoso solo en los lados.',
       freqHz:
         targetPreset.dspChain.eqBands.find((b) => b.id === 'side-air-shelf')
           ?.freq ?? 13000,
-      recommendedGainDb: airBoostNeeded,
+      recommendedGainDb: airRecommendedGain,
       recommendedQ: 0.7071,
       channel: 'side',
       filterType: 'highshelf',
       bandId: 'side-air-shelf',
-      priority: scan.highFreqCutoffHz < 17500 ? 'critical' : 'opportunity',
+      priority: scan.highFreqCutoffHz < 17500 || airExcess ? 'critical' : 'opportunity',
     },
     {
       id: 'cut-stereo-mud',
@@ -356,11 +389,11 @@ function buildDiagnosticSuggestions(
       name: 'Saturación Armónica 4x + Side Air Shelf',
       badge: 'ARMÓNICOS & AIRE',
       detectedIssue: `Banda aire (>5.5kHz): ${profile.air} dB · Corte BW: ${(scan.highFreqCutoffHz / 1000).toFixed(1)} kHz.`,
-      suggestionDetail: `Realzar +${airBoostNeeded} dB en canal Side y aplicar ${Math.round(targetPreset.dspChain.saturation.drive * 100)}% de saturación ${targetPreset.dspChain.saturation.type.toUpperCase()}.`,
+      suggestionDetail: `Realzar ${airRecommendedGain > 0 ? `+${airRecommendedGain}` : airRecommendedGain} dB en canal Side y aplicar ${Math.round(targetPreset.dspChain.saturation.drive * 100)}% de saturación ${targetPreset.dspChain.saturation.type.toUpperCase()}.`,
       confidencePct: 88,
       isRecommended: true,
       patchOverrides: {
-        sideAirBoostDb: airBoostNeeded,
+        sideAirBoostDb: airRecommendedGain,
         saturationType: targetPreset.dspChain.saturation.type,
         tapeDrivePct: Math.round(targetPreset.dspChain.saturation.drive * 100),
       },
@@ -424,16 +457,17 @@ function buildDiagnosticSuggestions(
 
   let recommendedWidthPct = targetPreset.dspChain.stereoWidth.widthPct;
   let widthDiagnosis = '';
+  const airSignStr = airRecommendedGain >= 0 ? `+${airRecommendedGain}` : `${airRecommendedGain}`;
 
   if (scan.stereoSideEnergyPct < 18) {
-    recommendedWidthPct = 128;
+    recommendedWidthPct = Math.max(targetPreset.dspChain.stereoWidth.widthPct, 126);
     widthDiagnosis = `Mezcla estrecha (${scan.stereoSideEnergyPct}% Side). Apertura al ${recommendedWidthPct}% segura (Fase ${detectedPhaseCorrelation}).`;
   } else if (scan.stereoSideEnergyPct > 42 || detectedPhaseCorrelation < 0.35) {
-    recommendedWidthPct = 104;
+    recommendedWidthPct = Math.min(targetPreset.dspChain.stereoWidth.widthPct, 104);
     widthDiagnosis = `Mezcla muy abierta (${scan.stereoSideEnergyPct}% Side, Fase ${detectedPhaseCorrelation}). Moderamos a ${recommendedWidthPct}% con Mono Maker @ ${recommendedMonoHz}Hz.`;
   } else {
-    recommendedWidthPct = 118;
-    widthDiagnosis = `Balance estéreo saludable (${scan.stereoSideEnergyPct}% Side, Fase +${detectedPhaseCorrelation}). Apertura al ${recommendedWidthPct}% con +${airBoostNeeded}dB de Side Air.`;
+    recommendedWidthPct = targetPreset.dspChain.stereoWidth.widthPct;
+    widthDiagnosis = `Balance estéreo saludable (${scan.stereoSideEnergyPct}% Side, Fase ${detectedPhaseCorrelation >= 0 ? `+${detectedPhaseCorrelation}` : detectedPhaseCorrelation}). Apertura calibrada a ${recommendedWidthPct}% con ${airSignStr}dB de Side Air.`;
   }
 
   const stereoWidthSuggestion: AiStereoWidthSuggestion = {
@@ -442,7 +476,7 @@ function buildDiagnosticSuggestions(
     diagnosis: widthDiagnosis,
     recommendedWidthPct,
     recommendedMonoMakerHz: recommendedMonoHz,
-    recommendedSideAirDb: airBoostNeeded,
+    recommendedSideAirDb: airRecommendedGain,
   };
 
   return {
@@ -460,7 +494,9 @@ function finalizeReportFromRaw(
   sampleRate: number,
   fluxOnsets: SpectralFluxOnsetResult | null,
   buffer: AudioBuffer | null,
-  currentPresetId?: string
+  currentPresetId?: string,
+  kickSensitivity = DEFAULT_DRUM_LAYERING_CONFIG.kickSensitivity,
+  snareSensitivity = DEFAULT_DRUM_LAYERING_CONFIG.snareSensitivity
 ): SpectralAdaptationReport {
   const scan = buildDiagnosticScanFromWelch(welch);
   const { profile, aiArtifactScore, sibilanceScore } = scan;
@@ -528,21 +564,18 @@ function finalizeReportFromRaw(
 
   let detectedDrumHits: DrumHitEvent[] = [];
   if (fluxOnsets) {
-    for (let i = 0; i < fluxOnsets.onsetTimesSec.length; i++) {
-      const cls = fluxOnsets.classifications[i];
-      if (cls === 'hat') continue;
-      detectedDrumHits.push({
-        timeSec: fluxOnsets.onsetTimesSec[i],
-        type: cls,
-        velocity: fluxOnsets.velocities[i],
-      });
-    }
+    detectedDrumHits = filterSpectralFluxDrumHits(
+      fluxOnsets,
+      kickSensitivity,
+      snareSensitivity
+    );
   } else if (buffer) {
     const drumScanner = new DrumTransientReplacerDSP();
-    detectedDrumHits = drumScanner.detectDrumTransients(
-      buffer,
-      DEFAULT_DRUM_LAYERING_CONFIG
-    );
+    detectedDrumHits = drumScanner.detectDrumTransients(buffer, {
+      ...DEFAULT_DRUM_LAYERING_CONFIG,
+      kickSensitivity,
+      snareSensitivity,
+    });
   }
 
   return {
@@ -557,6 +590,7 @@ function finalizeReportFromRaw(
     recommendationReason,
     aiArtifactScore,
     sibilanceScore,
+    subRumbleDb: scan.subRumbleDb,
     detectedResonanceLines: scan.detectedResonanceLines,
     forensicSignature,
     detectedDrumHits,
@@ -576,7 +610,9 @@ function finalizeReportFromRaw(
  */
 export function analyzeTrackAndComputeAdaptation(
   buffer: AudioBuffer,
-  currentPresetId?: string
+  currentPresetId?: string,
+  kickSensitivity = DEFAULT_DRUM_LAYERING_CONFIG.kickSensitivity,
+  snareSensitivity = DEFAULT_DRUM_LAYERING_CONFIG.snareSensitivity
 ): SpectralAdaptationReport {
   const channels: Float32Array[] = [];
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
@@ -593,7 +629,9 @@ export function analyzeTrackAndComputeAdaptation(
     buffer.sampleRate,
     null,
     buffer,
-    currentPresetId
+    currentPresetId,
+    kickSensitivity,
+    snareSensitivity
   );
 }
 
@@ -610,7 +648,12 @@ export async function analyzeTrackAndComputeAdaptationAsync(
   snareSensitivity = DEFAULT_DRUM_LAYERING_CONFIG.snareSensitivity
 ): Promise<SpectralAdaptationReport> {
   if (typeof Worker === 'undefined') {
-    return analyzeTrackAndComputeAdaptation(buffer, currentPresetId);
+    return analyzeTrackAndComputeAdaptation(
+      buffer,
+      currentPresetId,
+      kickSensitivity,
+      snareSensitivity
+    );
   }
 
   const channels: Float32Array[] = [];
@@ -658,7 +701,9 @@ export async function analyzeTrackAndComputeAdaptationAsync(
             buffer.sampleRate,
             ev.data.fluxOnsets ?? null,
             buffer,
-            currentPresetId
+            currentPresetId,
+            kickSensitivity,
+            snareSensitivity
           )
         );
       } else {
@@ -702,8 +747,39 @@ export function recomputeDeltasForPreset(
     ).toFixed(2)
   );
 
+  const detectedSibilancePeakHz =
+    report.filterSuggestions.find((f) => f.id === 'de-esser')?.patchOverrides
+      .sibilanceFreqHz ?? 6200;
+
+  const reconstructedScan: DeepDiagnosticScan = {
+    profile,
+    aiArtifactScore: report.aiArtifactScore,
+    sibilanceScore: report.sibilanceScore,
+    subRumbleDb: report.subRumbleDb ?? -26,
+    mudExcessDb: Number((profile.lowMid - -16.8).toFixed(1)),
+    vocalPocketDeficitDb: Number((-14.2 - profile.presence).toFixed(1)),
+    airDeficitDb: Number((-17.4 - profile.air).toFixed(1)),
+    detectedSibilancePeakHz,
+    stereoSideEnergyPct: report.stereoWidthSuggestion.detectedStereoEnergyPct,
+    bassPhaseCorrelation:
+      report.stereoWidthSuggestion.detectedBassPhaseCorrelation,
+    bassConcentrationPct: report.forensicSignature.bassEnergyConcentrationPct,
+    highFreqCutoffHz:
+      report.forensicSignature.measuredBandwidthHz ??
+      report.forensicSignature.highFreqCutoffDetectedHz,
+    detectedResonanceLines: report.detectedResonanceLines,
+  };
+
+  const diagnostics = buildDiagnosticSuggestions(
+    reconstructedScan,
+    preset,
+    report.detectedCrestFactorDb,
+    report.detectedPhaseCorrelation
+  );
+
   return {
     ...report,
+    ...diagnostics,
     deltaAdjustments: {
       subDeltaDb: clampDelta(target.sub - profile.sub),
       lowMidDeltaDb: clampDelta(target.lowMid - profile.lowMid),

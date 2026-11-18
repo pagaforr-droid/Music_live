@@ -14,6 +14,7 @@ import {
   createMidSideMatrix,
   type MidSideMatrixHandles,
 } from './MidSideMatrix';
+import { createBrickwallMaximizerCurve } from './TruePeakLimiter';
 import dynamicsWorkletUrl from './worklets/mastering-dynamics.worklet.ts?worker&url';
 import meteringWorkletUrl from './worklets/metering.worklet.ts?worker&url';
 
@@ -68,6 +69,7 @@ export interface MasteringGraphHandles {
     autoMakeupGainDb: number,
     now?: number
   ) => void;
+  dispose: () => void;
 }
 
 function configureStereoFilterNode(
@@ -152,7 +154,7 @@ export function buildPreCompressorStages(
     stereoBandFilters.set(band.id, filter);
   }
 
-  const MAX_RESONANCE_NOTCHES = 4;
+  const MAX_RESONANCE_NOTCHES = 6;
   const resonanceNotchFilters: BiquadFilterNode[] = [];
   const initialNotches = initialChain.resonanceNotches || [];
   for (let i = 0; i < MAX_RESONANCE_NOTCHES; i++) {
@@ -388,6 +390,7 @@ export function buildPostCompressorStages(
     inputNode,
     outputNode: humanizerStage.outputNode,
     updatePostCompressor,
+    dispose: () => humanizerStage.dispose(),
   };
 }
 
@@ -458,9 +461,22 @@ export function buildMasteringDspGraph(
     }
   }
 
-  // Fallback transparent GainNodes if worklet module isn't available (e.g. unit test without worklet)
+  // Fallback safety dynamics + brickwall clipper if worklet module isn't available yet
   const fallbackDriveGain = ctx.createGain();
-  fallbackDriveGain.gain.value = Math.pow(10, initialMakeupDriveDb / 20);
+  fallbackDriveGain.gain.value = Math.pow(10, Math.min(12, initialMakeupDriveDb) / 20);
+  const fallbackSafetyComp = ctx.createDynamicsCompressor();
+  fallbackSafetyComp.threshold.value = -2.0;
+  fallbackSafetyComp.knee.value = 2.0;
+  fallbackSafetyComp.ratio.value = 16;
+  fallbackSafetyComp.attack.value = 0.001;
+  fallbackSafetyComp.release.value = 0.06;
+  const fallbackBrickwallShaper = ctx.createWaveShaper();
+  fallbackBrickwallShaper.oversample = '4x';
+  fallbackBrickwallShaper.curve = createBrickwallMaximizerCurve(
+    initialChain.limiter.ceilingDbTp,
+    initialChain.limiter.softClipPrePct ?? 0.25
+  );
+  let lastFallbackCeiling = initialChain.limiter.ceilingDbTp;
 
   if (compWorkletNode && limiterWorkletNode) {
     preStages.outputNode.connect(compWorkletNode);
@@ -470,7 +486,9 @@ export function buildMasteringDspGraph(
   } else {
     preStages.outputNode.connect(postStages.inputNode);
     postStages.outputNode.connect(fallbackDriveGain);
-    fallbackDriveGain.connect(outputNode);
+    fallbackDriveGain.connect(fallbackSafetyComp);
+    fallbackSafetyComp.connect(fallbackBrickwallShaper);
+    fallbackBrickwallShaper.connect(outputNode);
   }
 
   const syncWorklets = (chain: MasteringDspChain, driveDb: number) => {
@@ -489,7 +507,19 @@ export function buildMasteringDspGraph(
         bypass: false,
       });
     }
-    fallbackDriveGain.gain.value = Math.pow(10, driveDb / 20);
+    fallbackDriveGain.gain.value = isTrueBypass
+      ? 1.0
+      : Math.pow(10, Math.max(-18, Math.min(16, driveDb)) / 20);
+    if (
+      !limiterWorkletNode &&
+      Math.abs(chain.limiter.ceilingDbTp - lastFallbackCeiling) > 0.05
+    ) {
+      lastFallbackCeiling = chain.limiter.ceilingDbTp;
+      fallbackBrickwallShaper.curve = createBrickwallMaximizerCurve(
+        chain.limiter.ceilingDbTp,
+        chain.limiter.softClipPrePct ?? 0.25
+      );
+    }
   };
 
   syncWorklets(initialChain, initialMakeupDriveDb);
@@ -520,5 +550,21 @@ export function buildMasteringDspGraph(
       limiterWorkletNode?.port.postMessage({ type: 'reset' });
     },
     applyDspChain,
+    dispose: () => {
+      postStages.dispose();
+      try {
+        if (compWorkletNode) {
+          compWorkletNode.port.onmessage = null;
+          compWorkletNode.disconnect();
+        }
+        if (limiterWorkletNode) {
+          limiterWorkletNode.port.onmessage = null;
+          limiterWorkletNode.disconnect();
+        }
+        outputNode.disconnect();
+      } catch {
+        // ignore
+      }
+    },
   };
 }

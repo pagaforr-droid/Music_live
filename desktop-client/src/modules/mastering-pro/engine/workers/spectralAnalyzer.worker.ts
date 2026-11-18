@@ -24,8 +24,12 @@ self.onmessage = (e: MessageEvent<SpectralWorkerRequest>) => {
     for (let i = 0; i < left.length; i++) {
       mono[i] = 0.5 * (left[i] + right[i]);
     }
+    const avgSensitivity = Math.max(
+      0.1,
+      Math.min(1.0, (kickSensitivity + snareSensitivity) * 0.5)
+    );
     const fluxOnsets = detectOnsetsSpectralFlux(mono, sampleRate, {
-      sensitivity: Math.max(kickSensitivity, snareSensitivity),
+      sensitivity: avgSensitivity,
       minIntervalMs: 85,
       snapToZeroCrossing: true,
     });

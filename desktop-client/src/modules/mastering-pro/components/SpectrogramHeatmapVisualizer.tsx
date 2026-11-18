@@ -286,16 +286,43 @@ export const SpectrogramHeatmapVisualizer: React.FC<
     return () => ro.disconnect();
   }, []);
 
-  // Inicializar fondo negro de estudio al montar o cambiar altura
+  const heatmapInitializedRef = useRef<boolean>(false);
+
+  // Inicializar y sincronizar tamaño físico del canvas del espectrograma conservando el historial al redimensionar
   useEffect(() => {
     const heatmapCanvas = heatmapCanvasRef.current;
     if (!heatmapCanvas) return;
     const ctx = heatmapCanvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    ctx.fillStyle = '#020617';
-    ctx.fillRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
-  }, [height]);
+    const targetW = Math.max(640, canvasCssWidth);
+    const targetH = Math.max(120, height);
+    if (heatmapCanvas.width !== targetW || heatmapCanvas.height !== targetH) {
+      let snapshotCanvas: HTMLCanvasElement | null = null;
+      if (heatmapInitializedRef.current && heatmapCanvas.width > 0 && heatmapCanvas.height > 0) {
+        snapshotCanvas = document.createElement('canvas');
+        snapshotCanvas.width = heatmapCanvas.width;
+        snapshotCanvas.height = heatmapCanvas.height;
+        const sCtx = snapshotCanvas.getContext('2d');
+        sCtx?.drawImage(heatmapCanvas, 0, 0);
+      }
+
+      heatmapCanvas.width = targetW;
+      heatmapCanvas.height = targetH;
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, targetW, targetH);
+
+      if (snapshotCanvas) {
+        const dx = targetW - snapshotCanvas.width;
+        ctx.drawImage(snapshotCanvas, 0, 0, snapshotCanvas.width, snapshotCanvas.height, dx, 0, snapshotCanvas.width, targetH);
+      }
+      heatmapInitializedRef.current = true;
+    } else if (!heatmapInitializedRef.current) {
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, targetW, targetH);
+      heatmapInitializedRef.current = true;
+    }
+  }, [canvasCssWidth, height]);
 
   // Bucle Principal de Renderizado del Espectrograma (60 FPS con Interpolación Cúbica Catmull-Rom)
   useEffect(() => {
@@ -404,6 +431,21 @@ export const SpectrogramHeatmapVisualizer: React.FC<
         const maxDb = -3;
         const dbRange = maxDb - minDb;
 
+        // Compute loudness-compensated frame offset for Delta mode so pure LUFS makeup gain
+        // does not flood the heatmap; only true spectral shape changes (cuts/notches/boosts) show!
+        let frameLoudnessOffsetDb = 0;
+        if (viewSource === 'delta') {
+          const b0 = Math.max(1, Math.floor((120 / nyquist) * bufferLength));
+          const b1 = Math.min(bufferLength - 1, Math.ceil((12000 / nyquist) * bufferLength));
+          let sumDiff = 0;
+          let count = 0;
+          for (let b = b0; b <= b1; b++) {
+            sumDiff += smoothedPost[b] - smoothedPre[b];
+            count++;
+          }
+          frameLoudnessOffsetDb = count > 0 ? sumDiff / count : 0;
+        }
+
         for (let y = 0; y < cHeight; y++) {
           const freq = yToFreq(y, cHeight);
           const exactBin = (freq / nyquist) * bufferLength;
@@ -428,13 +470,14 @@ export const SpectrogramHeatmapVisualizer: React.FC<
               exactBin,
               bufferLength
             );
-            const postVal = sampleSpectrumCatmullRom(
-              smoothedPost,
-              exactBin,
-              bufferLength
-            );
-            const removedEnergy = Math.max(0, Math.abs(preVal - postVal));
-            dbValue = minDb + removedEnergy * 4.2;
+            const postVal =
+              sampleSpectrumCatmullRom(
+                smoothedPost,
+                exactBin,
+                bufferLength
+              ) - frameLoudnessOffsetDb;
+            const spectralChangeDb = Math.max(0, Math.abs(preVal - postVal) - 0.35);
+            dbValue = minDb + spectralChangeDb * 6.5;
           }
 
           const normalized = Math.max(
@@ -969,8 +1012,6 @@ export const SpectrogramHeatmapVisualizer: React.FC<
       <div className="relative w-full" style={{ height: `${height}px` }}>
         <canvas
           ref={heatmapCanvasRef}
-          width={1100}
-          height={height}
           className="w-full h-full block"
         />
         <canvas
