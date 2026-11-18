@@ -1,6 +1,7 @@
 /**
- * YIN Fundamental Pitch Detection algorithm (50 Hz - 2000 Hz)
- * with parabolic sub-sample interpolation for accurate chromatic root-note assignment.
+ * YIN Fundamental Pitch Detection algorithm (35 Hz - 2000 Hz)
+ * with parabolic sub-sample interpolation, transient-skip steady-body sampling,
+ * and octave-halving verification for accurate root-note assignment.
  */
 
 export interface PitchEstimate {
@@ -20,33 +21,14 @@ export function midiNoteToName(midi: number): string {
   return `${note}${octave}`;
 }
 
-export function detectPitchYin(
-  monoSamples: Float32Array,
+function runYinSingleWindow(
+  x: Float32Array,
   sampleRate: number,
-  minFreqHz = 50,
-  maxFreqHz = 2000
+  minFreqHz: number,
+  maxFreqHz: number
 ): PitchEstimate {
-  const maxWin = Math.min(monoSamples.length, 4096);
-  if (maxWin < 512) {
-    return { freqHz: 261.63, midiNote: 60, noteName: 'C4', centsOffset: 0, confidence: 0 };
-  }
-
-  // Pick a high-energy window inside the region
-  let bestOffset = 0;
-  let bestEnergy = -1;
-  const step = Math.max(256, Math.floor((monoSamples.length - maxWin) / 8));
-  for (let off = 0; off <= monoSamples.length - maxWin; off += step) {
-    let e = 0;
-    for (let i = 0; i < maxWin; i += 4) e += monoSamples[off + i] * monoSamples[off + i];
-    if (e > bestEnergy) {
-      bestEnergy = e;
-      bestOffset = off;
-    }
-  }
-
-  const x = monoSamples.subarray(bestOffset, bestOffset + maxWin);
   const tauMin = Math.max(2, Math.floor(sampleRate / maxFreqHz));
-  const tauMax = Math.min(Math.floor(maxWin / 2) - 2, Math.ceil(sampleRate / minFreqHz));
+  const tauMax = Math.min(Math.floor(x.length / 2) - 2, Math.ceil(sampleRate / minFreqHz));
   if (tauMax <= tauMin) {
     return { freqHz: 261.63, midiNote: 60, noteName: 'C4', centsOffset: 0, confidence: 0 };
   }
@@ -70,7 +52,7 @@ export function detectPitchYin(
     cmndf[tau] = runningSum > 1e-12 ? (diff[tau] * tau) / runningSum : 1.0;
   }
 
-  // Absolute threshold search
+  // Absolute threshold search (0.15 standard YIN threshold)
   const threshold = 0.15;
   let bestTau = -1;
   for (let tau = tauMin; tau <= tauMax; tau++) {
@@ -98,6 +80,19 @@ export function detectPitchYin(
     return { freqHz: 261.63, midiNote: 60, noteName: 'C4', centsOffset: 0, confidence: 0 };
   }
 
+  // Octave-halving guard for plucked strings / bright harmonics:
+  // If bestTau * 2 is also inside range and has dramatically deeper periodicity, prefer true fundamental
+  const doubleTau = bestTau * 2;
+  if (doubleTau + 1 < tauMax && cmndf[bestTau] > 0.05) {
+    let localMinTau = doubleTau;
+    for (let t = Math.max(tauMin, doubleTau - 2); t <= Math.min(tauMax, doubleTau + 2); t++) {
+      if (cmndf[t] < cmndf[localMinTau]) localMinTau = t;
+    }
+    if (cmndf[localMinTau] < cmndf[bestTau] * 0.58) {
+      bestTau = localMinTau;
+    }
+  }
+
   // Parabolic interpolation around bestTau
   let refinedTau = bestTau;
   if (bestTau > tauMin && bestTau < tauMax) {
@@ -123,4 +118,104 @@ export function detectPitchYin(
     centsOffset,
     confidence,
   };
+}
+
+export function detectPitchYin(
+  monoSamples: Float32Array,
+  sampleRate: number,
+  minFreqHz = 35,
+  maxFreqHz = 2000
+): PitchEstimate {
+  const maxWin = Math.min(
+    monoSamples.length,
+    Math.max(4096, Math.round(sampleRate * 0.09))
+  );
+  if (maxWin < 512) {
+    return { freqHz: 261.63, midiNote: 60, noteName: 'C4', centsOffset: 0, confidence: 0 };
+  }
+
+  // Fast direct single-frame path for per-frame sliding analysis
+  if (monoSamples.length <= maxWin + Math.round(sampleRate * 0.025)) {
+    const startOff = Math.max(0, Math.floor((monoSamples.length - maxWin) * 0.5));
+    return runYinSingleWindow(
+      monoSamples.subarray(startOff, startOff + maxWin),
+      sampleRate,
+      minFreqHz,
+      maxFreqHz
+    );
+  }
+
+  // Multi-window steady-body consensus for full samples/regions:
+  // Avoid noisy attack transient by picking active windows after the initial peak
+  let globalMax = 0;
+  let globalPeakIdx = 0;
+  const probeLim = Math.min(monoSamples.length, Math.round(sampleRate * 0.6));
+  for (let i = 0; i < probeLim; i++) {
+    const a = Math.abs(monoSamples[i]);
+    if (a > globalMax) {
+      globalMax = a;
+      globalPeakIdx = i;
+    }
+  }
+
+  const attackSkip = Math.min(
+    Math.max(0, monoSamples.length - maxWin),
+    globalPeakIdx + Math.round(sampleRate * 0.022)
+  );
+  const availSpan = monoSamples.length - maxWin - attackSkip;
+
+  const candidates: Array<{ est: PitchEstimate; score: number }> = [];
+  const numOffsets = availSpan >= maxWin * 0.5 ? 3 : 1;
+  for (let idx = 0; idx < numOffsets; idx++) {
+    const off =
+      numOffsets === 1
+        ? attackSkip
+        : attackSkip + Math.floor((idx / (numOffsets - 1)) * Math.min(availSpan, Math.round(sampleRate * 0.45)));
+    const slice = monoSamples.subarray(off, off + maxWin);
+    let sq = 0;
+    for (let i = 0; i < maxWin; i += 4) sq += slice[i] * slice[i];
+    const rms = Math.sqrt(sq / (maxWin / 4));
+    if (rms < globalMax * 0.03) continue;
+    const est = runYinSingleWindow(slice, sampleRate, minFreqHz, maxFreqHz);
+    candidates.push({ est, score: est.confidence * (0.4 + 0.6 * Math.min(1, rms / Math.max(1e-4, globalMax))) });
+  }
+
+  if (candidates.length === 0) {
+    // Fallback to highest-energy window if sustain decayed very fast
+    let bestOffset = 0;
+    let bestEnergy = -1;
+    const step = Math.max(256, Math.floor((monoSamples.length - maxWin) / 8));
+    for (let off = 0; off <= monoSamples.length - maxWin; off += step) {
+      let e = 0;
+      for (let i = 0; i < maxWin; i += 4) e += monoSamples[off + i] * monoSamples[off + i];
+      if (e > bestEnergy) {
+        bestEnergy = e;
+        bestOffset = off;
+      }
+    }
+    return runYinSingleWindow(
+      monoSamples.subarray(bestOffset, bestOffset + maxWin),
+      sampleRate,
+      minFreqHz,
+      maxFreqHz
+    );
+  }
+
+  // Consensus voting by MIDI pitch (prevents transient glitch frame from winning)
+  candidates.sort((a, b) => b.score - a.score);
+  let bestGroupScore = -1;
+  let winner = candidates[0].est;
+  for (const c of candidates) {
+    let grpScore = 0;
+    for (const o of candidates) {
+      if (Math.abs(o.est.midiNote - c.est.midiNote) <= 0) {
+        grpScore += o.score;
+      }
+    }
+    if (grpScore > bestGroupScore) {
+      bestGroupScore = grpScore;
+      winner = c.est;
+    }
+  }
+  return winner;
 }

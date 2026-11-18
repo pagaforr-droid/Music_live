@@ -1955,8 +1955,45 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             )}
 
             {r.stemMode === 'drums' && (
-              <div className="space-y-1.5 pt-1 text-[11px] text-slate-300">
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div className="space-y-2 pt-1.5 border-t border-slate-800/80 text-[11px] text-slate-300">
+                <div className="text-[10px] text-slate-400">Modo sobre Stem o Canción completa:</div>
+                <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => r.applyMixPreset('replace')}
+                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                      r.mixOptions.originalPct === 0 && r.mixOptions.replacementPct === 100
+                        ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    100% Batería
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => r.applyMixPreset('layer-drums')}
+                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                      r.mixOptions.originalPct >= 80 && r.mixOptions.replacementPct >= 65
+                        ? 'bg-[#FF6B00]/20 border-[#FF6B00] text-[#FF6B00]'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-[#FF6B00]/50'
+                    }`}
+                    title="Agrega la nueva batería orgánica encima de tu canción completa respetando el tempo"
+                  >
+                    Sumar a Canción
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => r.applyMixPreset('hybrid')}
+                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                      r.mixOptions.originalPct > 0 && r.mixOptions.originalPct < 80
+                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    Híbrido 70/55
+                  </button>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer pt-0.5">
                   <input
                     type="checkbox"
                     checked={r.mixOptions.roundRobinHumanize}
@@ -2033,7 +2070,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onClick={() =>
                   onSendTo16Pads(
                     r.replacedBuffer ?? r.originalBuffer!,
-                    saveStemName || r.stemTitle || 'Sample_PC'
+                    saveStemName || r.stemTitle || 'Sample_PC',
+                    r.importedMemory
                   )
                 }
                 className="w-full py-1.5 px-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-amber-300 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"

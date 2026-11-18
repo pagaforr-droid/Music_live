@@ -271,7 +271,17 @@ export function useSamplerEngine() {
         0,
         Math.min(buffer.duration, 2.0)
       );
-      const pitch = detectPitchYin(monoForPitch, buffer.sampleRate);
+      const pitch = detectPitchYin(monoForPitch, buffer.sampleRate, 35, 1800);
+      const isMultiChordSong = Boolean(resolvedPre?.isTonal && resolvedPre.chords.length > 1);
+      const resolvedRootNote = isMultiChordSong
+        ? pitch.confidence >= 0.48 && pitch.midiNote >= 45
+          ? pitch.midiNote
+          : 48 + (((resolvedPre!.detectedRootMidi % 12) + 12) % 12)
+        : pitch.confidence >= 0.45
+          ? pitch.midiNote
+          : resolvedPre?.isTonal
+            ? resolvedPre.detectedRootMidi
+            : 60;
 
       const newSource: SampleSource = {
         id: srcId,
@@ -279,12 +289,7 @@ export function useSamplerEngine() {
         origin,
         buffer,
         bpm,
-        rootNote:
-          pitch.confidence >= 0.45
-            ? pitch.midiNote
-            : resolvedPre?.isTonal
-            ? resolvedPre.detectedRootMidi
-            : 60,
+        rootNote: resolvedRootNote,
         detectedPitchHz: pitch.freqHz,
         preAnalysis: resolvedPre,
         provenance,
@@ -308,6 +313,7 @@ export function useSamplerEngine() {
 
       const isFirstOrHandoff =
         sourcesRef.current.length === 0 ||
+        buffer.duration >= 1.5 ||
         provenance?.stemRole === 'replacer-handoff' ||
         origin === 'mastering-buffer';
 
@@ -325,7 +331,8 @@ export function useSamplerEngine() {
         : '';
       const autoSyncOnPad =
         (origin === 'file' || origin === 'stem' || origin === 'recording' || origin === 'sampler-bounce') &&
-        buffer.duration >= 0.45;
+        buffer.duration >= 1.4 &&
+        (resolvedPre ? resolvedPre.bpmConfidence >= 0.58 : true);
 
       if (targetPadIndex !== undefined && targetPadIndex >= 0 && targetPadIndex < 16) {
         setPads((prev) => {
@@ -1005,6 +1012,12 @@ export function useSamplerEngine() {
         ]);
         setSelectedRegionId(sliced[0].id);
         setPads((prev) => assignSlicesToPads(prev, sliced));
+        if (activeSource.bpm >= 45) {
+          setPattern((prev) => ({
+            ...prev,
+            bpm: activeSource.preAnalysis?.bpm ?? activeSource.bpm,
+          }));
+        }
         setStatusMessage(
           `Auto-Slice por transientes: ${sliced.length} golpes detectados y asignados a los Pads.`
         );
@@ -1077,6 +1090,12 @@ export function useSamplerEngine() {
       ]);
       setSelectedRegionId(sliced[0].id);
       setPads((prev) => assignSlicesToPads(prev, sliced));
+      if (activeSource.bpm >= 45) {
+        setPattern((prev) => ({
+          ...prev,
+          bpm: activeSource.preAnalysis?.bpm ?? activeSource.bpm,
+        }));
+      }
       setStatusMessage(
         `Corte por rejilla (${division} @ ${activeSource.bpm} BPM${beatOffsetSec > 0 ? ` · fase ${beatOffsetSec.toFixed(2)}s` : ''}): ${sliced.length} slices asignados.`
       );

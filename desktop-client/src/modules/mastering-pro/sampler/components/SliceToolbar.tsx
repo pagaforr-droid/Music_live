@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Upload,
   Mic,
@@ -62,6 +62,11 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [sensitivity, setSensitivity] = useState<number>(0.62);
   const [gridDiv, setGridDiv] = useState<GridDivision>('1/8');
+  const [bpmDraft, setBpmDraft] = useState<string>(String(source?.bpm ?? 120));
+
+  useEffect(() => {
+    setBpmDraft(String(source?.bpm ?? 120));
+  }, [source?.id, source?.bpm]);
 
   return (
     <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-lg flex flex-wrap items-center justify-between gap-3">
@@ -166,9 +171,30 @@ export const SliceToolbar: React.FC<SliceToolbarProps> = ({
             type="number"
             min={40}
             max={240}
-            value={source?.bpm ?? 120}
-            onChange={(e) => onUpdateSourceBpm(Number(e.target.value) || 120)}
-            className="w-11 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-mono text-white text-center"
+            step={0.1}
+            value={bpmDraft}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setBpmDraft(raw);
+              const parsed = Number(raw);
+              if (Number.isFinite(parsed) && parsed >= 40 && parsed <= 240) {
+                onUpdateSourceBpm(parsed);
+              }
+            }}
+            onBlur={() => {
+              const parsed = Number(bpmDraft);
+              if (Number.isFinite(parsed) && parsed >= 40 && parsed <= 240) {
+                onUpdateSourceBpm(parsed);
+              } else {
+                setBpmDraft(String(source?.bpm ?? 120));
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur();
+              }
+            }}
+            className="w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-mono text-white text-center"
             title="BPM original de la fuente de audio"
           />
           {source && (

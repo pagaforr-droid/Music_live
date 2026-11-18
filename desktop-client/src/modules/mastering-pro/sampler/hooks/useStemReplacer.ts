@@ -443,7 +443,7 @@ export function useStemReplacer() {
       try {
         const activeMem = memoryOverride !== undefined ? memoryOverride : importedMemoryRef.current;
         const activePoly =
-          sens === 0.62
+          sens === 0.62 && poly === 5
             ? polyOverride !== undefined
               ? polyOverride
               : importedPolyRef.current
@@ -472,6 +472,7 @@ export function useStemReplacer() {
               sensitivity: sens,
               maxPolyphony: poly,
               bpmHint: effectiveBpm,
+              lockedBpm: activeMem?.bpm,
               precomputedPoly: activePoly ?? undefined,
               precomputedChords: activeMem?.chords,
               musicalKey: activeMem?.musicalKey,
@@ -734,6 +735,11 @@ export function useStemReplacer() {
     async (stem: SongStemEntry, song?: SongWithStemsFolder) => {
       stopPlayback();
       setIsLoadingStem(true);
+      setReplacedBuffer(null);
+      setAnalysis(null);
+      importedMemoryRef.current = null;
+      importedPolyRef.current = null;
+      setImportedMemory(null);
       setSelectedStemId(stem.id);
       setStemTitle(stem.name);
       try {
@@ -765,6 +771,7 @@ export function useStemReplacer() {
         const nextFocus = inferredMode !== 'drums' && isBassPresetId(chosenPreset);
         setBassFocusMode(nextFocus);
         polyAutoWeightAppliedRef.current = false;
+        setMixOptions((p) => ({ ...p, originalPct: 0, replacementPct: 100, brightnessPct: 0 }));
         if (inferredMode !== 'drums') {
           setMelodicSlot((prev) => ({
             ...prev,
@@ -798,6 +805,11 @@ export function useStemReplacer() {
     async (file: File) => {
       stopPlayback();
       setIsLoadingStem(true);
+      setReplacedBuffer(null);
+      setAnalysis(null);
+      importedMemoryRef.current = null;
+      importedPolyRef.current = null;
+      setImportedMemory(null);
       try {
         const ctx = ensureCtx();
         const raw = await file.arrayBuffer();
@@ -816,6 +828,7 @@ export function useStemReplacer() {
         const nextFocus = inferredMode !== 'drums' && isBassPresetId(chosenPreset);
         setBassFocusMode(nextFocus);
         polyAutoWeightAppliedRef.current = false;
+        setMixOptions((p) => ({ ...p, originalPct: 0, replacementPct: 100, brightnessPct: 0 }));
         if (inferredMode !== 'drums') {
           setMelodicSlot((prev) => ({
             ...prev,
@@ -1017,6 +1030,18 @@ export function useStemReplacer() {
       let nextFocus = bassFocusMode;
       if (nextMode === 'drums') {
         nextFocus = false;
+        const isFullSongMix =
+          Boolean(importedMemoryRef.current?.isTonal) &&
+          !/\b(drum|drums|bateria|batería|perc|kick|snare)\b/i.test(stemTitle || '');
+        if (isFullSongMix && mixOptions.originalPct === 0) {
+          setMixOptions((p) => ({
+            ...p,
+            originalPct: 86,
+            replacementPct: 78,
+            duckOriginalTransients: true,
+            brightnessPct: 0,
+          }));
+        }
       } else if (nextMode === 'monophonic') {
         if (!isBassPresetId(melodicSlot.presetId)) {
           setMelodicSlot((prev) => ({ ...prev, presetId: 'inst-bass-finger' }));
@@ -1032,7 +1057,7 @@ export function useStemReplacer() {
           nextMode,
           sensitivity,
           maxPolyphony,
-          selectedSong?.bpm,
+          importedMemoryRef.current?.bpm ?? selectedSong?.bpm,
           nextFocus
         );
       }
@@ -1040,6 +1065,8 @@ export function useStemReplacer() {
     [
       bassFocusMode,
       melodicSlot.presetId,
+      mixOptions.originalPct,
+      stemTitle,
       originalBuffer,
       runAnalysis,
       sensitivity,
@@ -1588,7 +1615,7 @@ export function useStemReplacer() {
   );
 
   const applyMixPreset = useCallback(
-    (mode: 'replace' | 'layer-sub' | 'hybrid') => {
+    (mode: 'replace' | 'layer-sub' | 'layer-drums' | 'hybrid') => {
       polyAutoWeightAppliedRef.current = false;
       if (mode === 'replace') {
         setMixOptions((p) => ({
@@ -1598,6 +1625,19 @@ export function useStemReplacer() {
           brightnessPct: 0,
         }));
         setStatusMessage('Modo Mezcla: 100% Reemplazo limpio.');
+        return;
+      }
+      if (mode === 'layer-drums') {
+        setMixOptions((p) => ({
+          ...p,
+          replacementPct: 78,
+          originalPct: 86,
+          duckOriginalTransients: true,
+          brightnessPct: 0,
+        }));
+        setStatusMessage(
+          'Mezcla Orgánica Activa: Nueva batería sumada sobre la canción (78% Batería / 86% Original).'
+        );
         return;
       }
       if (mode === 'layer-sub') {

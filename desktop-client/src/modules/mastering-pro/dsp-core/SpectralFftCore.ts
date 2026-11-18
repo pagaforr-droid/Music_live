@@ -480,20 +480,66 @@ export function detectOnsetsSpectralFlux(
   const velocities: number[] = [];
   const classifications: Array<'kick' | 'snare' | 'hat'> = [];
 
-  let lastOnsetSec = -10;
-  for (let f = 1; f < numFrames - 1; f++) {
-    if (
-      flux[f] > thresholdCurve[f] &&
-      flux[f] >= flux[f - 1] &&
-      flux[f] >= flux[f + 1]
-    ) {
-      // Refine sample position by finding attack start (walk back up to 1 hop to energy rise)
-      const frameCenterSample = f * hopSize;
-      let bestSample = Math.max(0, frameCenterSample - Math.floor(hopSize * 0.35));
+  // Check if frame 0 itself starts immediately on an active transient
+  let trackMaxAbs = 0;
+  const probeLim = Math.min(len, sampleRate * 4);
+  for (let i = 0; i < probeLim; i += 8) {
+    const a = Math.abs(monoSamples[i]);
+    if (a > trackMaxAbs) trackMaxAbs = a;
+  }
+  const hasImmediateStart = (() => {
+    let headPeak = 0;
+    const headLen = Math.min(len, Math.floor(sampleRate * 0.015));
+    for (let i = 0; i < headLen; i++) {
+      const a = Math.abs(monoSamples[i]);
+      if (a > headPeak) headPeak = a;
+    }
+    return trackMaxAbs > 1e-4 && headPeak > trackMaxAbs * 0.22;
+  })();
 
-      if (snapZero) {
-        // Search ±4ms around attack onset for nearest clean zero-crossing
-        const radius = Math.floor(sampleRate * 0.004);
+  let lastOnsetSec = -10;
+  const startFrame = hasImmediateStart ? 0 : 1;
+  for (let f = startFrame; f < numFrames - 1; f++) {
+    const isPeak =
+      f === 0
+        ? flux[0] > thresholdCurve[0] * 0.65 && flux[0] >= flux[1]
+        : flux[f] > thresholdCurve[f] &&
+          flux[f] >= flux[f - 1] &&
+          flux[f] >= flux[f + 1];
+
+    if (isPeak) {
+      // Locate actual transient attack foot inside the Hann window's active center
+      let bestSample: number;
+      if (f === 0 && hasImmediateStart) {
+        bestSample = 0;
+      } else {
+        const winStart = Math.max(0, f * hopSize + Math.floor(fftSize * 0.12));
+        const winEnd = Math.min(len - 1, f * hopSize + Math.floor(fftSize * 0.68));
+        let localPeak = 0;
+        let localPeakIdx = Math.min(len - 1, f * hopSize + Math.floor(fftSize * 0.45));
+        for (let i = winStart; i <= winEnd; i++) {
+          const a = Math.abs(monoSamples[i]);
+          if (a > localPeak) {
+            localPeak = a;
+            localPeakIdx = i;
+          }
+        }
+        // Walk back from local transient peak to the 15% attack foot (up to 12ms)
+        const maxWalkBack = Math.round(sampleRate * 0.012);
+        const footThresh = localPeak * 0.16;
+        let footIdx = localPeakIdx;
+        while (
+          footIdx > Math.max(winStart, localPeakIdx - maxWalkBack) &&
+          Math.abs(monoSamples[footIdx - 1]) > footThresh
+        ) {
+          footIdx--;
+        }
+        bestSample = footIdx;
+      }
+
+      if (snapZero && bestSample > 0) {
+        // Search ±1.5ms around attack foot for nearest clean zero-crossing
+        const radius = Math.floor(sampleRate * 0.0015);
         const searchStart = Math.max(1, bestSample - radius);
         const searchEnd = Math.min(len - 1, bestSample + radius);
         let closestDist = radius + 1;

@@ -41,7 +41,22 @@ function buildZoneFromCustomSlot(
   if (slot.normalizeCustom) {
     normalizeStereoInPlace(left, right, -1.0);
   }
-  const peakOffsetSamples = Math.round((slot.customPeakOffsetSec ?? 0.002) * sr);
+  let peakOffsetSamples: number;
+  if (slot.customPeakOffsetSec !== undefined) {
+    peakOffsetSamples = Math.round(slot.customPeakOffsetSec * sr);
+  } else {
+    const lim = Math.min(left.length, Math.round(sr * 0.06));
+    let pk = 0;
+    let mx = 0;
+    for (let i = 0; i < lim; i++) {
+      const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
+      if (a > mx) {
+        mx = a;
+        pk = i;
+      }
+    }
+    peakOffsetSamples = pk;
+  }
   const loopStart = Math.round(left.length * 0.28);
   const loopEnd = Math.round(left.length * 0.82);
 
@@ -141,11 +156,12 @@ export function renderFullStemReplacement(params: {
       const alignedPeakSamples = Math.round(zone.peakOffsetSamples / rate);
       const startOut = Math.max(0, peakStartOut - alignedPeakSamples);
 
-      // Apply brief 14ms transient duck on original stem when blending so kicks don't double-flam
-      if (mix.duckOriginalTransients && mix.originalPct > 2) {
-        const duckPre = Math.max(0, Math.round(hit.timeSec * sr) - Math.round(sr * 0.002));
-        const duckLen = Math.round(sr * (hit.role === 'kick' ? 0.02 : 0.014));
-        const depth = Math.min(0.85, 0.45 + 0.4 * hit.velocity);
+      // Apply brief transient pocket duck on original audio (skip hi-hats; gentle sub-pocket when blending onto a song mix)
+      if (mix.duckOriginalTransients && mix.originalPct > 2 && (hit.role === 'kick' || hit.role === 'snare')) {
+        const duckPre = Math.max(0, Math.round(hit.peakTimeSec * sr) - Math.round(sr * 0.005));
+        const duckLen = Math.round(sr * (hit.role === 'kick' ? 0.024 : 0.016));
+        const baseDepth = mix.originalPct >= 25 ? 0.52 : 0.80;
+        const depth = Math.min(baseDepth, baseDepth * 0.6 + baseDepth * 0.4 * hit.velocity);
         for (let k = 0; k < duckLen && duckPre + k < totalLen; k++) {
           const envShape = Math.sin((k / duckLen) * Math.PI);
           duckEnv[duckPre + k] = Math.min(duckEnv[duckPre + k], 1 - depth * envShape);
@@ -155,11 +171,12 @@ export function renderFullStemReplacement(params: {
       const srcLen = zone.left.length;
       const maxOutFrames = Math.floor((srcLen - 1) / rate);
       const renderLen = Math.min(totalLen - startOut, maxOutFrames);
-      const attackSamples = Math.max(16, Math.round(sr * 0.0012));
+      const startsHot = Math.max(Math.abs(zone.left[0] ?? 0), Math.abs(zone.right[0] ?? 0)) > 0.015;
+      const attackSamples = startsHot ? Math.max(4, Math.round(sr * 0.00015)) : 0;
 
       for (let i = 0; i < renderLen; i++) {
         const srcPos = i * rate;
-        const atk = i < attackSamples ? i / attackSamples : 1.0;
+        const atk = attackSamples > 0 && i < attackSamples ? i / attackSamples : 1.0;
         if (Math.abs(rate - 1.0) < 1e-4) {
           const idx = Math.floor(srcPos);
           repL[startOut + i] += zone.left[idx] * ampScale * atk;
@@ -265,9 +282,26 @@ export function renderFullStemReplacement(params: {
   const gOrig = Math.max(0, Math.min(1.2, mix.originalPct / 100));
   const gRep = Math.max(0, Math.min(1.5, mix.replacementPct / 100));
 
-  for (let i = 0; i < totalLen; i++) {
-    outL[i] = origL[i] * gOrig * duckEnv[i] + repL[i] * gRep;
-    outR[i] = origR[i] * gOrig * duckEnv[i] + repR[i] * gRep;
+  // When blending drums over a full mix (originalPct >= 25), duck only <260Hz low-punch so vocals/guitars don't pump
+  if (analysis.mode === 'drums' && mix.originalPct >= 25 && mix.duckOriginalTransients) {
+    const lowAlpha = (2 * Math.PI * 260) / (sr + 2 * Math.PI * 260);
+    let lpL = 0;
+    let lpR = 0;
+    for (let i = 0; i < totalLen; i++) {
+      const oL = origL[i];
+      const oR = origR[i];
+      lpL += lowAlpha * (oL - lpL);
+      lpR += lowAlpha * (oR - lpR);
+      const duckedOrigL = lpL * duckEnv[i] + (oL - lpL);
+      const duckedOrigR = lpR * duckEnv[i] + (oR - lpR);
+      outL[i] = duckedOrigL * gOrig + repL[i] * gRep;
+      outR[i] = duckedOrigR * gOrig + repR[i] * gRep;
+    }
+  } else {
+    for (let i = 0; i < totalLen; i++) {
+      outL[i] = origL[i] * gOrig * duckEnv[i] + repL[i] * gRep;
+      outR[i] = origR[i] * gOrig * duckEnv[i] + repR[i] * gRep;
+    }
   }
 
   // Gentle 26Hz DC/sub-rumble protection

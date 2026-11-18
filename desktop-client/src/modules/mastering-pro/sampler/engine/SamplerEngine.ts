@@ -458,10 +458,19 @@ export class SamplerEngine {
     if (!buf || !this.kitBus) return null;
 
     this.voicePool.prepareForTrigger(pad.params.chokeGroup);
-    const rate = Math.pow(
-      2,
-      (pad.params.pitchSemis + deltaSemis + pad.params.fineCents / 100) / 12
-    );
+    const varispeedSync =
+      pad.params.warp.mode === 'varispeed' && pad.params.warp.syncToBpm && src
+        ? (pad.params.warp.targetBpm ?? this.pattern.bpm ?? src.bpm) / Math.max(30, src.bpm)
+        : 1.0;
+    const usePlaybackRate =
+      pad.params.warp.mode === 'off' ||
+      pad.params.warp.mode === 'varispeed' ||
+      pad.params.warp.mode === 'granular' ||
+      pad.params.warp.mode === 'paulstretch';
+    const baseSemiOffset = usePlaybackRate
+      ? pad.params.pitchSemis + pad.params.fineCents / 100
+      : 0;
+    const rate = Math.pow(2, (baseSemiOffset + deltaSemis) / 12) * varispeedSync;
 
     const voice = new SampleVoice({
       ctx,

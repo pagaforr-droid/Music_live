@@ -7,8 +7,10 @@ import {
 import { repairAndRelockBeatGrid } from '../../../../utils/beatGridDSP';
 import {
   analyzePolyphonicStemNotesFull,
+  constrainNotesToDetectedHarmony,
   filterBassIsolationBand,
   foldPitchClassToSubRegister,
+  parseMusicalKeyInfo,
 } from './FullStemAnalyzer';
 import { detectPitchYin, midiNoteToName } from './PitchDetector';
 import { buildMonoSliceFromBuffer } from './Slicer';
@@ -24,29 +26,9 @@ const CAMELOT_MAJOR = ['8B', '3B', '10B', '5B', '12B', '7B', '2B', '9B', '4B', '
 const CAMELOT_MINOR = ['5A', '12A', '7A', '2A', '9A', '4A', '11A', '6A', '1A', '8A', '3A', '10A'];
 
 export function toCamelotKey(musicalKey?: string): string | undefined {
-  if (!musicalKey) return undefined;
-  const trimmed = musicalKey.trim();
-  if (!trimmed || trimmed.startsWith('Percusi')) return undefined;
-  const isMinor =
-    /m(in(or)?)?$/i.test(trimmed) && !/maj/i.test(trimmed);
-  const rootMatch = trimmed.match(/^([A-G])([#b]?)/i);
-  if (!rootMatch) return undefined;
-  const letter = rootMatch[1].toUpperCase();
-  const acc = rootMatch[2] || '';
-  const flatToSharp: Record<string, string> = {
-    DB: 'C#',
-    EB: 'Eb',
-    GB: 'F#',
-    AB: 'Ab',
-    BB: 'Bb',
-    'G#': 'Ab',
-    'D#': 'Eb',
-    'A#': 'Bb',
-  };
-  const keyTok = flatToSharp[`${letter}${acc}`.toUpperCase()] ?? `${letter}${acc}`;
-  const pc = NOTE_CLASS_NAMES.findIndex((n) => n.toUpperCase() === keyTok.toUpperCase());
-  if (pc < 0) return undefined;
-  return isMinor ? CAMELOT_MINOR[pc] : CAMELOT_MAJOR[pc];
+  const info = parseMusicalKeyInfo(musicalKey);
+  if (!info) return undefined;
+  return info.isMinor ? CAMELOT_MINOR[info.tonicPc] : CAMELOT_MAJOR[info.tonicPc];
 }
 
 // Krumhansl-Schmuckler tonal key profiles
@@ -214,12 +196,14 @@ function buildDualBandNoveltyEnvelope(
   const snareRms = new Float32Array(maxFrames);
   const hiRms = new Float32Array(maxFrames);
 
-  // Zero-alloc 3-band crossover: Kick/Sub (<145Hz), Snare Shell/Attack (145..520Hz), Hats/Sparkle (>1950Hz)
-  const lpLowAlpha = (2 * Math.PI * 145) / (sampleRate + 2 * Math.PI * 145);
-  const lpSnareHiAlpha = (2 * Math.PI * 520) / (sampleRate + 2 * Math.PI * 520);
-  const lpMidAlpha = (2 * Math.PI * 1950) / (sampleRate + 2 * Math.PI * 1950);
+  // Low-lag 3-band crossover (~2ms group delay): Kick (<135Hz), Snare Body+Crack (210..3800Hz), Hats/Air (>5200Hz)
+  const lpLowAlpha = (2 * Math.PI * 135) / (sampleRate + 2 * Math.PI * 135);
+  const lpSnareLoAlpha = (2 * Math.PI * 210) / (sampleRate + 2 * Math.PI * 210);
+  const lpSnareHiAlpha = (2 * Math.PI * 3800) / (sampleRate + 2 * Math.PI * 3800);
+  const lpMidAlpha = (2 * Math.PI * 5200) / (sampleRate + 2 * Math.PI * 5200);
   let lpLow = 0;
-  let lpSnareHi = 0;
+  let lpSnareLo = 0;
+  let lpSnare = 0;
   let lpMid = 0;
   const stride = sampleRate > 56000 ? 2 : 1;
 
@@ -233,9 +217,10 @@ function buildDualBandNoveltyEnvelope(
     for (let i = start; i < end; i += stride) {
       const x = mono[i];
       lpLow += lpLowAlpha * (x - lpLow);
-      lpSnareHi += lpSnareHiAlpha * (x - lpSnareHi);
+      lpSnareLo += lpSnareLoAlpha * (x - lpSnareLo);
+      lpSnare += lpSnareHiAlpha * (x - lpSnare);
       lpMid += lpMidAlpha * (x - lpMid);
-      const snare = lpSnareHi - lpLow;
+      const snare = lpSnare - lpSnareLo;
       const hi = x - lpMid;
       sqL += lpLow * lpLow;
       sqS += snare * snare;
@@ -248,7 +233,7 @@ function buildDualBandNoveltyEnvelope(
     hiRms[f] = Math.sqrt(sqH * inv);
   }
 
-  // Positive half-wave flux delta (narrow 145-520Hz snare band is naturally immune to hi-hats without erasure)
+  // Linear half-wave flux delta preserves natural Kick/Snare contrast vs quiet 8th-note hats/strums
   const lowFlux = new Float32Array(maxFrames);
   const snareFlux = new Float32Array(maxFrames);
   const hiFlux = new Float32Array(maxFrames);
@@ -264,7 +249,7 @@ function buildDualBandNoveltyEnvelope(
     prevH = hiRms[f] * 0.65 + prevH * 0.35;
   }
 
-  // Subtract moving local floor (±0.22s = 22 frames) so sustained chords/vocals stay at 0
+  // Subtract moving local floor (±0.22s = 22 frames) and normalize by 99th percentile peak
   const lowNov = new Float32Array(maxFrames);
   const snareNov = new Float32Array(maxFrames);
   const hiNov = new Float32Array(maxFrames);
@@ -273,6 +258,7 @@ function buildDualBandNoveltyEnvelope(
 
   const normalizeAdaptive = (src: Float32Array, dst: Float32Array) => {
     const rad = 22;
+    const nonZero: number[] = [];
     let maxV = 1e-6;
     for (let f = 0; f < maxFrames; f++) {
       const s = Math.max(0, f - rad);
@@ -282,10 +268,20 @@ function buildDualBandNoveltyEnvelope(
       const mean = sum / (e - s + 1);
       const val = Math.max(0, src[f] - mean * 1.15);
       dst[f] = val;
-      if (val > maxV) maxV = val;
+      if (val > 1e-6) {
+        nonZero.push(val);
+        if (val > maxV) maxV = val;
+      }
     }
-    const scale = maxV > 1e-6 ? 1 / maxV : 0;
-    for (let f = 0; f < maxFrames; f++) dst[f] *= scale;
+    let refMax = maxV;
+    if (nonZero.length >= 20) {
+      nonZero.sort((a, b) => a - b);
+      refMax = Math.max(1e-6, nonZero[Math.min(nonZero.length - 1, Math.floor(nonZero.length * 0.99))]);
+    }
+    const scale = refMax > 1e-6 ? 1 / refMax : 0;
+    for (let f = 0; f < maxFrames; f++) {
+      dst[f] = Math.min(1.2, dst[f] * scale);
+    }
   };
 
   normalizeAdaptive(lowFlux, lowNov);
@@ -360,6 +356,7 @@ function evalCombGridForBpm(
   lowBeatCoverage: number;
   halfBeatLeakRatio: number;
   bodyHalfLeakRatio: number;
+  tripletBodyLeakRatio: number;
   offbeatLowOrSnareFrac: number;
   bodyEvenOddRatio: number;
   kickSnareAlternation: number;
@@ -377,6 +374,7 @@ function evalCombGridForBpm(
       lowBeatCoverage: 0,
       halfBeatLeakRatio: 0,
       bodyHalfLeakRatio: 0,
+      tripletBodyLeakRatio: 0,
       offbeatLowOrSnareFrac: 0,
       bodyEvenOddRatio: 1,
       kickSnareAlternation: 0,
@@ -385,7 +383,7 @@ function evalCombGridForBpm(
     };
   }
 
-  const sweepSteps = Math.max(24, Math.min(72, Math.round(periodFrames)));
+  const sweepSteps = Math.max(48, Math.min(120, Math.round(periodFrames * 2)));
   let bestPhi = 0;
   let bestComb = -1;
   let bestHits = 0;
@@ -398,6 +396,7 @@ function evalCombGridForBpm(
   let bestBeatSum = 0;
   let bestBodyHalfSum = 0;
   let bestBodyBeatSum = 0;
+  let bestTripletBodySum = 0;
   let bestEvenBody = 0;
   let bestOddBody = 0;
   let bestAltScore = 0;
@@ -420,6 +419,7 @@ function evalCombGridForBpm(
     let halfSum = 0;
     let bodyBeatSum = 0;
     let bodyHalfSum = 0;
+    let tripletBodySum = 0;
     let evenBodySum = 0;
     let oddBodySum = 0;
     let evenLowSum = 0;
@@ -475,6 +475,9 @@ function evalCombGridForBpm(
         const q3S = sampleWeightedNear(snareNov, pos + periodFrames * 0.75, 2);
         halfSum += Math.max(hC, hL);
         bodyHalfSum += sampleWeightedNear(bodyNov, halfPos, 2);
+        const t1B = sampleWeightedNear(bodyNov, pos + periodFrames / 3, 2);
+        const t2B = sampleWeightedNear(bodyNov, pos + (periodFrames * 2) / 3, 2);
+        tripletBodySum += Math.max(t1B, t2B);
         if (
           hL >= 0.24 ||
           (hS >= 0.26 && hH >= 0.22) ||
@@ -499,6 +502,7 @@ function evalCombGridForBpm(
       bestBeatSum = avgBeat;
       bestBodyHalfSum = bodyHalfSum / Math.max(1, totalBeats);
       bestBodyBeatSum = bodyBeatSum / Math.max(1, totalBeats);
+      bestTripletBodySum = tripletBodySum / Math.max(1, totalBeats);
       bestEvenBody = evenBodySum / Math.max(1, evenCnt);
       bestOddBody = oddBodySum / Math.max(1, oddCnt);
       const eLow = evenLowSum / Math.max(1, evenCnt);
@@ -542,6 +546,7 @@ function evalCombGridForBpm(
     lowBeatCoverage: bestLowHits / bestTotal,
     halfBeatLeakRatio: bestBeatSum > 1e-5 ? bestHalfSum / bestBeatSum : 0,
     bodyHalfLeakRatio: bestBodyBeatSum > 1e-5 ? bestBodyHalfSum / bestBodyBeatSum : 0,
+    tripletBodyLeakRatio: bestBodyBeatSum > 1e-5 ? bestTripletBodySum / bestBodyBeatSum : 0,
     offbeatLowOrSnareFrac: bestOffLowSnareHits / bestHalfCnt,
     bodyEvenOddRatio,
     kickSnareAlternation: bestAltScore,
@@ -577,8 +582,8 @@ export function detectAccurateTempoAndPhase(
   }
 
   // 2. Normalized multi-harmonic autocorrelation over Kick+Snare bodyNov and combinedNov
-  // Extended to 2.1s lag (captures 2x bar lag down to 58 BPM without triggering 4x 2/3 subharmonics)
-  const maxLag = Math.min(gLen - 16, Math.round(envHz * 2.1));
+  // Extended to 2.2s lag (captures 2x bar lag down to 56 BPM without triggering >2.5x subharmonics)
+  const maxLag = Math.min(gLen - 16, Math.round(envHz * 2.2));
   const acf = new Float32Array(maxLag + 1);
   const bodyAcf = new Float32Array(maxLag + 1);
   if (gLen > 120) {
@@ -727,10 +732,10 @@ export function detectAccurateTempoAndPhase(
     };
   }
 
-  // Expand top unique candidates + their octave partners (b/2, 2*b) and score via Comb Occupancy
+  // Expand top unique candidates + their octave partners (b/2, 2*b) and 1.5x partner (to escape 2/3 polyrhythm upward)
   const uniqueSeeds: number[] = [];
   for (const c of candidates) {
-    for (const m of [c.bpm, c.bpm * 0.5, c.bpm * 2]) {
+    for (const m of [c.bpm, c.bpm * 0.5, c.bpm * 2, c.bpm * 1.5]) {
       if (m < 58 || m > 186) continue;
       if (!uniqueSeeds.some((u) => Math.abs(u - m) <= 1.2)) {
         uniqueSeeds.push(m);
@@ -738,12 +743,23 @@ export function detectAccurateTempoAndPhase(
     }
   }
 
+  const evalCache = new Map<number, ReturnType<typeof evalCombGridForBpm>>();
+  const getCombEval = (b: number) => {
+    const key = Math.round(b * 10);
+    let hit = evalCache.get(key);
+    if (!hit) {
+      hit = evalCombGridForBpm(nov, b);
+      evalCache.set(key, hit);
+    }
+    return hit;
+  };
+
   let bestSeed = uniqueSeeds[0] ?? 120;
   let bestFinalScore = -1;
-  let bestEval = evalCombGridForBpm(nov, bestSeed);
+  let bestEval = getCombEval(bestSeed);
 
   for (const seedBpm of uniqueSeeds) {
-    const ev = evalCombGridForBpm(nov, seedBpm);
+    const ev = getCombEval(seedBpm);
 
     // Sum nearby candidate weight voting within +-2.2% of this tempo
     let voteWeight = 0;
@@ -758,34 +774,59 @@ export function detectAccurateTempoAndPhase(
       }
     }
 
-    // Octave disambiguation based on clean physical Kick+Snare spacing (`strongSpacingSec`) & offbeat/sub-beat leakage:
-    // 1. Subharmonic trap protection (e.g. 84 BPM on 168 DnB):
-    //    If off-beats or 16th inter-beat positions carry strong Kick/Snare energy (`offbeatLowOrSnareFrac >= 0.42`)
-    //    on a slow candidate (`seedBpm <= 96`), or if physical spacing is fast (`< 0.56s`), penalize subharmonic!
+    // Symmetric octave & 2/3 polyrhythm disambiguation using beat occupancy (`bodyBeatHitFrac`) + half-beat snare leak:
     let octaveFactor = 1.0;
+
+    // 1. Subharmonic trap protection (e.g. 62 BPM on 124 BPM, 78 BPM on 156 BPM):
+    //    If double-tempo fills >= 84% of beats with Kick/Snare (`evDouble.bodyBeatHitFrac >= 0.84`) AND this slow tempo
+    //    leaks real backbeat snares/kicks onto its half-beat (`bodyHalfLeakRatio >= 0.20` or `offbeatLowOrSnareFrac >= 0.35`), it's half-time!
     if (seedBpm <= 96) {
-      if (ev.offbeatLowOrSnareFrac >= 0.42) {
-        octaveFactor *= Math.max(0.45, 1.1 - ev.offbeatLowOrSnareFrac * 0.85);
-      }
-      if (ev.strongSpacingSec < 0.56) {
+      const doubleBpm = seedBpm * 2;
+      const evDouble = doubleBpm <= 192 ? getCombEval(doubleBpm) : null;
+      const isTrueDoubleGroove = Boolean(
+        evDouble &&
+          evDouble.bodyBeatHitFrac >= 0.84 &&
+          (ev.bodyHalfLeakRatio >= 0.2 ||
+            ev.offbeatLowOrSnareFrac >= 0.35 ||
+            evDouble.kickSnareAlternation > ev.kickSnareAlternation * 1.15)
+      );
+      if (isTrueDoubleGroove) {
+        octaveFactor *= 0.42;
+      } else if (ev.strongSpacingSec < 0.45 && ev.bodyBeatHitFrac < 0.82) {
         octaveFactor *= 0.62;
       }
     }
 
-    // 2. False double-time protection (e.g. 147 BPM on 74 BPM rock or 144 BPM on 72 BPM ballad):
-    //    When low kicks only cover <= 34% of fast beats AND physical Kick+Snare spacing >= 1.15s
-    if (seedBpm > 120 && ev.strongSpacingSec >= 1.15 && ev.lowBeatCoverage <= 0.34) {
-      octaveFactor *= 0.45;
+    // 2. False double-time protection (e.g. 136 BPM on 68 BPM, 148 BPM on 74 BPM):
+    //    False double-time leaves >22% of beats without Kick/Snare (`bodyBeatHitFrac < 0.78`) while its half-tempo fills >= 84%!
+    if (seedBpm > 120) {
+      const halfBpm = seedBpm * 0.5;
+      const evHalf = halfBpm >= 58 ? getCombEval(halfBpm) : null;
+      if (
+        (ev.bodyBeatHitFrac < 0.78 && evHalf && evHalf.bodyBeatHitFrac >= 0.84) ||
+        (ev.strongSpacingSec >= 1.15 && ev.lowBeatCoverage <= 0.34)
+      ) {
+        octaveFactor *= 0.40;
+      }
     }
 
-    // 3. Slow backbeat protection (62..88 BPM, e.g. 74 Stadium Rock / 72 Ballad)
+    // 3. 2/3 Polyrhythm trap protection (e.g. 104 BPM on 156 BPM, 83 BPM on 124 BPM):
+    //    Real snares/kicks land at 1/3 & 2/3 of 2/3-tempo (`tripletBodyLeakRatio >= 0.44`) while 1.5*seed fills >= 78% of beats cleanly
+    if (seedBpm >= 72 && seedBpm <= 128 && ev.tripletBodyLeakRatio >= 0.44) {
+      const evThreeHalves = seedBpm * 1.5 <= 192 ? getCombEval(seedBpm * 1.5) : null;
+      if (evThreeHalves && evThreeHalves.bodyBeatHitFrac >= 0.78) {
+        octaveFactor *= 0.46;
+      }
+    }
+
+    // 4. Slow backbeat protection (62..88 BPM) only when double-time isn't full-occupancy
     if (
       seedBpm >= 62 &&
       seedBpm <= 88 &&
-      ev.strongSpacingSec >= 1.15 &&
-      ev.offbeatLowOrSnareFrac < 0.36
+      octaveFactor >= 0.9 &&
+      ev.bodyBeatHitFrac >= 0.84
     ) {
-      octaveFactor *= 1.18;
+      octaveFactor *= 1.16;
     }
 
     // Gentle musical prior around 108 BPM
@@ -850,6 +891,11 @@ export function detectAccurateTempoAndPhase(
       ? nearestInt
       : Math.round(refined * 10) / 10;
 
+  // Re-lock comb phase at exact resolvedBpm so rounding never introduces cumulative drift
+  if (!isSparseHarmonic) {
+    bestEval = evalCombGridForBpm(nov, resolvedBpm);
+  }
+
   const bpmConfidence = Number(
     Math.max(
       0.3,
@@ -857,41 +903,75 @@ export function detectAccurateTempoAndPhase(
     ).toFixed(3)
   );
 
-  // Exact phase alignment (`beatOffsetSec`) anchored via comb + earliest leading percussive attack!
+  // Exact phase alignment (`beatOffsetSec`) anchored via groove-wide median transient attack foot
   const beatDur = 60 / Math.max(40, resolvedBpm);
   let rawOffsetSec = bestEval.bestPhiFrames / envHz;
   if (isSparseHarmonic && (chordAttackTimes.length > 0 || onsetTimesSec.length > 0)) {
     const earliest = chordAttackTimes[0] ?? onsetTimesSec[0] ?? 0;
     rawOffsetSec = earliest % beatDur;
   } else {
-    // Refine 10ms envelope phase against sample-level peak onset near beat 1
-    const firstBeatTimeSec = rawOffsetSec % beatDur;
-    const probeCenter = Math.round(firstBeatTimeSec * sampleRate);
-    const searchWin = Math.round(0.03 * sampleRate);
-    const sMin = Math.max(0, probeCenter - searchWin);
-    const sMax = Math.min(mono.length - 1, probeCenter + searchWin);
-    let maxAbs = 0;
-    let maxIdx = probeCenter;
-    for (let i = sMin; i <= sMax; i++) {
-      const a = Math.abs(mono[i]);
-      if (a > maxAbs) {
-        maxAbs = a;
-        maxIdx = i;
+    const grooveStartSec = grooveStartFrame / envHz;
+    const grooveEndSec = grooveEndFrame / envHz;
+    const residuals: number[] = [];
+    const nMin = Math.max(0, Math.ceil((grooveStartSec - rawOffsetSec) / beatDur));
+    const nMax = Math.floor((grooveEndSec - rawOffsetSec) / beatDur);
+    const beatStep = Math.max(1, Math.floor((nMax - nMin + 1) / 36));
+    const searchWin = Math.round(0.028 * sampleRate);
+    const stepMs = Math.max(8, Math.round(0.0012 * sampleRate));
+
+    for (let n = nMin; n <= nMax; n += beatStep) {
+      const btSec = rawOffsetSec + n * beatDur;
+      const fCenter = Math.round(btSec * envHz);
+      let beatStrength = 0;
+      for (let df = -3; df <= 3; df++) {
+        const fi = fCenter + df;
+        if (fi >= grooveStartFrame && fi < grooveEndFrame) {
+          beatStrength = Math.max(beatStrength, bodyNov[fi], combinedNov[fi] * 0.85);
+        }
+      }
+      if (beatStrength < 0.24) continue;
+
+      const centerSamp = Math.round(btSec * sampleRate);
+      const sMin = Math.max(2, centerSamp - searchWin);
+      const sMax = Math.min(mono.length - 1, centerSamp + searchWin);
+      if (sMax - sMin < stepMs * 4) continue;
+
+      // High-frequency derivative transient (mono[i] - mono[i-2]) triggers at exact beater/stick impact (~1ms lag, zero 50Hz kick delay!)
+      let bestRise = 0;
+      let bestRiseIdx = -1;
+      for (let idx = sMin + stepMs * 2; idx <= sMax - stepMs; idx += Math.max(2, Math.floor(stepMs / 4))) {
+        let eBefore = 0;
+        let eAfter = 0;
+        for (let k = 0; k < stepMs; k++) {
+          const db = mono[idx - stepMs + k] - mono[idx - stepMs + k - 2];
+          const da = mono[idx + k] - mono[idx + k - 2];
+          eBefore += db * db;
+          eAfter += da * da;
+        }
+        const rmsB = Math.sqrt(eBefore / stepMs);
+        const rmsA = Math.sqrt(eAfter / stepMs);
+        const rise = rmsA - rmsB * 1.25;
+        if (rise > bestRise) {
+          bestRise = rise;
+          bestRiseIdx = idx;
+        }
+      }
+      if (bestRiseIdx >= 0 && bestRise > 0.002) {
+        const resid = bestRiseIdx / sampleRate - btSec;
+        if (Math.abs(resid) <= 0.028) {
+          residuals.push(resid);
+        }
       }
     }
-    // Walk back slightly from peak to attack transient foot
-    if (maxAbs > 0.01) {
-      let footIdx = maxIdx;
-      const footThresh = maxAbs * 0.15;
-      while (footIdx > sMin && Math.abs(mono[footIdx - 1]) > footThresh) {
-        footIdx--;
-      }
-      rawOffsetSec = footIdx / sampleRate;
+
+    if (residuals.length >= 2) {
+      residuals.sort((a, b) => a - b);
+      rawOffsetSec += residuals[Math.floor(residuals.length / 2)];
     }
   }
 
   let offset = ((rawOffsetSec % beatDur) + beatDur) % beatDur;
-  if (offset < 0.022 || beatDur - offset < 0.022) {
+  if (offset < 0.004 || beatDur - offset < 0.004) {
     offset = 0;
   }
 
@@ -971,7 +1051,7 @@ export function rebuildBeatGridFromTempo(
   if (initialBeats.length < 4) {
     initialBeats.length = 0;
     let t = ((beatOffsetSec % beatDur) + beatDur) % beatDur;
-    if (beatDur - t < 0.022) t = 0;
+    if (beatDur - t < 0.004) t = 0;
     while (t <= durationSec + beatDur * 0.25) {
       initialBeats.push(Number(t.toFixed(4)));
       t += beatDur;
@@ -1006,17 +1086,102 @@ export function rebuildBeatGridFromTempo(
         .filter((t) => t >= -0.005 && t <= maxTime)
         .map((t) => Number(Math.max(0, t).toFixed(4)));
       if (clippedBeats.length >= 2) {
+        // Check whether repairAndRelockBeatGrid found a silence breakdown/tempo island vs simply lagging constant phase
+        let hasBreakdownShift = false;
+        const deltas: number[] = [];
+        const compareCount = Math.min(clippedBeats.length, initialBeats.length);
+        for (let bi = 1; bi < clippedBeats.length; bi++) {
+          if (clippedBeats[bi] - clippedBeats[bi - 1] > beatDur * 1.4) {
+            hasBreakdownShift = true;
+            break;
+          }
+        }
+        if (!hasBreakdownShift && (!seedBeats || seedBeats.length < 4)) {
+          for (let i = 0; i < compareCount; i++) {
+            deltas.push(clippedBeats[i] - initialBeats[i]);
+          }
+          if (deltas.length >= 3) {
+            deltas.sort((a, b) => a - b);
+            const medShift = deltas[Math.floor(deltas.length / 2)];
+            // Only preserve median transient attack phase if grid stayed near-constant without breakdown
+            if (Math.abs(medShift) > 0.005 && Math.abs(medShift) < 0.048) {
+              for (let i = 0; i < clippedBeats.length; i++) {
+                clippedBeats[i] = Number(Math.max(0, clippedBeats[i] - medShift).toFixed(4));
+              }
+              for (let i = 0; i < clippedDownbeats.length; i++) {
+                clippedDownbeats[i] = Number(Math.max(0, clippedDownbeats[i] - medShift).toFixed(4));
+              }
+            }
+          }
+        }
+
         beatTimes = clippedBeats;
         downbeats =
           clippedDownbeats.length > 0
             ? clippedDownbeats
             : clippedBeats.filter((_, idx) => idx % beatsPerMeasure === 0);
         const rawMod = ((beatTimes[0] ?? refinedOffset) % beatDur + beatDur) % beatDur;
-        refinedOffset = rawMod < 0.02 || beatDur - rawMod < 0.02 ? 0 : Number(rawMod.toFixed(4));
+        refinedOffset = rawMod < 0.004 || beatDur - rawMod < 0.004 ? 0 : Number(rawMod.toFixed(4));
       }
     } catch {
       // Keep clean regular grid fallback
     }
+  }
+
+  // Align Downbeat bar phase (0..beatsPerMeasure-1) via low-end kick energy + active musical entry
+  if ((!seedDownbeats || seedDownbeats.length === 0) && beatTimes.length >= beatsPerMeasure * 2) {
+    let firstActiveBeatIdx = 0;
+    const peakAmp = (() => {
+      let m = 1e-4;
+      for (let i = 0; i < mono.length; i += 64) {
+        const a = Math.abs(mono[i]);
+        if (a > m) m = a;
+      }
+      return m;
+    })();
+    for (let bi = 0; bi < beatTimes.length; bi++) {
+      const st = Math.max(0, Math.round(beatTimes[bi] * sampleRate));
+      const en = Math.min(mono.length, st + Math.round(Math.min(0.25, beatDur) * sampleRate));
+      let locMax = 0;
+      for (let i = st; i < en; i += 4) {
+        const a = Math.abs(mono[i]);
+        if (a > locMax) locMax = a;
+      }
+      if (locMax >= peakAmp * 0.22) {
+        firstActiveBeatIdx = bi;
+        break;
+      }
+    }
+
+    const phaseScores = new Float64Array(beatsPerMeasure);
+    const lpAlpha = (2 * Math.PI * 135) / (sampleRate + 2 * Math.PI * 135);
+    for (let bi = 0; bi < beatTimes.length; bi++) {
+      const bt = beatTimes[bi];
+      const st = Math.max(0, Math.round(bt * sampleRate));
+      const en = Math.min(mono.length, st + Math.round(0.085 * sampleRate));
+      if (en <= st + 16) continue;
+      let lp = 0;
+      let sq = 0;
+      for (let i = st; i < en; i++) {
+        lp += lpAlpha * (mono[i] - lp);
+        sq += lp * lp;
+      }
+      const lowE = Math.sqrt(sq / (en - st));
+      const p = bi % beatsPerMeasure;
+      phaseScores[p] += lowE;
+      if (bi === firstActiveBeatIdx) {
+        phaseScores[p] += peakAmp * 1.1;
+      }
+    }
+    let bestPhase = 0;
+    let bestPhaseScore = -1;
+    for (let p = 0; p < beatsPerMeasure; p++) {
+      if (phaseScores[p] > bestPhaseScore) {
+        bestPhaseScore = phaseScores[p];
+        bestPhase = p;
+      }
+    }
+    downbeats = beatTimes.filter((_, idx) => idx % beatsPerMeasure === bestPhase);
   }
 
   return {
@@ -1052,39 +1217,22 @@ function computeSpectralChromaFrames(
     return { frames: [], globalSpectralChroma, medianTonalityRatio: 0 };
   }
 
-  const winLen = Math.min(4096, mono.length);
-  const fftSize = 8192;
+  const winLen = Math.min(8192, mono.length);
+  const fftSize = 16384;
   const win = buildHannWindow(winLen);
   const re = new Float32Array(fftSize);
   const im = new Float32Array(fftSize);
   const binHz = sampleRate / fftSize;
-  const minBin = Math.max(2, Math.floor(62 / binHz));
+  const minBin = Math.max(2, Math.floor(55 / binHz));
   const maxBin = Math.min(fftSize / 2 - 2, Math.ceil(1150 / binHz));
   const durationSec = mono.length / sampleRate;
 
-  // Cap at ~1100 FFT frames across whole track so 270s WAV completes in <90ms
+  // Cap at ~1100 FFT frames across whole track so 270s WAV completes quickly
   const strideSec = Math.max(0.085, durationSec / 1100);
   const frames: SpectralChromaFrame[] = [];
   const tonalityRatios: number[] = [];
 
-  // Precompute bin->MIDI fractional mapping + frequency register weighting
   const numBins = maxBin - minBin + 1;
-  const binPc = new Int8Array(numBins).fill(-1);
-  const binWeight = new Float32Array(numBins);
-  for (let idx = 0; idx < numBins; idx++) {
-    const k = minBin + idx;
-    const freq = k * binHz;
-    const midiFloat = 69 + 12 * Math.log2(freq / 440);
-    const nearestMidi = Math.round(midiFloat);
-    const dev = Math.abs(midiFloat - nearestMidi);
-    if (dev <= 0.38) {
-      binPc[idx] = ((nearestMidi % 12) + 12) % 12;
-      const devWeight = 1 - (dev / 0.42) * 0.5;
-      const regWeight = freq < 210 ? 1.55 : freq < 580 ? 1.2 : 0.28;
-      binWeight[idx] = devWeight * regWeight;
-    }
-  }
-
   const mags = new Float32Array(numBins);
   const sortedMags: number[] = new Array(Math.ceil(numBins / 2));
 
@@ -1123,15 +1271,31 @@ function computeSpectralChromaFrames(
     tonalityRatios.push(tonalityRatio);
 
     const chroma = new Float32Array(12);
-    const noiseGate = floorMag * 1.35;
+    const noiseGate = Math.max(floorMag * 1.45, peakMag * 0.025);
     let frameChromaSum = 0;
-    for (let idx = 0; idx < numBins; idx++) {
-      const pc = binPc[idx];
-      if (pc < 0) continue;
-      const cleanMag = mags[idx] - noiseGate;
-      if (cleanMag <= 0) continue;
-      // Log compression avoids one hot distortion harmonic masking chord third/root
-      const magVal = Math.log1p(18 * (cleanMag / peakMag)) * binWeight[idx];
+    // Extract true parabolic spectral local peaks so Hann mainlobe & neighbor bins never smear semitones
+    for (let idx = 1; idx < numBins - 1; idx++) {
+      const a = mags[idx];
+      if (a <= noiseGate || a < mags[idx - 1] || a <= mags[idx + 1]) continue;
+      const s0 = mags[idx - 1];
+      const s2 = mags[idx + 1];
+      const denom = s0 - 2 * a + s2;
+      const delta =
+        Math.abs(denom) > 1e-9 ? Math.max(-0.5, Math.min(0.5, (0.5 * (s0 - s2)) / denom)) : 0;
+      const exactFreq = (minBin + idx + delta) * binHz;
+      if (exactFreq < 55 || exactFreq > 1150) continue;
+
+      const midiFloat = 69 + 12 * Math.log2(exactFreq / 440);
+      const nearestMidi = Math.round(midiFloat);
+      const dev = Math.abs(midiFloat - nearestMidi);
+      if (dev > 0.30) continue;
+
+      const pc = ((nearestMidi % 12) + 12) % 12;
+      const cleanMag = a - noiseGate;
+      const devWeight = 1 - (dev / 0.34) * 0.5;
+      // Weight fundamentals & 3rds (<520Hz) strongly and taper >580Hz so 5th harmonics don't flip min->maj
+      const regWeight = exactFreq < 220 ? 1.65 : exactFreq < 520 ? 1.2 : 0.22;
+      const magVal = Math.log1p(18 * (cleanMag / peakMag)) * devWeight * regWeight;
       chroma[pc] += magVal;
       frameChromaSum += magVal;
     }
@@ -1154,12 +1318,11 @@ function computeSpectralChromaFrames(
 }
 
 function getDiatonicChordSetForKey(musicalKey: string): Set<string> {
-  const isMinor = musicalKey.endsWith('m');
-  const rootName = isMinor ? musicalKey.slice(0, -1) : musicalKey;
-  const tonic = NOTE_CLASS_NAMES.indexOf(rootName);
+  const info = parseMusicalKeyInfo(musicalKey);
   const set = new Set<string>();
-  if (tonic < 0) return set;
-  if (!isMinor) {
+  if (!info) return set;
+  const tonic = info.tonicPc;
+  if (!info.isMinor) {
     // Major diatonic: I, ii, iii, IV, V, V7, vi, vii dim + common bVII rock borrow
     const degs: Array<[number, string[]]> = [
       [0, ['', 'maj7', 'sus4', 'sus2']],
@@ -1482,21 +1645,24 @@ export function detectChordsAndKeyFromEvents(
     }
   }
 
-  // Track-level bass root detection along windows
+  // Track-level bass root detection along steady post-kick portion of beat windows
   const bassRootCounts = new Float32Array(12);
   const windowBassRoot = new Int16Array(windows.length).fill(-1);
   if (mono.length >= Math.floor(sampleRate * 0.15)) {
     const low = filterBassIsolationBand(mono, sampleRate);
     const yinWin = Math.min(low.length, Math.max(2048, Math.round(sampleRate * 0.095)));
     for (let wIdx = 0; wIdx < windows.length; wIdx++) {
-      const midSec = (windows[wIdx].startSec + windows[wIdx].endSec) * 0.5;
-      const st = Math.max(0, Math.min(low.length - yinWin, Math.round(midSec * sampleRate - yinWin * 0.35)));
+      const wStart = windows[wIdx].startSec;
+      const wEnd = windows[wIdx].endSec;
+      const wDur = Math.max(0.05, wEnd - wStart);
+      const probeSec = wStart + Math.min(wDur * 0.58, Math.max(wDur * 0.4, 0.065));
+      const st = Math.max(0, Math.min(low.length - yinWin, Math.round(probeSec * sampleRate - yinWin * 0.25)));
       if (st + 512 >= low.length) continue;
-      const yin = detectPitchYin(low.subarray(st, Math.min(low.length, st + yinWin)), sampleRate);
-      if (yin.confidence >= 0.45 && yin.freqHz >= 36 && yin.freqHz <= 200) {
+      const yin = detectPitchYin(low.subarray(st, Math.min(low.length, st + yinWin)), sampleRate, 35, 220);
+      if (yin.confidence >= 0.45 && yin.freqHz >= 35 && yin.freqHz <= 210) {
         const pc = ((yin.midiNote % 12) + 12) % 12;
         windowBassRoot[wIdx] = pc;
-        bassRootCounts[pc] += windows[wIdx].endSec - windows[wIdx].startSec;
+        bassRootCounts[pc] += wDur;
       }
     }
   }
@@ -1533,7 +1699,6 @@ export function detectChordsAndKeyFromEvents(
   const prelimKey = seedKey && !seedKey.startsWith('Percusi')
     ? { musicalKey: seedKey.replace(/\s*major$/i, ''), keyConfidence: 0.92 }
     : estimateMusicalKey(globalChroma, [], bassRootCounts);
-  const diatonicSet = getDiatonicChordSetForKey(prelimKey.musicalKey);
 
   interface FrameChordObs {
     startSec: number;
@@ -1542,77 +1707,154 @@ export function detectChordsAndKeyFromEvents(
     rootPc: number;
     confidence: number;
     midis: number[];
+    chroma: Float32Array;
+    lowestMidi: number;
+    lowPc: number;
+    activePcs: number[];
   }
-  const frameObs: FrameChordObs[] = [];
 
-  for (let wIdx = 0; wIdx < windows.length; wIdx++) {
-    const { startSec: wStart, endSec: wEnd } = windows[wIdx];
-    const chroma = new Float32Array(12);
-    const midiSet = new Set<number>();
-    let lowestMidi = 127;
+  const runBeatClassification = (diatonicSet: Set<string>): FrameChordObs[] => {
+    const obs: FrameChordObs[] = [];
+    for (let wIdx = 0; wIdx < windows.length; wIdx++) {
+      const { startSec: wStart, endSec: wEnd } = windows[wIdx];
+      const chroma = new Float32Array(12);
+      const midiSet = new Set<number>();
+      let lowestMidi = 127;
 
-    // 1. Direct FFT Spectral Chromagram inside this beat window
-    if (hasSpec) {
-      let spWeightSum = 0;
-      for (const sf of spectralGrid.frames) {
-        if (sf.timeSec >= wStart - 0.03 && sf.timeSec <= wEnd + 0.03) {
-          const w = Math.max(0.2, Math.min(2.0, sf.energy * 14));
-          for (let pc = 0; pc < 12; pc++) chroma[pc] += sf.chroma[pc] * w;
-          spWeightSum += w;
+      // 1. Direct FFT Spectral Chromagram inside this beat window, strongly favoring steady sustain [wStart+75ms .. wEnd-40ms] over kick-sweep attack!
+      if (hasSpec) {
+        const wDur = Math.max(0.1, wEnd - wStart);
+        const sustainLo = wStart + Math.min(0.08, wDur * 0.22);
+        const sustainHi = wEnd - Math.min(0.04, wDur * 0.1);
+        let spWeightSum = 0;
+        for (const sf of spectralGrid.frames) {
+          if (sf.timeSec >= sustainLo && sf.timeSec <= sustainHi) {
+            const w = Math.max(0.25, Math.min(2.5, sf.energy * 16));
+            for (let pc = 0; pc < 12; pc++) chroma[pc] += sf.chroma[pc] * w;
+            spWeightSum += w;
+          }
+        }
+        if (spWeightSum === 0) {
+          for (const sf of spectralGrid.frames) {
+            if (sf.timeSec >= wStart - 0.02 && sf.timeSec <= wEnd + 0.02) {
+              const w = Math.max(0.2, Math.min(2.0, sf.energy * 14));
+              for (let pc = 0; pc < 12; pc++) chroma[pc] += sf.chroma[pc] * w;
+              spWeightSum += w;
+            }
+          }
+        }
+        if (spWeightSum > 0) {
+          for (let pc = 0; pc < 12; pc++) chroma[pc] = (chroma[pc] / spWeightSum) * 1.45;
         }
       }
-      if (spWeightSum > 0) {
-        for (let pc = 0; pc < 12; pc++) chroma[pc] = (chroma[pc] / spWeightSum) * 1.45;
+
+      // 2. Active Polyphonic Notes overlapping this beat window
+      const active = polyNoteEvents.filter(
+        (ev) => ev.startSec <= wEnd - 0.02 && ev.startSec + ev.durationSec >= wStart + 0.02
+      );
+      for (const n of active) {
+        const pc = ((n.midiNote % 12) + 12) % 12;
+        midiSet.add(n.midiNote);
+        if (n.midiNote < lowestMidi) lowestMidi = n.midiNote;
+        const overlap = Math.min(wEnd, n.startSec + n.durationSec) - Math.max(wStart, n.startSec);
+        const w =
+          Math.max(0.15, n.velocity) *
+          (0.45 + 0.55 * n.clarity) *
+          Math.max(0.25, overlap / Math.max(0.15, wEnd - wStart));
+        const regWeight = n.midiNote <= 52 ? 1.35 : 1.0;
+        chroma[pc] += w * regWeight * 0.7;
+      }
+
+      // 3. Add explicit YIN low bass root reinforcement
+      const lowPc = windowBassRoot[wIdx];
+      if (lowPc >= 0) {
+        chroma[lowPc] += 0.36;
+      }
+
+      const activePcs: number[] = [];
+      let cMax = 0;
+      for (let pc = 0; pc < 12; pc++) if (chroma[pc] > cMax) cMax = chroma[pc];
+      for (let pc = 0; pc < 12; pc++) {
+        if (chroma[pc] > cMax * 0.24) activePcs.push(pc);
+      }
+      if (activePcs.length === 0) continue;
+
+      const effLowestMidi = lowestMidi < 127 ? lowestMidi : -1;
+      const res = classifyChromaSegment(chroma, effLowestMidi, lowPc, activePcs, diatonicSet);
+      if (res.confidence > 0) {
+        obs.push({
+          startSec: wStart,
+          endSec: wEnd,
+          chord: res.chord,
+          rootPc: res.rootPc,
+          confidence: res.confidence,
+          midis: Array.from(midiSet).sort((a, b) => a - b),
+          chroma,
+          lowestMidi: effLowestMidi,
+          lowPc,
+          activePcs,
+        });
       }
     }
+    return obs;
+  };
 
-    // 2. Active Polyphonic Notes overlapping this beat window
-    const active = polyNoteEvents.filter(
-      (ev) => ev.startSec <= wEnd - 0.02 && ev.startSec + ev.durationSec >= wStart + 0.02
-    );
-    for (const n of active) {
-      const pc = ((n.midiNote % 12) + 12) % 12;
-      midiSet.add(n.midiNote);
-      if (n.midiNote < lowestMidi) lowestMidi = n.midiNote;
-      const overlap = Math.min(wEnd, n.startSec + n.durationSec) - Math.max(wStart, n.startSec);
-      const w =
-        Math.max(0.15, n.velocity) *
-        (0.45 + 0.55 * n.clarity) *
-        Math.max(0.25, overlap / Math.max(0.15, wEnd - wStart));
-      const regWeight = n.midiNote <= 52 ? 1.35 : 1.0;
-      chroma[pc] += w * regWeight * 0.7;
+  let frameObs = runBeatClassification(getDiatonicChordSetForKey(prelimKey.musicalKey));
+
+  // Second-pass key/diatonic refinement so intro noise or tonic ambiguity cannot flip minor<->major triads
+  if ((!seedKey || seedKey.startsWith('Percusi')) && frameObs.length >= 4) {
+    const pass1Chords: DetectedChordSegment[] = frameObs.map((ob, i) => ({
+      id: `p1-${i}`,
+      startSec: ob.startSec,
+      endSec: ob.endSec,
+      chord: ob.chord,
+      rootPitchClass: ob.rootPc,
+      rootName: NOTE_CLASS_NAMES[ob.rootPc],
+      rootMidi: 36 + ob.rootPc,
+      chordMidis: [],
+      confidence: ob.confidence,
+    }));
+    const refinedKey = estimateMusicalKey(globalChroma, pass1Chords, bassRootCounts);
+    if (refinedKey.musicalKey !== prelimKey.musicalKey) {
+      const diatonic2 = getDiatonicChordSetForKey(refinedKey.musicalKey);
+      for (const ob of frameObs) {
+        const res2 = classifyChromaSegment(ob.chroma, ob.lowestMidi, ob.lowPc, ob.activePcs, diatonic2);
+        if (res2.confidence > 0) {
+          ob.chord = res2.chord;
+          ob.rootPc = res2.rootPc;
+          ob.confidence = res2.confidence;
+        }
+      }
     }
+  }
 
-    // 3. Add explicit YIN low bass root reinforcement
-    const lowPc = windowBassRoot[wIdx];
-    if (lowPc >= 0) {
-      chroma[lowPc] += 0.36;
+  // Beat-level contextual smoothing (eliminates 1-beat edge flicker, A-B-A glitches, and same-root major/minor flips)
+  if (frameObs.length >= 3) {
+    if (
+      frameObs[0].chord !== frameObs[1].chord &&
+      frameObs[1].chord === frameObs[2].chord &&
+      frameObs[0].rootPc === frameObs[1].rootPc
+    ) {
+      frameObs[0].chord = frameObs[1].chord;
     }
-
-    const activePcs: number[] = [];
-    let cMax = 0;
-    for (let pc = 0; pc < 12; pc++) if (chroma[pc] > cMax) cMax = chroma[pc];
-    for (let pc = 0; pc < 12; pc++) {
-      if (chroma[pc] > cMax * 0.24) activePcs.push(pc);
-    }
-    if (activePcs.length === 0) continue;
-
-    const res = classifyChromaSegment(
-      chroma,
-      lowestMidi < 127 ? lowestMidi : -1,
-      lowPc,
-      activePcs,
-      diatonicSet
-    );
-    if (res.confidence > 0) {
-      frameObs.push({
-        startSec: wStart,
-        endSec: wEnd,
-        chord: res.chord,
-        rootPc: res.rootPc,
-        confidence: res.confidence,
-        midis: Array.from(midiSet).sort((a, b) => a - b),
-      });
+    for (let i = 1; i < frameObs.length - 1; i++) {
+      const prev = frameObs[i - 1];
+      const cur = frameObs[i];
+      const next = frameObs[i + 1];
+      if (prev.chord === next.chord && cur.chord !== prev.chord) {
+        cur.chord = prev.chord;
+        cur.rootPc = prev.rootPc;
+      } else if (cur.chord !== prev.chord && cur.chord !== next.chord) {
+        if (cur.rootPc === prev.rootPc && i >= 2 && frameObs[i - 2].chord === prev.chord) {
+          cur.chord = prev.chord;
+        } else if (
+          cur.rootPc === next.rootPc &&
+          i + 2 < frameObs.length &&
+          frameObs[i + 2].chord === next.chord
+        ) {
+          cur.chord = next.chord;
+        }
+      }
     }
   }
 
@@ -1660,21 +1902,55 @@ export function detectChordsAndKeyFromEvents(
     }
   }
 
-  // Absorb single noisy 1-beat chord blips (< beatSec * 1.05 when flanked or brief distortion)
-  const cleaned: RawSeg[] = [];
-  for (let i = 0; i < merged.length; i++) {
+  // Absorb single noisy 1-beat chord blips into same-root or flanking matching chords (never eat adjacent different-root bars!)
+  const segDurs = merged.map((m) => m.endSec - m.startSec).sort((a, b) => a - b);
+  const medianSegDur = segDurs.length > 0 ? segDurs[Math.floor(segDurs.length / 2)] : beatSec * 2;
+  const maxBlipDur =
+    medianSegDur >= beatSec * 1.75
+      ? beatSec * 1.12
+      : Math.min(0.85, beatSec * 0.95);
+
+  // First pass: coerce any short <=1-beat segment forward into next segment when sharing same root (e.g. A@12.69 + Am@13.31 -> Am@12.69)
+  for (let i = 0; i < merged.length - 1; i++) {
     const cur = merged[i];
+    const next = merged[i + 1];
+    if (cur.endSec - cur.startSec <= maxBlipDur && cur.rootPc === next.rootPc && cur.chord !== next.chord) {
+      cur.chord = next.chord;
+    } else if (next.endSec - next.startSec <= maxBlipDur && cur.rootPc === next.rootPc && cur.chord !== next.chord) {
+      next.chord = cur.chord;
+    }
+  }
+
+  // Re-merge after same-root coercion
+  const reMerged: RawSeg[] = [];
+  for (const seg of merged) {
+    const prev = reMerged[reMerged.length - 1];
+    if (prev && prev.chord === seg.chord && seg.startSec - prev.endSec <= 0.35) {
+      prev.endSec = seg.endSec;
+      prev.confSum += seg.confSum;
+      prev.count += seg.count;
+      for (const m of seg.midiSet) prev.midiSet.add(m);
+    } else {
+      reMerged.push(seg);
+    }
+  }
+
+  const cleaned: RawSeg[] = [];
+  for (let i = 0; i < reMerged.length; i++) {
+    const cur = reMerged[i];
     const dur = cur.endSec - cur.startSec;
-    const isShortBlip =
-      merged.length > 2 &&
-      dur < Math.min(0.85, beatSec * 0.95) &&
-      cleaned.length > 0 &&
-      i < merged.length - 1;
-    if (isShortBlip) {
-      cleaned[cleaned.length - 1].endSec = cur.endSec;
+    const prevClean = cleaned[cleaned.length - 1];
+    const nextSeg = reMerged[i + 1];
+    const canAbsorbFlanked =
+      reMerged.length > 2 &&
+      dur <= maxBlipDur &&
+      Boolean(prevClean) &&
+      Boolean(nextSeg) &&
+      (prevClean.chord === nextSeg.chord || cur.rootPc === prevClean.rootPc);
+    if (canAbsorbFlanked) {
+      prevClean.endSec = cur.endSec;
       continue;
     }
-    const prevClean = cleaned[cleaned.length - 1];
     if (prevClean && prevClean.chord === cur.chord && cur.startSec - prevClean.endSec <= 0.35) {
       prevClean.endSec = cur.endSec;
       prevClean.confSum += cur.confSum;
@@ -1796,6 +2072,27 @@ export function analyzeImportedAudioFirst(
   const sensitivity = options.sensitivity ?? 0.62;
   const timeSignature = options.timeSignature ?? '4/4';
 
+  let effectiveBpmHint = options.bpmHint;
+  if (
+    (!effectiveBpmHint || !Number.isFinite(effectiveBpmHint)) &&
+    options.seedBeatTimes &&
+    options.seedBeatTimes.length >= 4
+  ) {
+    const diffs: number[] = [];
+    for (let i = 1; i < options.seedBeatTimes.length; i++) {
+      const d = options.seedBeatTimes[i] - options.seedBeatTimes[i - 1];
+      if (d >= 0.24 && d <= 1.5) diffs.push(d);
+    }
+    if (diffs.length >= 2) {
+      diffs.sort((a, b) => a - b);
+      const medIbi = diffs[Math.floor(diffs.length / 2)];
+      const derivedBpm = 60 / medIbi;
+      if (derivedBpm >= 45 && derivedBpm <= 220) {
+        effectiveBpmHint = Math.round(derivedBpm * 10) / 10;
+      }
+    }
+  }
+
   const onsetRes = detectOnsetsSpectralFlux(mono, sampleRate, {
     sensitivity: Math.max(0.54, sensitivity),
     minIntervalMs: 65,
@@ -1805,7 +2102,7 @@ export function analyzeImportedAudioFirst(
   const rawPoly = analyzePolyphonicStemNotesFull(mono, sampleRate, {
     sensitivity,
     maxPolyphony: 5,
-    bpmHint: options.bpmHint,
+    bpmHint: effectiveBpmHint,
     hopOverride: durationSec > 60 ? 3072 : durationSec > 25 ? 2048 : undefined,
   });
 
@@ -1814,7 +2111,7 @@ export function analyzeImportedAudioFirst(
     sampleRate,
     onsetRes.onsetTimesSec,
     rawPoly.noteEvents,
-    options.bpmHint
+    effectiveBpmHint
   );
 
   // Build Stem Studio Beat Grid (`beatTimes[]` & `downbeats[]`) via `repairAndRelockBeatGrid`
@@ -1839,6 +2136,23 @@ export function analyzeImportedAudioFirst(
     options.seedKey
   );
 
+  const harmonizedPolyNotes = harmonyRes.isTonal
+    ? constrainNotesToDetectedHarmony(
+        rawPoly.noteEvents,
+        harmonyRes.chords,
+        harmonyRes.musicalKey
+      )
+    : rawPoly.noteEvents;
+  harmonizedPolyNotes.forEach((ev, idx) => {
+    ev.id = `pn-${idx}`;
+  });
+  let hMin = 127;
+  let hMax = 0;
+  for (const n of harmonizedPolyNotes) {
+    if (n.midiNote < hMin) hMin = n.midiNote;
+    if (n.midiNote > hMax) hMax = n.midiNote;
+  }
+
   const polyResult: FullStemAnalysisResult = {
     ...rawPoly,
     bpm: tempoRes.bpm,
@@ -1848,6 +2162,24 @@ export function analyzeImportedAudioFirst(
     beatOffsetSec: grid.beatOffsetSec,
     beatTimes: grid.beatTimes,
     downbeats: grid.downbeats,
+    noteEvents: harmonizedPolyNotes,
+    midiRange:
+      harmonizedPolyNotes.length > 0
+        ? {
+            minMidi: hMin,
+            maxMidi: hMax,
+            minName: midiNoteToName(hMin),
+            maxName: midiNoteToName(hMax),
+          }
+        : undefined,
+    counts: {
+      total: harmonizedPolyNotes.length,
+      kick: 0,
+      snare: 0,
+      hat: 0,
+      tom: 0,
+      notes: harmonizedPolyNotes.length,
+    },
   };
 
   const memory: ImportedAudioMemoryAnalysis = {
@@ -1867,7 +2199,7 @@ export function analyzeImportedAudioFirst(
     chordProgressionSummary: harmonyRes.chordProgressionSummary,
     detectedRootMidi: harmonyRes.detectedRootMidi,
     detectedRootName: harmonyRes.detectedRootName,
-    polyNoteEvents: rawPoly.noteEvents,
+    polyNoteEvents: harmonizedPolyNotes,
     onsetTimesSec: onsetRes.onsetTimesSec,
     analyzedAt: Date.now(),
   };

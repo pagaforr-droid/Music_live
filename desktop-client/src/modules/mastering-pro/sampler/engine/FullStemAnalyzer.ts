@@ -14,6 +14,227 @@ import type {
   StemQuantizeMode,
 } from '../types/sampler.types';
 
+const TOKEN_TO_PC: Record<string, number> = {
+  C: 0, 'B#': 0,
+  'C#': 1, DB: 1,
+  D: 2,
+  'D#': 3, EB: 3,
+  E: 4, FB: 4,
+  F: 5, 'E#': 5,
+  'F#': 6, GB: 6,
+  G: 7,
+  'G#': 8, AB: 8,
+  A: 9,
+  'A#': 10, BB: 10,
+  B: 11, CB: 11,
+};
+
+export function parsePitchClassToken(raw: string): number {
+  const m = (raw || '').trim().match(/^([A-Ga-g])([#b]?)/);
+  if (!m) return -1;
+  const tok = `${m[1].toUpperCase()}${(m[2] || '').toUpperCase()}`;
+  return TOKEN_TO_PC[tok] ?? -1;
+}
+
+export function parseMusicalKeyInfo(musicalKey?: string): {
+  tonicPc: number;
+  isMinor: boolean;
+  scalePcs: Set<number>;
+} | null {
+  if (!musicalKey) return null;
+  const trimmed = musicalKey.trim();
+  if (!trimmed || /^percusi/i.test(trimmed)) return null;
+  const tonicPc = parsePitchClassToken(trimmed);
+  if (tonicPc < 0) return null;
+  const isMinor = /\bmin(or)?\b/i.test(trimmed) || /^[A-G][#b]?m(?:$|[^a-z])/i.test(trimmed);
+  const intervals = isMinor
+    ? [0, 2, 3, 5, 7, 8, 10, 11] // natural + harmonic minor
+    : [0, 2, 4, 5, 7, 9, 11];
+  const scalePcs = new Set<number>(intervals.map((semi) => (tonicPc + semi) % 12));
+  return { tonicPc, isMinor, scalePcs };
+}
+
+export function getChordPitchClasses(chordSeg: DetectedChordSegment): Set<number> {
+  const pcs = new Set<number>();
+  const rootPc = ((chordSeg.rootPitchClass % 12) + 12) % 12;
+  pcs.add(rootPc);
+  const label = (chordSeg.chord || '').trim();
+  const suffix = label.replace(/^[A-G][#b]?/i, '').toLowerCase();
+  if (suffix === 'm') {
+    pcs.add((rootPc + 3) % 12);
+    pcs.add((rootPc + 7) % 12);
+  } else if (suffix === 'm7') {
+    pcs.add((rootPc + 3) % 12);
+    pcs.add((rootPc + 7) % 12);
+    pcs.add((rootPc + 10) % 12);
+  } else if (suffix === '7') {
+    pcs.add((rootPc + 4) % 12);
+    pcs.add((rootPc + 7) % 12);
+    pcs.add((rootPc + 10) % 12);
+  } else if (suffix === 'maj7') {
+    pcs.add((rootPc + 4) % 12);
+    pcs.add((rootPc + 7) % 12);
+    pcs.add((rootPc + 11) % 12);
+  } else if (suffix === 'sus4') {
+    pcs.add((rootPc + 5) % 12);
+    pcs.add((rootPc + 7) % 12);
+  } else if (suffix === 'sus2') {
+    pcs.add((rootPc + 2) % 12);
+    pcs.add((rootPc + 7) % 12);
+  } else if (suffix === 'dim') {
+    pcs.add((rootPc + 3) % 12);
+    pcs.add((rootPc + 6) % 12);
+  } else if (suffix === '5') {
+    pcs.add((rootPc + 7) % 12);
+  } else {
+    // Major triad fallback
+    pcs.add((rootPc + 4) % 12);
+    pcs.add((rootPc + 7) % 12);
+  }
+  return pcs;
+}
+
+/**
+ * Enforces harmonic consistency so detected melodic/polyphonic notes respect
+ * the song's detected chords & musical key (eliminating ±1 semitone FFT smear
+ * ghosts and out-of-key drum/noise artifacts).
+ */
+export function constrainNotesToDetectedHarmony(
+  notes: StemNoteEvent[],
+  detectedChords?: DetectedChordSegment[],
+  musicalKey?: string,
+  options: { isMonophonic?: boolean } = {}
+): StemNoteEvent[] {
+  if (notes.length === 0) return notes;
+  const hasChords = Boolean(detectedChords && detectedChords.length > 0);
+  const keyInfo = parseMusicalKeyInfo(musicalKey);
+  if (!hasChords && !keyInfo) return notes;
+
+  const findActiveChord = (tSec: number): DetectedChordSegment | undefined => {
+    if (!detectedChords || detectedChords.length === 0) return undefined;
+    const probeT = tSec + 0.02;
+    for (const c of detectedChords) {
+      if (probeT >= c.startSec && probeT < c.endSec) {
+        return c;
+      }
+    }
+    for (const c of detectedChords) {
+      if (tSec >= c.startSec && tSec < c.endSec) {
+        return c;
+      }
+    }
+    // Nearest chord fallback
+    let best = detectedChords[0];
+    let bestDist = Infinity;
+    for (const c of detectedChords) {
+      const d = tSec < c.startSec ? c.startSec - tSec : tSec > c.endSec ? tSec - c.endSec : 0;
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return bestDist <= 0.35 ? best : undefined;
+  };
+
+  // Pre-index existing note pitches near each timestamp so ±1 semitone ghost sidelobes
+  // sitting next to an ALREADY-DETECTED chord tone are dropped rather than duplicated
+  const hasNeighborChordNoteAtTime = (
+    targetMidi: number,
+    startSec: number,
+    minVel: number
+  ): boolean => {
+    return notes.some(
+      (o) =>
+        o.midiNote === targetMidi &&
+        Math.abs(o.startSec - startSec) <= 0.09 &&
+        o.velocity >= minVel
+    );
+  };
+
+  const out: StemNoteEvent[] = [];
+  for (const ev of notes) {
+    const pc = ((ev.midiNote % 12) + 12) % 12;
+    const activeChord = findActiveChord(ev.startSec);
+    const chordPcs = activeChord ? getChordPitchClasses(activeChord) : null;
+    const inChord = chordPcs ? chordPcs.has(pc) : false;
+    const inScale = keyInfo ? keyInfo.scalePcs.has(pc) : true;
+
+    if (inChord) {
+      out.push(ev);
+      continue;
+    }
+
+    // Check ±1 semitone ghost artifact against active chord tones
+    const upPc = (pc + 1) % 12;
+    const dnPc = (pc + 11) % 12;
+    const upInChord = chordPcs ? chordPcs.has(upPc) : false;
+    const dnInChord = chordPcs ? chordPcs.has(dnPc) : false;
+
+    if (upInChord || dnInChord) {
+      // If the real chord note is already present at this beat, this ±1 semitone peak is spectral bleed -> drop!
+      if (
+        (upInChord && hasNeighborChordNoteAtTime(ev.midiNote + 1, ev.startSec, ev.velocity * 0.55)) ||
+        (dnInChord && hasNeighborChordNoteAtTime(ev.midiNote - 1, ev.startSec, ev.velocity * 0.55))
+      ) {
+        continue;
+      }
+      // If out of scale OR in low accompaniment register (< C4 = 60), snap ±1 semitone to chord tone
+      if (!inScale || ev.midiNote < 60 || options.isMonophonic) {
+        const snappedMidi = upInChord ? ev.midiNote + 1 : ev.midiNote - 1;
+        out.push({
+          ...ev,
+          midiNote: snappedMidi,
+          noteName: midiNoteToName(snappedMidi),
+        });
+        continue;
+      }
+    }
+
+    // Reject non-scale chromatic bleed completely unless ultra-high clarity melody in upper register
+    if (!inScale) {
+      if (ev.midiNote >= 62 && ev.clarity >= 0.92 && ev.durationSec >= 0.16 && ev.velocity >= 0.6) {
+        out.push(ev);
+      }
+      continue;
+    }
+
+    // Note IS in the musical scale, but NOT in the active chord:
+    // Keep genuine upper melody / sustained non-bleed bass motions, drop chord-register sidelobe ghosts
+    if (ev.midiNote < 55 && chordPcs && activeChord && activeChord.confidence >= 0.45) {
+      const hasSidelobeNeighbor =
+        hasNeighborChordNoteAtTime(ev.midiNote + 2, ev.startSec, ev.velocity * 0.7) ||
+        hasNeighborChordNoteAtTime(ev.midiNote - 2, ev.startSec, ev.velocity * 0.7);
+      if (!hasSidelobeNeighbor && ev.durationSec >= 0.25 && ev.velocity >= 0.62 && ev.clarity >= 0.88) {
+        out.push(ev);
+      }
+      continue;
+    }
+    if (ev.durationSec < 0.09 && ev.velocity < 0.45) {
+      continue;
+    }
+    out.push(ev);
+  }
+
+  // Deduplicate identical MIDI notes whose onset snap/harmonic snap aligned within 70ms
+  out.sort((a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote);
+  const deduped: StemNoteEvent[] = [];
+  for (const ev of out) {
+    const existing = deduped.find(
+      (prev) => prev.midiNote === ev.midiNote && Math.abs(prev.startSec - ev.startSec) <= 0.07
+    );
+    if (existing) {
+      const endA = existing.startSec + existing.durationSec;
+      const endB = ev.startSec + ev.durationSec;
+      existing.durationSec = Number(Math.max(0.05, Math.max(endA, endB) - existing.startSec).toFixed(4));
+      existing.velocity = Math.max(existing.velocity, ev.velocity);
+      existing.clarity = Math.max(existing.clarity, ev.clarity);
+    } else {
+      deduped.push({ ...ev });
+    }
+  }
+  return deduped;
+}
+
 export function inferStemModeFromName(rawName: string): StemAnalysisMode {
   const n = (rawName || '').toLowerCase();
   if (
@@ -132,17 +353,38 @@ export function quantizeDrumHitsToTempo(
   beatTimes?: number[]
 ): StemDrumHitEvent[] {
   if (mode === 'off' || hits.length === 0) return hits;
-  return hits
+  const snapped = hits
     .map((h) => {
       const qTime = snapTimeToTempoGrid(h.timeSec, bpm, beatOffsetSec, durationSec, mode, beatTimes);
-      const peakLead = h.peakTimeSec - h.timeSec;
+      const peakLead = Math.max(0, Math.min(0.018, h.peakTimeSec - h.timeSec));
       return {
         ...h,
         timeSec: qTime,
-        peakTimeSec: Number(Math.max(qTime, Math.min(durationSec - 0.005, qTime + Math.max(0, peakLead))).toFixed(4)),
+        peakTimeSec: Number(Math.max(qTime, Math.min(durationSec - 0.005, qTime + peakLead)).toFixed(4)),
       };
     })
     .sort((a, b) => a.timeSec - b.timeSec);
+
+  // Prevent same-role double-flam collisions after grid snapping (keep stronger hit within 28ms)
+  const deduped: StemDrumHitEvent[] = [];
+  for (const h of snapped) {
+    const dup = deduped.find(
+      (prev) => prev.role === h.role && Math.abs(prev.timeSec - h.timeSec) < 0.028
+    );
+    if (dup) {
+      if (h.velocity > dup.velocity) {
+        dup.timeSec = h.timeSec;
+        dup.peakTimeSec = h.peakTimeSec;
+        dup.velocity = h.velocity;
+      }
+    } else {
+      deduped.push({ ...h });
+    }
+  }
+  deduped.forEach((h, i) => {
+    h.id = `dh-${i}`;
+  });
+  return deduped;
 }
 
 export function quantizeNoteEventsToTempo(
@@ -223,161 +465,482 @@ export function estimateBpmFromOnsets(
   return bestBpm;
 }
 
-/**
- * Classifies an acoustic transient window (~20ms) into kick / tom / snare / hat
- * using 512-pt FFT band ratios so drums in a full mix stem separate cleanly.
- */
-function classifyDrumHitWindow(
+function applyBiquadBandPassOrLp(
   mono: Float32Array,
-  sampleRate: number,
-  onsetSample: number
-): { role: DrumPieceRole; peakTimeSec: number; peakAmp: number } {
-  const peakSearchEnd = Math.min(mono.length, onsetSample + Math.round(sampleRate * 0.02));
-  let peakIdx = onsetSample;
-  let peakAmp = 0;
-  for (let i = Math.max(0, onsetSample); i < peakSearchEnd; i++) {
-    const a = Math.abs(mono[i]);
-    if (a > peakAmp) {
-      peakAmp = a;
-      peakIdx = i;
+  sr: number,
+  hpHz: number | null,
+  lpHz: number | null
+): Float32Array {
+  const n = mono.length;
+  const out = new Float32Array(n);
+  out.set(mono);
+
+  if (hpHz !== null && hpHz > 0 && hpHz < sr * 0.45) {
+    const w = (2 * Math.PI * hpHz) / sr;
+    const c = Math.cos(w);
+    const a = Math.sin(w) / (2 * Math.SQRT1_2);
+    const a0 = 1 + a;
+    const b0 = ((1 + c) * 0.5) / a0;
+    const b1 = -(1 + c) / a0;
+    const b2 = b0;
+    const a1 = (-2 * c) / a0;
+    const a2 = (1 - a) / a0;
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < n; i++) {
+      const x = out[i];
+      const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1; x1 = x; y2 = y1; y1 = y;
+      out[i] = y;
     }
   }
 
-  const fftSize = 1024;
-  const half = fftSize / 2;
-  const start = Math.max(0, Math.min(mono.length - fftSize, onsetSample - 32));
-  const re = new Float32Array(fftSize);
-  const im = new Float32Array(fftSize);
-  const win = buildHannWindow(fftSize);
-  const avail = Math.min(fftSize, mono.length - start);
-  for (let i = 0; i < avail; i++) {
-    re[i] = mono[start + i] * win[i];
-  }
-  fftInPlace(re, im);
-
-  const binHz = sampleRate / fftSize;
-  let eSubKick = 0; // 28 - 135 Hz
-  let eTomBody = 0; // 135 - 320 Hz
-  let eSnareMid = 0; // 320 - 1800 Hz
-  let eCrack = 0; // 1800 - 6000 Hz
-  let eHat = 0; // 6000 - 17000 Hz
-
-  for (let k = 1; k < half; k++) {
-    const f = k * binHz;
-    if (f < 28 || f > 17000) continue;
-    const p = re[k] * re[k] + im[k] * im[k];
-    if (f <= 135) eSubKick += p;
-    else if (f <= 320) eTomBody += p;
-    else if (f <= 1800) eSnareMid += p;
-    else if (f <= 6000) eCrack += p;
-    else eHat += p;
+  if (lpHz !== null && lpHz > 0 && lpHz < sr * 0.45) {
+    const w = (2 * Math.PI * lpHz) / sr;
+    const c = Math.cos(w);
+    const a = Math.sin(w) / (2 * Math.SQRT1_2);
+    const a0 = 1 + a;
+    const b0 = ((1 - c) * 0.5) / a0;
+    const b1 = (1 - c) / a0;
+    const b2 = b0;
+    const a1 = (-2 * c) / a0;
+    const a2 = (1 - a) / a0;
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < n; i++) {
+      const x = out[i];
+      const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1; x1 = x; y2 = y1; y1 = y;
+      out[i] = y;
+    }
   }
 
-  const total = Math.max(1e-12, eSubKick + eTomBody + eSnareMid + eCrack + eHat);
-  const rKick = eSubKick / total;
-  const rTom = eTomBody / total;
-  const rCrackHat = (eCrack + eHat) / total;
-  const rHat = eHat / total;
+  return out;
+}
 
-  let role: DrumPieceRole = 'snare';
-  if (rHat > 0.34 && rKick < 0.14) {
-    role = 'hat';
-  } else if (rCrackHat > 0.56 && (rKick + rTom) < 0.18) {
-    role = 'hat';
-  } else if (rKick > 0.38 || (eSubKick > eTomBody * 1.1 && rKick > 0.24 && rCrackHat < 0.25)) {
-    role = 'kick';
-  } else if (rTom > 0.34 && rKick < 0.24 && rCrackHat < 0.24) {
-    role = 'tom';
-  } else {
-    role = 'snare';
+function computePercentileFloat(arr: Float32Array, pct: number): number {
+  const vals: number[] = [];
+  const step = Math.max(1, Math.floor(arr.length / 4096));
+  for (let i = 0; i < arr.length; i += step) {
+    if (arr[i] > 1e-6) vals.push(arr[i]);
   }
-
-  return {
-    role,
-    peakTimeSec: Number((peakIdx / sampleRate).toFixed(5)),
-    peakAmp,
-  };
+  if (vals.length === 0) return 1e-4;
+  vals.sort((a, b) => a - b);
+  return Math.max(1e-5, vals[Math.min(vals.length - 1, Math.floor(vals.length * pct))]);
 }
 
 /**
- * Analyzes an ENTIRE Drum stem without slice limits, preserving exact onset timestamps,
- * peak-to-peak phase positions, dynamic velocities, and kick/snare/hat/tom roles.
+ * Analyzes an ENTIRE Drum stem OR Full Song Mix without slice limits,
+ * isolating Kick / Snare / Hat / Tom percussive transients via Delta-Spectrum subtraction
+ * (canceling sustained bass/guitars/vocals) and locking accurately to the tempo grid.
  */
 export function analyzeDrumStemFull(
   mono: Float32Array,
   sampleRate: number,
   options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode } = {}
 ): FullStemAnalysisResult {
-  const sensitivity = options.sensitivity ?? 0.62;
+  const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
   const minIntervalMs = options.minIntervalMs ?? 65;
   const durationSec = mono.length / sampleRate;
+  const isFullMix = Boolean(
+    (options.detectedChords && options.detectedChords.length > 0) ||
+    (options.musicalKey && !/^percusi/i.test(options.musicalKey))
+  );
 
+  // 1. Multi-band Butterworth isolation for accurate drum peak timing & transient separation
+  const kickSig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 138);
+  const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 155, 360);
+  const crackSig = applyBiquadBandPassOrLp(mono, sampleRate, 1850, 6500);
+  const hatSig = applyBiquadBandPassOrLp(mono, sampleRate, 5800, null);
+
+  // 500Hz (2ms) band RMS envelopes smoothed with cycle-spanning windows (eliminates 50Hz bass zero-crossing ripple!)
+  const envHz = 500;
+  const envHop = Math.max(1, Math.round(sampleRate / envHz));
+  const numEnv = Math.max(1, Math.floor(mono.length / envHop));
+  const psK = new Float64Array(numEnv + 1);
+  const psS = new Float64Array(numEnv + 1);
+  const psC = new Float64Array(numEnv + 1);
+  const psH = new Float64Array(numEnv + 1);
+
+  for (let f = 0; f < numEnv; f++) {
+    const st = f * envHop;
+    const en = Math.min(mono.length, st + envHop);
+    const inv = 1 / Math.max(1, en - st);
+    let sqK = 0, sqS = 0, sqC = 0, sqH = 0;
+    for (let i = st; i < en; i++) {
+      const k = kickSig[i];
+      const s = shellSig[i];
+      const c = crackSig[i];
+      const h = hatSig[i];
+      sqK += k * k;
+      sqS += s * s;
+      sqC += c * c;
+      sqH += h * h;
+    }
+    psK[f + 1] = psK[f] + sqK * inv;
+    psS[f + 1] = psS[f] + sqS * inv;
+    psC[f + 1] = psC[f] + sqC * inv;
+    psH[f + 1] = psH[f] + sqH * inv;
+  }
+
+  const buildCausalRms = (ps: Float64Array, backFrames: number, fwdFrames: number): Float32Array => {
+    const out = new Float32Array(numEnv);
+    for (let f = 0; f < numEnv; f++) {
+      const a = Math.max(0, f - backFrames);
+      const b = Math.min(numEnv, f + fwdFrames + 1);
+      out[f] = Math.sqrt(Math.max(0, (ps[b] - ps[a]) / Math.max(1, b - a)));
+    }
+    return out;
+  };
+
+  // Strict causal/short-forward RMS envelopes (zero early pre-smearing before transient attacks!)
+  const envKick = buildCausalRms(psK, 8, 2);   // ~22ms span, max +4ms lookahead
+  const envShell = buildCausalRms(psS, 5, 1);  // ~14ms span, max +2ms lookahead
+  const envCrack = buildCausalRms(psC, 2, 1);  // ~8ms span
+  const envHat = buildCausalRms(psH, 2, 1);
+
+  const refKickEnv = computePercentileFloat(envKick, 0.94);
+  const refShellEnv = computePercentileFloat(envShell, 0.94);
+  const refCrackEnv = computePercentileFloat(envCrack, 0.94);
+  const refHatEnv = computePercentileFloat(envHat, 0.94);
+
+  // 2. Collect onset candidates from Spectral Flux + causal Kick / Crack band step impulses
   const res = detectOnsetsSpectralFlux(mono, sampleRate, {
     sensitivity,
     minIntervalMs,
-    snapToZeroCrossing: true,
+    snapToZeroCrossing: false,
   });
+
+  const bandCandidates: number[] = [];
+  if (envKick[0] > refKickEnv * 0.28 || envCrack[0] > refCrackEnv * 0.28) {
+    bandCandidates.push(0);
+  }
+  const collectBandPeaks = (env: Float32Array, refLevel: number, minRatio: number, minGapSec: number) => {
+    const stepEnv = new Float32Array(numEnv);
+    for (let f = 10; f < numEnv - 4; f++) {
+      let pre = Infinity;
+      for (let p = f - 10; p <= f - 3; p++) if (env[p] < pre) pre = env[p];
+      let post = 0;
+      for (let q = f; q <= f + 3; q++) if (env[q] > post) post = env[q];
+      stepEnv[f] = Math.max(0, post - pre * 1.25);
+    }
+    const thresh = refLevel * (0.30 - sensitivity * 0.12);
+    const minGapFrames = Math.round(minGapSec * envHz);
+    let lastF = -minGapFrames;
+    for (let f = 10; f < numEnv - 4; f++) {
+      if (
+        stepEnv[f] >= thresh &&
+        stepEnv[f] >= stepEnv[f - 1] &&
+        stepEnv[f] > stepEnv[f + 1] &&
+        f - lastF >= minGapFrames
+      ) {
+        let pre = Infinity;
+        for (let p = f - 10; p <= f - 3; p++) if (env[p] < pre) pre = env[p];
+        let post = 0;
+        for (let q = f; q <= f + 3; q++) if (env[q] > post) post = env[q];
+        if (post / Math.max(1e-5, pre) >= minRatio) {
+          // Refine forward from [f - 2 .. f + 2] to exact 45% rising edge so we never jump early before the drum hit
+          const targetMid = pre + (post - pre) * 0.45;
+          let onsetF = f;
+          for (let s = Math.max(0, f - 2); s <= Math.min(numEnv - 1, f + 2); s++) {
+            if (env[s] >= targetMid) {
+              onsetF = s;
+              break;
+            }
+          }
+          bandCandidates.push(Number((onsetF / envHz).toFixed(4)));
+          lastF = f;
+        }
+      }
+    }
+  };
+
+  collectBandPeaks(envKick, refKickEnv, 1.5, 0.11);
+  collectBandPeaks(envCrack, refCrackEnv, 1.65, 0.11);
+  if (isFullMix) {
+    collectBandPeaks(envHat, refHatEnv, 1.65, 0.085);
+  }
+
+  // Cluster candidates within 26ms so separate beats/offbeat hits stay distinct while collapsing double-triggers
+  const tagged: Array<{ t: number; isFlux: boolean }> = [
+    ...res.onsetTimesSec.map((t) => ({ t, isFlux: true })),
+    ...bandCandidates.map((t) => ({ t, isFlux: false })),
+  ].sort((a, b) => a.t - b.t);
+  const candidateTimes: number[] = [];
+  for (let i = 0; i < tagged.length; i++) {
+    const cur = tagged[i];
+    const prev = candidateTimes[candidateTimes.length - 1];
+    if (prev !== undefined && cur.t - prev < 0.026) {
+      if (cur.isFlux && cur.t - prev <= 0.02) {
+        candidateTimes[candidateTimes.length - 1] = cur.t;
+      }
+      continue;
+    }
+    candidateTimes.push(cur.t);
+  }
+
+  // 3. Pre/Post Delta-Spectrum FFT Classifier (cancels sustaining guitars/bass/vocals!)
+  const fftSize = 1024;
+  const half = fftSize / 2;
+  const binHz = sampleRate / fftSize;
+  const win = buildHannWindow(fftSize);
+  const rePost = new Float32Array(fftSize);
+  const imPost = new Float32Array(fftSize);
+  const rePre = new Float32Array(fftSize);
+  const imPre = new Float32Array(fftSize);
+  const crackBinPows = new Float32Array(half);
 
   const rawHits: Array<{
     timeSec: number;
     peakTimeSec: number;
     role: DrumPieceRole;
     peakAmp: number;
+    percScore: number;
   }> = [];
 
-  for (let i = 0; i < res.onsetTimesSec.length; i++) {
-    const timeSec = res.onsetTimesSec[i];
-    const sampleIdx = Math.max(0, Math.round(timeSec * sampleRate));
-    const classified = classifyDrumHitWindow(mono, sampleRate, sampleIdx);
+  const preGapSamples = Math.round(sampleRate * 0.005);
 
-    // Tail ripple guard: suppress weak random wire noise immediately inside decaying tail (<140ms) of a much louder hit
-    const prev = rawHits[rawHits.length - 1];
-    if (prev && timeSec - prev.timeSec < 0.145) {
-      // Measure 25ms pre-onset RMS vs 15ms post-onset RMS to confirm genuine re-attack
-      const preLen = Math.round(sampleRate * 0.025);
-      const postLen = Math.round(sampleRate * 0.015);
-      let preSq = 0;
-      let postSq = 0;
-      for (let k = Math.max(0, sampleIdx - preLen); k < sampleIdx; k++) {
-        preSq += mono[k] * mono[k];
+  // Measure pre [-28ms..-6ms] vs post [0..+24ms] band step-ups (handling t=0 head onset where pre-region is empty!)
+  const getStep = (arr: Float32Array, eIdx: number) => {
+    const preS = Math.max(0, eIdx - 14);
+    const preE = Math.max(preS + 1, eIdx - 2);
+    let preMin = Infinity;
+    if (eIdx < 6) {
+      preMin = 0;
+    } else {
+      for (let k = preS; k < preE; k++) if (arr[k] < preMin) preMin = arr[k];
+      if (!Number.isFinite(preMin)) preMin = 0;
+    }
+    const postE = Math.min(numEnv, eIdx + 12);
+    let postMax = 0;
+    for (let k = eIdx; k < postE; k++) if (arr[k] > postMax) postMax = arr[k];
+    return {
+      pre: preMin,
+      post: postMax,
+      step: Math.max(0, postMax - preMin * 1.15),
+      ratio: postMax / Math.max(1e-5, preMin),
+    };
+  };
+
+  for (let i = 0; i < candidateTimes.length; i++) {
+    const timeSec = candidateTimes[i];
+    const sampleIdx = Math.max(0, Math.round(timeSec * sampleRate));
+    const envIdx = Math.min(numEnv - 1, Math.round(timeSec * envHz));
+
+    const kSt = getStep(envKick, envIdx);
+    const sSt = getStep(envShell, envIdx);
+    const cSt = getStep(envCrack, envIdx);
+    const hSt = getStep(envHat, envIdx);
+
+    // Measure post-kick sustain tail (+66ms..+112ms) to distinguish fast-decaying Kicks from sustained Bass notes/Pads!
+    let kTailAvg = kSt.post;
+    const tailS = Math.min(numEnv, envIdx + 33);
+    const tailE = Math.min(numEnv, envIdx + 56);
+    if (tailE > tailS + 2) {
+      let sum = 0;
+      for (let k = tailS; k < tailE; k++) sum += envKick[k];
+      kTailAvg = sum / (tailE - tailS);
+    }
+    const kTailDrop = kSt.post / Math.max(1e-5, kTailAvg);
+
+    // Post-onset FFT [sampleIdx - 16 .. +1008] vs strictly pre-onset FFT [sampleIdx - 1024 - 5ms .. sampleIdx - 5ms]
+    const postStart = Math.max(0, Math.min(mono.length - fftSize, sampleIdx - 16));
+    rePost.fill(0); imPost.fill(0);
+    for (let k = 0; k < fftSize && postStart + k < mono.length; k++) {
+      rePost[k] = mono[postStart + k] * win[k];
+    }
+    fftInPlace(rePost, imPost);
+
+    const hasPre = sampleIdx >= fftSize + preGapSamples;
+    if (hasPre) {
+      const preStart = sampleIdx - fftSize - preGapSamples;
+      rePre.fill(0); imPre.fill(0);
+      for (let k = 0; k < fftSize; k++) {
+        rePre[k] = mono[preStart + k] * win[k];
       }
-      for (let k = sampleIdx; k < Math.min(mono.length, sampleIdx + postLen); k++) {
-        postSq += mono[k] * mono[k];
+      fftInPlace(rePre, imPre);
+    }
+
+    let dSubKick = 0;
+    let dTomBody = 0;
+    let dSnareMid = 0;
+    let dCrack = 0;
+    let dHat = 0;
+    let crackBinsTotal = 0;
+
+    for (let k = 1; k < half; k++) {
+      const f = k * binHz;
+      if (f < 28 || f > 17000) continue;
+      const mPost = Math.hypot(rePost[k], imPost[k]);
+      const mPre = hasPre ? Math.hypot(rePre[k], imPre[k]) : 0;
+      const dMag = Math.max(0, mPost - 0.8 * mPre);
+      const p = dMag * dMag;
+
+      if (f <= 135) dSubKick += p;
+      else if (f <= 340) dTomBody += p;
+      else if (f <= 1800) dSnareMid += p;
+      else if (f <= 6000) {
+        dCrack += p;
+        if (crackBinsTotal < crackBinPows.length) {
+          crackBinPows[crackBinsTotal++] = p;
+        }
+      } else {
+        dHat += p;
       }
-      const preRms = Math.sqrt(preSq / Math.max(1, preLen));
-      const postRms = Math.sqrt(postSq / Math.max(1, postLen));
-      if (postRms < preRms * 1.28 && classified.peakAmp < prev.peakAmp * 0.45) {
+    }
+
+    const totalDelta = Math.max(1e-12, dSubKick + dTomBody + dSnareMid + dCrack + dHat);
+    const rKick = dSubKick / totalDelta;
+    const rTom = dTomBody / totalDelta;
+    const rSnareMid = dSnareMid / totalDelta;
+    const rCrack = dCrack / totalDelta;
+    const rCrackHat = (dCrack + dHat) / totalDelta;
+    const rHat = dHat / totalDelta;
+
+    // Exact Wiener spectral flatness over all 1800..6000Hz bins (snare wires ~ 0.15..0.65, harmonic guitars < 0.08)
+    let crackFlatness = 0;
+    if (crackBinsTotal > 4 && dCrack > 1e-10) {
+      const meanP = dCrack / crackBinsTotal;
+      const floorP = Math.max(1e-12, meanP * 1e-4);
+      let logSum = 0;
+      for (let b = 0; b < crackBinsTotal; b++) {
+        logSum += Math.log(crackBinPows[b] + floorP);
+      }
+      crackFlatness = Math.exp(logSum / crackBinsTotal) / meanP;
+    }
+
+    const kickStrength = kSt.step / Math.max(1e-4, refKickEnv);
+    const shellStrength = sSt.step / Math.max(1e-4, refShellEnv);
+    const crackStrength = cSt.step / Math.max(1e-4, refCrackEnv);
+    const hatStrength = hSt.step / Math.max(1e-4, refHatEnv);
+
+    // Full-mix gating: reject intro pads, solo bass plucks, vocal syllables, and non-drum strums!
+    if (isFullMix) {
+      const hasKickPulse =
+        kickStrength >= 0.36 - sensitivity * 0.12 &&
+        kSt.ratio >= 1.5 &&
+        dSubKick > totalDelta * 0.08 &&
+        (kTailDrop >= 1.32 || sSt.ratio >= 1.48 || cSt.ratio >= 1.48);
+      // True snares have BOTH broadband noise wires (crackFlatness >= 0.095, rejecting harmonic vocals/guitars!)
+      // AND drum shell / body presence (separating snares from pure >5.8kHz hi-hats!)
+      const hasSnarePulse =
+        crackStrength >= 0.30 - sensitivity * 0.10 &&
+        cSt.ratio >= 1.42 &&
+        crackFlatness >= 0.095 &&
+        (shellStrength >= 0.24 || (dSnareMid + dTomBody > dHat * 0.7 && rKick < 0.25));
+      const hasHatPulse =
+        hatStrength >= 0.34 - sensitivity * 0.12 &&
+        hSt.ratio >= 1.48 &&
+        rHat >= 0.20;
+      const hasTomPulse =
+        shellStrength >= 0.38 && sSt.ratio >= 1.72 && rTom >= 0.36 && crackFlatness < 0.095;
+      if (!hasKickPulse && !hasSnarePulse && !hasHatPulse && !hasTomPulse) {
         continue;
       }
     }
 
+    let role: DrumPieceRole = 'snare';
+    const strongKickRise =
+      kickStrength >= 0.34 &&
+      kSt.ratio >= 1.48 &&
+      dSubKick > totalDelta * 0.08 &&
+      (!isFullMix || kTailDrop >= 1.32 || cSt.ratio >= 1.45);
+    const strongSnareCrack =
+      crackStrength >= 0.28 &&
+      cSt.ratio >= 1.38 &&
+      crackFlatness >= 0.095 &&
+      (shellStrength >= 0.22 || dSnareMid + dTomBody > dHat * 0.72 || rCrack >= 0.20);
+
+    if (strongKickRise && (dSubKick >= dCrack * 0.28 || rKick >= 0.24 || !strongSnareCrack)) {
+      role = 'kick';
+    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.14 && rSnareMid + rCrack > rKick)) {
+      role = 'snare';
+    } else if (rTom > 0.36 && rKick < 0.24 && rCrackHat < 0.24 && shellStrength >= 0.35) {
+      role = 'tom';
+    } else if (hatStrength >= 0.28 && (rHat >= 0.18 || hSt.ratio >= 1.45)) {
+      role = 'hat';
+    } else {
+      role = kickStrength > crackStrength * 1.25 ? 'kick' : 'hat';
+    }
+
+    // Measure exact band-filtered transient peak inside [sampleIdx - 2ms .. sampleIdx + 22ms]
+    const bandSig =
+      role === 'kick'
+        ? kickSig
+        : role === 'hat'
+        ? hatSig
+        : role === 'tom'
+        ? shellSig
+        : crackSig;
+    const pSearchStart = Math.max(0, sampleIdx - Math.round(sampleRate * 0.002));
+    const pSearchEnd = Math.min(mono.length, sampleIdx + Math.round(sampleRate * 0.022));
+    let peakIdx = sampleIdx;
+    let bandPeakAmp = 0;
+    let monoPeakAmp = 0;
+    for (let k = pSearchStart; k < pSearchEnd; k++) {
+      const ba = Math.abs(bandSig[k]);
+      if (ba > bandPeakAmp) {
+        bandPeakAmp = ba;
+        peakIdx = k;
+      }
+      const ma = Math.abs(mono[k]);
+      if (ma > monoPeakAmp) monoPeakAmp = ma;
+    }
+
+    // For snare, combine shell + crack amplitude; for others use role step strength blended with peak
+    const roleAmp =
+      role === 'kick'
+        ? Math.max(kSt.post, bandPeakAmp)
+        : role === 'snare'
+        ? Math.max(cSt.post + sSt.post * 0.5, bandPeakAmp)
+        : role === 'hat'
+        ? Math.max(hSt.post, bandPeakAmp)
+        : Math.max(sSt.post, bandPeakAmp);
+
+    // Tail ripple / bass-rebound guard against decaying resonance inside 145ms of same non-hat hit
+    const prevSame = [...rawHits].reverse().find((h) => h.role === role);
+    const sameRoleThresh = role === 'kick' ? 0.72 : 0.48;
+    if (prevSame && timeSec - prevSame.timeSec < 0.145 && role !== 'hat') {
+      if (roleAmp < prevSame.peakAmp * sameRoleThresh) {
+        continue;
+      }
+    }
+
+    // Prevent spurious overlapping duplicate detections inside 55ms
+    const prevAny = rawHits[rawHits.length - 1];
+    if (prevAny && timeSec - prevAny.timeSec < 0.055) {
+      if (prevAny.role === role || Math.max(kickStrength, crackStrength, hatStrength) > prevAny.percScore * 1.15) {
+        if (roleAmp > prevAny.peakAmp) {
+          rawHits[rawHits.length - 1] = {
+            timeSec,
+            peakTimeSec: Number((peakIdx / sampleRate).toFixed(5)),
+            role,
+            peakAmp: roleAmp,
+            percScore: Math.max(kickStrength, crackStrength, hatStrength),
+          };
+        }
+      }
+      continue;
+    }
+
     rawHits.push({
       timeSec,
-      peakTimeSec: classified.peakTimeSec,
-      role: classified.role,
-      peakAmp: classified.peakAmp,
+      peakTimeSec: Number((peakIdx / sampleRate).toFixed(5)),
+      role,
+      peakAmp: Math.max(roleAmp, monoPeakAmp * 0.25),
+      percScore: Math.max(kickStrength, crackStrength, hatStrength),
     });
   }
 
-  // Normalize hit velocities relative to 95th percentile peak amplitude (preserves ghost notes!)
-  const sortedAmps = rawHits.map((h) => h.peakAmp).sort((a, b) => a - b);
-  const refAmp =
-    sortedAmps.length > 0
-      ? Math.max(1e-4, sortedAmps[Math.min(sortedAmps.length - 1, Math.floor(sortedAmps.length * 0.95))])
-      : 1.0;
-
-  let kickCount = 0;
-  let snareCount = 0;
-  let hatCount = 0;
-  let tomCount = 0;
+  // Normalize hit velocities per role / 95th percentile so hats & snares keep realistic musical dynamics
+  const roleRefAmp: Record<DrumPieceRole, number> = { kick: 1e-4, snare: 1e-4, hat: 1e-4, tom: 1e-4 };
+  (['kick', 'snare', 'hat', 'tom'] as DrumPieceRole[]).forEach((r) => {
+    const amps = rawHits.filter((h) => h.role === r).map((h) => h.peakAmp).sort((a, b) => a - b);
+    if (amps.length > 0) {
+      roleRefAmp[r] = Math.max(1e-4, amps[Math.min(amps.length - 1, Math.floor(amps.length * 0.92))]);
+    }
+  });
 
   const drumHits: StemDrumHitEvent[] = rawHits.map((h, idx) => {
-    if (h.role === 'kick') kickCount++;
-    else if (h.role === 'snare') snareCount++;
-    else if (h.role === 'hat') hatCount++;
-    else tomCount++;
-
-    const vel = Number(Math.max(0.16, Math.min(1.0, h.peakAmp / refAmp)).toFixed(3));
+    const vel = Number(Math.max(0.2, Math.min(1.0, h.peakAmp / roleRefAmp[h.role])).toFixed(3));
     return {
       id: `dh-${idx}`,
       timeSec: h.timeSec,
@@ -406,6 +969,17 @@ export function analyzeDrumStemFull(
     options.beatTimes
   );
 
+  let kickCount = 0;
+  let snareCount = 0;
+  let hatCount = 0;
+  let tomCount = 0;
+  for (const h of finalDrumHits) {
+    if (h.role === 'kick') kickCount++;
+    else if (h.role === 'snare') snareCount++;
+    else if (h.role === 'hat') hatCount++;
+    else tomCount++;
+  }
+
   return {
     mode: 'drums',
     quantizeMode: qMode,
@@ -420,7 +994,7 @@ export function analyzeDrumStemFull(
     drumHits: finalDrumHits,
     noteEvents: [],
     counts: {
-      total: drumHits.length,
+      total: finalDrumHits.length,
       kick: kickCount,
       snare: snareCount,
       hat: hatCount,
@@ -579,25 +1153,25 @@ export function analyzeMonophonicStemNotesFull(
   }
   flushNote(numFrames);
 
-  let minMidi = 127;
-  let maxMidi = 0;
-  for (const n of noteEvents) {
-    if (n.midiNote < minMidi) minMidi = n.midiNote;
-    if (n.midiNote > maxMidi) maxMidi = n.midiNote;
-  }
+  const harmonizedMonoNotes = constrainNotesToDetectedHarmony(
+    noteEvents,
+    options.detectedChords,
+    options.musicalKey,
+    { isMonophonic: true }
+  );
 
   const bpm =
     options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
       ? options.lockedBpm
       : estimateBpmFromOnsets(
-          noteEvents.map((n) => n.startSec),
+          harmonizedMonoNotes.map((n) => n.startSec),
           options.bpmHint ?? 120
         );
 
   const qMode: StemQuantizeMode =
     options.quantizeMode ?? (options.lockedBpm ? 'soft' : 'off');
   const finalMonoNotes = quantizeNoteEventsToTempo(
-    noteEvents,
+    harmonizedMonoNotes,
     bpm,
     options.beatOffsetSec ?? 0,
     durationSec,
@@ -605,6 +1179,16 @@ export function analyzeMonophonicStemNotesFull(
     true,
     options.beatTimes
   );
+  finalMonoNotes.forEach((ev, idx) => {
+    ev.id = `mn-${idx}`;
+  });
+
+  let minMidi = 127;
+  let maxMidi = 0;
+  for (const n of finalMonoNotes) {
+    if (n.midiNote < minMidi) minMidi = n.midiNote;
+    if (n.midiNote > maxMidi) maxMidi = n.midiNote;
+  }
 
   return {
     mode: 'monophonic',
@@ -717,8 +1301,8 @@ export function analyzePolyphonicStemNotesFull(
   const maxCentRatioLow = Math.pow(2, -42 / 1200);
   const polyRelThreshold = 0.34 - sensitivity * 0.14; // 0.32 down to 0.20
 
-  // Hann mainlobe subtraction kernel for ±3 bins around harmonic bin
-  const subtractKernel = [0.22, 0.6, 0.92, 1.0, 0.92, 0.6, 0.22];
+  // Hann mainlobe subtraction kernel for ±5 bins around harmonic bin (matches 2x zero-padded 16384-pt FFT of 8192-pt Hann)
+  const subtractKernel = [0.04, 0.14, 0.36, 0.65, 0.9, 1.0, 0.9, 0.65, 0.36, 0.14, 0.04];
 
   for (let f = 0; f < numFrames; f++) {
     if (frameRms[f] < rmsGate) continue;
@@ -732,12 +1316,19 @@ export function analyzePolyphonicStemNotesFull(
     fftInPlace(re, im);
 
     let frameMaxMag = 0;
+    let magSum = 0;
+    const tonalMaxBin = Math.min(halfBins - 1, Math.round(4500 / binHz));
     for (let k = 1; k < halfBins; k++) {
       const a = Math.hypot(re[k], im[k]);
       mag[k] = a;
       if (a > frameMaxMag) frameMaxMag = a;
+      if (k >= 6 && k <= tonalMaxBin) magSum += a;
     }
     if (frameMaxMag < 1e-4) continue;
+
+    // Reject broadband percussive frames (snare cracks / hi-hat bursts) with flat spectrum
+    const tonalMeanMag = magSum / Math.max(1, tonalMaxBin - 5);
+    if (frameMaxMag / Math.max(1e-7, tonalMeanMag) < 3.6) continue;
 
     cleanMag.set(mag);
 
@@ -747,7 +1338,7 @@ export function analyzePolyphonicStemNotesFull(
     for (let p = 0; p < maxPolyphony; p++) {
       // Extract TRUE local spectral peaks in cleanMag with parabolic sub-bin frequency estimation
       const peaks: Array<{ bin: number; freqHz: number; amp: number }> = [];
-      const peakNoiseFloor = frameMaxMag * 0.015;
+      const peakNoiseFloor = frameMaxMag * 0.028;
       for (let k = 8; k < halfBins - 8; k++) {
         const a = cleanMag[k];
         if (a > peakNoiseFloor && a >= cleanMag[k - 1] && a > cleanMag[k + 1]) {
@@ -788,8 +1379,14 @@ export function analyzePolyphonicStemNotesFull(
 
       for (let m = 0; m < numNotes; m++) {
         const candMidi = minMidi + m;
-        if (pickedInFrame.some((x) => Math.abs(x.midi - candMidi) <= 1)) {
-          continue; // Do not pick same note or adjacent semitone smearing
+        if (
+          pickedInFrame.some(
+            (x) =>
+              Math.abs(x.midi - candMidi) <= 1 ||
+              (candMidi < 55 && x.midi < 55 && Math.abs(x.midi - candMidi) <= 2)
+          )
+        ) {
+          continue; // Do not pick same note, adjacent semitone smearing, or <200Hz ±2st shoulder overlap
         }
 
         const f0 = midiFreqs[m];
@@ -837,12 +1434,12 @@ export function analyzePolyphonicStemNotesFull(
       for (let h = 1; h <= maxHarm; h++) {
         const fh = f0 * h;
         const bk = Math.round(fh / binHz);
-        if (bk < 4 || bk >= halfBins - 4) continue;
+        if (bk < 6 || bk >= halfBins - 6) continue;
         const binLocalMax = Math.max(cleanMag[bk - 1], cleanMag[bk], cleanMag[bk + 1]);
         const predictedMax = bestAmp1 * expectedPeelRatio[h - 1] * 1.15;
         const peelLevel = Math.min(binLocalMax * 0.94, predictedMax);
-        for (let d = -3; d <= 3; d++) {
-          cleanMag[bk + d] = Math.max(0, cleanMag[bk + d] - peelLevel * subtractKernel[d + 3]);
+        for (let d = -5; d <= 5; d++) {
+          cleanMag[bk + d] = Math.max(0, cleanMag[bk + d] - peelLevel * subtractKernel[d + 5]);
         }
       }
     }
@@ -969,16 +1566,11 @@ export function analyzePolyphonicStemNotesFull(
     }
   }
 
-  dedupedEvents.forEach((ev, idx) => {
-    ev.id = `pn-${idx}`;
-  });
-
-  let minFound = 127;
-  let maxFound = 0;
-  for (const n of dedupedEvents) {
-    if (n.midiNote < minFound) minFound = n.midiNote;
-    if (n.midiNote > maxFound) maxFound = n.midiNote;
-  }
+  const harmonizedPolyEvents = constrainNotesToDetectedHarmony(
+    dedupedEvents,
+    options.detectedChords,
+    options.musicalKey
+  );
 
   const bpm =
     options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
@@ -988,7 +1580,7 @@ export function analyzePolyphonicStemNotesFull(
   const qMode: StemQuantizeMode =
     options.quantizeMode ?? (options.lockedBpm ? 'soft' : 'off');
   const finalPolyNotes = quantizeNoteEventsToTempo(
-    dedupedEvents,
+    harmonizedPolyEvents,
     bpm,
     options.beatOffsetSec ?? 0,
     durationSec,
@@ -996,6 +1588,16 @@ export function analyzePolyphonicStemNotesFull(
     false,
     options.beatTimes
   );
+  finalPolyNotes.forEach((ev, idx) => {
+    ev.id = `pn-${idx}`;
+  });
+
+  let minFound = 127;
+  let maxFound = 0;
+  for (const n of finalPolyNotes) {
+    if (n.midiNote < minFound) minFound = n.midiNote;
+    if (n.midiNote > maxFound) maxFound = n.midiNote;
+  }
 
   return {
     mode: 'polyphonic',
@@ -1011,7 +1613,7 @@ export function analyzePolyphonicStemNotesFull(
     drumHits: [],
     noteEvents: finalPolyNotes,
     midiRange:
-      dedupedEvents.length > 0
+      finalPolyNotes.length > 0
         ? {
             minMidi: minFound,
             maxMidi: maxFound,
@@ -1020,12 +1622,12 @@ export function analyzePolyphonicStemNotesFull(
           }
         : undefined,
     counts: {
-      total: dedupedEvents.length,
+      total: finalPolyNotes.length,
       kick: 0,
       snare: 0,
       hat: 0,
       tom: 0,
-      notes: dedupedEvents.length,
+      notes: finalPolyNotes.length,
     },
   };
 }
@@ -1161,6 +1763,7 @@ export function analyzeBassProgressionFull(
     sensitivity?: number;
     maxPolyphony?: number;
     bpmHint?: number;
+    lockedBpm?: number;
     precomputedPoly?: FullStemAnalysisResult;
     precomputedChords?: DetectedChordSegment[];
     musicalKey?: string;
@@ -1181,6 +1784,14 @@ export function analyzeBassProgressionFull(
       sensitivity,
       maxPolyphony: options.maxPolyphony ?? 5,
       bpmHint: options.bpmHint,
+      lockedBpm: options.lockedBpm,
+      detectedChords: options.precomputedChords,
+      musicalKey: options.musicalKey,
+      camelotKey: options.camelotKey,
+      beatOffsetSec: options.beatOffsetSec,
+      beatTimes: options.beatTimes,
+      downbeats: options.downbeats,
+      quantizeMode: options.quantizeMode,
     });
   const storedChords = options.precomputedChords ?? [];
 
@@ -1320,6 +1931,27 @@ export function analyzeBassProgressionFull(
   const fullGate = peakFullRms * 0.08;
   let lastBassMidi: number | null = null;
 
+  const findChordAt = (tSec: number): DetectedChordSegment | undefined => {
+    if (storedChords.length === 0) return undefined;
+    const probeT = tSec + 0.02;
+    for (const c of storedChords) {
+      if (probeT >= c.startSec && probeT < c.endSec) return c;
+    }
+    for (const c of storedChords) {
+      if (tSec >= c.startSec && tSec < c.endSec) return c;
+    }
+    let best = storedChords[0];
+    let bestDist = Infinity;
+    for (const c of storedChords) {
+      const d = tSec < c.startSec ? c.startSec - tSec : tSec > c.endSec ? tSec - c.endSec : 0;
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return bestDist <= 0.35 ? best : undefined;
+  };
+
   for (let f = 0; f < numFrames; f++) {
     if (fullRms[f] < fullGate && lowRms[f] < peakLowRms * 0.12) continue;
     const tSec = (f * hop + frameLen * 0.38) / sampleRate;
@@ -1329,6 +1961,44 @@ export function analyzeBassProgressionFull(
     const lowMidi = smoothedLowMidi[f];
     const lowEnergyRatio = lowRms[f] / (fullRms[f] + 1e-6);
 
+    // When chord progression is detected, anchor sub-bass to detected chords so kick sweeps
+    // and low-FFT bin jitter never emit non-chord/out-of-key bass notes
+    const activeChord = findChordAt(tSec);
+    if (activeChord) {
+      const chordPcs = getChordPitchClasses(activeChord);
+      const lowPc = lowMidi >= 28 ? ((lowMidi % 12) + 12) % 12 : -1;
+      const isRootMatch = lowPc === activeChord.rootPitchClass;
+      const isSteadyChordInversion =
+        lowMidi >= 28 &&
+        lowMidi <= 44 &&
+        chordPcs.has(lowPc) &&
+        Math.abs((lowPc - activeChord.rootPitchClass + 12) % 12) !== 1 &&
+        Math.abs((activeChord.rootPitchClass - lowPc + 12) % 12) !== 1 &&
+        lowEnergyRatio >= 0.17 &&
+        f >= 2 &&
+        smoothedLowMidi[f - 1] === lowMidi &&
+        smoothedLowMidi[f - 2] === lowMidi;
+
+      if (isRootMatch && lowMidi >= 28 && lowMidi <= 44) {
+        chosenFrameMidi[f] = lowMidi;
+        lastBassMidi = lowMidi;
+      } else if (isSteadyChordInversion) {
+        const folded = foldPitchClassToSubRegister(lowPc, lastBassMidi, 28, 40);
+        chosenFrameMidi[f] = folded;
+        lastBassMidi = folded;
+      } else {
+        const folded = foldPitchClassToSubRegister(
+          activeChord.rootPitchClass,
+          lastBassMidi,
+          28,
+          40
+        );
+        chosenFrameMidi[f] = folded;
+        lastBassMidi = folded;
+      }
+      continue;
+    }
+
     const hasTrueSubBass =
       (lowMidi >= 28 && lowMidi <= 40 && (lowEnergyRatio >= 0.14 || activePoly.length === 0)) ||
       (lowMidi >= 28 && lowMidi <= 44 && activePoly.length <= 1);
@@ -1337,23 +2007,6 @@ export function analyzeBassProgressionFull(
       chosenFrameMidi[f] = lowMidi;
       lastBassMidi = lowMidi;
       continue;
-    }
-
-    if (storedChords.length > 0) {
-      const activeChord = storedChords.find(
-        (c) => tSec >= c.startSec - 0.03 && tSec <= c.endSec + 0.03
-      );
-      if (activeChord) {
-        const folded: number = foldPitchClassToSubRegister(
-          activeChord.rootPitchClass,
-          lastBassMidi,
-          28,
-          40
-        );
-        chosenFrameMidi[f] = folded;
-        lastBassMidi = folded;
-        continue;
-      }
     }
 
     if (activePoly.length > 0) {
@@ -1507,12 +2160,14 @@ export function analyzeBassProgressionFull(
   }
 
   const resolvedBpm =
-    options.bpmHint && options.bpmHint >= 45 && options.bpmHint <= 220
-      ? Math.round(options.bpmHint * 10) / 10
-      : poly.bpm;
+    options.lockedBpm && options.lockedBpm >= 45 && options.lockedBpm <= 220
+      ? options.lockedBpm
+      : options.bpmHint && options.bpmHint >= 45 && options.bpmHint <= 220
+        ? Math.round(options.bpmHint * 10) / 10
+        : poly.bpm;
 
   const qMode: StemQuantizeMode =
-    options.quantizeMode ?? (options.bpmHint ? 'soft' : 'off');
+    options.quantizeMode ?? (options.lockedBpm || options.bpmHint ? 'soft' : 'off');
   const effectiveBeatTimes = options.beatTimes ?? poly.beatTimes;
   const finalBassNotes = quantizeNoteEventsToTempo(
     monoBass,

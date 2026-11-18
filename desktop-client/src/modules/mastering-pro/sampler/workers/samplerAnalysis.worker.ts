@@ -100,6 +100,7 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               sensitivity: req.sensitivity,
               maxPolyphony: req.maxPolyphony,
               bpmHint: effectiveBpm,
+              lockedBpm: req.lockedBpm,
               precomputedPoly: req.precomputedPoly,
               precomputedChords: req.detectedChords,
               musicalKey: req.musicalKey,

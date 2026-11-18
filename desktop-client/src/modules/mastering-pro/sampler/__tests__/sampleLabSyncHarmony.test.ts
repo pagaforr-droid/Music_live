@@ -1,0 +1,407 @@
+import { beforeAll, describe, expect, it } from 'vitest';
+import { detectOnsetsSpectralFlux } from '../../dsp-core/SpectralFftCore';
+import {
+  analyzeBassProgressionFull,
+  analyzeDrumStemFull,
+  analyzeMonophonicStemNotesFull,
+  constrainNotesToDetectedHarmony,
+  parseMusicalKeyInfo,
+} from '../engine/FullStemAnalyzer';
+import { detectPitchYin } from '../engine/PitchDetector';
+import {
+  analyzeImportedAudioFirst,
+  clearPreImportMemoryCache,
+  toCamelotKey,
+} from '../engine/PreImportAnalyzer';
+import { assignSlicesToPads, sliceByBpmGrid } from '../engine/Slicer';
+import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
+import { prepareCustomReplacementSample } from '../engine/StudioSampleBank';
+import { createDefaultPads } from '../engine/SampleBufferOps';
+import type { DetectedChordSegment, StemNoteEvent } from '../types/sampler.types';
+
+beforeAll(() => {
+  if (typeof (globalThis as Record<string, unknown>).AudioBuffer === 'undefined') {
+    class MockAudioBuffer {
+      readonly sampleRate: number;
+      readonly length: number;
+      readonly numberOfChannels: number;
+      readonly duration: number;
+      private readonly channels: Float32Array[];
+
+      constructor(opts: { length: number; numberOfChannels?: number; sampleRate: number }) {
+        this.length = opts.length;
+        this.numberOfChannels = opts.numberOfChannels ?? 2;
+        this.sampleRate = opts.sampleRate;
+        this.duration = this.length / this.sampleRate;
+        this.channels = Array.from({ length: this.numberOfChannels }, () => new Float32Array(this.length));
+      }
+
+      getChannelData(ch: number): Float32Array {
+        return this.channels[ch] ?? this.channels[0];
+      }
+
+      copyToChannel(src: Float32Array, ch: number): void {
+        this.channels[ch].set(src);
+      }
+    }
+    (globalThis as Record<string, unknown>).AudioBuffer = MockAudioBuffer;
+  }
+});
+
+function synthesizeMix(opts: {
+  bpm: number;
+  sr?: number;
+  bars?: number;
+  introSilenceSec?: number;
+  introPadSec?: number;
+  chords: Array<{ rootMidi: number; notes: number[]; label: string }>;
+}) {
+  const sr = opts.sr ?? 48000;
+  const bars = opts.bars ?? 8;
+  const introSilenceSec = opts.introSilenceSec ?? 0;
+  const introPadSec = opts.introPadSec ?? 0;
+  const beatSec = 60 / opts.bpm;
+  const barSec = beatSec * 4;
+  const musicStart = introSilenceSec + introPadSec;
+  const len = Math.floor((musicStart + bars * barSec + 0.35) * sr);
+  const mono = new Float32Array(len);
+
+  let seed = 0x51a9d001;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return (seed / 0xffffffff) * 2 - 1;
+  };
+
+  const expectedKicks: number[] = [];
+  const expectedSnares: number[] = [];
+  const expectedChords: Array<{ timeSec: number; label: string; rootMidi: number; notes: number[] }> = [];
+
+  if (introPadSec > 0) {
+    const start = Math.floor(introSilenceSec * sr);
+    const plen = Math.floor(introPadSec * sr);
+    for (const m of opts.chords[0].notes) {
+      const f = 440 * Math.pow(2, (m - 69) / 12);
+      for (let i = 0; i < plen && start + i < len; i++) {
+        const t = i / sr;
+        mono[start + i] += Math.sin(2 * Math.PI * f * t) * Math.min(1, t / 0.15) * 0.18;
+      }
+    }
+  }
+
+  for (let bar = 0; bar < bars; bar++) {
+    const barStart = musicStart + bar * barSec;
+    const ch = opts.chords[bar % opts.chords.length];
+    expectedChords.push({ timeSec: barStart, label: ch.label, rootMidi: ch.rootMidi, notes: ch.notes });
+
+    for (const so of [0, 1.5, 2, 3]) {
+      const sIdx = Math.floor((barStart + so * beatSec) * sr);
+      const sLen = Math.floor(beatSec * 1.25 * sr);
+      for (const m of ch.notes) {
+        const f = 440 * Math.pow(2, (m - 69) / 12);
+        for (let i = 0; i < sLen && sIdx + i < len; i++) {
+          const t = i / sr;
+          const env = Math.min(1, t / 0.006) * Math.exp(-t * 2.3);
+          mono[sIdx + i] +=
+            (Math.sin(2 * Math.PI * f * t) +
+              0.45 * Math.sin(2 * Math.PI * f * 2 * t) +
+              0.22 * Math.sin(2 * Math.PI * f * 3 * t)) *
+            env *
+            0.12;
+        }
+      }
+    }
+
+    for (const bp of [
+      { b: 0, semi: 0, dur: 1.3 },
+      { b: 1.5, semi: 0, dur: 0.45 },
+      { b: 2, semi: 7, dur: 1.2 },
+      { b: 3.5, semi: 12, dur: 0.4 },
+    ]) {
+      const bIdx = Math.floor((barStart + bp.b * beatSec) * sr);
+      const bLen = Math.floor(bp.dur * beatSec * sr);
+      const f = 440 * Math.pow(2, (ch.rootMidi + bp.semi - 69) / 12);
+      for (let i = 0; i < bLen && bIdx + i < len; i++) {
+        const t = i / sr;
+        const env = Math.min(1, t / 0.008) * Math.exp(-t * 1.9);
+        mono[bIdx + i] +=
+          (Math.sin(2 * Math.PI * f * t) * 0.68 +
+            Math.sin(2 * Math.PI * f * 2 * t) * 0.28 +
+            Math.sin(2 * Math.PI * f * 3 * t) * 0.12) *
+          env *
+          0.38;
+      }
+    }
+
+    for (let e = 0; e < 8; e++) {
+      const hTime = barStart + e * beatSec * 0.5;
+      const hIdx = Math.floor(hTime * sr);
+      let prevN = 0;
+      for (let i = 0; i < Math.floor(sr * 0.06) && hIdx + i < len; i++) {
+        const t = i / sr;
+        const n = rnd();
+        const hp = n - 0.85 * prevN;
+        prevN = n;
+        mono[hIdx + i] += hp * Math.exp(-t * 72) * 0.14;
+      }
+      if (e === 0 || e === 3 || e === 4) {
+        expectedKicks.push(hTime);
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.24) && hIdx + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (48 + 105 * Math.exp(-t * 36))) / sr;
+          mono[hIdx + i] += (Math.sin(ph) * Math.exp(-t * 13) + rnd() * Math.exp(-t * 260) * 0.28) * 0.55;
+        }
+      }
+      if (e === 2 || e === 6) {
+        expectedSnares.push(hTime);
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.2) && hIdx + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (195 + 80 * Math.exp(-t * 50))) / sr;
+          mono[hIdx + i] +=
+            (Math.sin(ph) * Math.exp(-t * 22) * 0.5 +
+              rnd() * Math.exp(-t * 20) * 0.45 +
+              Math.sin(2 * Math.PI * 2400 * t) * Math.exp(-t * 250) * 0.35) *
+            0.48;
+        }
+      }
+    }
+  }
+
+  let pk = 0;
+  for (let i = 0; i < len; i++) pk = Math.max(pk, Math.abs(mono[i]));
+  if (pk > 0.01) {
+    const g = 0.88 / pk;
+    for (let i = 0; i < len; i++) mono[i] *= g;
+  }
+
+  return { mono, sr, expectedKicks, expectedSnares, expectedChords, musicStart };
+}
+
+describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () => {
+  it('detects t=0 immediate transients without skipping frame 0 in SpectralFftCore', () => {
+    const sr = 48000;
+    const mono = new Float32Array(sr * 2);
+    for (const tSec of [0, 0.5, 1.0, 1.5]) {
+      const start = Math.round(tSec * sr);
+      for (let i = 0; i < 4000 && start + i < mono.length; i++) {
+        mono[start + i] += Math.sin((2 * Math.PI * 60 * i) / sr) * Math.exp((-i / sr) * 18) * 0.85;
+      }
+    }
+    const res = detectOnsetsSpectralFlux(mono, sr, { sensitivity: 0.65, minIntervalMs: 80 });
+    expect(res.onsetTimesSec.length).toBeGreaterThanOrEqual(4);
+    expect(res.onsetTimesSec[0]).toBeLessThan(0.025);
+  });
+
+  it('tracks low bass E1/A1 fundamentals down to 35 Hz and ignores initial transient clicks', () => {
+    const sr = 48000;
+    const cases: Array<[number, number]> = [
+      [41.203, 28],
+      [55.0, 33],
+      [261.626, 60],
+    ];
+    for (const [hz, expectedMidi] of cases) {
+      const L = new Float32Array(Math.floor(sr * 1.1));
+      for (let i = 0; i < L.length; i++) {
+        const t = i / sr;
+        const click = i < 380 ? Math.sin(2 * Math.PI * 1950 * t) * (1 - i / 380) * 0.5 : 0;
+        const env = Math.min(1, t / 0.01) * Math.exp(-t * 1.5);
+        L[i] = click + (Math.sin(2 * Math.PI * hz * t) * 0.7 + Math.sin(2 * Math.PI * hz * 2 * t) * 0.25) * env;
+      }
+      const res = detectPitchYin(L, sr, 35, 1800);
+      expect(res.midiNote).toBe(expectedMidi);
+      expect(res.confidence).toBeGreaterThan(0.75);
+
+      const buf = new AudioBuffer({ length: L.length, numberOfChannels: 2, sampleRate: sr });
+      buf.copyToChannel(L, 0);
+      buf.copyToChannel(L, 1);
+      const custom = prepareCustomReplacementSample(buf, { normalize: true });
+      expect(custom.detectedRootMidi).toBe(expectedMidi);
+    }
+  });
+
+  it('resolves flat/sharp enharmonic keys, Camelot codes, and harmony constraints', () => {
+    expect(toCamelotKey('Eb')).toBe('5B');
+    expect(toCamelotKey('Bb')).toBe('6B');
+    expect(toCamelotKey('G#m')).toBe('1A');
+    expect(parseMusicalKeyInfo('Ebm')?.tonicPc).toBe(3);
+
+    const chords: DetectedChordSegment[] = [
+      {
+        id: 'c0',
+        startSec: 0,
+        endSec: 4,
+        chord: 'Eb',
+        rootPitchClass: 3,
+        rootName: 'Eb',
+        rootMidi: 39,
+        chordMidis: [51, 55, 58],
+        confidence: 0.9,
+      },
+    ];
+    const noisyNotes: StemNoteEvent[] = [
+      { id: 'n0', startSec: 0.5, durationSec: 0.8, midiNote: 39, noteName: 'Eb2', velocity: 0.85, clarity: 0.9 },
+      { id: 'n1', startSec: 0.51, durationSec: 0.4, midiNote: 40, noteName: 'E2', velocity: 0.35, clarity: 0.6 },
+      { id: 'n2', startSec: 1.5, durationSec: 0.6, midiNote: 42, noteName: 'F#2', velocity: 0.5, clarity: 0.7 },
+    ];
+    const filtered = constrainNotesToDetectedHarmony(noisyNotes, chords, 'Eb');
+    expect(filtered.every((n) => parseMusicalKeyInfo('Eb')!.scalePcs.has(((n.midiNote % 12) + 12) % 12))).toBe(true);
+    expect(filtered.some((n) => n.midiNote === 40)).toBe(false);
+  });
+
+  const fullMixScenarios = [
+    {
+      name: '68 BPM ballad (G-D-Em-C)',
+      bpm: 68,
+      introSilenceSec: 0.25,
+      introPadSec: 0,
+      chords: [
+        { label: 'G', rootMidi: 31, notes: [43, 55, 59, 62] },
+        { label: 'D', rootMidi: 38, notes: [50, 57, 62, 66] },
+        { label: 'Em', rootMidi: 28, notes: [40, 52, 55, 59] },
+        { label: 'C', rootMidi: 36, notes: [48, 60, 64, 67] },
+      ],
+    },
+    {
+      name: '97 BPM pop/rock w/ silence + intro pad (Am-F-C-G)',
+      bpm: 97,
+      introSilenceSec: 0.31,
+      introPadSec: 2.47,
+      chords: [
+        { label: 'Am', rootMidi: 33, notes: [45, 57, 60, 64] },
+        { label: 'F', rootMidi: 29, notes: [41, 53, 57, 60] },
+        { label: 'C', rootMidi: 36, notes: [48, 60, 64, 67] },
+        { label: 'G', rootMidi: 31, notes: [43, 55, 59, 62] },
+      ],
+    },
+    {
+      name: '124 BPM modern rock (Em-C-G-D)',
+      bpm: 124,
+      introSilenceSec: 0.42,
+      introPadSec: 0,
+      chords: [
+        { label: 'Em', rootMidi: 28, notes: [40, 52, 55, 59] },
+        { label: 'C', rootMidi: 36, notes: [48, 60, 64, 67] },
+        { label: 'G', rootMidi: 31, notes: [43, 55, 59, 62] },
+        { label: 'D', rootMidi: 38, notes: [50, 57, 62, 66] },
+      ],
+    },
+    {
+      name: '156 BPM fast punk (F-C-Dm-Bb)',
+      bpm: 156,
+      introSilenceSec: 0.14,
+      introPadSec: 0,
+      chords: [
+        { label: 'F', rootMidi: 29, notes: [41, 53, 57, 60] },
+        { label: 'C', rootMidi: 36, notes: [48, 60, 64, 67] },
+        { label: 'Dm', rootMidi: 38, notes: [50, 57, 62, 65] },
+        { label: 'Bb', rootMidi: 34, notes: [46, 58, 62, 65] },
+      ],
+    },
+  ];
+
+  it.each(fullMixScenarios)(
+    'locks BPM, phase, key, chords, drums & bass-focus on $name',
+    (sc) => {
+      const mix = synthesizeMix(sc);
+      clearPreImportMemoryCache();
+      const entry = analyzeImportedAudioFirst(mix.mono, mix.sr, { sensitivity: 0.62 });
+      expect(entry.memory.bpm).toBe(sc.bpm);
+
+      const beatSec = 60 / sc.bpm;
+      const expPhase = ((sc.introSilenceSec + sc.introPadSec) % beatSec + beatSec) % beatSec;
+      const rawDiff = Math.abs(entry.memory.beatOffsetSec - expPhase);
+      const wrappedDiff = Math.min(rawDiff, beatSec - rawDiff);
+      expect(wrappedDiff).toBeLessThan(0.01);
+
+      const drumRes = analyzeDrumStemFull(mix.mono, mix.sr, {
+        sensitivity: 0.62,
+        lockedBpm: entry.memory.bpm,
+        musicalKey: entry.memory.musicalKey,
+        detectedChords: entry.memory.chords,
+        beatOffsetSec: entry.memory.beatOffsetSec,
+        beatTimes: entry.memory.beatTimes,
+        quantizeMode: 'soft',
+      });
+      const matchedKicks = mix.expectedKicks.filter((ek) =>
+        drumRes.drumHits.some((h) => h.role === 'kick' && Math.abs(h.peakTimeSec - ek) < 0.025)
+      ).length;
+      const matchedSnares = mix.expectedSnares.filter((es) =>
+        drumRes.drumHits.some((h) => h.role === 'snare' && Math.abs(h.peakTimeSec - es) < 0.025)
+      ).length;
+      expect(matchedKicks / mix.expectedKicks.length).toBeGreaterThanOrEqual(0.88);
+      expect(matchedSnares / mix.expectedSnares.length).toBeGreaterThanOrEqual(0.88);
+
+      const bassRes = analyzeBassProgressionFull(mix.mono, mix.sr, {
+        sensitivity: 0.62,
+        lockedBpm: entry.memory.bpm,
+        precomputedPoly: entry.polyResult,
+        precomputedChords: entry.memory.chords,
+        musicalKey: entry.memory.musicalKey,
+        beatOffsetSec: entry.memory.beatOffsetSec,
+        beatTimes: entry.memory.beatTimes,
+        quantizeMode: 'soft',
+      });
+      let inChordBass = 0;
+      for (const n of bassRes.noteEvents) {
+        const ch = mix.expectedChords.slice().reverse().find((c) => n.startSec >= c.timeSec - 0.08);
+        if (ch) {
+          const pcs = new Set(ch.notes.map((m) => m % 12));
+          pcs.add(ch.rootMidi % 12);
+          if (pcs.has(((n.midiNote % 12) + 12) % 12)) inChordBass++;
+        }
+      }
+      expect(inChordBass / Math.max(1, bassRes.noteEvents.length)).toBeGreaterThanOrEqual(0.9);
+
+      const origBuf = new AudioBuffer({ length: mix.mono.length, numberOfChannels: 2, sampleRate: mix.sr });
+      origBuf.copyToChannel(mix.mono, 0);
+      origBuf.copyToChannel(mix.mono, 1);
+      const rendered = renderFullStemReplacement({
+        originalBuffer: origBuf,
+        analysis: drumRes,
+        drumSlots: {
+          kick: { roleOrTarget: 'kick', enabled: true, sourceType: 'preset', presetId: 'drum-kick-acoustic', gainDb: 0, pitchSemis: 0 },
+          snare: { roleOrTarget: 'snare', enabled: true, sourceType: 'preset', presetId: 'drum-snare-warm', gainDb: 0, pitchSemis: 0 },
+          hat: { roleOrTarget: 'hat', enabled: true, sourceType: 'preset', presetId: 'drum-hat-tight', gainDb: -2, pitchSemis: 0 },
+          tom: { roleOrTarget: 'tom', enabled: true, sourceType: 'preset', presetId: 'drum-tom-deep', gainDb: 0, pitchSemis: 0 },
+        },
+        melodicSlot: { roleOrTarget: 'melodic', enabled: true, sourceType: 'preset', presetId: 'inst-piano-grand', gainDb: 0, pitchSemis: 0 },
+        mix: { replacementPct: 78, originalPct: 86, duckOriginalTransients: true, roundRobinHumanize: true, sustainScale: 1, brightnessPct: 0 },
+      });
+      expect(rendered.length).toBe(origBuf.length);
+      let maxSample = 0;
+      const ch0 = rendered.getChannelData(0);
+      for (let i = 0; i < ch0.length; i += 4) maxSample = Math.max(maxSample, Math.abs(ch0[i]));
+      expect(maxSample).toBeGreaterThan(0.2);
+      expect(maxSample).toBeLessThanOrEqual(0.92);
+    },
+    20000
+  );
+
+  it('applies monophonic harmony constraints and preserves accurate beat-grid slicing in 16-Pad Slicer', () => {
+    const sr = 48000;
+    const regions = sliceByBpmGrid('src-1', 0, 4.0, 120, '1/4', 16, 0.25);
+    expect(regions[0].startSec).toBeCloseTo(0.25, 3);
+    expect(regions[1].startSec).toBeCloseTo(0.75, 3);
+
+    const shortSlices = [
+      { ...regions[0], startSec: 0, endSec: 0.25 },
+      { ...regions[1], startSec: 0.5, endSec: 1.2 },
+    ];
+    const pads = assignSlicesToPads(createDefaultPads(), shortSlices);
+    expect(pads[0].params.warp.syncToBpm).toBe(false);
+    expect(pads[1].params.warp.syncToBpm).toBe(true);
+
+    const monoBass = new Float32Array(sr * 2);
+    for (let i = 0; i < monoBass.length; i++) {
+      monoBass[i] = Math.sin((2 * Math.PI * 55 * i) / sr) * 0.6; // A1
+    }
+    const res = analyzeMonophonicStemNotesFull(monoBass, sr, {
+      lockedBpm: 120,
+      musicalKey: 'Am',
+      bassOnly: true,
+    });
+    expect(res.bpm).toBe(120);
+    expect(res.noteEvents.every((n) => n.midiNote % 12 === 9)).toBe(true);
+  });
+});

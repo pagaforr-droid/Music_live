@@ -93,6 +93,25 @@ function createPrng(seedInit: number): () => number {
   };
 }
 
+function findPeakOffsetSample(
+  left: Float32Array,
+  right: Float32Array,
+  sr: number,
+  maxSearchSec = 0.03
+): number {
+  const lim = Math.min(left.length, Math.max(1, Math.round(sr * maxSearchSec)));
+  let peakIdx = 0;
+  let maxA = 0;
+  for (let i = 0; i < lim; i++) {
+    const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
+    if (a > maxA) {
+      maxA = a;
+      peakIdx = i;
+    }
+  }
+  return peakIdx;
+}
+
 function buildDrumPresetArrays(
   id: DefaultDrumPresetId,
   sr: number
@@ -126,17 +145,7 @@ function buildDrumPresetArrays(
       R[i] = v;
     }
     normalizeStereoInPlace(L, R, -1.0);
-    // Find peak within first 20ms
-    let peakIdx = 0;
-    let maxA = 0;
-    const lim = Math.min(len, Math.round(sr * 0.02));
-    for (let i = 0; i < lim; i++) {
-      if (Math.abs(L[i]) > maxA) {
-        maxA = Math.abs(L[i]);
-        peakIdx = i;
-      }
-    }
-    return { rootMidi: 36, left: L, right: R, peakOffsetSamples: peakIdx };
+    return { rootMidi: 36, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.025) };
   }
 
   if (id.startsWith('drum-snare')) {
@@ -151,7 +160,8 @@ function buildDrumPresetArrays(
     let p2 = 0;
     let lpL = 0;
     let lpR = 0;
-    const lpAlpha = (2 * Math.PI * (id === 'drum-snare-warm' ? 6800 : 10500)) / (sr + 2 * Math.PI * 10500);
+    const lpHz = id === 'drum-snare-warm' ? 6800 : 10500;
+    const lpAlpha = (2 * Math.PI * lpHz) / (sr + 2 * Math.PI * lpHz);
 
     for (let i = 0; i < len; i++) {
       const t = i / sr;
@@ -169,7 +179,7 @@ function buildDrumPresetArrays(
       R[i] = Math.tanh((shell + crack + lpR * wireEnv) * 1.1) * fade;
     }
     normalizeStereoInPlace(L, R, -1.0);
-    return { rootMidi: 38, left: L, right: R, peakOffsetSamples: Math.round(sr * 0.002) };
+    return { rootMidi: 38, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.025) };
   }
 
   if (id.startsWith('drum-hat')) {
@@ -206,7 +216,7 @@ function buildDrumPresetArrays(
       R[i] = (inR - hp2R * 0.1) * 0.55 * env * fade + hp1R * 0.55 * env * fade;
     }
     normalizeStereoInPlace(L, R, -1.5);
-    return { rootMidi: 42, left: L, right: R, peakOffsetSamples: Math.round(sr * 0.001) };
+    return { rootMidi: 42, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.02) };
   }
 
   // drum-tom-deep
@@ -226,7 +236,7 @@ function buildDrumPresetArrays(
     R[i] = v;
   }
   normalizeStereoInPlace(L, R, -1.0);
-  return { rootMidi: 45, left: L, right: R, peakOffsetSamples: Math.round(sr * 0.002) };
+  return { rootMidi: 45, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.025) };
 }
 
 /**
@@ -522,8 +532,8 @@ export function prepareCustomReplacementSample(
     normalizeStereoInPlace(left, right, -1.0);
   }
 
-  // De-click 2ms fade-in and 4ms tail fade-out
-  const fadeIn = Math.min(Math.floor(outLen / 4), Math.round(sr * 0.002));
+  // Micro de-click 0.4ms fade-in (preserves snappy drum transients) and 4ms tail fade-out
+  const fadeIn = Math.min(Math.floor(outLen / 4), Math.round(sr * 0.0004));
   for (let i = 0; i < fadeIn; i++) {
     const g = i / Math.max(1, fadeIn);
     left[i] *= g;
@@ -536,24 +546,15 @@ export function prepareCustomReplacementSample(
     right[outLen - 1 - i] *= g;
   }
 
-  // Peak offset in first 25ms
-  let peakIdx = 0;
-  let peakA = 0;
-  const searchEnd = Math.min(outLen, Math.round(sr * 0.025));
-  for (let i = 0; i < searchEnd; i++) {
-    const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
-    if (a > peakA) {
-      peakA = a;
-      peakIdx = i;
-    }
-  }
+  // Peak offset across first 80ms so natural room-attack acoustic drums align cleanly
+  const peakIdx = findPeakOffsetSample(left, right, sr, 0.08);
 
-  // YIN root note detection
+  // YIN root note detection covering down to 35Hz sub/bass notes
   const mono = new Float32Array(Math.min(outLen, sr * 2));
   for (let i = 0; i < mono.length; i++) {
     mono[i] = 0.5 * (left[i] + right[i]);
   }
-  const pitch = detectPitchYin(mono, sr, 40, 1800);
+  const pitch = detectPitchYin(mono, sr, 35, 1800);
   const rootMidi = pitch.confidence >= 0.42 ? pitch.midiNote : 60;
   const waveformPreview = computeMiniWaveformPreview(left, right, 32);
 
