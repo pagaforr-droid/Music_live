@@ -748,14 +748,20 @@ export default function LiveConcert() {
     if (typeof BroadcastChannel === 'undefined') return;
     const bc = new BroadcastChannel('tandu_stage_sync');
     bc.onmessage = (event) => {
-      if (event.data?.type === 'SONG_LYRICS_UPDATED' && event.data.songId) {
-        const { songId, prompter_data } = event.data;
+      const msgType = event.data?.type;
+      const incomingData = event.data?.prompter_data || event.data?.prompterData;
+      if ((msgType === 'SONG_LYRICS_UPDATED' || msgType === 'PROMPTER_UPDATED') && event.data.songId && incomingData) {
+        const { songId } = event.data;
         setSongs((prevSongs) =>
           prevSongs.map((s) =>
-            s.id === songId ? { ...s, prompter_data: prompter_data || s.prompter_data } : s
+            s.id === songId ? { ...s, prompter_data: incomingData || s.prompter_data } : s
           )
         );
-        setSyncFeedback('¡Letras actualizadas en vivo!');
+        setSyncFeedback(
+          msgType === 'PROMPTER_UPDATED'
+            ? '¡Prompter actualizado desde Studio!'
+            : '¡Letras actualizadas en vivo!'
+        );
         setTimeout(() => setSyncFeedback(null), 2500);
       }
     };

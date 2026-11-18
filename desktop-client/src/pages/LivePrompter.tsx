@@ -13,27 +13,10 @@ import {
   InstrumentSvgIcon,
 } from '../utils/instrumentIcons';
 import { decodeAudioUrlToBuffer } from '../utils/beatGridDSP';
-import { detectChordsAndBeatsLocalDSP } from '../utils/chordDetectorDSP';
+import { detectChordsAndBeatsLocalDSP, transposeChordSymbol } from '../utils/chordDetectorDSP';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
-
-const CHROMATIC_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const CHROMATIC_FLAT  = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
-
-function transposeSingleNote(note: string, semitones: number): string {
-  let idx = CHROMATIC_SHARP.indexOf(note);
-  const preferFlats = note.includes('b');
-  if (idx === -1) idx = CHROMATIC_FLAT.indexOf(note);
-  if (idx === -1) return note;
-  const nextIdx = (((idx + semitones) % 12) + 12) % 12;
-  return preferFlats ? CHROMATIC_FLAT[nextIdx] : CHROMATIC_SHARP[nextIdx];
-}
-
-function transposeChordSymbol(chord: string, semitones: number): string {
-  if (!chord || chord === 'N' || chord === 'NC') return chord;
-  return chord.replace(/([A-G][#b]?)/g, (match) => transposeSingleNote(match, semitones));
-}
 
 export default function LivePrompter() {
   const navigate = useNavigate();
@@ -54,6 +37,8 @@ export default function LivePrompter() {
     loadProgress,
     totalDuration,
     preRollDuration,
+    preRollEnabled,
+    togglePreRoll,
     exportLiveMix,
     exportMultitrackToZip,
     exportFullMixToMp3,
@@ -72,6 +57,7 @@ export default function LivePrompter() {
     key?: string;
     firstBeatOffset?: number;
     beatTimes?: number[];
+    downbeats?: number[];
     chords: any[];
     sections: any[];
     lyrics?: any[];
@@ -109,6 +95,10 @@ export default function LivePrompter() {
 
   // Grid Nudge State
   const [manualGridOffset, setManualGridOffset] = useState<number>(0);
+  const manualGridOffsetRef = useRef<number>(0);
+  useEffect(() => {
+    manualGridOffsetRef.current = manualGridOffset;
+  }, [manualGridOffset]);
   const [audioLoaded, setAudioLoaded] = useState(false);
 
   // CapCut Sections History, Waveform & Unsaved Indicator
@@ -126,17 +116,57 @@ export default function LivePrompter() {
   const [trackAliasDraft, setTrackAliasDraft] = useState<string>('');
   const [isSavingTrackMeta, setIsSavingTrackMeta] = useState<boolean>(false);
 
+  const broadcastSenderIdRef = useRef<string>(`studio_prompter_${Math.random().toString(36).slice(2, 10)}`);
+
   const prompterDataRef = useRef(prompterData);
   useEffect(() => {
     prompterDataRef.current = prompterData;
-    syncPrompterData(prompterData);
-  }, [prompterData, syncPrompterData]);
+    const debounceId = window.setTimeout(() => {
+      syncPrompterData(prompterDataRef.current, manualGridOffsetRef.current);
+    }, 65);
+    return () => window.clearTimeout(debounceId);
+  }, [prompterData, manualGridOffset, syncPrompterData]);
+
+  // Escuchar cambios en vivo desde Lyric Studio / Stage Dispatch sin pisar acordes ni secciones locales
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const bc = new BroadcastChannel('tandu_stage_sync');
+    bc.onmessage = (event) => {
+      if (event.data?.senderId === broadcastSenderIdRef.current) return;
+      const msgType = event.data?.type;
+      const incoming = event.data?.prompter_data || event.data?.prompterData;
+      if (!event.data?.songId || event.data.songId !== activeSongIdRef.current || !incoming) return;
+
+      if (msgType === 'SONG_LYRICS_UPDATED') {
+        setPrompterData((prev) => ({
+          ...prev,
+          lyrics: incoming.lyrics ?? prev.lyrics ?? [],
+          lyric_settings: incoming.lyric_settings ?? prev.lyric_settings,
+        }));
+      } else if (msgType === 'PROMPTER_UPDATED') {
+        setPrompterData((prev) => ({
+          ...prev,
+          ...incoming,
+          lyrics: incoming.lyrics ?? prev.lyrics ?? [],
+          lyric_settings: incoming.lyric_settings ?? prev.lyric_settings,
+        }));
+      }
+    };
+    return () => {
+      bc.close();
+    };
+  }, []);
 
   /**
    * Deep-Merge seguro para guardar en songs.prompter_data sin sobrescribir jamás
    * las letras sincronizadas (lyrics / lyric_settings) creadas en Lyric Studio.
    */
   const persistPrompterDataSafe = async (songId: string, nextLocalData: any) => {
+    const activeOffset = manualGridOffsetRef.current;
+    const dataToPersist = activeOffset !== 0
+      ? consolidateGridOffset(nextLocalData, activeOffset)
+      : nextLocalData;
+
     const { data: currentSongRow } = await supabase
       .from('songs')
       .select('prompter_data')
@@ -145,17 +175,36 @@ export default function LivePrompter() {
     const latestRemote = currentSongRow?.prompter_data || {};
     const merged = {
       ...latestRemote,
-      ...nextLocalData,
+      ...dataToPersist,
       // Preservar siempre las letras de Lyric Studio si existen en remoto
-      lyrics: latestRemote.lyrics ?? nextLocalData.lyrics ?? [],
-      lyric_settings: latestRemote.lyric_settings ?? nextLocalData.lyric_settings,
+      lyrics: latestRemote.lyrics ?? dataToPersist.lyrics ?? [],
+      lyric_settings: latestRemote.lyric_settings ?? dataToPersist.lyric_settings,
     };
     const { error } = await supabase
       .from('songs')
       .update({ prompter_data: merged })
       .eq('id', songId);
     if (error) throw error;
+
+    if (activeOffset !== 0) {
+      manualGridOffsetRef.current = 0;
+      setManualGridOffset(0);
+    }
     setPrompterData(merged);
+    setPrompterText(stringifyPrompterData(merged));
+    syncPrompterData(merged, 0);
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel('tandu_stage_sync');
+      channel.postMessage({
+        type: 'PROMPTER_UPDATED',
+        senderId: broadcastSenderIdRef.current,
+        songId,
+        prompterData: merged,
+        prompter_data: merged,
+      });
+      channel.close();
+    }
     return merged;
   };
 
@@ -462,22 +511,36 @@ export default function LivePrompter() {
 
   const handleNudge = (amount: number) => {
     const newOffset = Number((manualGridOffset + amount).toFixed(3));
+    manualGridOffsetRef.current = newOffset;
     setManualGridOffset(newOffset);
     setHasUnsavedSections(true);
-    syncPrompterData(prompterData, newOffset);
   };
 
   const handleHalveTempo = async () => {
     if (!prompterData.bpm) return;
-    const newBpm = prompterData.bpm / 2;
+    const newBpm = Number((prompterData.bpm / 2).toFixed(2));
+    if (newBpm < 30) {
+      setSaveToastMsg('El tempo mínimo permitido es 30 BPM');
+      setTimeout(() => setSaveToastMsg(null), 2500);
+      return;
+    }
     let newBeatTimes = prompterData.beatTimes;
     if (newBeatTimes && newBeatTimes.length > 0) {
       newBeatTimes = newBeatTimes.filter((_, i) => i % 2 === 0);
     }
-    const newData = { ...prompterData, bpm: newBpm, beatTimes: newBeatTimes };
+    let newDownbeats = prompterData.downbeats;
+    if (newDownbeats && newDownbeats.length > 0) {
+      newDownbeats = newDownbeats.filter((_, i) => i % 2 === 0);
+    }
+    const newData = {
+      ...prompterData,
+      bpm: newBpm,
+      beatTimes: newBeatTimes,
+      ...(newDownbeats ? { downbeats: newDownbeats } : {}),
+    };
     setPrompterData(newData);
-    syncPrompterData(newData, manualGridOffset);
-    
+    setPrompterText(stringifyPrompterData(newData));
+
     if (selectedSongId) {
       await persistPrompterDataSafe(selectedSongId, newData);
     }
@@ -485,43 +548,75 @@ export default function LivePrompter() {
 
   const handleDoubleTempo = async () => {
     if (!prompterData.bpm) return;
-    const newBpm = prompterData.bpm * 2;
+    const newBpm = Number((prompterData.bpm * 2).toFixed(2));
+    if (newBpm > 300) {
+      setSaveToastMsg('El tempo máximo permitido es 300 BPM');
+      setTimeout(() => setSaveToastMsg(null), 2500);
+      return;
+    }
     let newBeatTimes = prompterData.beatTimes;
-    if (newBeatTimes && newBeatTimes.length > 0) {
+    if (newBeatTimes && newBeatTimes.length > 1) {
       const doubled = [];
       for (let i = 0; i < newBeatTimes.length - 1; i++) {
         doubled.push(newBeatTimes[i]);
-        doubled.push((newBeatTimes[i] + newBeatTimes[i+1]) / 2);
+        doubled.push(Number(((newBeatTimes[i] + newBeatTimes[i + 1]) / 2).toFixed(4)));
       }
       doubled.push(newBeatTimes[newBeatTimes.length - 1]);
       newBeatTimes = doubled;
     }
-    const newData = { ...prompterData, bpm: newBpm, beatTimes: newBeatTimes };
+    let newDownbeats = prompterData.downbeats;
+    if (newDownbeats && newDownbeats.length > 1) {
+      const doubledDb = [];
+      for (let i = 0; i < newDownbeats.length - 1; i++) {
+        doubledDb.push(newDownbeats[i]);
+        doubledDb.push(Number(((newDownbeats[i] + newDownbeats[i + 1]) / 2).toFixed(4)));
+      }
+      doubledDb.push(newDownbeats[newDownbeats.length - 1]);
+      newDownbeats = doubledDb;
+    }
+    const newData = {
+      ...prompterData,
+      bpm: newBpm,
+      beatTimes: newBeatTimes,
+      ...(newDownbeats ? { downbeats: newDownbeats } : {}),
+    };
     setPrompterData(newData);
-    syncPrompterData(newData, manualGridOffset);
-    
+    setPrompterText(stringifyPrompterData(newData));
+
     if (selectedSongId) {
       await persistPrompterDataSafe(selectedSongId, newData);
     }
   };
 
   const handleTransposeAllChords = async (semitones: number) => {
-    if (!selectedSongId || !prompterData.chords || prompterData.chords.length === 0) return;
-    const transposed = prompterData.chords.map((c: any) => ({
-      ...c,
-      chord: transposeChordSymbol(c.chord, semitones),
-    }));
-    const nextData = { ...prompterData, chords: transposed };
+    const hasChords = Array.isArray(prompterData.chords) && prompterData.chords.length > 0;
+    const hasKey = Boolean(prompterData.key && prompterData.key !== '--' && prompterData.key !== 'N' && prompterData.key !== 'NC');
+    if (!selectedSongId || (!hasChords && !hasKey)) return;
+    const transposed = hasChords
+      ? prompterData.chords.map((c: any) => ({
+          ...c,
+          chord: transposeChordSymbol(c.chord, semitones),
+        }))
+      : prompterData.chords;
+    const nextKey = hasKey && prompterData.key ? transposeChordSymbol(prompterData.key, semitones) : prompterData.key;
+    const nextData = { ...prompterData, chords: transposed, key: nextKey };
     setPrompterData(nextData);
     setPrompterText(stringifyPrompterData(nextData));
     await persistPrompterDataSafe(selectedSongId, nextData);
   };
 
-  const handleEditSingleChord = async (index: number, newChord: string) => {
+  const handleEditSingleChord = async (index: number, newChord: string, newTime?: number) => {
     if (!selectedSongId) return;
     const nextChords = [...(prompterData.chords || [])];
     if (!nextChords[index]) return;
-    nextChords[index] = { ...nextChords[index], chord: newChord };
+    const updatedChord: any = { ...nextChords[index], chord: newChord };
+    if (typeof newTime === 'number' && Number.isFinite(newTime)) {
+      updatedChord.time = Number(Math.max(0, newTime).toFixed(3));
+    }
+    nextChords[index] = updatedChord;
+    if (typeof newTime === 'number' && Number.isFinite(newTime)) {
+      nextChords.sort((a: any, b: any) => a.time - b.time);
+    }
     const nextData = { ...prompterData, chords: nextChords };
     setPrompterData(nextData);
     setPrompterText(stringifyPrompterData(nextData));
@@ -722,11 +817,26 @@ export default function LivePrompter() {
                 if (activeSongIdRef.current !== targetSongId) return;
                 const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', targetSongId).single();
                 if (songData?.prompter_data && activeSongIdRef.current === targetSongId) {
-                  setPrompterData(prev => ({
+                  const prev = prompterDataRef.current;
+                  const nextData = {
                     ...songData.prompter_data,
                     lyrics: songData.prompter_data.lyrics || prev.lyrics || [],
                     lyric_settings: songData.prompter_data.lyric_settings || prev.lyric_settings,
-                  }));
+                  };
+                  setPrompterData(nextData);
+                  setPrompterText(stringifyPrompterData(nextData));
+                  syncPrompterData(nextData, manualGridOffsetRef.current);
+                  if (typeof BroadcastChannel !== 'undefined') {
+                    const bc = new BroadcastChannel('tandu_stage_sync');
+                    bc.postMessage({
+                      type: 'PROMPTER_UPDATED',
+                      senderId: broadcastSenderIdRef.current,
+                      songId: targetSongId,
+                      prompterData: nextData,
+                      prompter_data: nextData,
+                    });
+                    bc.close();
+                  }
                 }
                 setChordDetectionMsg(null);
                 setSaveToastMsg('¡Acordes IA generados exitosamente!');
@@ -890,10 +1000,9 @@ export default function LivePrompter() {
     setSectionsHistoryFuture([]);
     const newData = { ...prompterData, chords: parsedData.chords, sections: parsedData.sections };
     setPrompterData(newData);
-    syncPrompterData(newData, manualGridOffset);
     setIsEditingPrompter(false);
     setHasUnsavedSections(false);
-    
+
     await persistPrompterDataSafe(selectedSongId, newData);
     setSaveToastMsg('¡Texto de Acordes y Secciones guardado!');
     setTimeout(() => setSaveToastMsg(null), 3000);
@@ -1069,22 +1178,9 @@ export default function LivePrompter() {
   const savePrompterData = async () => {
     if (!selectedSongId) return;
     try {
-      const consolidated = consolidateGridOffset(prompterData, manualGridOffset);
-      if (manualGridOffset !== 0) {
-        setManualGridOffset(0);
-      }
-      const merged = await persistPrompterDataSafe(selectedSongId, consolidated);
-      syncPrompterData(merged, 0);
+      await persistPrompterDataSafe(selectedSongId, prompterData);
       setHasUnsavedSections(false);
       setIsEditingSections(false);
-
-      const channel = new BroadcastChannel('tandu_stage_sync');
-      channel.postMessage({
-        type: 'PROMPTER_UPDATED',
-        songId: selectedSongId,
-        prompterData: merged
-      });
-      channel.close();
 
       setSaveToastMsg('¡Voz Guía y Secciones sincronizadas!');
       setTimeout(() => setSaveToastMsg(null), 3200);
@@ -1230,6 +1326,21 @@ export default function LivePrompter() {
               {isPlaying ? <Pause fill="currentColor" size={14} /> : <Play fill="currentColor" size={14} className="ml-0.5" />}
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => togglePreRoll()}
+            disabled={!audioLoaded}
+            className={`px-3 py-1.5 rounded-full text-[10.5px] font-extrabold uppercase tracking-wider border transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-45 ${
+              preRollEnabled
+                ? 'bg-sky-600 text-white border-sky-500 shadow-xs'
+                : 'bg-white/90 text-slate-600 border-slate-200/90 hover:bg-slate-50 hover:text-slate-900 shadow-2xs'
+            }`}
+            title={preRollEnabled ? 'Pre-Roll (2 compases de entrada) activado' : 'Activar Pre-Roll de 2 compases antes del inicio'}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${preRollEnabled ? 'bg-white animate-pulse' : 'bg-slate-400'}`}></span>
+            Pre-Roll 2C
+          </button>
 
           <div className="bg-slate-100/90 border border-slate-200/90 px-4 py-1.5 rounded-full flex items-center justify-center min-w-[116px] shadow-inner">
             <span className="text-sm font-mono font-bold text-slate-900 tracking-tight tabular-nums">
@@ -1925,7 +2036,14 @@ export default function LivePrompter() {
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             />
             <div className="w-full h-1.5 bg-slate-200/90 rounded-full relative pointer-events-none overflow-hidden shadow-inner">
-              <div className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-sky-500 to-rose-500 rounded-full" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
+              <div
+                className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-sky-500 to-rose-500 rounded-full"
+                style={{
+                  width: audioLoaded
+                    ? `${Math.max(0, Math.min(100, (((isDraggingSlider ? localSliderTime : currentTime) + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100))}%`
+                    : '0%'
+                }}
+              ></div>
             </div>
           </div>
 

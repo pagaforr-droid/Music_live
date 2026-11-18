@@ -56,7 +56,7 @@ export interface PrompterProps {
   onVampTrigger?: (sectionStart: number, sectionEnd: number) => void;
   isEditing?: boolean;
   onRemoveSection?: (index: number) => void;
-  onEditChord?: (index: number, newChord: string) => void;
+  onEditChord?: (index: number, newChord: string, newTime?: number) => void;
   onAddChord?: (time: number, newChord: string) => void;
   onRemoveChord?: (index: number) => void;
   onSeek?: (time: number) => void;
@@ -288,6 +288,7 @@ export const Prompter: React.FC<PrompterProps> = ({
   const [editingChordIdx, setEditingChordIdx] = useState<number | null>(null);
   const [addingChordTime, setAddingChordTime] = useState<number | null>(null);
   const [editingChordValue, setEditingChordValue] = useState<string>('');
+  const [editingChordTime, setEditingChordTime] = useState<number>(0);
 
   // Custom section name inline input
   const [customLabelInput, setCustomLabelInput] = useState<string>('');
@@ -391,7 +392,7 @@ export const Prompter: React.FC<PrompterProps> = ({
         points.push({
           time: t,
           isDownbeat: beatInBar === 1,
-          bar: Math.max(1, barNum),
+          bar: barNum,
           beat: beatInBar,
         });
       });
@@ -554,25 +555,29 @@ export const Prompter: React.FC<PrompterProps> = ({
     }
   }, [currentTime, pixelsPerSecond, scrollPosition]);
 
-  // Dibujar Onda de Audio Real (Waveform) en el carril de fondo (Modo Studio CapCut)
+  // Dibujar Onda de Audio Real (Waveform) alineada 1:1 al Timeline CapCut sin límite de 28,000px
   useEffect(() => {
     const canvas = waveformCanvasRef.current;
     if (!canvas || !isStudioCapCutMode) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const totalWidthPx = Math.min(28000, Math.max(2000, Math.round(effectiveTotalDuration * pixelsPerSecond)));
+    const timelineWidthPx = Math.max(2000, Math.round(effectiveTotalDuration * pixelsPerSecond));
+    const bitmapWidth = Math.min(16384, timelineWidthPx);
     const heightPx = 64;
-    if (canvas.width !== totalWidthPx) canvas.width = totalWidthPx;
+    if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
     if (canvas.height !== heightPx) canvas.height = heightPx;
 
-    ctx.clearRect(0, 0, totalWidthPx, heightPx);
+    ctx.clearRect(0, 0, bitmapWidth, heightPx);
 
     const peaks = waveformPeaks && waveformPeaks.length > 0 ? waveformPeaks : [];
     if (peaks.length === 0) return;
 
-    const barCount = Math.min(peaks.length, Math.floor(totalWidthPx / 3));
-    const stepPx = totalWidthPx / barCount;
+    const audioSpanSec = totalDuration > 0 ? totalDuration : effectiveTotalDuration;
+    const pxPerSecBitmap = bitmapWidth / Math.max(1, effectiveTotalDuration);
+    const audioWidthBitmap = Math.min(bitmapWidth, audioSpanSec * pxPerSecBitmap);
+    const barCount = Math.min(peaks.length, Math.max(60, Math.floor(audioWidthBitmap / 2.5)));
+    const stepPx = audioWidthBitmap / barCount;
     const centerY = heightPx / 2;
 
     for (let i = 0; i < barCount; i++) {
@@ -580,7 +585,7 @@ export const Prompter: React.FC<PrompterProps> = ({
       const amp = peaks[peakIdx];
       const barH = Math.max(3, amp * (heightPx * 0.85));
       const x = i * stepPx;
-      const barTimeSec = x / pixelsPerSecond;
+      const barTimeSec = (i / barCount) * audioSpanSec;
 
       const activeSec = sectionBlocks.find(
         (s) => barTimeSec >= s.time && barTimeSec <= s.time + s.duration
@@ -594,10 +599,10 @@ export const Prompter: React.FC<PrompterProps> = ({
       }
 
       ctx.beginPath();
-      ctx.roundRect(x, centerY - barH / 2, Math.max(1.5, stepPx * 0.65), barH, 2);
+      ctx.roundRect(x, centerY - barH / 2, Math.max(1.2, stepPx * 0.65), barH, 2);
       ctx.fill();
     }
-  }, [waveformPeaks, effectiveTotalDuration, pixelsPerSecond, sectionBlocks, isStudioCapCutMode]);
+  }, [waveformPeaks, totalDuration, effectiveTotalDuration, pixelsPerSecond, sectionBlocks, isStudioCapCutMode]);
 
   // Encontrar sección activa en el tiempo actual
   const activeSectionIndex = useMemo(() => {
@@ -665,10 +670,21 @@ export const Prompter: React.FC<PrompterProps> = ({
         }
         return { ...chord, time: qTime, originalIndex };
       })
-      .sort((a, b) => a.time - b.time);
+      .sort((a, b) => a.time - b.time || a.originalIndex - b.originalIndex);
 
-    return quantizedChords.map((chord, index) => {
-      const nextChord = quantizedChords[index + 1];
+    // Deduplicar acordes que colapsan al mismo pulso/corchea tras cuantizar (conservando el último)
+    const dedupedChords: typeof quantizedChords = [];
+    for (const c of quantizedChords) {
+      const last = dedupedChords[dedupedChords.length - 1];
+      if (last && Math.abs(c.time - last.time) < 0.015) {
+        dedupedChords[dedupedChords.length - 1] = c;
+      } else {
+        dedupedChords.push(c);
+      }
+    }
+
+    return dedupedChords.map((chord, index) => {
+      const nextChord = dedupedChords[index + 1];
       const duration = nextChord ? Math.max(0.1, nextChord.time - chord.time) : 10;
       return {
         ...chord,
@@ -723,11 +739,12 @@ export const Prompter: React.FC<PrompterProps> = ({
 
   const commitChordEdit = () => {
     const cleanVal = editingChordValue.trim();
+    const cleanTime = Number(Math.max(0, editingChordTime).toFixed(3));
     if (cleanVal) {
       if (addingChordTime !== null && onAddChord) {
-        onAddChord(addingChordTime, cleanVal);
+        onAddChord(cleanTime, cleanVal);
       } else if (editingChordIdx !== null && onEditChord) {
-        onEditChord(editingChordIdx, cleanVal);
+        onEditChord(editingChordIdx, cleanVal, cleanTime);
       }
     }
     setEditingChordIdx(null);
@@ -1162,7 +1179,7 @@ export const Prompter: React.FC<PrompterProps> = ({
         }
         return;
       }
-      if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (!isEditing && e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (selectedSectionIdx !== null) {
           e.preventDefault();
           handleSplitSelectedSection();
@@ -1178,6 +1195,7 @@ export const Prompter: React.FC<PrompterProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     isStudioCapCutMode,
+    isEditing,
     selectedSectionIdx,
     onUndo,
     onRedo,
@@ -1412,6 +1430,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                       const snapped = snapTimeSec(Math.max(0, currentTime));
                       setEditingChordIdx(null);
                       setAddingChordTime(snapped.time);
+                      setEditingChordTime(snapped.time);
                       setEditingChordValue('C');
                     }}
                     className="px-3 py-1.5 rounded-full bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300/90 text-[10.5px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
@@ -1652,8 +1671,8 @@ export const Prompter: React.FC<PrompterProps> = ({
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[10.5px] font-bold uppercase tracking-[0.14em] text-amber-600">
               {addingChordTime !== null
-                ? `Nuevo Acorde en ${formatMmSs(addingChordTime)} (C.${getBarNumberAtTime(addingChordTime)})`
-                : `Editar Acorde #${(editingChordIdx ?? 0) + 1}`}
+                ? `Nuevo Acorde en ${formatMmSs(editingChordTime)} (C.${getBarNumberAtTime(editingChordTime)})`
+                : `Editar Acorde #${(editingChordIdx ?? 0) + 1} · ${formatMmSs(editingChordTime)}`}
             </span>
             <button
               type="button"
@@ -1665,6 +1684,35 @@ export const Prompter: React.FC<PrompterProps> = ({
             >
               ✕
             </button>
+          </div>
+          <div className="flex items-center justify-between gap-1.5 mb-2.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-[10px] font-mono">
+            <span className="text-slate-500 font-bold uppercase">Tiempo (s):</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setEditingChordTime((t) => Number(Math.max(0, t - beatDuration * 0.5).toFixed(3)))}
+                className="px-1.5 py-0.5 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
+                title="Adelantar ½ pulso"
+              >
+                -½♪
+              </button>
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                value={Number(editingChordTime.toFixed(2))}
+                onChange={(e) => setEditingChordTime(Math.max(0, Number(e.target.value) || 0))}
+                className="w-16 bg-white border border-slate-200 rounded px-1.5 py-0.5 text-center font-bold text-slate-900 outline-none focus:border-amber-500"
+              />
+              <button
+                type="button"
+                onClick={() => setEditingChordTime((t) => Number((t + beatDuration * 0.5).toFixed(3)))}
+                className="px-1.5 py-0.5 rounded bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
+                title="Retrasar ½ pulso"
+              >
+                +½♪
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-2 mb-3">
             <input
@@ -1830,8 +1878,12 @@ export const Prompter: React.FC<PrompterProps> = ({
         >
           {/* Onda de Audio Real (Waveform de Fondo en Modo Studio CapCut) */}
           {isStudioCapCutMode && waveformPeaks && waveformPeaks.length > 0 && (
-            <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-16 opacity-60 pointer-events-none z-0">
-              <canvas ref={waveformCanvasRef} className="h-full" />
+            <div className="absolute left-0 top-1/2 -translate-y-1/2 h-16 opacity-60 pointer-events-none z-0">
+              <canvas
+                ref={waveformCanvasRef}
+                className="h-full block"
+                style={{ width: `${Math.max(2000, Math.round(effectiveTotalDuration * pixelsPerSecond))}px`, height: '64px' }}
+              />
             </div>
           )}
 
@@ -1860,12 +1912,12 @@ export const Prompter: React.FC<PrompterProps> = ({
               )
               .map((pt) => (
                 <div
-                  key={`bar-lbl-${pt.bar}-${pt.time}`}
+                  key={`bar-lbl-${pt.bar}-${pt.time.toFixed(3)}`}
                   className="absolute top-0 bottom-0 border-l-2 border-zinc-300 pl-1.5 flex items-center gap-1 pointer-events-none"
                   style={{ left: `${pt.time * pixelsPerSecond}px` }}
                 >
                   <span className="text-[9.5px] font-mono font-extrabold text-zinc-600 uppercase whitespace-nowrap">
-                    C.{pt.bar}
+                    {pt.bar <= 0 ? 'PRE' : `C.${pt.bar}`}
                   </span>
                   <span className="text-[8.5px] font-mono text-zinc-400 whitespace-nowrap">
                     {formatMmSs(pt.time)}
@@ -2201,6 +2253,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                 const snapped = snapTimeSec(rawTime);
                 setEditingChordIdx(null);
                 setAddingChordTime(snapped.time);
+                setEditingChordTime(snapped.time);
                 setEditingChordValue('C');
               }
             }}
@@ -2215,7 +2268,7 @@ export const Prompter: React.FC<PrompterProps> = ({
 
               return (
                 <div
-                  key={i}
+                  key={`${block.originalIndex}-${block.time.toFixed(3)}-${i}`}
                   className={`absolute h-full flex flex-col justify-center ${
                     block.isActive
                       ? 'border-l-4 border-amber-500 bg-amber-50/95 z-20 shadow-sm'
@@ -2235,6 +2288,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     if (onEditChord) {
                       setAddingChordTime(null);
                       setEditingChordIdx(block.originalIndex);
+                      setEditingChordTime(Number(chords[block.originalIndex]?.time ?? block.time));
                       setEditingChordValue(block.chord);
                     }
                   }}

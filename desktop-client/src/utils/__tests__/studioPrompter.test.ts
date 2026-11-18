@@ -4,7 +4,11 @@ import {
   scheduleSectionVoiceCues,
   resolveCueBufferName,
 } from '../cueEngine';
-import { detectChordsAndBeatsLocalDSP } from '../chordDetectorDSP';
+import {
+  detectChordsAndBeatsLocalDSP,
+  computeChromaVector,
+  transposeChordSymbol,
+} from '../chordDetectorDSP';
 
 describe('Studio Prompter Engine & Cue Synchronization (Pasada 1 & Pasada 2)', () => {
   const mockCueBuffers: Record<string, any> = {
@@ -172,5 +176,52 @@ describe('Studio Prompter Engine & Cue Synchronization (Pasada 1 & Pasada 2)', (
     expect(detectedNames).toContain('Am');
     expect(detectedNames).toContain('F');
     expect(detectedNames).toContain('G');
+  });
+
+  it('7. transposeChordSymbol preserva sufijos complejos en mayúsculas y bajos invertidos', () => {
+    expect(transposeChordSymbol('CMAJ7', 2)).toBe('DMAJ7');
+    expect(transposeChordSymbol('CAUG', 2)).toBe('DAUG');
+    expect(transposeChordSymbol('F#m7b5/C#', 1)).toBe('Gm7b5/D');
+    expect(transposeChordSymbol('Ebdim', 3)).toBe('Gbdim');
+    expect(transposeChordSymbol('Gadd9', -2)).toBe('Fadd9');
+    expect(transposeChordSymbol('NC', 5)).toBe('NC');
+    expect(transposeChordSymbol('N', -3)).toBe('N');
+  });
+
+  it('8. computeChromaVector separa frecuencias graves C2 (65.41 Hz) vs C#2 (69.30 Hz) sin cuantización de bin', () => {
+    const sampleRate = 48000;
+    const durationSec = 0.5;
+    const length = Math.floor(sampleRate * durationSec);
+    const makeTone = (freq: number) => {
+      const buf = new Float32Array(length);
+      for (let i = 0; i < length; i++) {
+        buf[i] = Math.sin((2 * Math.PI * freq * i) / sampleRate);
+      }
+      return buf;
+    };
+
+    const chromaC2 = computeChromaVector(makeTone(65.406), sampleRate, 0, durationSec);
+    const chromaCs2 = computeChromaVector(makeTone(69.296), sampleRate, 0, durationSec);
+
+    // Pitch class 0 = C, Pitch class 1 = C#
+    expect(chromaC2[0]).toBeGreaterThan(chromaC2[1] * 2);
+    expect(chromaCs2[1]).toBeGreaterThan(chromaCs2[0] * 2);
+  });
+
+  it('9. buildShiftedBeatGrid genera beats pre-offset e indexa downbeats consistente con compás', () => {
+    const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+      { bpm: 120, timeSignature: '4/4', firstBeatOffset: 1.5, beatTimes: [1.5, 2.0, 2.5, 3.0, 3.5] },
+      0,
+      10,
+      0
+    );
+    const preOffsetBeats = shiftedBeatTimes.filter((t) => t < 1.49);
+    expect(preOffsetBeats.length).toBeGreaterThanOrEqual(2);
+    expect(shiftedBeatTimes[downbeatIndex]).toBeCloseTo(1.5, 4);
+    expect(downbeatIndex).toBeGreaterThanOrEqual(2);
+    // Verificar monotonicidad temporal estricta en todo el grid
+    for (let i = 1; i < shiftedBeatTimes.length; i++) {
+      expect(shiftedBeatTimes[i]).toBeGreaterThan(shiftedBeatTimes[i - 1]);
+    }
   });
 });

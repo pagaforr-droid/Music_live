@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   generateClickBuffer,
+  loadCueBuffers,
   resolveCueBufferName,
   scheduleSectionVoiceCues,
   buildShiftedBeatGrid
@@ -72,8 +73,18 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const startTime = useRef<number>(0);
   const pauseTime = useRef<number>(0);
   const loopState = useRef<{ isLooping: boolean; start: number; end: number }>({ isLooping: false, start: 0, end: 0 });
-  // Referencia para la duración del Pre-Roll (Cuenta Regresiva)
+  // Estado reactivo y referencia para la duración del Pre-Roll (Cuenta Regresiva de 2 compases)
+  const [preRollEnabled, setPreRollEnabledState] = useState<boolean>(false);
+  const preRollEnabledRef = useRef<boolean>(false);
+  const [preRollDuration, setPreRollDurationState] = useState<number>(0);
   const preRollDurationRef = useRef(0);
+
+  const computePreRollSeconds = useCallback((pd: any, enabled: boolean): number => {
+    if (!enabled || !pd || !(Number(pd.bpm) > 0)) return 0;
+    const beatsPerMeasure = parseInt(pd.timeSignature?.split('/')[0]) || 4;
+    const secondsPerBeat = 60 / Number(pd.bpm);
+    return Math.min(secondsPerBeat * beatsPerMeasure * 2, 16);
+  }, []);
   
   // Referencias para programación en tiempo real
   const clickSources = useRef<AudioBufferSourceNode[]>([]);
@@ -83,9 +94,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const cueBuffersRef = useRef<Record<string, AudioBuffer>>({});
   const cueOffsetsRef = useRef<Record<string, number>>({});
   
-  // Referencias para el auto-play al buscar
+  // Referencias para el auto-play al buscar sin perder el estado en scrubbing continuo
   const prompterDataRef = useRef<any>(null);
   const manualGridOffsetRef = useRef<number>(0);
+  const wasPlayingBeforeSeekRef = useRef<boolean>(false);
   
   const animationFrame = useRef<number>(0);
   const seekTimeoutRef = useRef<number | null>(null);
@@ -249,10 +261,12 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     }
     // ------------------------------------------------------------------------
 
-    let preRollDuration = 0;
-    preRollDurationRef.current = preRollDuration;
+    const nextPreRoll = computePreRollSeconds(prompterData, preRollEnabledRef.current);
+    preRollDurationRef.current = nextPreRoll;
+    setPreRollDurationState(nextPreRoll);
     if (maxDuration > 0) {
       setTotalDuration(maxDuration);
+      totalDurationRef.current = maxDuration;
     }
 
     // Guardar para uso interno respetando fallback chords[0].time
@@ -266,33 +280,15 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     manualGridOffsetRef.current = _gridOffsetTime - baseFirstBeat;
 
     // Resetear el reloj visual al inicio del Pre-Roll
-    setCurrentTime(-preRollDuration);
+    setCurrentTime(-nextPreRoll);
     pauseTime.current = 0;
     
-    // Pre-cargar todas las voces desde public/cues/
-    const cueNames = ['intro', 'verso', 'pre-coro', 'coro', 'puente', 'solo', 'final', '1', '2', '3', '4'];
-    await Promise.all(cueNames.map(async (name) => {
-       try {
-         if (!cueBuffersRef.current[name]) {
-             const res = await fetch(`/cues/${name}.mp3`);
-             if (res.ok) {
-               const arrayBuffer = await res.arrayBuffer();
-               const audioBuffer = await audioContext.current!.decodeAudioData(arrayBuffer);
-               cueBuffersRef.current[name] = audioBuffer;
-               
-               // Auto-Trim: Detectar el inicio real de la voz para saltar el silencio (padding del MP3)
-               const data = audioBuffer.getChannelData(0);
-               let startSample = 0;
-               for (let i = 0; i < data.length; i++) {
-                  if (Math.abs(data[i]) > 0.05) { startSample = i; break; }
-               }
-               cueOffsetsRef.current[name] = startSample / audioBuffer.sampleRate;
-             }
-         }
-       } catch (e) {
-         console.error("No se pudo cargar cue:", name);
-       }
-    }));
+    // Pre-cargar todas las voces desde public/cues/ usando loadCueBuffers unificado (margen 5ms)
+    if (Object.keys(cueBuffersRef.current).length < 11 && audioContext.current) {
+      const loadedCues = await loadCueBuffers(audioContext.current);
+      cueBuffersRef.current = { ...cueBuffersRef.current, ...loadedCues.cueBuffers };
+      cueOffsetsRef.current = { ...cueOffsetsRef.current, ...loadedCues.cueOffsets };
+    }
 
     setLoadProgress({ loaded: activeStemsArray.length, total: activeStemsArray.length, currentFile: '¡Todas las pistas cargadas en RAM!' });
     return prompterData;
@@ -558,7 +554,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (globalOffset < preRollDuration) {
         source.start(now + (preRollDuration - globalOffset), 0);
       } else {
-        source.start(0, globalOffset - preRollDuration);
+        source.start(now, globalOffset - preRollDuration);
       }
     });
     
@@ -571,15 +567,24 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     updateTime();
   };
 
-  const pause = () => {
+  const pause = (isInternalSeek: unknown = false) => {
     if (!audioContext.current) return;
+    if (isInternalSeek !== true) {
+      if (seekTimeoutRef.current) {
+        clearTimeout(seekTimeoutRef.current);
+        seekTimeoutRef.current = null;
+      }
+      wasPlayingBeforeSeekRef.current = false;
+    }
     sourceNodes.current.forEach(source => {
       try { source.stop(); } catch (e) {}
     });
     clickSources.current.forEach(src => { try { src.stop(); } catch (e) {} });
     cueSources.current.forEach(src => { try { src.stop(); } catch (e) {} });
     
-    pauseTime.current = audioContext.current.currentTime - startTime.current;
+    if (isPlayingRef.current) {
+      pauseTime.current = audioContext.current.currentTime - startTime.current;
+    }
     setIsPlaying(false);
     isPlayingRef.current = false;
     cancelAnimationFrame(animationFrame.current);
@@ -587,7 +592,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
   // Resetea completamente el reloj, el estado de reproducción y los nodos al cambiar de canción
   const resetEngine = useCallback(() => {
-    if (seekTimeoutRef.current) clearTimeout(seekTimeoutRef.current);
+    if (seekTimeoutRef.current) {
+      clearTimeout(seekTimeoutRef.current);
+      seekTimeoutRef.current = null;
+    }
+    wasPlayingBeforeSeekRef.current = false;
     cancelAnimationFrame(animationFrame.current);
     sourceNodes.current.forEach((source) => {
       try {
@@ -617,6 +626,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     pauseTime.current = 0;
     startTime.current = 0;
     preRollDurationRef.current = 0;
+    setPreRollDurationState(0);
     manualGridOffsetRef.current = 0;
     loopState.current = { isLooping: false, start: 0, end: 0 };
     setCurrentTime(0);
@@ -629,17 +639,18 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     
     const globalTime = audioContext.current.currentTime - startTime.current;
     const visualTime = globalTime - preRollDurationRef.current;
+    const currentTotalDur = totalDurationRef.current;
     
-    // 5. Vamp / Loop Logic (Requiere adaptar globalTime vs visualTime si se usa)
+    // 5. Vamp / Loop Logic
     if (loopState.current.isLooping && visualTime >= loopState.current.end) {
-      pause();
-      pauseTime.current = loopState.current.start + preRollDurationRef.current;
-      play();
+      pause(true);
+      pauseTime.current = Math.max(0, loopState.current.start + preRollDurationRef.current);
+      void play();
       return;
     }
 
-    // Auto-stop al final de la canción
-    if (totalDuration > 0 && globalTime >= totalDuration + preRollDurationRef.current) {
+    // Auto-stop al final de la canción (usando totalDurationRef para evitar stale closure)
+    if (currentTotalDur > 0 && globalTime >= currentTotalDur + preRollDurationRef.current) {
       pause();
       pauseTime.current = 0;
       setCurrentTime(-preRollDurationRef.current);
@@ -654,23 +665,50 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
   const seekTo = (newVisualTime: number) => {
     if (!audioContext.current) return;
-    const wasPlaying = isPlayingRef.current;
-    
-    if (wasPlaying) {
-      pause();
+    if (isPlayingRef.current) {
+      wasPlayingBeforeSeekRef.current = true;
+      pause(true);
     }
-    
-    const preRollDuration = preRollDurationRef.current;
-    // Permitir buscar desde -preRollDuration hasta totalDuration
-    const globalTime = Math.max(0, Math.min(newVisualTime + preRollDuration, (totalDuration > 0 ? totalDuration : 600) + preRollDuration));
+    const shouldResume = wasPlayingBeforeSeekRef.current;
+    const preRollDur = preRollDurationRef.current;
+    const maxDur = totalDurationRef.current > 0 ? totalDurationRef.current : 600;
+    const clampedVisual = Math.max(-preRollDur, Math.min(newVisualTime, maxDur));
+    const globalTime = Math.max(0, Math.min(clampedVisual + preRollDur, maxDur + preRollDur));
     pauseTime.current = globalTime;
-    setCurrentTime(newVisualTime);
+    setCurrentTime(clampedVisual);
     
-    if (wasPlaying) {
+    if (shouldResume) {
       if (seekTimeoutRef.current) clearTimeout(seekTimeoutRef.current);
-      seekTimeoutRef.current = window.setTimeout(() => play(), 50);
+      seekTimeoutRef.current = window.setTimeout(() => {
+        seekTimeoutRef.current = null;
+        wasPlayingBeforeSeekRef.current = false;
+        void play();
+      }, 50);
     }
   };
+
+  const togglePreRoll = useCallback((forceValue?: boolean) => {
+    const nextEnabled = typeof forceValue === 'boolean' ? forceValue : !preRollEnabledRef.current;
+    const oldPreRoll = preRollDurationRef.current;
+    const currentVisual = isPlayingRef.current && audioContext.current
+      ? (audioContext.current.currentTime - startTime.current) - oldPreRoll
+      : pauseTime.current - oldPreRoll;
+
+    preRollEnabledRef.current = nextEnabled;
+    setPreRollEnabledState(nextEnabled);
+
+    const nextPreRoll = computePreRollSeconds(prompterDataRef.current, nextEnabled);
+    preRollDurationRef.current = nextPreRoll;
+    setPreRollDurationState(nextPreRoll);
+
+    if (!isPlayingRef.current && currentVisual <= 0.05) {
+      pauseTime.current = 0;
+      setCurrentTime(-nextPreRoll);
+    } else {
+      const nextVisual = Math.max(-nextPreRoll, currentVisual);
+      seekTo(nextVisual);
+    }
+  }, [computePreRollSeconds]);
 
   const setLoop = (start: number, end: number, enable: boolean) => {
     loopState.current = { isLooping: enable, start, end };
@@ -701,6 +739,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const exportLiveMix = async (songId: string, bandId: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
+    await ensureCueBuffersLoaded();
     
     let maxBufDuration = totalDuration;
     buffers.current.forEach(buf => {
@@ -720,6 +759,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const sampleRate = audioContext.current.sampleRate;
     const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; // 5 seconds tail
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
+    const hasInstrumentSolo = stems.some((s) => s.type === 'Instrument' && s.solo);
 
     const renderMix = async (isFoh: boolean): Promise<{ buffer: AudioBuffer, blob: Blob }> => {
       onProgress(`Preparando renderizado ${isFoh ? 'FOH' : 'CUE'}...`);
@@ -730,14 +770,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       // Render Stems
       stems.forEach(stem => {
-        // FOH: Only Music. CUE: Only Click & Cues (and maybe Music if they didn't mute it? No, user wants CUE to be click+cue, FOH to be music).
-        // Actually, the user asked for FOH = Stereo Music, CUE = Stereo Click+Cue.
-        // Let's filter:
         const isMusic = stem.type === 'Instrument';
         if (isFoh && !isMusic) return; // FOH only gets instruments
         if (!isFoh && isMusic) return; // CUE only gets click and cues
 
-        const isMuted = stem.muted;
+        const isMuted = stem.muted || (isMusic && hasInstrumentSolo && !stem.solo);
         if (isMuted) return;
 
         if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
@@ -996,37 +1033,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     return peaks.map((p) => Math.max(0.04, Math.min(1, p / globalMax)));
   }, [stems]);
 
-  // Asegurar que los audios de voz guía estén cargados en RAM incluso antes de Cargar Stems
+  // Asegurar que los audios de voz guía estén cargados en RAM incluso antes de Cargar Stems (con margen 5ms)
   const ensureCueBuffersLoaded = useCallback(async () => {
     if (!audioContext.current) return;
     if (audioContext.current.state === 'suspended') {
       try { await audioContext.current.resume(); } catch {}
     }
-    const cueNames = ['intro', 'verso', 'pre-coro', 'coro', 'puente', 'solo', 'final', '1', '2', '3', '4'];
-    const missing = cueNames.filter((n) => !cueBuffersRef.current[n]);
-    if (missing.length === 0) return;
-
-    await Promise.all(
-      missing.map(async (name) => {
-        try {
-          const res = await fetch(`/cues/${name}.mp3`);
-          if (res.ok && audioContext.current) {
-            const arrayBuffer = await res.arrayBuffer();
-            const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer);
-            cueBuffersRef.current[name] = audioBuffer;
-            const data = audioBuffer.getChannelData(0);
-            let startSample = 0;
-            for (let i = 0; i < data.length; i++) {
-              if (Math.abs(data[i]) > 0.05) {
-                startSample = i;
-                break;
-              }
-            }
-            cueOffsetsRef.current[name] = startSample / audioBuffer.sampleRate;
-          }
-        } catch {}
-      })
-    );
+    if (Object.keys(cueBuffersRef.current).length >= 11) return;
+    const loadedCues = await loadCueBuffers(audioContext.current);
+    cueBuffersRef.current = { ...cueBuffersRef.current, ...loadedCues.cueBuffers };
+    cueOffsetsRef.current = { ...cueOffsetsRef.current, ...loadedCues.cueOffsets };
   }, []);
 
   // Pre-escucha inmediata de una etiqueta de Voz Guía (al soltar o hacer clic en 🔊)
@@ -1064,6 +1080,21 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (typeof nextManualGridOffset === 'number') {
         manualGridOffsetRef.current = nextManualGridOffset;
       }
+      if (preRollEnabledRef.current) {
+        const oldPre = preRollDurationRef.current;
+        const nextPre = computePreRollSeconds(nextPrompterData, true);
+        if (Math.abs(nextPre - oldPre) > 0.001) {
+          preRollDurationRef.current = nextPre;
+          setPreRollDurationState(nextPre);
+          if (isPlayingRef.current) {
+            startTime.current -= nextPre - oldPre;
+          } else if (pauseTime.current <= 0.001) {
+            setCurrentTime(-nextPre);
+          } else {
+            pauseTime.current = Math.max(0, pauseTime.current + (nextPre - oldPre));
+          }
+        }
+      }
       if (!isPlayingRef.current || !audioContext.current) return;
 
       const now = audioContext.current.currentTime;
@@ -1075,7 +1106,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         globalOffset
       );
     },
-    [scheduleLiveClicksAndCues]
+    [scheduleLiveClicksAndCues, computePreRollSeconds]
   );
 
   const exportGhostBounce = async (onProgress: (msg: string) => void): Promise<Blob> => {
@@ -1087,18 +1118,22 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
 
+    const prompterData = prompterDataRef.current;
+    const calculatedPreRoll = computePreRollSeconds(prompterData, true);
     const sampleRate = audioContext.current.sampleRate;
-    const lengthSeconds = maxBufDuration + preRollDurationRef.current + 5; 
+    const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; 
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
 
     onProgress('Preparando Ghost Bounce...');
     const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
     
-    const preRollDuration = preRollDurationRef.current;
+    const preRollDur = calculatedPreRoll;
+    const hasInstrumentSolo = stems.some((s) => s.type === 'Instrument' && s.solo);
 
     stems.forEach(stem => {
       const isMusic = stem.type === 'Instrument';
-      if (!isMusic) return; 
+      if (!isMusic) return;
+      if (stem.muted || (hasInstrumentSolo && !stem.solo)) return;
 
       const buffer = buffers.current.get(stem.id);
       if (!buffer) return;
@@ -1116,7 +1151,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       gain.connect(panner);
       panner.connect(offlineCtx.destination);
       
-      source.start(preRollDuration);
+      source.start(preRollDur);
     });
 
     onProgress('Renderizando Ghost Bounce...');
@@ -1129,6 +1164,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const exportMultitrackToZip = async (songName: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
+    await ensureCueBuffersLoaded();
     
     let maxBufDuration = totalDuration;
     buffers.current.forEach(buf => {
@@ -1153,10 +1189,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const { saveAs } = await import('file-saver');
 
     const zip = new JSZip();
+    const hasSolo = stems.some((s) => s.solo);
+    const activeStems = stems.filter((s) => !(s.muted || (hasSolo && !s.solo)));
+    const stemsToExport = activeStems.length > 0 ? activeStems : stems;
 
-    for (let i = 0; i < stems.length; i++) {
-      const stem = stems[i];
-      onProgress(`Renderizando ${stem.name} (${i+1}/${stems.length})...`);
+    for (let i = 0; i < stemsToExport.length; i++) {
+      const stem = stemsToExport[i];
+      onProgress(`Renderizando ${stem.name} (${i+1}/${stemsToExport.length})...`);
       
       const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
       
@@ -1262,6 +1301,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const exportFullMixToMp3 = async (songName: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
+    await ensureCueBuffersLoaded();
     
     let maxBufDuration = totalDuration;
     buffers.current.forEach(buf => {
@@ -1294,9 +1334,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       maxBufDuration,
       manualGridOffset
     );
+    const hasSolo = stems.some((s) => s.solo);
 
     stems.forEach(stem => {
-      const isMuted = stem.muted;
+      const isMuted = stem.muted || (hasSolo && !stem.solo);
       if (isMuted) return;
 
       if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
@@ -1446,7 +1487,9 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     setLoop,
     loadProgress,
     totalDuration,
-    preRollDuration: preRollDurationRef.current,
+    preRollDuration,
+    preRollEnabled,
+    togglePreRoll,
     exportLiveMix,
     exportGhostBounce,
     exportMultitrackToZip,

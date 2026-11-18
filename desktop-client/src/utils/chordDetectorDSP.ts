@@ -22,6 +22,40 @@ export interface LocalChordDetectionResult {
 }
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+const CHROMATIC_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const CHROMATIC_FLAT  = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+export function transposeSingleNote(note: string, semitones: number, preferFlatsHint?: boolean): string {
+  let idx = CHROMATIC_SHARP.indexOf(note);
+  const preferFlats = preferFlatsHint ?? note.includes('b');
+  if (idx === -1) idx = CHROMATIC_FLAT.indexOf(note);
+  if (idx === -1) return note;
+  const nextIdx = (((idx + semitones) % 12) + 12) % 12;
+  return preferFlats ? CHROMATIC_FLAT[nextIdx] : CHROMATIC_SHARP[nextIdx];
+}
+
+/**
+ * Transpone un símbolo de acorde (ej. "Cmaj7", "CMAJ7", "F#m7b5/C#", "Ebdim", "Gadd9")
+ * afectando únicamente la fundamental inicial y el bajo opcional tras '/', sin corromper
+ * letras A-G que formen parte del sufijo ("MAJ", "DIM", "AUG", "ADD").
+ */
+export function transposeChordSymbol(chord: string, semitones: number): string {
+  if (!chord) return chord;
+  const trimmed = chord.trim();
+  if (!trimmed || trimmed === 'N' || trimmed === 'NC') return chord;
+  const preferFlats = trimmed.includes('b');
+  return trimmed.replace(
+    /^([A-G][#b]?)(.*?)(\/([A-G][#b]?))?$/,
+    (_full, root: string, quality: string, slashPart?: string, bassNote?: string) => {
+      const nextRoot = transposeSingleNote(root, semitones, preferFlats);
+      const nextSlash =
+        slashPart && bassNote
+          ? `/${transposeSingleNote(bassNote, semitones, preferFlats)}`
+          : slashPart || '';
+      return `${nextRoot}${quality}${nextSlash}`;
+    }
+  );
+}
 
 interface ChordTemplate {
   suffix: string;
@@ -37,6 +71,8 @@ const CHORD_TEMPLATES: ChordTemplate[] = [
   { suffix: 'm7', intervals: [0, 3, 7, 10], weights: [1.0, 0.82, 0.75, 0.72], bias: 0.96 },
   { suffix: 'maj7', intervals: [0, 4, 7, 11], weights: [1.0, 0.8, 0.75, 0.72], bias: 0.95 },
   { suffix: 'sus4', intervals: [0, 5, 7], weights: [1.0, 0.85, 0.88], bias: 0.94 },
+  { suffix: 'dim', intervals: [0, 3, 6], weights: [1.0, 0.88, 0.88], bias: 0.92 },
+  { suffix: 'add9', intervals: [0, 4, 7, 2], weights: [1.0, 0.82, 0.8, 0.68], bias: 0.91 },
 ];
 
 // Perfiles Krumhansl-Kessler para estimar tonalidad global y favorecer acordes diatónicos
@@ -44,7 +80,8 @@ const MAJOR_KEY_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39,
 const MINOR_KEY_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
 
 /**
- * Calcula la energía espectral en una frecuencia dada mediante el algoritmo de Goertzel con ventana Hann.
+ * Calcula la energía espectral en una frecuencia exacta (DTFT / Generalized Goertzel) con ventana Hann,
+ * evitando la cuantización de bin entero que colapsaba semitonos graves en la octava 2.
  */
 function goertzelMagnitude(
   samples: Float32Array,
@@ -53,9 +90,8 @@ function goertzelMagnitude(
   targetFreq: number,
   sampleRate: number
 ): number {
-  const k = Math.round((length * targetFreq) / sampleRate);
-  if (k <= 0 || k >= length / 2) return 0;
-  const omega = (2 * Math.PI * k) / length;
+  if (targetFreq <= 20 || targetFreq >= sampleRate * 0.48 || length < 32) return 0;
+  const omega = (2 * Math.PI * targetFreq) / sampleRate;
   const coeff = 2 * Math.cos(omega);
   let s1 = 0;
   let s2 = 0;
@@ -75,6 +111,7 @@ function goertzelMagnitude(
 
 /**
  * Extrae el vector cromático de 12 notas (C..B) en una ventana de audio [startSec, endSec].
+ * Evalúa hasta 2 sub-ventanas (evitando el ataque percusivo inicial) para robustez ante articulaciones.
  */
 export function computeChromaVector(
   monoSamples: Float32Array,
@@ -88,30 +125,43 @@ export function computeChromaVector(
   const totalLen = endSample - startSample;
   if (totalLen < 512) return chroma;
 
-  // Sub-muestrear hasta 4096 muestras centradas en la ventana para máxima velocidad y resolución tonal
-  const analysisLen = Math.min(totalLen, 4096);
-  const offsetSample = startSample + Math.floor((totalLen - analysisLen) * 0.35);
+  // Escalado proporcional a sampleRate (~0.34s) para resolver semitonos graves (C2 vs C#2 = 3.89 Hz) a 44.1/48 kHz
+  const targetWindowSamples = Math.min(16384, Math.max(4096, Math.round(sampleRate * 0.34)));
+  const analysisLen = Math.min(totalLen, targetWindowSamples);
+  const offsets =
+    totalLen > analysisLen * 1.4
+      ? [
+          startSample + Math.floor((totalLen - analysisLen) * 0.22),
+          startSample + Math.floor((totalLen - analysisLen) * 0.62),
+        ]
+      : [startSample + Math.floor((totalLen - analysisLen) * 0.35)];
 
-  let rms = 0;
-  for (let i = 0; i < analysisLen; i++) {
-    const v = monoSamples[offsetSample + i];
-    rms += v * v;
-  }
-  rms = Math.sqrt(rms / analysisLen);
-  if (rms < 1e-4) return chroma;
-
-  // Evaluar octavas 2, 3, 4 y 5 (MIDI 36 = C2 a MIDI 83 = B5)
-  for (let pc = 0; pc < 12; pc++) {
-    let pcEnergy = 0;
-    for (let octave = 2; octave <= 5; octave++) {
-      const midi = (octave + 1) * 12 + pc;
-      const freq = 440 * Math.pow(2, (midi - 69) / 12);
-      const octWeight = octave === 3 || octave === 4 ? 1.0 : 0.65;
-      const magFund = goertzelMagnitude(monoSamples, offsetSample, analysisLen, freq, sampleRate);
-      pcEnergy += magFund * octWeight;
+  let validSubWindows = 0;
+  for (const offsetSample of offsets) {
+    let rms = 0;
+    for (let i = 0; i < analysisLen; i++) {
+      const v = monoSamples[offsetSample + i];
+      rms += v * v;
     }
-    chroma[pc] = pcEnergy;
+    rms = Math.sqrt(rms / analysisLen);
+    if (rms < 1e-4) continue;
+    validSubWindows++;
+
+    // Evaluar octavas 2, 3, 4 y 5 (MIDI 36 = C2 a MIDI 83 = B5)
+    for (let pc = 0; pc < 12; pc++) {
+      let pcEnergy = 0;
+      for (let octave = 2; octave <= 5; octave++) {
+        const midi = (octave + 1) * 12 + pc;
+        const freq = 440 * Math.pow(2, (midi - 69) / 12);
+        const octWeight = octave === 3 || octave === 4 ? 1.0 : 0.65;
+        const magFund = goertzelMagnitude(monoSamples, offsetSample, analysisLen, freq, sampleRate);
+        pcEnergy += magFund * octWeight;
+      }
+      chroma[pc] += pcEnergy;
+    }
   }
+
+  if (validSubWindows === 0) return chroma;
 
   // Normalización L2
   let norm = 0;
