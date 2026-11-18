@@ -168,6 +168,32 @@ export default function LivePrompter() {
     fetchSongs();
   }, []);
 
+  // Consolida cualquier desplazamiento manual (Nudge) dentro de firstBeatOffset/beatTimes antes de persistir
+  const consolidateGridOffset = useCallback((data: any, offset: number) => {
+    if (!offset || Math.abs(offset) < 0.0001) return data;
+    const baseFirstBeat =
+      data?.firstBeatOffset !== undefined
+        ? Number(data.firstBeatOffset)
+        : data?.chords && data.chords.length > 0
+        ? Number(data.chords[0].time)
+        : 0;
+    const nextFirstBeat = Number(Math.max(0, baseFirstBeat + offset).toFixed(4));
+    const nextBeatTimes =
+      Array.isArray(data?.beatTimes) && data.beatTimes.length > 0
+        ? data.beatTimes.map((t: number) => Number(Math.max(0, Number(t) + offset).toFixed(4)))
+        : data?.beatTimes;
+    const nextDownbeats =
+      Array.isArray(data?.downbeats) && data.downbeats.length > 0
+        ? data.downbeats.map((t: number) => Number(Math.max(0, Number(t) + offset).toFixed(4)))
+        : data?.downbeats;
+    return {
+      ...data,
+      firstBeatOffset: nextFirstBeat,
+      ...(nextBeatTimes ? { beatTimes: nextBeatTimes } : {}),
+      ...(nextDownbeats ? { downbeats: nextDownbeats } : {}),
+    };
+  }, []);
+
   // Fetch stems and prompter data when a song is selected
   useEffect(() => {
     if (!selectedSongId) return;
@@ -176,6 +202,7 @@ export default function LivePrompter() {
       setAudioLoaded(false);
       setLoadError(null);
       setIsVamping(false);
+      setManualGridOffset(0);
       setSectionsHistoryPast([]);
       setSectionsHistoryFuture([]);
       setHasUnsavedSections(false);
@@ -284,7 +311,17 @@ export default function LivePrompter() {
       const baseOffset = prompterData.firstBeatOffset !== undefined 
         ? prompterData.firstBeatOffset 
         : (prompterData.chords && prompterData.chords.length > 0 ? prompterData.chords[0].time : 0);
-      await loadStems(prompterData.bpm || 120, baseOffset + manualGridOffset, prompterData.timeSignature, prompterData.beatTimes, prompterData, stems);
+      const repaired = await loadStems(
+        prompterData.bpm || 120,
+        baseOffset + manualGridOffset,
+        prompterData.timeSignature,
+        prompterData.beatTimes,
+        prompterData,
+        stems
+      );
+      if (repaired) {
+        setPrompterData((prev: any) => ({ ...prev, ...repaired }));
+      }
       setWaveformPeaks(getCompositePeaks(900));
       setAudioLoaded(true);
     } catch (error: any) {
@@ -313,28 +350,34 @@ export default function LivePrompter() {
 
       await Promise.all(updates);
 
-      // Persistir configuración de Metrónomo IA y Voz Guía IA en prompter_data
+      // Persistir configuración de Metrónomo IA y Voz Guía IA en prompter_data (consolidando Nudge si existe)
       const clickStem = stems.find(s => s.id === 'synthetic-click');
       const cueStem = stems.find(s => s.id === 'synthetic-cues');
+      const basePrompter = consolidateGridOffset(prompterData, manualGridOffset);
       const updatedPrompterData = {
-        ...prompterData,
+        ...basePrompter,
         mixConfig: {
-          ...(prompterData.mixConfig || {}),
+          ...(basePrompter.mixConfig || {}),
           click: clickStem
-            ? { ...(prompterData.mixConfig?.click || {}), volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted }
+            ? { ...(basePrompter.mixConfig?.click || {}), volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted }
             : undefined,
           cues: cueStem
-            ? { ...(prompterData.mixConfig?.cues || {}), volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted }
+            ? { ...(basePrompter.mixConfig?.cues || {}), volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted }
             : undefined,
         }
       };
       setPrompterData(updatedPrompterData);
+      if (manualGridOffset !== 0) {
+        setManualGridOffset(0);
+      }
+      syncPrompterData(updatedPrompterData, 0);
       await persistPrompterDataSafe(selectedSongId, updatedPrompterData);
       
       const { data } = await supabase.from('stems').select('*').eq('song_id', selectedSongId).order('name');
       if (data) setDbStems(data);
 
-      alert('¡Configuración de faders, paneos y guías guardada exitosamente!');
+      setSaveToastMsg('¡Faders, paneos y guías guardados!');
+      setTimeout(() => setSaveToastMsg(null), 3200);
     } catch (err: any) {
       alert(`Error al guardar configuración: ${err.message}`);
     }
@@ -402,24 +445,11 @@ export default function LivePrompter() {
     }
   };
 
-  const handleNudge = async (amount: number) => {
-    const newOffset = manualGridOffset + amount;
+  const handleNudge = (amount: number) => {
+    const newOffset = Number((manualGridOffset + amount).toFixed(3));
     setManualGridOffset(newOffset);
-    if (audioLoaded) {
-      const baseOffset = prompterData.firstBeatOffset !== undefined 
-        ? prompterData.firstBeatOffset 
-        : (prompterData.chords && prompterData.chords.length > 0 ? prompterData.chords[0].time : 0);
-      await loadStems(prompterData.bpm || 120, baseOffset + newOffset, prompterData.timeSignature, prompterData.beatTimes, prompterData);
-      
-      if (isPlaying) {
-        const current = currentTime;
-        pause();
-        setTimeout(() => {
-          seekTo(current);
-          play();
-        }, 50);
-      }
-    }
+    setHasUnsavedSections(true);
+    syncPrompterData(prompterData, newOffset);
   };
 
   const handleHalveTempo = async () => {
@@ -431,7 +461,7 @@ export default function LivePrompter() {
     }
     const newData = { ...prompterData, bpm: newBpm, beatTimes: newBeatTimes };
     setPrompterData(newData);
-    await loadStems(newBpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, newBeatTimes, newData);
+    syncPrompterData(newData, manualGridOffset);
     
     if (selectedSongId) {
       await persistPrompterDataSafe(selectedSongId, newData);
@@ -453,7 +483,7 @@ export default function LivePrompter() {
     }
     const newData = { ...prompterData, bpm: newBpm, beatTimes: newBeatTimes };
     setPrompterData(newData);
-    await loadStems(newBpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, newBeatTimes, newData);
+    syncPrompterData(newData, manualGridOffset);
     
     if (selectedSongId) {
       await persistPrompterDataSafe(selectedSongId, newData);
@@ -505,14 +535,17 @@ export default function LivePrompter() {
 
   const handleClearBeatGrid = async () => {
     if (!prompterData.bpm) return;
-    const newData = { ...prompterData, beatTimes: [] };
+    const baseData = consolidateGridOffset(prompterData, manualGridOffset);
+    const newData = { ...baseData, beatTimes: [] };
     setPrompterData(newData);
-    await loadStems(prompterData.bpm, (prompterData.firstBeatOffset || 0) + manualGridOffset, prompterData.timeSignature, [], newData);
+    setManualGridOffset(0);
+    syncPrompterData(newData, 0);
     
     if (selectedSongId) {
       await persistPrompterDataSafe(selectedSongId, newData);
     }
-    alert("Grilla IA descartada. El metrónomo ahora es 100% matemático y rígido.");
+    setSaveToastMsg('Grilla matemática fija activada');
+    setTimeout(() => setSaveToastMsg(null), 3000);
   };
 
   const handleDetectChordsAI = async () => {
@@ -679,29 +712,36 @@ export default function LivePrompter() {
   };
 
   // --- Prompter Parser Logic ---
+  const formatTimestampMmSsCs = (rawSec: number) => {
+    const safeSec = Number.isFinite(rawSec) ? Math.max(0, rawSec) : 0;
+    const totalHundredths = Math.round(safeSec * 100);
+    const mins = Math.floor(totalHundredths / 6000);
+    const remHundredths = totalHundredths % 6000;
+    const secs = (remHundredths / 100).toFixed(2).padStart(5, '0');
+    return `${mins.toString().padStart(2, '0')}:${secs}`;
+  };
+
   const stringifyPrompterData = (data: any) => {
     let text = '# SECCIONES\n';
     if (data?.sections) {
       data.sections.forEach((s: any) => {
-        const mins = Math.floor(s.time / 60).toString().padStart(2, '0');
-        const secs = (s.time % 60).toFixed(2).padStart(5, '0');
+        const ts = formatTimestampMmSsCs(Number(s.time) || 0);
         const durTag = typeof s.duration === 'number' && s.duration > 0 ? ` [${s.duration.toFixed(2)}s]` : '';
         const muteTag = s.cueEnabled === false ? ' [MUTE]' : '';
-        text += `${mins}:${secs} ${s.section || s.name}${durTag}${muteTag}\n`;
+        text += `${ts} ${s.section || s.name}${durTag}${muteTag}\n`;
       });
     }
     text += '\n# ACORDES\n';
     if (data?.chords) {
       data.chords.forEach((c: any) => {
-        const mins = Math.floor(c.time / 60).toString().padStart(2, '0');
-        const secs = (c.time % 60).toFixed(2).padStart(5, '0');
-        text += `${mins}:${secs} ${c.chord}\n`;
+        const ts = formatTimestampMmSsCs(Number(c.time) || 0);
+        text += `${ts} ${c.chord}\n`;
       });
     }
     return text;
   };
 
-  const parsePrompterText = (text: string) => {
+  const parsePrompterText = (text: string, existingSections: any[] = []) => {
     const lines = text.split('\n');
     const result = { chords: [] as any[], sections: [] as any[] };
     let currentBlock = '';
@@ -714,17 +754,17 @@ export default function LivePrompter() {
         continue;
       }
       
-      const match = t.match(/^(\d{2}):(\d{2}(?:\.\d+)?)\s+(.+)$/);
+      const match = t.match(/^(\d{1,3}):(\d{2}(?:\.\d+)?)\s+(.+)$/);
       if (match) {
         const minutes = parseInt(match[1], 10);
         const seconds = parseFloat(match[2]);
-        const time = minutes * 60 + seconds;
+        const time = Number((minutes * 60 + seconds).toFixed(3));
         let content = match[3].trim();
 
         if (currentBlock === 'chords') {
           result.chords.push({ time, chord: content });
         } else {
-          let cueEnabled = true;
+          let cueEnabled: boolean | undefined = undefined;
           if (/\[MUTE\]/i.test(content)) {
             cueEnabled = false;
             content = content.replace(/\[MUTE\]/ig, '').trim();
@@ -735,23 +775,51 @@ export default function LivePrompter() {
             duration = parseFloat(durMatch[1]);
             content = content.replace(durMatch[0], '').trim();
           }
+
+          // Preservar id, duration o cueEnabled si existía una sección en ese mismo instante
+          const existingMatch = existingSections.find(
+            (s: any) => Math.abs((Number(s.time) || 0) - time) < 0.05
+          );
+          const resolvedDuration =
+            duration !== undefined
+              ? duration
+              : typeof existingMatch?.duration === 'number'
+              ? existingMatch.duration
+              : undefined;
+          const resolvedCueEnabled =
+            cueEnabled !== undefined
+              ? cueEnabled
+              : existingMatch?.cueEnabled !== undefined
+              ? existingMatch.cueEnabled
+              : true;
+
           result.sections.push({
+            id: existingMatch?.id || `sec_txt_${Date.now()}_${result.sections.length}`,
             time,
             name: content,
-            ...(duration !== undefined ? { duration } : {}),
-            ...(cueEnabled === false ? { cueEnabled: false } : {})
+            section: content,
+            ...(resolvedDuration !== undefined ? { duration: resolvedDuration } : {}),
+            cueEnabled: resolvedCueEnabled
           });
         }
       }
     }
+    result.chords.sort((a, b) => a.time - b.time);
+    result.sections.sort((a, b) => a.time - b.time);
     return result;
   };
 
   const handleSavePrompter = async () => {
     if (!selectedSongId) return;
-    const parsedData = parsePrompterText(prompterText);
+    const parsedData = parsePrompterText(prompterText, prompterData.sections || []);
+    setSectionsHistoryPast((h) => [
+      ...h.slice(-39),
+      (prompterData.sections || []).map((s: any) => ({ ...s }))
+    ]);
+    setSectionsHistoryFuture([]);
     const newData = { ...prompterData, chords: parsedData.chords, sections: parsedData.sections };
     setPrompterData(newData);
+    syncPrompterData(newData, manualGridOffset);
     setIsEditingPrompter(false);
     setHasUnsavedSections(false);
     
@@ -808,6 +876,7 @@ export default function LivePrompter() {
     if (!selectedSongId || isEditingPrompter) return;
     
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const targetTag = (e.target as HTMLElement)?.tagName;
       if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') return;
 
@@ -825,6 +894,10 @@ export default function LivePrompter() {
 
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+      // Los atajos de inserción por teclado (I, V, P, C, B, S, F) requieren que el modo "Tapping Teclado" esté activo,
+      // evitando colisiones accidentales con el atajo CapCut 'S' (Dividir sección seleccionada).
+      if (!isEditingSections) return;
+
       const keyMap: Record<string, string> = {
         'i': 'INTRO',
         'v': 'VERSO',
@@ -835,8 +908,6 @@ export default function LivePrompter() {
         'f': 'FINAL'
       };
       
-      // En modo CapCut, 's' sin selección o cuando se está en modo Live Tapping inserta SOLO
-      // (Prompter maneja 's' para Dividir cuando hay un bloque seleccionado con stopPropagation)
       const sectionName = keyMap[e.key.toLowerCase()];
       if (sectionName) {
         let exactTime = Math.max(0, currentTimeRef.current);
@@ -874,8 +945,21 @@ export default function LivePrompter() {
           setSectionsHistoryPast((h) => [...h.slice(-39), currentSections.map((s: any) => ({ ...s }))]);
           setSectionsHistoryFuture([]);
 
-          const filtered = currentSections.filter((s: any) => Math.abs(s.time - exactTime) > 0.25);
-          const nextSec = filtered.find((s: any) => s.time > exactTime + 0.25);
+          // Recortar cualquier sección previa cuya cola se solape con exactTime (Auto-Trim CapCut)
+          const filtered = currentSections
+            .filter((s: any) => Math.abs(s.time - exactTime) > 0.25)
+            .map((s: any) => {
+              if (s.time < exactTime && typeof s.duration === 'number' && s.time + s.duration > exactTime) {
+                return {
+                  ...s,
+                  duration: Number(Math.max(beatDur, exactTime - s.time).toFixed(3)),
+                };
+              }
+              return s;
+            });
+          const nextSec = filtered
+            .filter((s: any) => s.time > exactTime + 0.25)
+            .sort((a: any, b: any) => a.time - b.time)[0];
           const duration = nextSec
             ? Number(Math.max(beatDur, Math.min(defaultBarDur, nextSec.time - exactTime)).toFixed(3))
             : Number(defaultBarDur.toFixed(3));
@@ -900,13 +984,17 @@ export default function LivePrompter() {
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedSongId, isEditingPrompter, isPlaying, prompterData.beatTimes, prompterData.bpm, prompterData.firstBeatOffset, prompterData.timeSignature, manualGridOffset, previewVoiceCue]);
+  }, [selectedSongId, isEditingPrompter, isEditingSections, isPlaying, prompterData.beatTimes, prompterData.bpm, prompterData.firstBeatOffset, prompterData.timeSignature, manualGridOffset, previewVoiceCue]);
 
   const savePrompterData = async () => {
     if (!selectedSongId) return;
     try {
-      const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
-      syncPrompterData(merged);
+      const consolidated = consolidateGridOffset(prompterData, manualGridOffset);
+      if (manualGridOffset !== 0) {
+        setManualGridOffset(0);
+      }
+      const merged = await persistPrompterDataSafe(selectedSongId, consolidated);
+      syncPrompterData(merged, 0);
       setHasUnsavedSections(false);
       setIsEditingSections(false);
 
@@ -933,14 +1021,18 @@ export default function LivePrompter() {
       try {
         const clickStem = stems.find(s => s.id === 'synthetic-click');
         const cueStem = stems.find(s => s.id === 'synthetic-cues');
+        const basePrompter = consolidateGridOffset(prompterData, manualGridOffset);
+        if (manualGridOffset !== 0) setManualGridOffset(0);
         const updatedPrompterData = {
-          ...prompterData,
+          ...basePrompter,
           mixConfig: {
-            click: clickStem ? { volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted } : undefined,
-            cues: cueStem ? { volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted } : undefined,
+            ...(basePrompter.mixConfig || {}),
+            click: clickStem ? { ...(basePrompter.mixConfig?.click || {}), volume: clickStem.volume, pan: clickStem.pan, muted: clickStem.muted } : undefined,
+            cues: cueStem ? { ...(basePrompter.mixConfig?.cues || {}), volume: cueStem.volume, pan: cueStem.pan, muted: cueStem.muted } : undefined,
           }
         };
         const merged = await persistPrompterDataSafe(selectedSongId, updatedPrompterData);
+        syncPrompterData(merged, 0);
         await exportLiveMix(selectedSongId, FAKE_BAND_ID, merged, setExportProgress);
         alert('¡Mix En Vivo (Público FOH Estéreo + Músicos CUE Balanceado) exportado y listo para el Setlist!');
       } catch (err: any) {
@@ -959,7 +1051,10 @@ export default function LivePrompter() {
     if (confirm('¿Estás seguro de que deseas exportar cada pista (stems, click, cues) en WAV separados dentro de un archivo ZIP? (Esto tomará unos minutos)')) {
       setIsExportingMultitrack(true);
       try {
-        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        const consolidated = consolidateGridOffset(prompterData, manualGridOffset);
+        if (manualGridOffset !== 0) setManualGridOffset(0);
+        const merged = await persistPrompterDataSafe(selectedSongId, consolidated);
+        syncPrompterData(merged, 0);
         await exportMultitrackToZip(songName, merged, setExportProgress);
         alert('¡Exportación Multitrack completada exitosamente!');
       } catch (err: any) {
@@ -978,7 +1073,10 @@ export default function LivePrompter() {
     if (confirm('¿Deseas exportar la mezcla completa (todos los stems, click y cues) en formato MP3 (Alta Calidad 320kbps)?')) {
       setIsExportingMp3(true);
       try {
-        const merged = await persistPrompterDataSafe(selectedSongId, prompterData);
+        const consolidated = consolidateGridOffset(prompterData, manualGridOffset);
+        if (manualGridOffset !== 0) setManualGridOffset(0);
+        const merged = await persistPrompterDataSafe(selectedSongId, consolidated);
+        syncPrompterData(merged, 0);
         await exportFullMixToMp3(songName, merged, setExportProgress);
         alert('¡Exportación a MP3 completada exitosamente!');
       } catch (err: any) {
@@ -991,26 +1089,26 @@ export default function LivePrompter() {
   };
 
   return (
-    <div className="h-screen bg-[#08090c] text-zinc-300 flex flex-col font-sans overflow-hidden select-none relative">
+    <div className="h-screen bg-[#F4F6F9] text-slate-900 flex flex-col font-sans overflow-hidden select-none relative">
       
       {/* Error Alert */}
       {loadError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-950/90 backdrop-blur-xl border border-red-500/40 text-red-200 px-5 py-2.5 rounded-full shadow-[0_12px_30px_rgba(0,0,0,0.6)] flex items-center z-50 text-xs font-bold">
-          <AlertCircle size={14} className="mr-2 text-red-400" />
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-rose-50/95 backdrop-blur-xl border border-rose-300 text-rose-800 px-5 py-2.5 rounded-full shadow-[0_12px_30px_rgba(15,23,42,0.14)] flex items-center z-50 text-xs font-bold">
+          <AlertCircle size={14} className="mr-2 text-rose-600" />
           {loadError}
         </div>
       )}
 
-      {/* HEADER / TRANSPORT (QClay + Musiko.io Sleek Studio Toolbar) */}
-      <header className="h-16 bg-[#0d0f15]/95 backdrop-blur-xl border-b border-white/[0.06] flex items-center px-5 justify-between shrink-0 z-20 gap-3 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+      {/* HEADER / TRANSPORT (Apple Studio Light Sleek Toolbar) */}
+      <header className="h-16 bg-white/95 backdrop-blur-xl border-b border-slate-200/90 flex items-center px-5 justify-between shrink-0 z-20 gap-3 shadow-[0_2px_12px_rgba(15,23,42,0.04)]">
         
         {/* Left: Branding & Song Loader */}
         <div className="flex items-center gap-3 min-w-0">
-          <div className="flex items-center justify-center w-9 h-9 bg-gradient-to-br from-[#ef4444]/20 to-black text-[#ef4444] rounded-xl border border-[#ef4444]/30 shrink-0 shadow-[0_0_16px_rgba(239,68,68,0.18)]">
+          <div className="flex items-center justify-center w-9 h-9 bg-gradient-to-br from-sky-50 to-blue-100/80 text-sky-600 rounded-xl border border-sky-200/90 shrink-0 shadow-2xs">
              <Disc3 size={17} />
           </div>
           <select 
-            className="bg-[#08090c] border border-white/[0.08] text-white font-bold px-3.5 py-2 rounded-xl text-xs outline-none focus:border-[#ef4444]/50 w-[220px] shadow-[inset_0_2px_6px_rgba(0,0,0,0.65)] transition-colors"
+            className="bg-slate-50 hover:bg-slate-100/80 border border-slate-200/95 text-slate-900 font-bold px-3.5 py-2 rounded-xl text-xs outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/15 w-[230px] shadow-2xs transition-all cursor-pointer"
             value={selectedSongId || ''}
             onChange={(e) => setSelectedSongId(e.target.value)}
           >
@@ -1022,39 +1120,39 @@ export default function LivePrompter() {
           {selectedSongId && !audioLoaded && (
             <button
               onClick={handleLoadAudio}
-              className="bg-emerald-500 hover:bg-emerald-400 text-black px-3.5 py-2 rounded-full text-[10.5px] font-semibold uppercase tracking-wider transition-all whitespace-nowrap shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider transition-all whitespace-nowrap shadow-[0_4px_14px_rgba(5,150,105,0.28)] cursor-pointer"
             >
               ⚡ Cargar Stems a RAM
             </button>
           )}
         </div>
 
-        {/* Center: Tactile Transport Pod & LED Time Readout */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-[#08090c] p-1.5 rounded-full border border-white/[0.07] shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
+        {/* Center: Tactile Transport Pod & Digital Time Readout */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 bg-slate-100/95 p-1 rounded-full border border-slate-200/90 shadow-inner">
             <button 
               onClick={() => { pause(); seekTo(-(preRollDuration || 0)); }} 
-              className="stage-tactile-btn w-8 h-8 flex items-center justify-center rounded-full text-zinc-400 hover:text-white"
-              title="Reiniciar al Conteo Pre-Roll"
+              className="w-8 h-8 flex items-center justify-center rounded-full bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200/80 shadow-2xs transition-all cursor-pointer"
+              title="Reiniciar al Inicio / Conteo Pre-Roll"
             >
               <Square fill="currentColor" size={11} />
             </button>
             <button 
               onClick={isPlaying ? pause : play} 
               disabled={!audioLoaded || loadError !== null}
-              className={`w-11 h-8 flex items-center justify-center rounded-full transition-all disabled:opacity-40 ${
+              className={`w-11 h-8 flex items-center justify-center rounded-full transition-all disabled:opacity-40 cursor-pointer ${
                 isPlaying
-                  ? 'bg-gradient-to-br from-[#ef4444] to-[#dc2626] text-white shadow-[0_0_18px_rgba(239,68,68,0.6)] border border-red-400/40'
-                  : 'stage-tactile-btn text-zinc-200 hover:text-white'
+                  ? 'bg-gradient-to-br from-rose-600 to-rose-500 text-white shadow-[0_4px_14px_rgba(225,29,72,0.35)] border border-rose-500'
+                  : 'bg-sky-600 hover:bg-sky-500 text-white shadow-[0_3px_10px_rgba(2,132,199,0.28)]'
               }`}
-              title={isPlaying ? "Pausar" : "Reproducir"}
+              title={isPlaying ? "Pausar (Espacio)" : "Reproducir (Espacio)"}
             >
               {isPlaying ? <Pause fill="currentColor" size={14} /> : <Play fill="currentColor" size={14} className="ml-0.5" />}
             </button>
           </div>
 
-          <div className="bg-[#08090c] border border-white/[0.08] px-4 py-1.5 rounded-full flex items-center justify-center min-w-[112px] shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
-            <span className="text-sm font-mono font-medium text-white tracking-tight tabular-nums">
+          <div className="bg-slate-100/90 border border-slate-200/90 px-4 py-1.5 rounded-full flex items-center justify-center min-w-[116px] shadow-inner">
+            <span className="text-sm font-mono font-bold text-slate-900 tracking-tight tabular-nums">
               {formatTime(currentTime)}
             </span>
           </div>
@@ -1062,53 +1160,55 @@ export default function LivePrompter() {
 
         {/* Right: AI Chords, Transposer, Tempo & Nudge */}
         <div className="flex items-center gap-2 justify-end">
-          <div className="flex items-center gap-1 bg-[#08090c] rounded-full border border-white/[0.07] p-1 shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
+          <div className="flex items-center gap-1 bg-slate-100/90 rounded-full border border-slate-200/90 p-1">
             <button 
               onClick={handleDetectChordsAI}
               disabled={isDetectingChords || !selectedSongId}
-              className="hover:bg-purple-500/25 bg-purple-500/15 text-purple-300 border border-purple-500/35 px-3 py-1 rounded-full text-[10.5px] font-medium uppercase tracking-wide transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.18)]"
+              className="hover:bg-indigo-100 bg-indigo-50 text-indigo-700 border border-indigo-200/90 px-3 py-1 rounded-full text-[10.5px] font-bold uppercase tracking-wide transition-all disabled:opacity-45 flex items-center gap-1.5 shadow-2xs cursor-pointer"
               title="Detectar Acordes automáticamente desde la pista ★ Master"
             >
               <Activity size={11} className={isDetectingChords ? "animate-pulse" : ""} />
               {isDetectingChords ? 'Analizando...' : 'Acordes IA'}
             </button>
-            <div className="w-px h-3.5 bg-white/[0.08] mx-0.5"></div>
-            <span className="text-[9px] text-zinc-500 font-bold uppercase px-1">Tono:</span>
+            <div className="w-px h-3.5 bg-slate-300/80 mx-0.5"></div>
+            <span className="text-[9.5px] text-slate-500 font-bold uppercase px-1">Tono:</span>
             <button
               onClick={() => handleTransposeAllChords(-1)}
-              className="px-2 py-0.5 text-[10px] stage-tactile-btn text-zinc-300 hover:text-white rounded-full font-bold"
+              disabled={!selectedSongId}
+              className="px-2 py-0.5 text-[10.5px] bg-white hover:bg-slate-50 border border-slate-200/90 text-slate-700 hover:text-slate-950 rounded-full font-bold shadow-2xs disabled:opacity-40 cursor-pointer"
               title="Bajar todos los acordes 1 semitono"
             >
               -1
             </button>
             <button
               onClick={() => handleTransposeAllChords(1)}
-              className="px-2 py-0.5 text-[10px] stage-tactile-btn text-zinc-300 hover:text-white rounded-full font-bold"
+              disabled={!selectedSongId}
+              className="px-2 py-0.5 text-[10.5px] bg-white hover:bg-slate-50 border border-slate-200/90 text-slate-700 hover:text-slate-950 rounded-full font-bold shadow-2xs disabled:opacity-40 cursor-pointer"
               title="Subir todos los acordes 1 semitono"
             >
               +1
             </button>
-            <div className="w-px h-3.5 bg-white/[0.08] mx-0.5"></div>
-            <button onClick={handleHalveTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Mitad de Tempo">÷2</button>
-            <button onClick={handleDoubleTempo} className="px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-white font-bold transition-colors" title="Doble de Tempo">x2</button>
-            <button onClick={handleClearBeatGrid} className="hover:bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider transition-colors" title="Usar grilla matemática rígida">Fijar</button>
+            <div className="w-px h-3.5 bg-slate-300/80 mx-0.5"></div>
+            <button onClick={handleHalveTempo} disabled={!selectedSongId} className="px-1.5 py-0.5 text-[10.5px] text-slate-600 hover:text-slate-950 font-bold transition-colors disabled:opacity-40 cursor-pointer" title="Mitad de Tempo">÷2</button>
+            <button onClick={handleDoubleTempo} disabled={!selectedSongId} className="px-1.5 py-0.5 text-[10.5px] text-slate-600 hover:text-slate-950 font-bold transition-colors disabled:opacity-40 cursor-pointer" title="Doble de Tempo">x2</button>
+            <button onClick={handleClearBeatGrid} disabled={!selectedSongId} className="hover:bg-rose-100 bg-rose-50 text-rose-600 border border-rose-200/80 px-2 py-0.5 rounded-full text-[9.5px] font-bold uppercase tracking-wider transition-colors disabled:opacity-40 cursor-pointer" title="Usar grilla matemática rígida">Fijar</button>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#08090c] rounded-full border border-white/[0.07] py-1 px-2.5 shadow-[inset_0_2px_6px_rgba(0,0,0,0.75)]">
-            <span className="text-[9px] text-zinc-500 font-bold uppercase">Nudge</span>
-            <button onClick={() => handleNudge(-0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">-</button>
-            <span className="text-[10px] text-zinc-200 font-mono w-6 text-center tabular-nums">{(manualGridOffset * 1000).toFixed(0)}</span>
-            <button onClick={() => handleNudge(0.01)} className="text-zinc-400 hover:text-white text-xs px-1 font-bold">+</button>
+          <div className="flex items-center gap-1.5 bg-slate-100/90 rounded-full border border-slate-200/90 py-1 px-2.5">
+            <span className="text-[9.5px] text-slate-500 font-bold uppercase">Nudge</span>
+            <button onClick={() => handleNudge(-0.01)} disabled={!selectedSongId} className="w-5 h-5 rounded-full bg-white hover:bg-slate-50 border border-slate-200/80 text-slate-700 hover:text-slate-950 text-xs flex items-center justify-center font-bold disabled:opacity-40 cursor-pointer" title="Adelantar grilla -10ms">-</button>
+            <span className="text-[10.5px] text-slate-800 font-mono font-bold w-8 text-center tabular-nums">{(manualGridOffset * 1000).toFixed(0)}ms</span>
+            <button onClick={() => handleNudge(0.01)} disabled={!selectedSongId} className="w-5 h-5 rounded-full bg-white hover:bg-slate-50 border border-slate-200/80 text-slate-700 hover:text-slate-950 text-xs flex items-center justify-center font-bold disabled:opacity-40 cursor-pointer" title="Retrasar grilla +10ms">+</button>
           </div>
 
           {selectedSongId && (
             <button
               onClick={() => navigate('/lyrics')}
-              className="px-3 py-1.5 rounded-full stage-tactile-btn text-zinc-200 hover:text-white text-[10.5px] font-medium uppercase tracking-wide flex items-center gap-1.5 transition-all"
+              className="px-3 py-1.5 rounded-full bg-white hover:bg-sky-50 border border-slate-200/90 hover:border-sky-200 text-slate-700 hover:text-sky-700 text-[10.5px] font-bold uppercase tracking-wide flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
               title="Ir a Lyric Studio para sincronizar la letra de esta canción"
             >
               <span>Lyrics</span>
-              <ArrowRight size={11} className="text-[#ef4444]" />
+              <ArrowRight size={11} className="text-sky-600" />
             </button>
           )}
         </div>
@@ -1117,25 +1217,25 @@ export default function LivePrompter() {
       {/* MAIN LAYOUT */}
       <div className="flex-1 flex overflow-hidden relative">
         
-        {/* Progress Overlays */}
+        {/* Progress Overlays (Apple Studio Light Glass) */}
         {isDownloading && (
-          <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-md">
-            <Loader2 size={34} className="animate-spin text-emerald-500 mb-4" />
-            <h2 className="text-sm font-black text-white tracking-widest uppercase mb-1">Cargando Stems en Memoria RAM</h2>
-            <p className="text-xs text-zinc-400 mb-6 font-mono">{loadProgress.currentFile}</p>
-            <div className="w-64 bg-[#11131a] border border-white/[0.06] rounded-full h-2 overflow-hidden">
-              <div className="bg-emerald-500 h-full transition-all duration-300 shadow-[0_0_12px_rgba(16,185,129,0.6)]" style={{ width: `${(loadProgress.loaded / Math.max(1, loadProgress.total)) * 100}%` }}></div>
+          <div className="absolute inset-0 bg-white/88 z-40 flex flex-col items-center justify-center backdrop-blur-md">
+            <Loader2 size={34} className="animate-spin text-sky-600 mb-4" />
+            <h2 className="text-sm font-black text-slate-900 tracking-widest uppercase mb-1">Cargando Stems en Memoria RAM</h2>
+            <p className="text-xs text-slate-500 mb-6 font-mono">{loadProgress.currentFile}</p>
+            <div className="w-72 bg-slate-200/80 border border-slate-300/70 rounded-full h-2.5 overflow-hidden shadow-inner">
+              <div className="bg-gradient-to-r from-sky-500 to-emerald-500 h-full transition-all duration-300" style={{ width: `${(loadProgress.loaded / Math.max(1, loadProgress.total)) * 100}%` }}></div>
             </div>
           </div>
         )}
 
         {chordDetectionMsg && (
-          <div className="absolute inset-0 bg-[#08090c]/90 z-40 flex flex-col items-center justify-center backdrop-blur-md">
-            <Sparkles size={34} className="animate-pulse text-purple-400 mb-4" />
-            <h2 className="text-sm font-black text-purple-300 tracking-widest uppercase mb-1">Análisis Armónico IA</h2>
-            <p className="text-xs text-zinc-400 mb-6 font-mono">{chordDetectionMsg}</p>
-            <div className="w-64 bg-[#11131a] border border-white/[0.06] rounded-full h-2 overflow-hidden">
-              <div className="bg-purple-500 h-full w-full animate-pulse"></div>
+          <div className="absolute inset-0 bg-white/88 z-40 flex flex-col items-center justify-center backdrop-blur-md">
+            <Sparkles size={34} className="animate-pulse text-indigo-600 mb-4" />
+            <h2 className="text-sm font-black text-indigo-900 tracking-widest uppercase mb-1">Análisis Armónico IA</h2>
+            <p className="text-xs text-slate-500 mb-6 font-mono">{chordDetectionMsg}</p>
+            <div className="w-72 bg-slate-200/80 border border-slate-300/70 rounded-full h-2.5 overflow-hidden">
+              <div className="bg-indigo-600 h-full w-full animate-pulse"></div>
             </div>
           </div>
         )}
@@ -1626,29 +1726,32 @@ export default function LivePrompter() {
         </aside>
 
         {/* PROMPTER VISUAL AREA */}
-        <div className="flex-1 bg-[#08090c] flex flex-col relative overflow-hidden">
-          {/* Prompter Header Toolbar */}
-          <div className="h-12 border-b border-white/[0.06] flex items-center justify-between px-4 bg-[#0d1017]/90 backdrop-blur-md shrink-0">
+        <div className="flex-1 bg-[#F4F6F9] flex flex-col relative overflow-hidden">
+          {/* Prompter Header Toolbar (Apple Studio Light) */}
+          <div className="h-12 border-b border-slate-200/90 flex items-center justify-between px-4 bg-white/95 backdrop-blur-md shrink-0">
              <div className="flex items-center gap-3">
                <div className="flex items-center gap-2">
-                 <Mic size={14} className="text-[#ef4444]" />
-                 <h2 className="text-[10px] font-black text-white uppercase tracking-[0.16em]">2. Studio Prompter &bull; Voz Guía y Exportación</h2>
+                 <div className="w-6 h-6 rounded-lg bg-rose-50 border border-rose-200/80 flex items-center justify-center text-rose-600">
+                   <Mic size={13} />
+                 </div>
+                 <h2 className="text-[11px] font-black text-slate-900 uppercase tracking-[0.14em]">2. Studio Prompter &bull; Voz Guía y Exportación</h2>
                </div>
                
-               <div className="w-px h-4 bg-white/[0.08] mx-1"></div>
+               <div className="w-px h-4 bg-slate-200 mx-1"></div>
                
                <div className="flex items-center gap-2">
                   <button 
                     onClick={() => setIsEditingSections(!isEditingSections)}
-                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                    disabled={!selectedSongId}
+                    className={`px-3 py-1 rounded-full text-[10.5px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 disabled:opacity-40 cursor-pointer ${
                       isEditingSections
-                        ? 'bg-[#ef4444]/20 text-red-300 border border-[#ef4444]/40 shadow-[0_0_12px_rgba(239,68,68,0.2)]'
-                        : 'stage-tactile-btn text-zinc-300 hover:text-white'
+                        ? 'bg-rose-600 text-white border border-rose-600 shadow-[0_3px_10px_rgba(225,29,72,0.28)]'
+                        : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 hover:text-slate-950 border border-slate-200/90'
                     }`}
-                    title="El Timeline CapCut siempre está activo. Activa este modo para resaltar la grabación rápida con teclado (I, V, P, C, B, S, F)"
+                    title="El Timeline CapCut siempre está activo. Activa este modo para insertar secciones en vivo con el teclado (I, V, P, C, B, S, F)"
                   >
                     {isEditingSections ? 'Modo Tapping Activo' : '🎙️ Tapping Teclado'}
-                    {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] animate-pulse ml-1"></span>}
+                    {isEditingSections && <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping ml-1"></span>}
                   </button>
                   {(prompterData.sections?.length > 0) && (
                     <button
@@ -1657,7 +1760,7 @@ export default function LivePrompter() {
                           handleUpdateSections([]);
                         }
                       }}
-                      className="px-2 py-1 text-[9px] text-red-400 hover:text-red-300 uppercase tracking-widest font-bold"
+                      className="px-2.5 py-1 rounded-full bg-rose-50 hover:bg-rose-100 border border-rose-200/80 text-[9.5px] text-rose-600 hover:text-rose-700 uppercase tracking-wider font-bold transition-colors cursor-pointer"
                       title="Vaciar todos los bloques de sección"
                     >
                       Limpiar
@@ -1666,12 +1769,12 @@ export default function LivePrompter() {
                   <button
                     onClick={savePrompterData}
                     disabled={!selectedSongId}
-                    className={`px-3 py-1 text-[10px] rounded-full uppercase tracking-wider font-black transition-all flex items-center gap-1.5 ${
+                    className={`px-3.5 py-1 text-[10.5px] rounded-full uppercase tracking-wider font-bold transition-all flex items-center gap-1.5 disabled:opacity-40 cursor-pointer ${
                       hasUnsavedSections
-                        ? 'text-black bg-emerald-400 border border-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.5)] animate-pulse'
-                        : 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 hover:bg-emerald-500/25'
+                        ? 'text-white bg-emerald-600 hover:bg-emerald-500 border border-emerald-600 shadow-[0_3px_12px_rgba(5,150,105,0.3)] ring-2 ring-emerald-500/20'
+                        : 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100/80'
                     }`}
-                    title="Guardar configuración de Voz Guía y Secciones en la nube (Ctrl+S)"
+                    title="Guardar configuración de Voz Guía, Nudge y Secciones en la nube (Ctrl+S)"
                   >
                     <Save size={11} />
                     {hasUnsavedSections ? 'Guardar Voz Guía *' : 'Guardar Voz Guía'}
@@ -1679,18 +1782,18 @@ export default function LivePrompter() {
                   
                   {!isEditingSections && (
                     isEditingPrompter ? (
-                      <button onClick={handleSavePrompter} className="px-3 py-1 text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/35 rounded-full uppercase tracking-wider font-black hover:bg-emerald-500/25 flex items-center gap-1">
+                      <button onClick={handleSavePrompter} className="px-3.5 py-1 text-[10.5px] text-white bg-sky-600 hover:bg-sky-500 border border-sky-600 rounded-full uppercase tracking-wider font-bold flex items-center gap-1 shadow-2xs cursor-pointer">
                         <Save size={11} /> Guardar Texto
                       </button>
                     ) : (
-                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-3 py-1 text-[10px] stage-tactile-btn text-zinc-300 rounded-full uppercase tracking-wider font-bold hover:text-white flex items-center gap-1.5">
+                      <button onClick={() => { setPrompterText(stringifyPrompterData(prompterData)); setIsEditingPrompter(true); }} disabled={!selectedSongId} className="px-3 py-1 text-[10.5px] bg-slate-100 hover:bg-slate-200/80 border border-slate-200/90 text-slate-700 hover:text-slate-950 rounded-full uppercase tracking-wider font-bold flex items-center gap-1.5 disabled:opacity-40 cursor-pointer">
                         <Edit3 size={11} /> Editor Texto Acordes
                       </button>
                     )
                   )}
 
                   {saveToastMsg && (
-                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold flex items-center gap-1">
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
                       <Check size={11} /> {saveToastMsg}
                     </span>
                   )}
@@ -1701,7 +1804,7 @@ export default function LivePrompter() {
                 <button
                   onClick={handleSaveMixConfig}
                   disabled={!selectedSongId}
-                  className="px-3 py-1.5 stage-tactile-btn text-zinc-200 hover:text-white rounded-full text-[10px] font-bold uppercase tracking-wider transition-all"
+                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200/80 border border-slate-200/90 text-slate-700 hover:text-slate-950 rounded-full text-[10.5px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 cursor-pointer"
                   title="Guardar volúmenes, paneos y mutes de todos los canales (incluye Metrónomo y Voz Guía)"
                 >
                   Guardar Faders
@@ -1711,27 +1814,27 @@ export default function LivePrompter() {
                 <button
                   onClick={handleExportLiveMix}
                   disabled={isExporting || !audioLoaded}
-                  className="px-4 py-1.5 bg-gradient-to-r from-[#ef4444] to-[#dc2626] hover:from-[#f87171] hover:to-[#ef4444] text-white rounded-full text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_0_24px_rgba(239,68,68,0.4)] border border-red-400/30 cursor-pointer"
+                  className="px-4 py-1.5 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white rounded-full text-[10.5px] font-bold uppercase tracking-wider transition-all disabled:opacity-40 shadow-[0_4px_14px_rgba(2,132,199,0.28)] border border-sky-600 cursor-pointer"
                   title="Renderizar y subir la mezcla espacial optimizada (FOH en estéreo real + CUE balanceado para protección auditiva)"
                 >
                   {isExporting ? (exportProgress || 'Exportando...') : '🚀 Exportar Mix En Vivo (FOH / CUE)'}
                 </button>
 
                 {/* Opciones secundarias de descarga local */}
-                <div className="flex items-center gap-1 bg-[#08090c] p-1 rounded-full border border-white/[0.07]">
-                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack || !audioLoaded} className="px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-full border border-slate-200/90">
+                  <button onClick={handleExportMultitrackToZip} disabled={isExportingMultitrack || !audioLoaded} className="px-2.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-600 hover:text-slate-950 transition-colors disabled:opacity-40 cursor-pointer">
                     {isExportingMultitrack ? (exportProgress || 'ZIP...') : 'ZIP'}
                   </button>
-                  <div className="w-px h-3 bg-white/[0.08]"></div>
-                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3 || !audioLoaded} className="px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white transition-colors disabled:opacity-40">
+                  <div className="w-px h-3 bg-slate-300"></div>
+                  <button onClick={handleExportFullMixMp3} disabled={isExportingMp3 || !audioLoaded} className="px-2.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-600 hover:text-slate-950 transition-colors disabled:opacity-40 cursor-pointer">
                     {isExportingMp3 ? (exportProgress || 'MP3...') : 'MP3'}
                   </button>
                 </div>
              </div>
           </div>
           
-          {/* Playhead Timeline Scrubber */}
-          <div className="h-6 bg-[#08090c] border-b border-white/[0.06] flex items-center px-4 relative group cursor-pointer z-20">
+          {/* Playhead Timeline Scrubber (Apple Studio Light) */}
+          <div className="h-6 bg-slate-100/90 border-b border-slate-200/90 flex items-center px-4 relative group cursor-pointer z-20">
             <input 
               type="range" min={-(preRollDuration || 0)} max={totalDuration || 100} step="0.1" 
               value={isDraggingSlider ? localSliderTime : currentTime}
@@ -1741,27 +1844,61 @@ export default function LivePrompter() {
               disabled={!audioLoaded}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
             />
-            <div className="w-full h-1.5 bg-[#12151f] rounded-full relative pointer-events-none overflow-hidden">
-              <div className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-[#ef4444] to-amber-500 rounded-full shadow-[0_0_12px_rgba(239,68,68,0.8)]" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
+            <div className="w-full h-1.5 bg-slate-200/90 rounded-full relative pointer-events-none overflow-hidden shadow-inner">
+              <div className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-sky-500 to-rose-500 rounded-full" style={{ width: audioLoaded ? `${((currentTime + (preRollDuration || 0)) / Math.max(1, totalDuration + (preRollDuration || 0))) * 100}%` : '0%' }}></div>
             </div>
           </div>
 
-          <div className="flex-1 overflow-hidden relative">
+          <div className="flex-1 overflow-hidden relative p-2.5">
             {isEditingPrompter ? (
-              <div className="h-full flex flex-col p-5 bg-[#08090c]">
-                <p className="text-xs text-zinc-400 mb-2 font-mono uppercase tracking-widest">Formato: <span className="text-amber-400">MM:SS Acorde o Sección</span></p>
+              <div className="h-full flex flex-col p-5 bg-white rounded-2xl border border-slate-200/90 shadow-xs">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-slate-500 font-mono uppercase tracking-wider">
+                    Formato: <span className="text-sky-700 font-bold">MM:SS.CC Acorde o Sección [Duración] [MUTE]</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingPrompter(false)}
+                    className="px-3 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10.5px] font-bold uppercase cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                </div>
                 <textarea 
-                  className="flex-1 bg-[#0d1017] border border-white/[0.08] rounded-2xl p-4 text-xs font-mono text-zinc-200 outline-none focus:border-[#ef4444]/50 resize-none leading-relaxed custom-scrollbar shadow-[inset_0_2px_10px_rgba(0,0,0,0.6)]"
+                  className="flex-1 bg-slate-50 border border-slate-200/95 rounded-xl p-4 text-xs font-mono text-slate-800 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/15 resize-none leading-relaxed custom-scrollbar shadow-inner"
                   value={prompterText}
                   onChange={(e) => setPrompterText(e.target.value)}
-                  placeholder="# SECCIONES\n00:00 INTRO\n00:15 CORO\n\n# ACORDES\n00:05 Am\n00:10 C"
+                  placeholder="# SECCIONES\n00:00.00 INTRO [8.00s]\n00:15.00 CORO\n\n# ACORDES\n00:05.00 Am\n00:10.00 C"
                   spellCheck={false}
                 />
               </div>
             ) : (
               <div className="h-full relative flex flex-col justify-center">
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#ef4444]/[0.05] via-[#08090c] to-[#08090c] pointer-events-none"></div>
-                
+                {/* Banner Flotante de Estado Guiado cuando falta seleccionar canción o cargar stems en RAM */}
+                {(!selectedSongId || !audioLoaded) && (
+                  <div className="absolute bottom-11 right-5 z-40 bg-white/95 backdrop-blur-xl border border-slate-200/95 rounded-2xl px-4 py-2.5 shadow-[0_12px_32px_rgba(15,23,42,0.10)] flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
+                    <div className="text-[11px] text-slate-700 font-medium">
+                      {!selectedSongId ? (
+                        <span>Selecciona una canción en el menú superior para cargar sus pistas y estructura.</span>
+                      ) : (
+                        <span>
+                          Pistas listas ({stems.length} canales). Carga el audio en RAM para reproducir y ver la forma de onda.
+                        </span>
+                      )}
+                    </div>
+                    {selectedSongId && !audioLoaded && (
+                      <button
+                        type="button"
+                        onClick={handleLoadAudio}
+                        className="px-3 py-1 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[10.5px] font-bold uppercase tracking-wider shadow-xs cursor-pointer shrink-0"
+                      >
+                        ⚡ Cargar a RAM
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <Prompter 
                   currentTime={currentTime}
                   totalDuration={totalDuration}

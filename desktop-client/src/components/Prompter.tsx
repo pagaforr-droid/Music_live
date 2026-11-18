@@ -685,6 +685,12 @@ export const Prompter: React.FC<PrompterProps> = ({
     (nextList: NormalizedSectionBlock[], recordUndo = true) => {
       if (!onUpdateSections) return;
       const sorted = [...nextList].sort((a, b) => a.time - b.time);
+      if (dragStateRef.current) {
+        const activeDragIdx = sorted.findIndex((s) => s.id === dragStateRef.current?.sectionId);
+        if (activeDragIdx !== -1) {
+          setSelectedSectionIdx(activeDragIdx);
+        }
+      }
       const serialized: SectionEvent[] = sorted.map((s) => ({
         id: s.id,
         name: s.name,
@@ -769,9 +775,10 @@ export const Prompter: React.FC<PrompterProps> = ({
       if (!drag) return;
 
       const deltaPx = e.clientX - drag.initialClientX;
-      if (Math.abs(deltaPx) > 3) {
-        drag.hasMoved = true;
-      }
+      if (Math.abs(deltaPx) <= 2 && !drag.hasMoved) return;
+      const shouldRecordUndo = !drag.hasMoved;
+      drag.hasMoved = true;
+
       const deltaSec = deltaPx / pixelsPerSecond;
       const disableSnap = e.altKey;
       const rippleAdjacent = e.shiftKey;
@@ -804,7 +811,7 @@ export const Prompter: React.FC<PrompterProps> = ({
           ...target,
           time: newStart,
         };
-        emitSectionsUpdate(current, false);
+        emitSectionsUpdate(current, shouldRecordUndo);
       } else if (drag.mode === 'trim-left') {
         const originalEnd = drag.initialStartTime + drag.initialDuration;
         const maxStart = originalEnd - beatDuration;
@@ -837,7 +844,7 @@ export const Prompter: React.FC<PrompterProps> = ({
           time: clampedStart,
           duration: newDuration,
         };
-        emitSectionsUpdate(current, false);
+        emitSectionsUpdate(current, shouldRecordUndo);
       } else if (drag.mode === 'trim-right') {
         const rawEnd = Math.max(
           drag.initialStartTime + beatDuration,
@@ -873,7 +880,7 @@ export const Prompter: React.FC<PrompterProps> = ({
           ...target,
           duration: newDuration,
         };
-        emitSectionsUpdate(current, false);
+        emitSectionsUpdate(current, shouldRecordUndo);
       }
     };
 
@@ -1528,17 +1535,17 @@ export const Prompter: React.FC<PrompterProps> = ({
         </div>
       )}
 
-      {/* Modal / Popover de Edición Rápida de Acorde */}
+      {/* Modal / Popover de Edición Rápida de Acorde (Apple Studio Light) */}
       {editingChordIdx !== null && (
-        <div className="apple-glass-card absolute top-20 left-36 z-50 border border-amber-500/40 rounded-2xl p-4 shadow-[0_24px_60px_rgba(0,0,0,0.95)] w-84 pointer-events-auto backdrop-blur-2xl">
+        <div className="bg-white/98 absolute top-20 left-36 z-50 border border-slate-200 rounded-2xl p-4 shadow-[0_24px_56px_-12px_rgba(15,23,42,0.22)] w-84 pointer-events-auto backdrop-blur-2xl ring-1 ring-amber-400/40">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-400">
+            <span className="text-[10.5px] font-bold uppercase tracking-[0.14em] text-amber-600">
               Editar Acorde #{editingChordIdx + 1}
             </span>
             <button
               type="button"
               onClick={() => setEditingChordIdx(null)}
-              className="w-6 h-6 rounded-full bg-white/[0.06] hover:bg-white/15 text-zinc-400 hover:text-white text-xs font-bold flex items-center justify-center transition-colors"
+              className="w-6 h-6 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-900 text-xs font-bold flex items-center justify-center transition-colors cursor-pointer"
             >
               ✕
             </button>
@@ -1553,13 +1560,13 @@ export const Prompter: React.FC<PrompterProps> = ({
                 if (e.key === 'Escape') setEditingChordIdx(null);
               }}
               autoFocus
-              className="flex-1 bg-black/40 border border-white/15 focus:border-amber-400/80 rounded-xl px-3 py-1.5 text-lg font-bold text-white outline-none"
+              className="flex-1 bg-slate-50 border border-slate-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 rounded-xl px-3 py-1.5 text-lg font-black text-slate-900 outline-none"
               placeholder="Ej. Cm7, G/B..."
             />
             <button
               type="button"
               onClick={commitChordEdit}
-              className="px-3.5 py-2 rounded-full amber-pill-accent text-zinc-950 font-bold text-xs uppercase tracking-wider"
+              className="px-3.5 py-2 rounded-full bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs uppercase tracking-wider shadow-xs cursor-pointer transition-colors"
             >
               Guardar
             </button>
@@ -1570,7 +1577,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                   onRemoveChord(editingChordIdx);
                   setEditingChordIdx(null);
                 }}
-                className="px-2.5 py-2 rounded-full bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 font-bold text-xs transition-colors"
+                className="px-2.5 py-2 rounded-full bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 font-bold text-xs transition-colors cursor-pointer"
                 title="Eliminar acorde"
               >
                 🗑
@@ -1584,7 +1591,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                   key={r}
                   type="button"
                   onClick={() => setEditingChordValue(r)}
-                  className="py-1 rounded-lg bg-white/[0.04] hover:bg-white/15 border border-white/[0.06] text-[11px] font-semibold text-zinc-200 transition-colors"
+                  className="py-1 rounded-lg bg-slate-100 hover:bg-sky-50 hover:border-sky-300 hover:text-sky-700 border border-slate-200 text-[11px] font-bold text-slate-800 transition-colors cursor-pointer"
                 >
                   {r}
                 </button>
@@ -1599,7 +1606,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                     key={q || 'maj'}
                     type="button"
                     onClick={() => setEditingChordValue(target)}
-                    className="py-1 rounded-lg bg-white/[0.03] hover:bg-amber-500/20 hover:border-amber-400/40 border border-white/[0.04] text-[10px] font-mono text-zinc-300 transition-colors"
+                    className="py-1 rounded-lg bg-slate-50 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-800 border border-slate-200 text-[10px] font-mono font-semibold text-slate-700 transition-colors cursor-pointer"
                   >
                     {target}
                   </button>
@@ -1945,7 +1952,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                             initialClientX: e.clientX,
                             initialStartTime: block.time,
                             initialDuration: block.duration,
-                            hasMoved: true,
+                            hasMoved: false,
                           };
                         }}
                         className="w-3 h-full cursor-ew-resize bg-black/30 hover:bg-black/60 flex items-center justify-center shrink-0 transition-colors z-30 border-r border-white/20"
@@ -2042,7 +2049,7 @@ export const Prompter: React.FC<PrompterProps> = ({
                             initialClientX: e.clientX,
                             initialStartTime: block.time,
                             initialDuration: block.duration,
-                            hasMoved: true,
+                            hasMoved: false,
                           };
                         }}
                         className="w-3 h-full cursor-ew-resize bg-black/30 hover:bg-black/60 flex items-center justify-center shrink-0 transition-colors z-30 border-l border-white/20"

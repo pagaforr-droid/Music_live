@@ -117,11 +117,12 @@ export const scheduleSectionVoiceCues = (
     const resolvedName = resolveCueBufferName(section.name || section.section || '', cueBuffers);
     const beat1Cue = resolvedName || '1';
 
-    // Si estamos en pre-escucha sin pre-roll (preRollDuration === 0) y la sección está en el compás 1 (< beatsPerMeasure),
-    // anunciar el nombre de la sección en su downbeat para dar feedback auditivo en Studio Prompter
+    // Si no caben todos los pulsos de un compás completo antes del downbeat (ej. preRollDuration === 0 en Compás 1),
+    // anunciar la etiqueta de la sección directamente en su pulso de inicio para nunca perder el aviso vocal.
     if (nearestBeatIdx < beatsPerMeasure) {
-      if (preRollDuration === 0 && resolvedName && !scheduledBeats.has(nearestBeatIdx)) {
-        schedule(resolvedName, nearestBeatIdx);
+      const directCue = resolvedName || (preRollDuration === 0 ? beat1Cue : '');
+      if (directCue && !scheduledBeats.has(nearestBeatIdx)) {
+        schedule(directCue, nearestBeatIdx);
         scheduledBeats.add(nearestBeatIdx);
       }
       return;
@@ -167,6 +168,80 @@ export const scheduleSectionVoiceCues = (
   }
 };
 
+export interface ShiftedBeatGridResult {
+  shiftedBeatTimes: number[];
+  downbeatIndex: number;
+}
+
+/**
+ * Construye la grilla global de pulsos (en segundos de AudioContext, incluyendo preRollDuration y manualGridOffset)
+ * garantizando paridad 1:1 entre reproducción en vivo, hot-reload y exportación offline (con o sin beatTimes).
+ */
+export const buildShiftedBeatGrid = (
+  prompterData: any,
+  preRollDuration: number,
+  maxSongDuration: number,
+  manualGridOffset: number = 0
+): ShiftedBeatGridResult => {
+  const bpm = Number(prompterData?.bpm) || 120;
+  const beatInterval = 60 / Math.max(20, Math.min(300, bpm));
+  const maxGlobalTime = preRollDuration + (maxSongDuration > 0 ? maxSongDuration : 600);
+  const baseFirstBeat =
+    prompterData?.firstBeatOffset !== undefined
+      ? Number(prompterData.firstBeatOffset)
+      : prompterData?.chords?.[0]?.time !== undefined
+      ? Number(prompterData.chords[0].time)
+      : 0;
+
+  if (Array.isArray(prompterData?.beatTimes) && prompterData.beatTimes.length > 0) {
+    const bTimes = prompterData.beatTimes.map(
+      (t: number) => Number(t) + preRollDuration + manualGridOffset
+    );
+    let unshiftedCount = 0;
+    let firstBeat = bTimes[0];
+    while (firstBeat - beatInterval >= -0.001) {
+      firstBeat -= beatInterval;
+      bTimes.unshift(Math.max(0, firstBeat));
+      unshiftedCount++;
+    }
+    let lastBeat = bTimes[bTimes.length - 1];
+    while (lastBeat + beatInterval <= maxGlobalTime + 5) {
+      lastBeat += beatInterval;
+      bTimes.push(lastBeat);
+    }
+
+    const targetFirstBeatGlobal = preRollDuration + baseFirstBeat + manualGridOffset;
+    let downbeatIndex = bTimes.findIndex((t: number) => Math.abs(t - targetFirstBeatGlobal) < 0.05);
+    if (downbeatIndex === -1) {
+      downbeatIndex = unshiftedCount;
+    }
+    return { shiftedBeatTimes: bTimes, downbeatIndex };
+  }
+
+  // Fallback Grid cuando no hay beatTimes: Anclar el Golpe 1 del Compás 1 en (preRollDuration + baseFirstBeat + manualGridOffset)
+  const anchorGlobalTime = Math.max(0, preRollDuration + baseFirstBeat + manualGridOffset);
+  const bTimes: number[] = [anchorGlobalTime];
+  let unshiftedCount = 0;
+
+  let prevBeat = anchorGlobalTime;
+  while (prevBeat - beatInterval >= -0.001) {
+    prevBeat -= beatInterval;
+    bTimes.unshift(Math.max(0, prevBeat));
+    unshiftedCount++;
+  }
+
+  let nextBeat = anchorGlobalTime;
+  while (nextBeat + beatInterval <= maxGlobalTime + 5) {
+    nextBeat += beatInterval;
+    bTimes.push(nextBeat);
+  }
+
+  return {
+    shiftedBeatTimes: bTimes,
+    downbeatIndex: unshiftedCount,
+  };
+};
+
 // Sintetizador en tiempo real de pista CUE (Clic + Voz Guía) en RAM
 export const synthesizeLiveCueBuffer = async (
   audioCtx: AudioContext,
@@ -191,39 +266,12 @@ export const synthesizeLiveCueBuffer = async (
   const clickHighBuffer = generateClickBuffer(offlineCtx, 1000);
   const clickLowBuffer = generateClickBuffer(offlineCtx, 600);
 
-  const beatInterval = 60 / bpm;
-  let shiftedBeatTimes: number[] = [];
-  let unshiftedCount = 0;
-
-  if (prompterData?.beatTimes && prompterData.beatTimes.length > 0) {
-    let bTimes = [...prompterData.beatTimes.map((t: number) => t + preRollDuration)];
-    let firstBeat = bTimes[0];
-    while (firstBeat - beatInterval >= 0) {
-      firstBeat -= beatInterval;
-      bTimes.unshift(firstBeat);
-      unshiftedCount++;
-    }
-    let lastBeat = bTimes[bTimes.length - 1];
-    while (lastBeat + beatInterval <= lengthSeconds + 2) {
-      lastBeat += beatInterval;
-      bTimes.push(lastBeat);
-    }
-    shiftedBeatTimes = bTimes;
-  } else {
-    const startOffset = (prompterData?.firstBeatOffset || 0);
-    for (let t = 0; t <= lengthSeconds; t += beatInterval) {
-      const adjusted = t + startOffset;
-      if (adjusted >= 0) shiftedBeatTimes.push(adjusted);
-    }
-  }
-
-  // 1. Programar Clics de Metrónomo
-  let downbeatIndex = 0;
-  if (prompterData?.beatTimes && prompterData.beatTimes.length > 0) {
-    downbeatIndex = prompterData.beatTimes.findIndex((t: number) => Math.abs(t - (prompterData.firstBeatOffset || 0)) < 0.05);
-    if (downbeatIndex === -1) downbeatIndex = 0;
-    downbeatIndex += unshiftedCount;
-  }
+  const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+    prompterData,
+    preRollDuration,
+    Math.max(0, lengthSeconds - preRollDuration),
+    0
+  );
 
   let beatCount = 0;
   for (const time of shiftedBeatTimes) {
