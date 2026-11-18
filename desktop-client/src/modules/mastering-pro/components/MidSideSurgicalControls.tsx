@@ -316,11 +316,12 @@ export const MidSideSurgicalControls: React.FC<
               </div>
             </div>
 
-            {/* De-Sibilance 6.2kHz */}
+            {/* De-Sibilance dinámico */}
             <div>
               <div className="flex justify-between text-xs font-mono mb-1">
                 <span className="text-slate-300">
-                  De-Sibilance / Aliasing (6.2kHz)
+                  De-Sibilance / Aliasing (
+                  {((overrides.sibilanceFreqHz || 6200) / 1000).toFixed(1)}kHz)
                 </span>
                 <span className="text-emerald-400 font-bold">
                   {formatSignedDb(overrides.sibilanceCutDb)}

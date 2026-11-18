@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { BusCompressorCore } from '../dsp-core/BusCompressorCore';
-import { computeFullLoudnessReport } from '../dsp-core/KWeightingLufs';
+import {
+  StreamingLoudnessMeter,
+  computeFullLoudnessReport,
+} from '../dsp-core/KWeightingLufs';
 import {
   LookaheadLimiterCore,
   applyTruePeakLookaheadLimiterOffline,
@@ -16,14 +19,25 @@ import {
   linearToDbTp,
   measureTruePeakLinear4x,
 } from '../dsp-core/TruePeakDetector';
+import { generateAnalogSaturationCurve } from '../engine/AnalogSaturationCurves';
 import { DrumTransientReplacerDSP } from '../engine/DrumTransientReplacerDSP';
+import {
+  loadActiveMasteringConfigSnapshot,
+  saveActiveMasteringConfigSnapshot,
+  type MasteringConfigurationFile,
+} from '../engine/MasteringConfigStorage';
 import {
   analyzeTrackAndComputeAdaptation,
   recomputeDeltasForPreset,
 } from '../engine/SpectralDeltaAnalyzer';
 import { encodeAudioBufferToWav24Bit } from '../engine/Wav24BitEncoder';
 import { applyKickBassSidechainToBassArrays } from '../engine/WebAudioMasteringEngine';
-import { getPresetById } from '../presets/proPresetsCatalog';
+import {
+  PRO_PRESETS_CATALOG,
+  buildEffectiveDspChain,
+  extractSurgicalOverridesFromPreset,
+  getPresetById,
+} from '../presets/proPresetsCatalog';
 
 function createMockAudioBuffer(
   left: Float32Array,
@@ -432,5 +446,169 @@ describe('Mastering Pro — DSP Core, Limiter, Compressor & Stems Precision Suit
     // Also sanity check KWeightingLufs still exports exact loudness metrics
     const report = computeFullLoudnessReport([new Float32Array(len).fill(0.5), new Float32Array(len).fill(0.5)], sr);
     expect(Number.isFinite(report.truePeakDbTp)).toBe(true);
+  });
+
+  it('KWeightingLufs gives 1-channel mono input equal integrated loudness to dual-mono stereo (BS.1770 parity)', () => {
+    const sr = 48000;
+    const len = sr; // 1.0s
+    const mono = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      mono[i] = 0.5 * Math.sin((2 * Math.PI * 1000 * i) / sr);
+    }
+    const monoReport = computeFullLoudnessReport([mono], sr);
+    const dualMonoReport = computeFullLoudnessReport([mono, mono], sr);
+
+    expect(Number.isFinite(monoReport.integratedLufs)).toBe(true);
+    expect(Math.abs(monoReport.integratedLufs - dualMonoReport.integratedLufs)).toBeLessThan(0.01);
+  });
+
+  it('buildEffectiveDspChain protects surgical de-harsh and mud cuts from positive spectral deltas', () => {
+    const preset = getPresetById(PRO_PRESETS_CATALOG[0].id);
+    const baseOverrides = extractSurgicalOverridesFromPreset(preset);
+    const customOverrides = {
+      ...baseOverrides,
+      deHarshnessCutDb: -0.5,
+      stereoMudCutDb: -0.8,
+      midPresenceDb: 0.5,
+    };
+
+    const chain = buildEffectiveDspChain(preset, 100, customOverrides, {
+      subDeltaDb: 0,
+      lowMidDeltaDb: 3.2,
+      presenceDeltaDb: 3.2,
+      airDeltaDb: 0,
+    });
+
+    const deHarsh = chain.eqBands.find((b) => b.id === 'stereo-de-harsh');
+    const mudCut = chain.eqBands.find((b) => b.id === 'stereo-mud-cut');
+    const vocalBite = chain.eqBands.find((b) => b.id === 'mid-vocal-bite');
+
+    expect(deHarsh).toBeDefined();
+    expect(mudCut).toBeDefined();
+    expect(vocalBite).toBeDefined();
+    // De-harsh & mud cuts must NEVER be diluted or flipped into boosts by positive deltas
+    expect(deHarsh!.gainDb).toBeLessThanOrEqual(-0.5);
+    expect(mudCut!.gainDb).toBeLessThanOrEqual(-0.8);
+    // Mid vocal bite receives the positive presenceDelta (~+0.8 dB)
+    expect(vocalBite!.gainDb).toBeGreaterThan(customOverrides.midPresenceDb + 0.4);
+  });
+
+  it('AnalogSaturationCurves transformer mode has zero DC midpoint, genuine 2nd-harmonic asymmetry, and unity small-signal slope', () => {
+    const xformer = generateAnalogSaturationCurve('transformer', 0.65);
+    const tape = generateAnalogSaturationCurve('tape', 0.65);
+
+    expect(xformer.length).toBe(65536);
+    expect(xformer[32768]).toBe(0);
+    expect(tape[32768]).toBe(0);
+
+    // Opposite inputs around 0 should yield non-zero sum under transformer even harmonic
+    const evenSum = Math.abs(xformer[49152] + xformer[65535 - 49152]);
+    expect(evenSum).toBeGreaterThan(1e-4);
+
+    // Small-signal unity slope at x -> 0 (~1.0)
+    const dx = ((32768 + 64) * 2) / 65535 - (((32768 - 64) * 2) / 65535);
+    const slope = (xformer[32768 + 64] - xformer[32768 - 64]) / dx;
+    expect(slope).toBeCloseTo(1.0, 2);
+  });
+
+  it('StreamingLoudnessMeter starts at -70 LUFS sentinel (no phantom -60 LUFS) and tracks live LRA (lraLu)', () => {
+    const sr = 48000;
+    const meter = new StreamingLoudnessMeter(sr);
+    const shortSilence = new Float32Array(2048);
+    meter.processBlock(shortSilence, shortSilence);
+
+    const initSnap = meter.getSnapshot();
+    expect(initSnap.momentaryLufs).toBeLessThanOrEqual(-70);
+    expect(initSnap.shortTermLufs).toBeLessThanOrEqual(-70);
+    expect(initSnap.integratedLufs).toBeLessThanOrEqual(-70);
+    expect(initSnap.lraLu).toBe(0);
+
+    // Feed 3.6s quiet (-26dB) then 3.6s loud (-12dB) at 1 kHz to build Short-Term histogram variance
+    const blockLen = 2048;
+    const quietBlocks = Math.ceil((3.6 * sr) / blockLen);
+    const loudBlocks = Math.ceil((3.6 * sr) / blockLen);
+    const leftBlock = new Float32Array(blockLen);
+    const rightBlock = new Float32Array(blockLen);
+    let sampleIdx = 0;
+
+    for (let b = 0; b < quietBlocks + loudBlocks; b++) {
+      const amp = b < quietBlocks ? 0.05 : 0.25;
+      for (let i = 0; i < blockLen; i++) {
+        const s = amp * Math.sin((2 * Math.PI * 1000 * sampleIdx) / sr);
+        leftBlock[i] = s;
+        rightBlock[i] = s;
+        sampleIdx++;
+      }
+      meter.processBlock(leftBlock, rightBlock);
+    }
+
+    const finalSnap = meter.getSnapshot();
+    expect(finalSnap.integratedLufs).toBeGreaterThan(-40);
+    expect(finalSnap.shortTermLufs).toBeGreaterThan(-40);
+    expect(Number.isFinite(finalSnap.lraLu)).toBe(true);
+    expect(finalSnap.lraLu).toBeGreaterThan(2.0);
+  });
+
+  it('MasteringConfigStorage save/load round-trip preserves song-specific snapshot reliably', () => {
+    const g = globalThis as unknown as { localStorage?: Storage };
+    const hadStorage = 'localStorage' in g && g.localStorage !== undefined;
+    const prevStorage = g.localStorage;
+    const mem = new Map<string, string>();
+    g.localStorage = {
+      get length() {
+        return mem.size;
+      },
+      clear: () => mem.clear(),
+      getItem: (k: string) => mem.get(k) ?? null,
+      key: (idx: number) => Array.from(mem.keys())[idx] ?? null,
+      removeItem: (k: string) => {
+        mem.delete(k);
+      },
+      setItem: (k: string, v: string) => {
+        mem.set(k, v);
+      },
+    };
+
+    try {
+      const preset = getPresetById(PRO_PRESETS_CATALOG[0].id);
+      const surgicalOverrides = {
+        ...extractSurgicalOverridesFromPreset(preset),
+        deHarshnessCutDb: -1.6,
+        stereoWidthPct: 122,
+      };
+      const effectiveDspChain = buildEffectiveDspChain(preset, 115, surgicalOverrides);
+      const config: MasteringConfigurationFile = {
+        schemaVersion: '1.0.0',
+        savedAtIso: new Date().toISOString(),
+        trackTitle: 'Session RoundTrip Test',
+        songId: 'song-pasada2-test',
+        selectedPresetId: preset.id,
+        presetName: preset.name,
+        intensityPct: 115,
+        autoAdaptEnabled: false,
+        kickBassSidechain: false,
+        autoMakeupGainDb: 2.4,
+        detectedInputLufs: -16.5,
+        surgicalOverrides,
+        effectiveDspChain,
+      };
+
+      saveActiveMasteringConfigSnapshot(config);
+      const loaded = loadActiveMasteringConfigSnapshot('song-pasada2-test');
+
+      expect(loaded).not.toBeNull();
+      expect(loaded!.selectedPresetId).toBe(preset.id);
+      expect(loaded!.intensityPct).toBe(115);
+      expect(loaded!.autoAdaptEnabled).toBe(false);
+      expect(loaded!.kickBassSidechain).toBe(false);
+      expect(loaded!.surgicalOverrides.deHarshnessCutDb).toBe(-1.6);
+      expect(loaded!.surgicalOverrides.stereoWidthPct).toBe(122);
+    } finally {
+      if (hadStorage) {
+        g.localStorage = prevStorage;
+      } else {
+        delete g.localStorage;
+      }
+    }
   });
 });

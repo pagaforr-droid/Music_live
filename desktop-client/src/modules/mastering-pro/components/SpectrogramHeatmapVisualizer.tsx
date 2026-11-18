@@ -744,6 +744,15 @@ export const SpectrogramHeatmapVisualizer: React.FC<
     height,
   ]);
 
+  // Garantiza liberar el solo pasa-banda si el espectrograma se desmonta/oculta mientras estaba activo
+  const stopSoloRef = useRef(onStopBandPassSolo);
+  stopSoloRef.current = onStopBandPassSolo;
+  useEffect(() => {
+    return () => {
+      stopSoloRef.current?.();
+    };
+  }, []);
+
   // Atajo de Tecla 'X' para insertar un filtro Notch Q=12 mientras el ingeniero audiciona el espectrograma
   useEffect(() => {
     if (!hoverInfo || !onToggleResonanceNotchAtFreq) return;

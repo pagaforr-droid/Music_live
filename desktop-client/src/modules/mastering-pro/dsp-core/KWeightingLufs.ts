@@ -175,8 +175,8 @@ export function computeFullLoudnessReport(
   const isMono = channels.length === 1;
   const coeffs = getItuKWeightingCoeffs(sampleRate);
 
-  // ITU channel weights: L=1, R=1, C=1, LFE=0, Ls=1.41, Rs=1.41
-  const ituWeights = [1.0, 1.0, 1.0, 0.0, 1.41, 1.41];
+  // ITU channel weights: mono dual-routed to L+R = 2.0; stereo L=1, R=1; 5.1 C=1, LFE=0, Ls=1.41, Rs=1.41
+  const ituWeights = isMono ? [2.0] : [1.0, 1.0, 1.0, 0.0, 1.41, 1.41];
   const weightedKwChannels: Array<{ data: Float32Array; weight: number }> = [];
   for (let ch = 0; ch < Math.min(channels.length, 6); ch++) {
     const w = ituWeights[ch] ?? 1.0;
@@ -378,6 +378,10 @@ export class StreamingLoudnessMeter {
   private readonly intBins = new Uint32Array(701);
   private readonly intPowerBins = new Float64Array(701);
 
+  // Histogram of 3s Short-Term blocks in 0.1 LU bins from -70.0 to 0.0 (701 bins) for live LRA
+  private readonly stBins = new Uint32Array(701);
+  private readonly stPowerBins = new Float64Array(701);
+
   // K-weighting biquad states L & R
   private lx1 = 0; private lx2 = 0; private ly1 = 0; private ly2 = 0;
   private lhx1 = 0; private lhx2 = 0; private lhy1 = 0; private lhy2 = 0;
@@ -394,9 +398,10 @@ export class StreamingLoudnessMeter {
   private blockSamples = 0;
   private totalClippedSamples = 0;
 
-  private lastMomentaryLufs = -60;
-  private lastShortTermLufs = -60;
-  private lastIntegratedLufs = -60;
+  private lastMomentaryLufs = -70;
+  private lastShortTermLufs = -70;
+  private lastIntegratedLufs = -70;
+  private lastLraLu = 0;
   private lastPhaseCorr = 1.0;
   private lastCrestDb = 0;
 
@@ -414,6 +419,8 @@ export class StreamingLoudnessMeter {
     this.subHistoryFilled = 0;
     this.intBins.fill(0);
     this.intPowerBins.fill(0);
+    this.stBins.fill(0);
+    this.stPowerBins.fill(0);
     this.tpDetector.reset();
     this.heldTruePeakLin = 0;
     this.totalClippedSamples = 0;
@@ -421,9 +428,10 @@ export class StreamingLoudnessMeter {
     this.lhx1 = this.lhx2 = this.lhy1 = this.lhy2 = 0;
     this.rx1 = this.rx2 = this.ry1 = this.ry2 = 0;
     this.rhx1 = this.rhx2 = this.rhy1 = this.rhy2 = 0;
-    this.lastMomentaryLufs = -60;
-    this.lastShortTermLufs = -60;
-    this.lastIntegratedLufs = -60;
+    this.lastMomentaryLufs = -70;
+    this.lastShortTermLufs = -70;
+    this.lastIntegratedLufs = -70;
+    this.lastLraLu = 0;
     this.lastPhaseCorr = 1.0;
     this.lastCrestDb = 0;
     this.resetBlockStats();
@@ -516,6 +524,16 @@ export class StreamingLoudnessMeter {
         const sMean = sSum / this.subHistoryFilled;
         this.lastShortTermLufs =
           sMean > 1e-12 ? Math.max(-70, -0.691 + 10 * Math.log10(sMean)) : -70;
+
+        if (this.subHistoryFilled >= 30 && this.lastShortTermLufs > -70) {
+          const stBin = Math.max(
+            0,
+            Math.min(700, Math.round((this.lastShortTermLufs + 70) * 10))
+          );
+          this.stBins[stBin]++;
+          this.stPowerBins[stBin] += sMean;
+          this.recomputeLraFromHistogram();
+        }
       }
     }
 
@@ -562,11 +580,52 @@ export class StreamingLoudnessMeter {
     }
   }
 
+  private recomputeLraFromHistogram(): void {
+    let totalCount = 0;
+    let totalPower = 0;
+    for (let b = 0; b <= 700; b++) {
+      totalCount += this.stBins[b];
+      totalPower += this.stPowerBins[b];
+    }
+    if (totalCount < 2 || totalPower <= 1e-12) return;
+    const ungated = -0.691 + 10 * Math.log10(totalPower / totalCount);
+    const lraGateBin = Math.max(0, Math.min(700, Math.ceil((ungated - 20 + 70) * 10)));
+
+    let gatedCount = 0;
+    for (let b = lraGateBin; b <= 700; b++) {
+      gatedCount += this.stBins[b];
+    }
+    if (gatedCount < 2) return;
+
+    const p10Target = Math.floor((gatedCount - 1) * 0.1);
+    const p95Target = Math.floor((gatedCount - 1) * 0.95);
+    let cum = 0;
+    let p10Lufs = -70;
+    let p95Lufs = -70;
+    let found10 = false;
+    for (let b = lraGateBin; b <= 700; b++) {
+      const cnt = this.stBins[b];
+      if (cnt === 0) continue;
+      cum += cnt;
+      const valLufs = -70 + b * 0.1;
+      if (!found10 && cum > p10Target) {
+        p10Lufs = valLufs;
+        found10 = true;
+      }
+      if (cum > p95Target) {
+        p95Lufs = valLufs;
+        break;
+      }
+    }
+    this.lastLraLu = Math.max(0, p95Lufs - p10Lufs);
+  }
+
   public getSnapshot() {
     return {
       momentaryLufs: Number(this.lastMomentaryLufs.toFixed(1)),
       shortTermLufs: Number(this.lastShortTermLufs.toFixed(1)),
       integratedLufs: Number(this.lastIntegratedLufs.toFixed(1)),
+      lraLu: Number(this.lastLraLu.toFixed(1)),
       truePeakDbTp: Number(linearToDbTp(this.heldTruePeakLin, -70).toFixed(2)),
       phaseCorrelation: Number(this.lastPhaseCorr.toFixed(2)),
       crestFactorDb: Number(this.lastCrestDb.toFixed(1)),

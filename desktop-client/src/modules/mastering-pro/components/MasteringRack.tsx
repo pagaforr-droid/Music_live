@@ -22,6 +22,7 @@ import {
 } from '../presets/proPresetsCatalog';
 import {
   downloadMasteringConfigJsonFile,
+  loadActiveMasteringConfigSnapshot,
   parseMasteringConfigJsonFile,
   saveActiveMasteringConfigSnapshot,
   type MasteringConfigurationFile,
@@ -117,13 +118,33 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 }) => {
   const navigate = useNavigate();
   const defaultPreset = PRO_PRESETS_CATALOG[0];
+  const loadRequestIdRef = useRef(0);
+  const initialSnapshotRef = useRef<MasteringConfigurationFile | null | undefined>(
+    undefined
+  );
+  if (initialSnapshotRef.current === undefined) {
+    initialSnapshotRef.current = loadActiveMasteringConfigSnapshot(propSongId);
+  }
+  const initialSnapshot = initialSnapshotRef.current;
+  const initialPreset = initialSnapshot?.selectedPresetId
+    ? getPresetById(initialSnapshot.selectedPresetId)
+    : defaultPreset;
+
   const [selectedPresetId, setSelectedPresetId] = useState<string>(
-    defaultPreset.id
+    initialPreset.id
   );
-  const [intensityPct, setIntensityPct] = useState<number>(100);
-  const [overrides, setOverrides] = useState<SurgicalOverrides>(() =>
-    extractSurgicalOverridesFromPreset(defaultPreset)
-  );
+  const [intensityPct, setIntensityPct] = useState<number>(() => {
+    const raw = initialSnapshot?.intensityPct;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : 100;
+  });
+  const [overrides, setOverrides] = useState<SurgicalOverrides>(() => {
+    const base = extractSurgicalOverridesFromPreset(initialPreset);
+    if (!initialSnapshot?.surgicalOverrides) return base;
+    return syncSurgicalOverridesEqBands({
+      ...base,
+      ...initialSnapshot.surgicalOverrides,
+    });
+  });
 
   const [trackTitle, setTrackTitle] = useState<string>(
     initialTitle || 'Sin pista cargada'
@@ -138,7 +159,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
   const [isBypassed, setIsBypassed] = useState<boolean>(false);
   const [isGainMatch, setIsGainMatch] = useState<boolean>(true);
-  const [autoAdaptEnabled, setAutoAdaptEnabled] = useState<boolean>(true);
+  const [autoAdaptEnabled, setAutoAdaptEnabled] = useState<boolean>(
+    initialSnapshot?.autoAdaptEnabled ?? true
+  );
   const [adaptationReport, setAdaptationReport] =
     useState<SpectralAdaptationReport | null>(null);
 
@@ -158,7 +181,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
 
   // Stems state
   const [stems, setStems] = useState<StemTrackState[]>(INITIAL_STEMS);
-  const [kickBassSidechain, setKickBassSidechain] = useState<boolean>(true);
+  const [kickBassSidechain, setKickBassSidechain] = useState<boolean>(
+    initialSnapshot?.kickBassSidechain ?? true
+  );
   const [isMixingStems, setIsMixingStems] = useState<boolean>(false);
 
   // Drum Layering & Custom Sample state
@@ -316,12 +341,14 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
     // Consume pending bounce sent from Sample Lab to master
     const pendingBounce = SampleLabHandoff.consumeBounceForMastering();
     if (pendingBounce) {
+      const reqId = ++loadRequestIdRef.current;
       void (async () => {
         setIsAnalyzing(true);
         try {
           const { buffer, report: rep } = await engine.loadAudioBuffer(
             pendingBounce.buffer
           );
+          if (reqId !== loadRequestIdRef.current) return;
           setTrackTitle(pendingBounce.title);
           if (pendingBounce.songId) setActiveSongId(pendingBounce.songId);
           setHasAudio(true);
@@ -336,7 +363,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             message: `"${pendingBounce.title}" recibido desde Sample Lab (${rep.detectedInputLufs} LUFS).`,
           });
         } finally {
-          setIsAnalyzing(false);
+          if (reqId === loadRequestIdRef.current) {
+            setIsAnalyzing(false);
+          }
         }
       })();
     }
@@ -414,6 +443,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const handleFileSelected = async (file: File) => {
     const engine = engineRef.current;
     if (!engine) return;
+    const reqId = ++loadRequestIdRef.current;
     try {
       setIsAnalyzing(true);
       setStatusBanner({
@@ -421,6 +451,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         message: `Decodificando y escaneando "${file.name}" en 32-bit float...`,
       });
       const { buffer, report } = await engine.loadAudioFile(file);
+      if (reqId !== loadRequestIdRef.current) return;
       setTrackTitle(file.name);
       setHasAudio(true);
       setDurationSec(buffer.duration);
@@ -435,6 +466,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         message: `Análisis completado (${report.detectedInputLufs} LUFS, ${report.detectedTruePeakDb} dBTP). Preset recomendado: ${getPresetById(report.recommendedPresetId).name}.`,
       });
     } catch (err) {
+      if (reqId !== loadRequestIdRef.current) return;
       setStatusBanner({
         type: 'error',
         message:
@@ -443,13 +475,16 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             : 'Error al decodificar el archivo de audio.',
       });
     } finally {
-      setIsAnalyzing(false);
+      if (reqId === loadRequestIdRef.current) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
   const handleLoadAudioUrl = async (url: string, title: string) => {
     const engine = engineRef.current;
     if (!engine) return;
+    const reqId = ++loadRequestIdRef.current;
     try {
       setIsAnalyzing(true);
       setStatusBanner({
@@ -457,6 +492,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         message: `Cargando pista "${title}" desde el proyecto...`,
       });
       const { buffer, report } = await engine.loadAudioFromUrl(url);
+      if (reqId !== loadRequestIdRef.current) return;
       setTrackTitle(title);
       setHasAudio(true);
       setDurationSec(buffer.duration);
@@ -471,6 +507,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         message: `"${title}" lista en el rack (${report.detectedInputLufs} LUFS).`,
       });
     } catch (err) {
+      if (reqId !== loadRequestIdRef.current) return;
       setStatusBanner({
         type: 'error',
         message:
@@ -479,16 +516,20 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
             : 'No se pudo cargar el audio remoto.',
       });
     } finally {
-      setIsAnalyzing(false);
+      if (reqId === loadRequestIdRef.current) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
   const handleGenerateDemoTrack = async (silent = false) => {
     const engine = engineRef.current;
     if (!engine) return;
+    const reqId = ++loadRequestIdRef.current;
     try {
       setIsAnalyzing(true);
       const { buffer, report } = await engine.generateStudioDemoTrack();
+      if (reqId !== loadRequestIdRef.current) return;
       setTrackTitle('Zitio Studio Reference Mix (118 BPM Stereo)');
       setHasAudio(true);
       setDurationSec(buffer.duration);
@@ -506,7 +547,9 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
         });
       }
     } finally {
-      setIsAnalyzing(false);
+      if (reqId === loadRequestIdRef.current) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
@@ -872,12 +915,14 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   const handleMixStemsToMaster = async () => {
     const engine = engineRef.current;
     if (!engine) return;
+    const reqId = ++loadRequestIdRef.current;
     try {
       setIsMixingStems(true);
       const { buffer, report } = await engine.mixStemsIntoMasteringBuffer(
         stems,
         kickBassSidechain
       );
+      if (reqId !== loadRequestIdRef.current) return;
       setTrackTitle('Stem Mix Bus (Sidechain Bombo→Bajo Activo)');
       setHasAudio(true);
       setDurationSec(buffer.duration);
@@ -892,6 +937,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           'Stems sumados con Sidechain Bombo→Bajo e inyectados en la cadena Mid/Side.',
       });
     } catch (err) {
+      if (reqId !== loadRequestIdRef.current) return;
       setStatusBanner({
         type: 'error',
         message:

@@ -50,6 +50,7 @@ interface MeterWorkletSnapshot {
   momentaryLufs: number;
   shortTermLufs: number;
   integratedLufs: number;
+  lraLu?: number;
   truePeakDbTp: number;
   phaseCorrelation: number;
   crestFactorDb: number;
@@ -257,10 +258,8 @@ export class WebAudioMasteringEngine {
 
     this.bypassGainNode = ctx.createGain();
     this.bypassLatencyAlignDelay = ctx.createDelay(0.05);
-    const lookaheadMs = Math.max(3.5, this.activeChain.limiter.lookaheadMs || 5.0);
-    // Match exact lookahead + 5-sample FIR delay so A/B crossfade is sample-aligned
     this.bypassLatencyAlignDelay.delayTime.value =
-      lookaheadMs / 1000 + 5 / ctx.sampleRate;
+      this.computeLiveBypassLatencySec(this.activeChain, ctx.sampleRate);
 
     this.masterGainNode = ctx.createGain();
     if (!this.masterVolumeNode) {
@@ -457,12 +456,29 @@ export class WebAudioMasteringEngine {
     return { buffer: decoded, report };
   }
 
+  private computeLiveBypassLatencySec(
+    chain: MasteringDspChain,
+    sampleRate: number
+  ): number {
+    const lookaheadMs = Math.max(3.5, chain.limiter.lookaheadMs || 5.0);
+    const isTrueBypass = (chain.intensityScale ?? 1) <= 0.005;
+    // Stage 4C inserts a stereo-linked 1.2ms tape delay when enabled
+    const humanizerTapeDelaySec =
+      !isTrueBypass && chain.forensicHumanizer?.enabled !== false ? 0.0012 : 0;
+    return lookaheadMs / 1000 + 5 / sampleRate + humanizerTapeDelaySec;
+  }
+
   private normalizeBufferToStereo(ctx: BaseAudioContext, raw: AudioBuffer): AudioBuffer {
-    if (raw.numberOfChannels <= 2 && Math.abs(raw.sampleRate - 48000) < 1) {
+    if (raw.numberOfChannels === 2) {
       return raw;
     }
-    if (raw.numberOfChannels <= 2) {
-      return raw;
+    if (raw.numberOfChannels === 1) {
+      // Explicit Mono -> Dual-Mono Stereo upmix so Mid/Side Matrix, LUFS & True Peak stay 100% consistent
+      const ch0 = raw.getChannelData(0);
+      const out = ctx.createBuffer(2, raw.length, raw.sampleRate);
+      out.copyToChannel(new Float32Array(ch0), 0);
+      out.copyToChannel(new Float32Array(ch0), 1);
+      return out;
     }
     // >2 channels (e.g. 5.1 surround): ITU downmix to clean Stereo
     const chans: Float32Array[] = [];
@@ -998,9 +1014,8 @@ export class WebAudioMasteringEngine {
       this.ctx.currentTime
     );
     if (this.bypassLatencyAlignDelay) {
-      const lookaheadMs = Math.max(3.5, this.activeChain.limiter.lookaheadMs || 5.0);
       this.bypassLatencyAlignDelay.delayTime.setTargetAtTime(
-        lookaheadMs / 1000 + 5 / this.ctx.sampleRate,
+        this.computeLiveBypassLatencySec(this.activeChain, this.ctx.sampleRate),
         this.ctx.currentTime,
         0.012
       );
@@ -1481,7 +1496,9 @@ export class WebAudioMasteringEngine {
     const outputLufsVal =
       postSnap && postSnap.integratedLufs > -68
         ? postSnap.integratedLufs
-        : postSnap?.momentaryLufs ?? NaN;
+        : postSnap && postSnap.momentaryLufs > -68
+        ? postSnap.momentaryLufs
+        : NaN;
 
     return {
       isMeteringActive: true,
@@ -1489,8 +1506,11 @@ export class WebAudioMasteringEngine {
       outputLufs: Number.isFinite(outputLufsVal)
         ? Number(outputLufsVal.toFixed(1))
         : NaN,
-      momentaryLufs: postSnap?.momentaryLufs ?? NaN,
-      shortTermLufs: postSnap?.shortTermLufs ?? NaN,
+      momentaryLufs:
+        postSnap && postSnap.momentaryLufs > -68 ? postSnap.momentaryLufs : NaN,
+      shortTermLufs:
+        postSnap && postSnap.shortTermLufs > -68 ? postSnap.shortTermLufs : NaN,
+      lraLu: postSnap?.lraLu,
       truePeakDb: postSnap?.truePeakDbTp ?? NaN, // Never artificially clamped!
       inputPeakDb:
         preSnap?.truePeakDbTp ??

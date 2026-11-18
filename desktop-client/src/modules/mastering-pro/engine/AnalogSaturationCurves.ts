@@ -35,9 +35,9 @@ export function generateAnalogSaturationCurve(
   const evalUnitSlope = (u: number): number => {
     switch (type) {
       case 'tape': {
-        // Studer A800 style: hyperbolic tangent normalized so f'(0) = 1.0 + subtle 2nd harmonic warmth
+        // Studer A800 style: hyperbolic tangent normalized so f'(0) = 1.0 + bounded 2nd harmonic warmth
         const k = 0.65 + d * 2.2;
-        const asym = 0.032 * d * u * u;
+        const asym = (0.032 * d * u * u) / (1 + 0.35 * u * u);
         return Math.tanh(k * u + asym) / k;
       }
       case 'tube': {
@@ -50,11 +50,11 @@ export function generateAnalogSaturationCurve(
         return -(1 - Math.exp(kn * u)) / kn;
       }
       case 'transformer': {
-        // Neve/API iron core: algebraic S-curve with exact slope 1.0 at zero
+        // Neve/API iron core: algebraic S-curve + true even 2nd-harmonic term with exact slope 1.0 at zero
         const k = 0.75 + d * 2.6;
         const ku = k * u;
         const odd = u / Math.sqrt(1 + ku * ku);
-        const evenBias = 0.022 * d * (u * Math.abs(u)) / (1 + Math.abs(u));
+        const evenBias = (0.028 * d * (u * u)) / (1 + u * u);
         return odd + evenBias;
       }
       case 'softclip':

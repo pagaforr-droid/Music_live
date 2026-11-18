@@ -309,6 +309,12 @@ export class ForensicHumanizerDSP {
     const sumBus = ctx.createGain();
     sumBus.gain.value = 1.0;
 
+    // 18 Hz DC Blocker removes any dynamic even-harmonic rectification DC from Stage 4C waveshapers before limiter
+    const stage4cDcBlocker = ctx.createBiquadFilter();
+    stage4cDcBlocker.type = 'highpass';
+    stage4cDcBlocker.frequency.value = 18;
+    stage4cDcBlocker.Q.value = Math.SQRT1_2;
+
     ultrasonicPurgeLpf2.connect(sumBus);
     exciterMixGain.connect(sumBus);
     roomWetGain.connect(sumBus);
@@ -330,7 +336,8 @@ export class ForensicHumanizerDSP {
     noiseGain.connect(sumBus);
     consoleNoiseSource.start(0);
 
-    sumBus.connect(wetActiveGain);
+    sumBus.connect(stage4cDcBlocker);
+    stage4cDcBlocker.connect(wetActiveGain);
     wetActiveGain.connect(outputNode);
 
     const applyRoutingState = (cfg: ForensicHumanizerConfig, now: number) => {
@@ -490,7 +497,7 @@ export class ForensicHumanizerDSP {
       } else {
         const u = x * SAT_HEADROOM_SCALE;
         const k = 1 + 0.55 * d;
-        const even = (0.045 * d * (u * u)) / (1 + Math.abs(u));
+        const even = (0.045 * d * (u * u)) / (1 + u * u);
         const y = (Math.tanh(k * u) / k + even) / SAT_HEADROOM_SCALE;
         curve[i] = Math.max(-0.9999, Math.min(0.9999, y));
       }

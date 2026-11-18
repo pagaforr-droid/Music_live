@@ -800,11 +800,16 @@ export function buildEffectiveDspChain(
     if (band.id === 'mid-sub-punch') {
       rawGain = overrides.midLowPunchDb * scale + subDelta;
     } else if (band.id === 'stereo-mud-cut') {
-      rawGain = overrides.stereoMudCutDb * scale + lowMidDelta;
+      // Only let negative lowMidDelta deepen mud cleanup; never let positive delta
+      // flip a subtractive mud cut into a 285Hz boost.
+      const effectiveMudDelta =
+        overrides.stereoMudCutDb <= 0 ? Math.min(0, lowMidDelta) : lowMidDelta * 0.5;
+      rawGain = overrides.stereoMudCutDb * scale + effectiveMudDelta;
     } else if (band.id === 'mid-vocal-bite') {
-      rawGain = overrides.midPresenceDb * scale + presenceDelta * 0.6;
+      rawGain = overrides.midPresenceDb * scale + presenceDelta;
     } else if (band.id === 'stereo-de-harsh') {
-      rawGain = overrides.deHarshnessCutDb * scale + presenceDelta * 0.4;
+      // Keep surgical 3.8kHz de-harshness cut independent of broad presence boost
+      rawGain = overrides.deHarshnessCutDb * scale;
     } else if (band.id === 'stereo-sibilance') {
       rawGain = overrides.sibilanceCutDb * scale;
       freq = overrides.sibilanceFreqHz || band.freq;

@@ -102,7 +102,7 @@ export const LoudnessMeterPanel: React.FC<LoudnessMeterPanelProps> = ({
           </div>
           <div className="text-[10px] font-mono text-slate-500 mt-0.5">
             Ceil: {ceilingDbTp.toFixed(1)} · Crest{' '}
-            {active ? fmt(metrics.crestFactorDb, 1) : fmt(metrics.crestFactorDb, 1)}dB
+            {fmt(metrics.crestFactorDb, 1)}dB
           </div>
         </div>
       </div>
