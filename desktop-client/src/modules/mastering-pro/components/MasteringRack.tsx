@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   Cpu,
   History,
@@ -1148,32 +1149,37 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
   }, [effectiveDspChain.eqBands]);
 
   return (
-    <div className="w-full h-full overflow-y-auto bg-slate-950 text-slate-100 p-4 md:p-5 select-none">
-      <div className="max-w-[1600px] mx-auto flex flex-col gap-4 pb-10">
+    <div className="w-full h-full overflow-y-auto studio-scrollbar bg-[#07090f] text-zinc-100 py-4 md:py-5 select-none">
+      <div className="w-full max-w-none px-4 sm:px-6 lg:px-8 2xl:px-10 mx-auto flex flex-col gap-5 pb-12">
         {/* Top Studio Hardware Rack Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-slate-900/90 border border-slate-800/90 shadow-lg">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FF6B00] to-[#00E5FF] p-0.5 shadow-[0_0_20px_rgba(255,107,0,0.3)]">
-              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 360, damping: 32 }}
+          className="flex flex-wrap items-center justify-between gap-4 px-5 py-3.5 rounded-2xl mastering-surface backdrop-blur-xl"
+        >
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#FF6B00] to-[#00E5FF] p-[1.5px] shadow-[0_0_24px_rgba(255,107,0,0.25)] shrink-0">
+              <div className="w-full h-full bg-[#090c14] rounded-[14.5px] flex items-center justify-center">
                 <Cpu size={20} className="text-[#00E5FF]" />
               </div>
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-extrabold tracking-wider uppercase text-white">
-                  STUDIO MASTERING PRO
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-[16px] font-bold tracking-tight text-white">
+                  Studio Mastering Pro
                 </h1>
-                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-[#FF6B00]/20 border border-[#FF6B00]/50 text-[#FF6B00]">
+                <span className="text-[10px] font-mono font-semibold px-2.5 py-0.5 rounded-full bg-[#FF6B00]/12 border border-[#FF6B00]/35 text-[#FF6B00]">
                   32-BIT FLOAT DSP · 24-BIT WAV
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF]">
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-[#00E5FF]/12 border border-[#00E5FF]/35 text-[#00E5FF]">
                   M/S MATRIX + 4X OVERSAMPLING
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold">
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-emerald-500/12 border border-emerald-500/35 text-emerald-300 font-semibold">
                   ● CONFIG SINCRONIZADA 1:1 CON EXPORTADOR
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-zinc-400 mt-0.5">
                 Suite de masterización inteligente con curva ITU-R BS.1770-4, Mono Maker Butterworth y Limitador Lookahead True Peak.
               </p>
             </div>
@@ -1193,39 +1199,42 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
               }}
             />
 
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.96 }}
               onClick={handleOpenInSampleLab}
-              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00]/20 to-[#00E5FF]/20 hover:from-[#FF6B00]/35 hover:to-[#00E5FF]/35 border border-[#00E5FF]/50 text-xs font-mono font-bold text-[#00E5FF] flex items-center gap-1.5 transition-all cursor-pointer"
+              className="h-9 px-3.5 rounded-xl bg-gradient-to-r from-[#FF6B00]/18 to-[#00E5FF]/18 hover:from-[#FF6B00]/30 hover:to-[#00E5FF]/30 border border-[#00E5FF]/45 text-xs font-semibold text-[#00E5FF] flex items-center gap-1.5 transition-all cursor-pointer"
               title="Abrir Sample Lab (/sample-lab) para cortar, editar y crear sonidos desde esta pista"
             >
-              <Grid size={13} className="text-[#FF6B00]" />
+              <Grid size={13.5} className="text-[#FF6B00]" />
               <span>Sample Lab</span>
-            </button>
+            </motion.button>
 
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.96 }}
               onClick={handleExportConfigFile}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-emerald-500/40 text-xs font-mono text-emerald-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+              className="h-9 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-emerald-500/35 text-xs font-medium text-emerald-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
               title="Guardar toda la configuración actual del módulo en un archivo .mastering.json"
             >
               <Save size={13} className="text-emerald-400" />
               <span>Guardar Config (.json)</span>
-            </button>
+            </motion.button>
 
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.96 }}
               onClick={() => configFileInputRef.current?.click()}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+              className="h-9 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-zinc-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
               title="Cargar un archivo .mastering.json con configuraciones guardadas"
             >
               <Upload size={13} className="text-[#00E5FF]" />
               <span>Cargar Config</span>
-            </button>
+            </motion.button>
 
             {projectTracks.length > 0 && (
-              <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
-                <FolderOpen size={13} className="text-[#00E5FF]" />
+              <div className="h-9 flex items-center gap-1.5 bg-white/[0.04] border border-white/[0.08] rounded-xl px-3">
+                <FolderOpen size={13} className="text-[#00E5FF] shrink-0" />
                 <select
                   defaultValue=""
                   onChange={(e) => {
@@ -1240,7 +1249,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                       );
                     }
                   }}
-                  className="bg-transparent text-xs font-mono text-slate-200 focus:outline-none max-w-[210px]"
+                  className="bg-transparent text-xs font-medium text-zinc-200 focus:outline-none max-w-[210px] cursor-pointer"
                 >
                   <option value="" disabled className="bg-slate-950">
                     Cargar pista de tu Proyecto...
@@ -1258,71 +1267,82 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
               </div>
             )}
 
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.96 }}
               onClick={() => setShowHistoryModal(true)}
-              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 flex items-center gap-1.5 transition-colors"
+              className="h-9 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-zinc-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <History size={13} className="text-[#FF6B00]" />
               <span>Historial ({sessionsHistory.length})</span>
-            </button>
+            </motion.button>
 
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.96 }}
               onClick={() => setShowSqlModal(true)}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-400 hover:text-white flex items-center gap-1.5 transition-colors"
+              className="h-9 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-xs font-medium text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
               title="Ver script SQL de migración para Supabase"
             >
               <Database size={13} className="text-[#00E5FF]" />
               <span>SQL Schema</span>
-            </button>
+            </motion.button>
           </div>
-        </div>
+        </motion.div>
 
         {/* Status Notification / Offline Render Progress Bar */}
-        {(statusBanner || exportProgress) && (
-          <div className="rounded-xl bg-slate-900 border border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
-            {exportProgress ? (
-              <div className="w-full flex flex-col gap-1.5">
-                <div className="flex justify-between text-xs font-mono text-[#00E5FF]">
-                  <span>{exportProgress.stage}</span>
-                  <span>{exportProgress.pct}%</span>
-                </div>
-                <div className="w-full h-2 rounded-full bg-slate-950 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] transition-all duration-150"
-                    style={{ width: `${exportProgress.pct}%` }}
-                  />
-                </div>
-              </div>
-            ) : (
-              statusBanner && (
-                <>
-                  <div className="flex items-center gap-2 text-xs">
-                    {statusBanner.type === 'error' ? (
-                      <AlertCircle size={15} className="text-rose-400 shrink-0" />
-                    ) : (
-                      <CheckCircle2
-                        size={15}
-                        className="text-emerald-400 shrink-0"
-                      />
-                    )}
-                    <span className="text-slate-200">
-                      {statusBanner.message}
-                    </span>
+        <AnimatePresence initial={false}>
+          {(statusBanner || exportProgress) && (
+            <motion.div
+              key="mastering-status-banner"
+              initial={{ opacity: 0, y: -6, scale: 0.99 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -6, scale: 0.99 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              className="rounded-xl mastering-surface px-4 py-2.5 flex flex-wrap items-center justify-between gap-3"
+            >
+              {exportProgress ? (
+                <div className="w-full flex flex-col gap-1.5">
+                  <div className="flex justify-between text-xs font-mono text-[#00E5FF]">
+                    <span>{exportProgress.stage}</span>
+                    <span>{exportProgress.pct}%</span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setStatusBanner(null)}
-                    className="text-slate-500 hover:text-slate-300"
-                  >
-                    <X size={14} />
-                  </button>
-                </>
-              )
-            )}
-          </div>
-        )}
+                  <div className="w-full h-2 rounded-full bg-[#05070b] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] transition-all duration-150"
+                      style={{ width: `${exportProgress.pct}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                statusBanner && (
+                  <>
+                    <div className="flex items-center gap-2.5 text-xs">
+                      {statusBanner.type === 'error' ? (
+                        <AlertCircle size={15} className="text-rose-400 shrink-0" />
+                      ) : (
+                        <CheckCircle2
+                          size={15}
+                          className="text-emerald-400 shrink-0"
+                        />
+                      )}
+                      <span className="text-zinc-200">
+                        {statusBanner.message}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStatusBanner(null)}
+                      className="text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                    >
+                      <X size={14} />
+                    </button>
+                  </>
+                )
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* 1. Top Transport & A/B Comparison + Gain-Match + Target LUFS Bar */}
         <ABComparisonBar
@@ -1353,35 +1373,50 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           onSaveToCloud={() => void handleSaveToCloud()}
         />
 
-        {/* 2. Main Visual & Metering Grid: Left 8 Cols = Dual FFT + RX Heatmap, Right 4 Cols = Loudness & Phase Panel */}
-        <div className="flex items-center justify-between px-1">
-          <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400">
+        {/* 2. Main Visual & Metering Grid */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-400">
             Modo de Monitoreo Espectral y Diagnóstico RX
           </span>
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
+          <div className="flex items-center gap-1 bg-[#0b0e17] border border-white/[0.07] rounded-xl p-1">
             {[
               { id: 'both' as const, label: 'Vista Dual (FFT + RX Heatmap)' },
               { id: 'heatmap' as const, label: 'Solo RX Spectral Heatmap 3D' },
               { id: 'fft' as const, label: 'Solo Analizador FFT Dual' },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setVisualizerView(tab.id)}
-                className={`px-3 py-1 rounded-lg text-[11px] font-mono font-semibold transition-all ${
-                  visualizerView === tab.id
-                    ? 'bg-[#00E5FF] text-slate-950 shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+            ].map((tab) => {
+              const active = visualizerView === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setVisualizerView(tab.id)}
+                  className={`relative z-10 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                    active
+                      ? 'text-slate-950 font-semibold'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="mastering-visualizer-view-pill"
+                      transition={{
+                        type: 'spring',
+                        stiffness: 450,
+                        damping: 34,
+                        mass: 0.75,
+                      }}
+                      className="absolute inset-0 rounded-lg bg-[#00E5FF] shadow-[0_2px_12px_rgba(0,229,255,0.3)] -z-10"
+                    />
+                  )}
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
-          <div className="xl:col-span-8 flex flex-col gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-stretch">
+          <div className="xl:col-span-8 2xl:col-span-9 flex flex-col gap-5">
             {(visualizerView === 'both' || visualizerView === 'fft') && (
               <DualSpectrumVisualizer
                 getVisualSnapshot={getVisualSnapshot}
@@ -1408,12 +1443,12 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
                 onStartBandPassSolo={handleStartBandPassSolo}
                 onUpdateBandPassSolo={handleUpdateBandPassSolo}
                 onStopBandPassSolo={handleStopBandPassSolo}
-                height={visualizerView === 'heatmap' ? 370 : 290}
+                height={visualizerView === 'heatmap' ? 390 : 300}
               />
             )}
           </div>
 
-          <div className="xl:col-span-4">
+          <div className="xl:col-span-4 2xl:col-span-3">
             <LoudnessMeterPanel
               metrics={liveMetrics}
               targetLufs={overrides.targetLufs}
@@ -1424,7 +1459,7 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
           </div>
         </div>
 
-        {/* 2.5. AI Master Assistant & Customizer Panel (Critical EQ Boost/Cut Points, De-Esser/Notch Filters, Custom EQ/Comp/Stereo) */}
+        {/* 2.5. AI Master Assistant & Customizer Panel */}
         <AiMasteringAssistantPanel
           report={adaptationReport}
           overrides={overrides}
@@ -1496,93 +1531,119 @@ export const MasteringRack: React.FC<StudioMasteringModuleProps> = ({
       </div>
 
       {/* Modal: Sessions History */}
-      {showHistoryModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-2xl flex flex-col gap-4 max-h-[80vh]">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <History size={18} className="text-[#FF6B00]" />
-                <h3 className="text-sm font-mono font-bold uppercase text-white">
-                  Historial de Masters 24-Bit WAV
-                </h3>
+      <AnimatePresence>
+        {showHistoryModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              className="w-full max-w-2xl rounded-2xl mastering-surface p-5 shadow-2xl flex flex-col gap-4 max-h-[80vh]"
+            >
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+                <div className="flex items-center gap-2">
+                  <History size={18} className="text-[#FF6B00]" />
+                  <h3 className="text-sm font-semibold tracking-tight text-white">
+                    Historial de Masters 24-Bit WAV
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowHistoryModal(false)}
+                  className="text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowHistoryModal(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            <div className="overflow-y-auto space-y-2.5 pr-1">
-              {sessionsHistory.length === 0 ? (
-                <p className="text-xs text-slate-400 py-8 text-center font-mono">
-                  Aún no hay sesiones guardadas. Usa el botón "Guardar Cloud" para registrar tu primer Master 24-bit.
-                </p>
-              ) : (
-                sessionsHistory.map((item) => (
-                  <div
-                    key={item.id || item.created_at}
-                    className="rounded-xl bg-slate-950 border border-slate-800 p-3 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div>
-                      <div className="text-xs font-bold text-white">
-                        {item.track_title}
+              <div className="overflow-y-auto space-y-2.5 pr-1">
+                {sessionsHistory.length === 0 ? (
+                  <p className="text-xs text-zinc-400 py-8 text-center font-mono">
+                    Aún no hay sesiones guardadas. Usa el botón "Guardar Cloud" para registrar tu primer Master 24-bit.
+                  </p>
+                ) : (
+                  sessionsHistory.map((item) => (
+                    <div
+                      key={item.id || item.created_at}
+                      className="rounded-xl mastering-subpanel p-3.5 flex flex-wrap items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="text-xs font-semibold text-white">
+                          {item.track_title}
+                        </div>
+                        <div className="text-[11px] font-mono text-zinc-400 mt-0.5">
+                          Preset: <span className="text-[#FF6B00]">{item.preset_name}</span> ({item.intensity_pct}%) · Out: {item.output_lufs} LUFS · {item.true_peak_dbtp} dBTP
+                        </div>
                       </div>
-                      <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                        Preset: <span className="text-[#FF6B00]">{item.preset_name}</span> ({item.intensity_pct}%) · Out: {item.output_lufs} LUFS · {item.true_peak_dbtp} dBTP
+
+                      <div className="flex items-center gap-2">
+                        {item.master_wav_url && (
+                          <a
+                            href={item.master_wav_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            download
+                            className="px-3 py-1.5 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-xs font-mono flex items-center gap-1"
+                          >
+                            <Download size={12} />
+                            WAV 24-Bit
+                          </a>
+                        )}
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      {item.master_wav_url && (
-                        <a
-                          href={item.master_wav_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          download
-                          className="px-2.5 py-1.5 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-xs font-mono flex items-center gap-1"
-                        >
-                          <Download size={12} />
-                          WAV 24-Bit
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Modal: SQL Migration Script */}
-      {showSqlModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-2xl flex flex-col gap-3 max-h-[82vh]">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <Database size={18} className="text-[#00E5FF]" />
-                <h3 className="text-sm font-mono font-bold uppercase text-white">
-                  Migración SQL Supabase (`mastering_sessions` + Bucket `masters`)
-                </h3>
+      <AnimatePresence>
+        {showSqlModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              className="w-full max-w-2xl rounded-2xl mastering-surface p-5 shadow-2xl flex flex-col gap-3 max-h-[82vh]"
+            >
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+                <div className="flex items-center gap-2">
+                  <Database size={18} className="text-[#00E5FF]" />
+                  <h3 className="text-sm font-semibold tracking-tight text-white">
+                    Migración SQL Supabase (`mastering_sessions` + Bucket `masters`)
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSqlModal(false)}
+                  className="text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowSqlModal(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-300 overflow-x-auto overflow-y-auto">
-              {MASTERING_SESSIONS_MIGRATION_SQL}
-            </pre>
-          </div>
-        </div>
-      )}
+              <pre className="p-3.5 rounded-xl mastering-subpanel text-[11px] font-mono text-emerald-300 overflow-x-auto overflow-y-auto">
+                {MASTERING_SESSIONS_MIGRATION_SQL}
+              </pre>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

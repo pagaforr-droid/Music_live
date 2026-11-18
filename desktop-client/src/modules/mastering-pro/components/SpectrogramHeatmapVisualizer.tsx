@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useMemo,
 } from 'react';
+import { motion } from 'framer-motion';
 import {
   Eye,
   Sparkles,
@@ -839,27 +840,27 @@ export const SpectrogramHeatmapVisualizer: React.FC<
   return (
     <div
       ref={containerRef}
-      className="w-full rounded-2xl bg-slate-950 border border-slate-800/90 shadow-[0_14px_40px_rgba(0,0,0,0.65)] overflow-hidden select-none"
+      className="w-full rounded-2xl mastering-surface overflow-hidden select-none"
     >
       {/* Barra de Herramientas del Espectrograma RX */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-slate-900/90 border-b border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white/[0.02] border-b border-white/[0.07]">
         <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-[#FF6B00]/15 border border-[#FF6B00]/40 text-[#FF6B00]">
+          <div className="w-8 h-8 rounded-xl bg-[#FF6B00]/15 border border-[#FF6B00]/35 flex items-center justify-center text-[#FF6B00]">
             <Activity className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-100 flex items-center gap-2">
+            <h3 className="text-[13px] font-semibold tracking-tight text-white flex flex-wrap items-center gap-2">
               RX Spectral Heatmap (Rayos X 3D)
-              <span className="px-1.5 py-0.5 text-[10px] rounded bg-cyan-500/15 text-[#00E5FF] border border-cyan-500/30 font-mono">
+              <span className="px-2 py-0.5 text-[10px] rounded-full bg-[#00E5FF]/12 text-[#00E5FF] border border-[#00E5FF]/30 font-mono">
                 4096-FFT CATMULL-ROM
               </span>
               {resonanceNotches.filter((n) => n.enabled).length > 0 && (
-                <span className="px-1.5 py-0.5 text-[10px] rounded bg-rose-500/15 text-rose-400 border border-rose-500/40 font-mono">
+                <span className="px-2 py-0.5 text-[10px] rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/35 font-mono">
                   {resonanceNotches.filter((n) => n.enabled).length} LINE KILLER Q=12
                 </span>
               )}
             </h3>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-zinc-400">
               Auditoría visual de piso de ruido y resonancias ·{' '}
               <span className="text-[#00E5FF] font-medium">
                 Haz clic en cualquier línea horizontal para insertar/quitar un Notch Q=12
@@ -869,49 +870,60 @@ export const SpectrogramHeatmapVisualizer: React.FC<
         </div>
 
         {/* Selector de Vista: Original (Con Ruido) vs Post-IA (Limpio) vs Delta (Solo lo eliminado) */}
-        <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
-          <button
-            type="button"
-            onClick={() => setViewSource('pre')}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-all cursor-pointer ${
-              viewSource === 'pre'
-                ? 'bg-slate-800 text-amber-400 border border-amber-500/40 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            1. Original (Pre)
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewSource('post')}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-all cursor-pointer ${
-              viewSource === 'post'
-                ? 'bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            2. Master Limpio (Post)
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewSource('delta')}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-all flex items-center gap-1 cursor-pointer ${
-              viewSource === 'delta'
-                ? 'bg-[#FF6B00]/20 text-[#FF6B00] border border-[#FF6B00]/50 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            title="Muestra únicamente la suciedad, ruido y resonancias que la cirugía DSP está modificando"
-          >
-            <Sparkles className="w-3 h-3" />
-            3. Delta (Diferencia)
-          </button>
+        <div className="flex items-center gap-1 bg-[#05070b] p-1 rounded-xl border border-white/[0.07]">
+          {(
+            [
+              { id: 'pre', label: '1. Original (Pre)' },
+              { id: 'post', label: '2. Master Limpio (Post)' },
+              { id: 'delta', label: '3. Delta (Diferencia)', icon: true },
+            ] as const
+          ).map((item) => {
+            const active = viewSource === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setViewSource(item.id)}
+                className={`relative z-10 px-3 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1 cursor-pointer ${
+                  active
+                    ? item.id === 'post'
+                      ? 'text-slate-950 font-semibold'
+                      : item.id === 'delta'
+                      ? 'text-slate-950 font-semibold'
+                      : 'text-amber-300 font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="rx-heatmap-view-source-pill"
+                    transition={{
+                      type: 'spring',
+                      stiffness: 450,
+                      damping: 34,
+                      mass: 0.75,
+                    }}
+                    className={`absolute inset-0 rounded-lg -z-10 ${
+                      item.id === 'post'
+                        ? 'bg-[#00E5FF] shadow-[0_2px_10px_rgba(0,229,255,0.3)]'
+                        : item.id === 'delta'
+                        ? 'bg-[#FF6B00] shadow-[0_2px_10px_rgba(255,107,0,0.3)]'
+                        : 'bg-zinc-800 border border-amber-500/40'
+                    }`}
+                  />
+                )}
+                {'icon' in item && item.icon && <Sparkles className="w-3 h-3" />}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Controles de Sensibilidad de Ruido, Velocidad y Congelamiento */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 text-xs text-slate-300">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-[#05070b] border border-white/[0.07] text-xs text-zinc-300">
             <Sliders className="w-3.5 h-3.5 text-[#00E5FF]" />
-            <span className="text-[11px] text-slate-400">Piso:</span>
+            <span className="text-[11px] text-zinc-400">Piso:</span>
             <input
               type="range"
               min={-95}
@@ -919,9 +931,9 @@ export const SpectrogramHeatmapVisualizer: React.FC<
               step={1}
               value={noiseFloorSensitivity}
               onChange={(e) => setNoiseFloorSensitivity(Number(e.target.value))}
-              className="w-20 accent-[#FF6B00] cursor-pointer"
+              className="w-20 mastering-fader"
             />
-            <span className="font-mono text-[11px] text-[#00E5FF] w-11">
+            <span className="font-mono text-[11px] text-[#00E5FF] w-10 text-right">
               {noiseFloorSensitivity}dB
             </span>
           </div>
@@ -931,7 +943,7 @@ export const SpectrogramHeatmapVisualizer: React.FC<
             onClick={() =>
               setScrollSpeed((prev) => (prev === 1 ? 2 : prev === 2 ? 4 : 1))
             }
-            className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-300 hover:text-white flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.07] text-[11px] font-mono text-zinc-300 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
             title="Velocidad de barrido del espectrograma"
           >
             <Gauge className="w-3 h-3 text-[#00E5FF]" />
@@ -948,10 +960,10 @@ export const SpectrogramHeatmapVisualizer: React.FC<
                 onStopBandPassSolo?.();
               }
             }}
-            className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
               soloModeArmed || isSoloAuditioning
-                ? 'bg-[#00E5FF]/20 border-[#00E5FF] text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.3)]'
-                : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
+                ? 'bg-[#00E5FF]/15 border-[#00E5FF]/50 text-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.25)]'
+                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.07] text-zinc-300 hover:text-white'
             }`}
             title="Modo Audición Quirúrgica Band-Pass Solo (También puedes mantener Shift + Clic y arrastrar)"
           >
@@ -966,10 +978,10 @@ export const SpectrogramHeatmapVisualizer: React.FC<
           <button
             type="button"
             onClick={() => setShowAIOverlay(!showAIOverlay)}
-            className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
               showAIOverlay
-                ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400'
+                ? 'bg-emerald-500/12 border-emerald-500/40 text-emerald-300'
+                : 'bg-white/[0.04] border-white/[0.07] text-zinc-400'
             }`}
             title="Mostrar/Ocultar pastillas quirúrgicas laterales de EQ y Line Killer"
           >
@@ -980,10 +992,10 @@ export const SpectrogramHeatmapVisualizer: React.FC<
           <button
             type="button"
             onClick={() => setDemoSignalWhenIdle((prev) => !prev)}
-            className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
               demoSignalWhenIdle
-                ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                ? 'bg-purple-500/15 border-purple-500/45 text-purple-300'
+                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.07] text-zinc-400 hover:text-zinc-200'
             }`}
             title="Generar señal sintética de prueba cuando el reproductor está en pausa"
           >
@@ -994,10 +1006,10 @@ export const SpectrogramHeatmapVisualizer: React.FC<
           <button
             type="button"
             onClick={() => setIsFrozen(!isFrozen)}
-            className={`p-1.5 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
               isFrozen || isAutoPausedOnRealTrack
-                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                ? 'bg-amber-500/15 border-amber-500/45 text-amber-300'
+                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.07] text-zinc-300'
             }`}
             title="Congelar imagen para inspeccionar resonancias"
           >
@@ -1054,33 +1066,33 @@ export const SpectrogramHeatmapVisualizer: React.FC<
         {/* Inspector Quirúrgico Flotante al mover el mouse */}
         {hoverInfo && (
           <div
-            className="pointer-events-none absolute z-20 px-3 py-2 rounded-xl bg-slate-950/95 border border-[#00E5FF]/50 shadow-2xl text-xs flex items-center gap-3 backdrop-blur-md"
+            className="pointer-events-none absolute z-20 px-3.5 py-2 rounded-xl bg-[#07090e]/95 border border-[#00E5FF]/45 shadow-2xl text-xs flex items-center gap-3 backdrop-blur-md"
             style={{
               left: `${Math.min(62, (hoverInfo.x / Math.max(1, canvasCssWidth)) * 100)}%`,
               top: `${Math.max(6, (hoverInfo.y / height) * 100 - 15)}%`,
             }}
           >
             <div>
-              <span className="text-slate-400 text-[10px] block">
+              <span className="text-zinc-400 text-[10px] block">
                 FRECUENCIA
               </span>
               <span className="font-mono font-bold text-[#00E5FF] text-sm">
                 {hoverInfo.freq} Hz
               </span>
             </div>
-            <div className="h-7 w-px bg-slate-800" />
+            <div className="h-7 w-px bg-white/10" />
             <div>
-              <span className="text-slate-400 text-[10px] block">NOTA</span>
+              <span className="text-zinc-400 text-[10px] block">NOTA</span>
               <span className="font-mono font-bold text-[#FF6B00] text-sm">
                 {hoverInfo.note}
               </span>
             </div>
-            <div className="h-7 w-px bg-slate-800" />
+            <div className="h-7 w-px bg-white/10" />
             <div>
-              <span className="text-slate-400 text-[10px] block">
+              <span className="text-zinc-400 text-[10px] block">
                 DIAGNÓSTICO DE ZONA
               </span>
-              <span className="text-slate-200 font-medium text-[11px] block">
+              <span className="text-zinc-100 font-medium text-[11px] block">
                 {hoverInfo.zoneLabel}
               </span>
               {onToggleResonanceNotchAtFreq && (
@@ -1097,31 +1109,31 @@ export const SpectrogramHeatmapVisualizer: React.FC<
       </div>
 
       {/* Leyenda Térmica de Decibelios en el Pie del Visualizador */}
-      <div className="px-4 py-2 bg-slate-900/95 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+      <div className="px-4 py-2.5 bg-white/[0.02] border-t border-white/[0.07] flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
         <div className="flex flex-wrap items-center gap-4">
-          <span className="font-semibold text-slate-300 flex items-center gap-1">
+          <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
             <ZoomIn className="w-3.5 h-3.5 text-[#FF6B00]" />
             Código Quirúrgico:
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
-            <strong>NOTCH Q12:</strong> Supresor de Línea Horizontal
+            <strong className="text-zinc-200">NOTCH Q12:</strong> Supresor de Línea Horizontal
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-            <strong>CUT:</strong> Limpieza de Barro/Dureza
+            <strong className="text-zinc-200">CUT:</strong> Limpieza de Barro/Dureza
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-[#00E5FF] inline-block" />
-            <strong>BOOST:</strong> Realce Armónico/Aire
+            <strong className="text-zinc-200">BOOST:</strong> Realce Armónico/Aire
           </span>
         </div>
 
         {/* Escala de Color de Intensidad */}
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px]">-90dB (Silencio)</span>
+          <span className="font-mono text-[10px] text-zinc-500">-90dB (Silencio)</span>
           <div
-            className="w-36 h-2.5 rounded-full border border-slate-700"
+            className="w-36 h-2.5 rounded-full border border-white/[0.12]"
             style={{
               background:
                 'linear-gradient(90deg, #020617 0%, #0f174b 20%, #006ea5 40%, #00E5FF 60%, #FF6B00 82%, #ffffff 100%)',

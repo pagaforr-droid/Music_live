@@ -371,29 +371,29 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
   };
 
   return (
-    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-2.5">
-      {/* Header Telemetry Bar + Waveform Overview Scrubber */}
+    <div className="rounded-2xl mastering-surface p-4 flex flex-col gap-3">
+      {/* Header Telemetry Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className="inline-block w-2 h-2 rounded-full bg-[#00E5FF] shadow-[0_0_8px_#00E5FF]" />
-          <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-200">
+          <span className="text-[13px] font-semibold tracking-tight text-white">
             Dual FFT Real-Time Analyzer (60 FPS)
           </span>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400">
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#07090e] border border-white/[0.08] text-zinc-400">
             PRE (Gris) vs POST (#FF6B00 → #00E5FF)
           </span>
         </div>
 
-        <div className="flex items-center gap-3 text-[10px] font-mono">
-          <span className="flex items-center gap-1 text-[#FF6B00]">
+        <div className="flex items-center gap-3.5 text-[10.5px] font-mono">
+          <span className="flex items-center gap-1.5 text-[#FF6B00]">
             <span className="w-2 h-2 rounded-full bg-[#FF6B00]" />
             MID (Voz/Sub)
           </span>
-          <span className="flex items-center gap-1 text-[#00E5FF]">
+          <span className="flex items-center gap-1.5 text-[#00E5FF]">
             <span className="w-2 h-2 rounded-full bg-[#00E5FF]" />
             SIDE (Aire/Width {dspChain.stereoWidth.widthPct}%)
           </span>
-          <span className="flex items-center gap-1 text-emerald-400">
+          <span className="flex items-center gap-1.5 text-emerald-400">
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
             SURGICAL STEREO
           </span>
@@ -401,7 +401,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
       </div>
 
       {/* Interactive Waveform Scrubber */}
-      <div className="relative w-full h-11 rounded-xl bg-slate-950 border border-slate-800/80 overflow-hidden px-2 py-1">
+      <div className="relative w-full h-11 rounded-xl bg-[#05070b] border border-white/[0.07] shadow-inner overflow-hidden px-2 py-1">
         <canvas
           ref={waveformCanvasRef}
           onClick={handleWaveformClick}
@@ -411,7 +411,7 @@ export const DualSpectrumVisualizer: React.FC<DualSpectrumVisualizerProps> = ({
       </div>
 
       {/* Main 60fps FFT Spectrum Canvas */}
-      <div className="relative w-full h-56 rounded-xl bg-slate-950 border border-slate-800/90 overflow-hidden">
+      <div className="relative w-full h-60 2xl:h-64 rounded-xl bg-[#040711] border border-white/[0.07] shadow-inner overflow-hidden">
         <canvas ref={spectrumCanvasRef} className="w-full h-full block" />
       </div>
     </div>

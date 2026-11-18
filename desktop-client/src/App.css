@@ -691,4 +691,113 @@ input[type="range"].apple-studio-slider::-moz-range-thumb:active {
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.3);
 }
 
+/* ==========================================================================
+   APPLE LOGIC PRO / PRO AUDIO DARK WORKSTATION SURFACES & PRECISION FADERS
+   ========================================================================== */
+
+.mastering-surface {
+  background: linear-gradient(180deg, rgba(20, 24, 34, 0.94) 0%, rgba(13, 16, 23, 0.96) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+    0 20px 45px -15px rgba(0, 0, 0, 0.72);
+}
+
+.mastering-subpanel {
+  background: rgba(9, 11, 17, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+input[type="range"].mastering-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+input[type="range"].mastering-fader:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+input[type="range"].mastering-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  border: 1.5px solid #FF6B00;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.65),
+    0 0 0 2px rgba(255, 107, 0, 0.15);
+  cursor: pointer;
+  transition:
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+input[type="range"].mastering-fader::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.75),
+    0 0 0 4px rgba(255, 107, 0, 0.25);
+}
+
+input[type="range"].mastering-fader::-webkit-slider-thumb:active {
+  transform: scale(1.06);
+}
+
+input[type="range"].mastering-fader.fader-cyan::-webkit-slider-thumb {
+  border-color: #00E5FF;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.65),
+    0 0 0 2px rgba(0, 229, 255, 0.16);
+}
+
+input[type="range"].mastering-fader.fader-cyan::-webkit-slider-thumb:hover {
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.75),
+    0 0 0 4px rgba(0, 229, 255, 0.28);
+}
+
+input[type="range"].mastering-fader.fader-emerald::-webkit-slider-thumb {
+  border-color: #34d399;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.65),
+    0 0 0 2px rgba(52, 211, 153, 0.16);
+}
+
+input[type="range"].mastering-fader.fader-emerald::-webkit-slider-thumb:hover {
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.75),
+    0 0 0 4px rgba(52, 211, 153, 0.28);
+}
+
+input[type="range"].mastering-fader.fader-rose::-webkit-slider-thumb {
+  border-color: #f43f5e;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.65),
+    0 0 0 2px rgba(244, 63, 94, 0.18);
+}
+
+input[type="range"].mastering-fader::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  border: 1.5px solid #FF6B00;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+
 
