@@ -2,6 +2,11 @@ import { useEffect, useState, useRef } from 'react';
 import { useSyncSlave } from '../hooks/useSyncSlave';
 import { Volume2, Power, Music, Activity, Headphones } from 'lucide-react';
 import { Prompter } from '../components/Prompter';
+import {
+  resolveEffectivePreRoll,
+  resolveEffectivePreRollBars,
+  resolveLyricsTimeMapping,
+} from '../utils/cueEngine';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -105,7 +110,7 @@ export default function MobileInEar() {
       setFohBuffer(fBuffer);
       
       setLoadStatus('Listo para Ensayo (Standby)');
-      setCurrentTime(0);
+      setCurrentTime(-getPreRoll(songData));
     } catch (e: any) {
       setLoadStatus('Error: ' + e.message);
     }
@@ -156,14 +161,14 @@ export default function MobileInEar() {
 
   useEffect(() => {
     if (seekTrigger) {
-      setCurrentTime(seekTrigger.offset);
+      setCurrentTime(seekTrigger.offset - getPreRoll(songData));
     }
-  }, [seekTrigger]);
+  }, [seekTrigger, songData]);
 
   const updateTime = () => {
     if (!audioCtx) return;
     
-    const globalTime = audioCtx.currentTime - startTimeRef.current;
+    const globalTime = Math.max(0, audioCtx.currentTime - startTimeRef.current);
     const preRoll = getPreRoll(songData);
     const visualTime = globalTime - preRoll;
     
@@ -171,11 +176,9 @@ export default function MobileInEar() {
     animationFrameRef.current = requestAnimationFrame(updateTime);
   };
 
-  // Exact match with LiveConcert.tsx & useAudioEngine.ts 16s cap
+  // Fuente única de verdad compartida con LiveConcert y Studio Prompter (liveMixMeta + fallback legacy)
   const getPreRoll = (song: any) => {
-    if (!song?.prompter_data?.bpm) return 0;
-    const beatsPerMeasure = parseInt(song.prompter_data.timeSignature?.split('/')[0]) || 4;
-    return Math.min((60 / song.prompter_data.bpm) * beatsPerMeasure * 2, 16);
+    return resolveEffectivePreRoll(song);
   };
 
   if (!hasInteracted) {
@@ -260,6 +263,9 @@ export default function MobileInEar() {
         {songData ? (
           <Prompter 
             currentTime={currentTime}
+            preRollDuration={getPreRoll(songData)}
+            preRollBars={resolveEffectivePreRollBars(songData)}
+            lyricsTimeOffset={resolveLyricsTimeMapping(songData).prompterLyricsOffsetSec}
             bpm={songData.prompter_data?.bpm || 0}
             timeSignature={songData.prompter_data?.timeSignature}
             baseOffset={songData.prompter_data?.firstBeatOffset}

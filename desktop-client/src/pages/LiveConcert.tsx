@@ -3,10 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity, Zap } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 import { StageEqualizerConsole, LoadedStemSummary } from '../components/StageEqualizerConsole';
 import { detectInstrumentCategory, InstrumentCategory } from '../utils/instrumentIcons';
+import {
+  resolveEffectivePreRoll,
+  resolveEffectivePreRollBars,
+  resolveEffectivePlaybackBounds,
+  resolveLyricsTimeMapping,
+} from '../utils/cueEngine';
 import {
   STAGE_EQ_18_BANDS,
   StageEqProfile,
@@ -103,6 +109,21 @@ export default function LiveConcert() {
   const [currentTime, setCurrentTime] = useState(0);
   const [audioTime, setAudioTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
+  const totalDurationRef = useRef<number>(0);
+  const [skipPreRoll, setSkipPreRoll] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('tandu_live_skip_preroll') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const skipPreRollRef = useRef<boolean>(skipPreRoll);
+  useEffect(() => {
+    skipPreRollRef.current = skipPreRoll;
+    try {
+      sessionStorage.setItem('tandu_live_skip_preroll', skipPreRoll ? '1' : '0');
+    } catch {}
+  }, [skipPreRoll]);
   const isApplyingExternalIoSyncRef = useRef(false);
   const [routingMode, setRoutingMode] = useState<'StereoInEar' | 'StereoSplit' | 'MultiChannel'>(() => loadStoredRoutingMode());
   const routingModeRef = useRef<'StereoInEar' | 'StereoSplit' | 'MultiChannel'>(routingMode);
@@ -275,6 +296,10 @@ export default function LiveConcert() {
   // Network Sync (Para In-Ears de Práctica por Wi-Fi)
   const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID);
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
+  const broadcastEnabledRef = useRef<boolean>(false);
+  const connectionsRef = useRef<number>(0);
+  useEffect(() => { broadcastEnabledRef.current = broadcastEnabled; }, [broadcastEnabled]);
+  useEffect(() => { connectionsRef.current = connections; }, [connections]);
 
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [localSliderTime, setLocalSliderTime] = useState(0);
@@ -283,7 +308,7 @@ export default function LiveConcert() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const fohSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const cueSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const stemSourcesRef = useRef<{ id: string; name: string; category: InstrumentCategory; source: AudioBufferSourceNode; gainNode: GainNode; baseVolume: number; group: StemBusGroupId }[]>([]);
+  const stemSourcesRef = useRef<{ id: string; name: string; category: InstrumentCategory; source: AudioBufferSourceNode; gainNode: GainNode; pannerNode: StereoPannerNode; baseVolume: number; group: StemBusGroupId }[]>([]);
 
   // Buffers loaded in RAM
   const fohBufferRef = useRef<AudioBuffer | null>(null);
@@ -339,10 +364,18 @@ export default function LiveConcert() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadStatus, setLoadStatus] = useState('');
 
-  // Pre-carga silenciosa de la SIGUIENTE canción
-  const nextFohBufferRef = useRef<AudioBuffer | null>(null);
-  const nextCueBufferRef = useRef<AudioBuffer | null>(null);
+  // Pre-carga silenciosa de la SIGUIENTE canción (indexada por songId + playbackMode + URLs para evitar cruces)
+  const prefetchedSongRef = useRef<{
+    songId: string;
+    playbackMode: 'LIVE' | 'REHEARSAL';
+    fohUrl: string;
+    cueUrl: string;
+    fohBuffer: AudioBuffer;
+    cueBuffer: AudioBuffer;
+  } | null>(null);
   const isPrefetchingRef = useRef(false);
+  const loadRequestIdRef = useRef<number>(0);
+  const loadAbortControllerRef = useRef<AbortController | null>(null);
   const autoPlayOnLoadRef = useRef(false);
   const songsRef = useRef<any[]>([]);
   const currentSongIndexRef = useRef<number>(0);
@@ -514,8 +547,9 @@ export default function LiveConcert() {
 
     return () => {
       if (deviceChangeTimer) window.clearTimeout(deviceChangeTimer);
+      loadAbortControllerRef.current?.abort();
       navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
-      pause();
+      pauseRef.current(true);
       if (audioCtxRef.current) audioCtxRef.current.close();
     };
   }, [isProjectorWindow]);
@@ -547,6 +581,7 @@ export default function LiveConcert() {
 
   useEffect(() => {
     if (isProjectorWindow) return;
+    prefetchedSongRef.current = null;
     if (selectedSetlistId) {
       sessionStorage.setItem('tandu_active_setlist_id', selectedSetlistId);
       fetchSetlistSongs(selectedSetlistId);
@@ -561,7 +596,12 @@ export default function LiveConcert() {
   useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
   useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
 
-  // When song index changes, load the audio automatically
+  // Limpiar caché de prefetch al alternar CONSOLA VIVO ↔ MODO PRÁCTICA
+  useEffect(() => {
+    prefetchedSongRef.current = null;
+  }, [playbackMode]);
+
+  // Cargar audio al cambiar canción, URLs exportadas o modo (SIN cortar por alternar Wi-Fi In-Ear)
   useEffect(() => {
     if (isProjectorWindow) return;
     if (currentSong) {
@@ -570,7 +610,22 @@ export default function LiveConcert() {
       loadSongAudio(currentSong, autoPlayOnLoadRef.current);
       autoPlayOnLoadRef.current = false;
     }
-  }, [currentSongIndex, currentSong?.id, broadcastEnabled, isProjectorWindow]);
+  }, [
+    currentSongIndex,
+    currentSong?.id,
+    currentSong?.foh_mix_url,
+    currentSong?.cue_mix_url,
+    currentSong?.foh_mobile_url,
+    currentSong?.cue_mobile_url,
+    playbackMode,
+    isProjectorWindow,
+  ]);
+
+  // Efecto no destructivo: notificar canción activa a esclavos Wi-Fi sin interrumpir audio local
+  useEffect(() => {
+    if (isProjectorWindow || !broadcastEnabled || !currentSong) return;
+    broadcast({ type: 'LOAD_SONG', songId: currentSong.id, songData: currentSong });
+  }, [broadcastEnabled, currentSong?.id, isProjectorWindow]);
 
   // Sincronizar DSP (EQ 18 Bandas, HPF, Limiter, Cue Tone) en vivo con cero clics
   useEffect(() => {
@@ -654,24 +709,29 @@ export default function LiveConcert() {
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying, isProjectorWindow]);
 
-  // Sincronizar con ventana de Proyector Externo HDMI (Envía audioTime para sincronía exacta de letras)
+  // Sincronizar con ventana de Proyector Externo HDMI usando reloj unificado de letras
   useEffect(() => {
     if (isProjectorWindow || !projectorChannelRef.current || !currentSong) return;
+    const { lyricReferencePreRollSec } = resolveLyricsTimeMapping(currentSong);
+    const syncedLyricTime = Math.max(0, currentTime + lyricReferencePreRollSec);
+    const rawBeatTimes = Array.isArray(currentSong.prompter_data?.beatTimes)
+      ? currentSong.prompter_data.beatTimes.map((t: number) => Number(t) + lyricReferencePreRollSec)
+      : undefined;
     projectorChannelRef.current.postMessage({
       type: 'PROJECTOR_SYNC',
       payload: {
-        currentTime: audioTime,
+        currentTime: syncedLyricTime,
         isPlaying,
         title: currentSong.title,
         lyrics: currentSong.prompter_data?.lyrics || [],
         settings: currentSong.prompter_data?.lyric_settings,
         bpm: currentSong.prompter_data?.bpm || 120,
-        firstBeatOffset: currentSong.prompter_data?.firstBeatOffset || 0,
-        beatTimes: currentSong.prompter_data?.beatTimes,
+        firstBeatOffset: (Number(currentSong.prompter_data?.firstBeatOffset) || 0) + lyricReferencePreRollSec,
+        beatTimes: rawBeatTimes,
         background: currentSong.prompter_data?.background,
       },
     });
-  }, [audioTime, isPlaying, currentSong, isProjectorWindow]);
+  }, [currentTime, audioTime, isPlaying, currentSong, isProjectorWindow]);
 
   const openExternalProjector = () => {
     window.open(
@@ -707,10 +767,12 @@ export default function LiveConcert() {
     if (error) {
       console.error(error);
     } else {
-      const mapped = (data || []).map(item => ({
-        position: item.position,
-        ...(item.song as any)
-      }));
+      const mapped = (data || [])
+        .filter((item) => Boolean(item.song))
+        .map((item) => ({
+          position: item.position,
+          ...(item.song as any),
+        }));
       setSongs(mapped);
       setCurrentSongIndex(0);
     }
@@ -743,22 +805,42 @@ export default function LiveConcert() {
     }
   };
 
-  // Escucha instantánea de cambios guardados en Lyric Studio (Cero Latencia <1ms en la misma máquina)
+  // Escucha instantánea de cambios guardados en Lyric Studio / Studio Prompter (Cero Latencia <1ms en la misma máquina)
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
     const bc = new BroadcastChannel('tandu_stage_sync');
     bc.onmessage = (event) => {
       const msgType = event.data?.type;
       const incomingData = event.data?.prompter_data || event.data?.prompterData;
-      if ((msgType === 'SONG_LYRICS_UPDATED' || msgType === 'PROMPTER_UPDATED') && event.data.songId && incomingData) {
+      if (
+        (msgType === 'SONG_LYRICS_UPDATED' ||
+          msgType === 'PROMPTER_UPDATED' ||
+          msgType === 'LIVE_MIX_EXPORTED') &&
+        event.data.songId &&
+        incomingData
+      ) {
         const { songId } = event.data;
+        if (msgType === 'LIVE_MIX_EXPORTED' && prefetchedSongRef.current?.songId === songId) {
+          prefetchedSongRef.current = null;
+        }
         setSongs((prevSongs) =>
           prevSongs.map((s) =>
-            s.id === songId ? { ...s, prompter_data: incomingData || s.prompter_data } : s
+            s.id === songId
+              ? {
+                  ...s,
+                  prompter_data: incomingData || s.prompter_data,
+                  ...(event.data.foh_mix_url ? { foh_mix_url: event.data.foh_mix_url } : {}),
+                  ...(event.data.cue_mix_url ? { cue_mix_url: event.data.cue_mix_url } : {}),
+                  ...(event.data.foh_mobile_url ? { foh_mobile_url: event.data.foh_mobile_url } : {}),
+                  ...(event.data.cue_mobile_url ? { cue_mobile_url: event.data.cue_mobile_url } : {}),
+                }
+              : s
           )
         );
         setSyncFeedback(
-          msgType === 'PROMPTER_UPDATED'
+          msgType === 'LIVE_MIX_EXPORTED'
+            ? '¡Mix En Vivo actualizado desde Studio!'
+            : msgType === 'PROMPTER_UPDATED'
             ? '¡Prompter actualizado desde Studio!'
             : '¡Letras actualizadas en vivo!'
         );
@@ -781,7 +863,13 @@ export default function LiveConcert() {
         { event: 'UPDATE', schema: 'public', table: 'songs' },
         (payload) => {
           if (payload.new && payload.new.id) {
-            const updated = payload.new;
+            const updated = payload.new as any;
+            if (
+              prefetchedSongRef.current?.songId === updated.id &&
+              (updated.foh_mix_url || updated.cue_mix_url)
+            ) {
+              prefetchedSongRef.current = null;
+            }
             setSongs((prevSongs) =>
               prevSongs.map((s) =>
                 s.id === updated.id
@@ -789,6 +877,10 @@ export default function LiveConcert() {
                       ...s,
                       prompter_data: updated.prompter_data || s.prompter_data,
                       title: updated.title || s.title,
+                      ...(updated.foh_mix_url ? { foh_mix_url: updated.foh_mix_url } : {}),
+                      ...(updated.cue_mix_url ? { cue_mix_url: updated.cue_mix_url } : {}),
+                      ...(updated.foh_mobile_url ? { foh_mobile_url: updated.foh_mobile_url } : {}),
+                      ...(updated.cue_mobile_url ? { cue_mobile_url: updated.cue_mobile_url } : {}),
                     }
                   : s
               )
@@ -852,14 +944,19 @@ export default function LiveConcert() {
         }
 
         const hasSeparated = rows.length > 1 && rows.some((r: any) => !r.metadata?.is_master);
-        const activeRows = rows.filter((r: any) => {
+        const candidateRows = rows.filter((r: any) => {
           const lower = (r.name || '').toLowerCase();
           const isClickOrCue =
             lower.includes('click') || lower.includes('metronomo') || lower.includes('cue') || lower.includes('guia');
           if (isClickOrCue) return false;
           if (hasSeparated && r.metadata?.is_master) return false;
-          if (r.metadata?.muted === true) return false;
           return Boolean(r.file_url);
+        });
+        const hasAnySolo = candidateRows.some((r: any) => r.metadata?.solo === true);
+        const activeRows = candidateRows.filter((r: any) => {
+          if (r.metadata?.muted === true) return false;
+          if (hasAnySolo && r.metadata?.solo !== true) return false;
+          return true;
         });
 
         const decodedList: DecodedStemBuffer[] = [];
@@ -936,44 +1033,103 @@ export default function LiveConcert() {
     }
   }, [multiChannelPatch.consoleBusMode, routingMode, currentSong?.id, isProjectorWindow]);
 
+  const getPreRoll = (song: any) => {
+    const s = song || currentSongRef.current || currentSong;
+    return resolveEffectivePreRoll(s);
+  };
+
+  const getInitialPositionsForSong = (song: any) => {
+    const preRoll = getPreRoll(song);
+    if (skipPreRollRef.current && preRoll > 0) {
+      return { globalOffset: preRoll, visualTime: 0 };
+    }
+    return { globalOffset: 0, visualTime: -preRoll };
+  };
+
+  const handleToggleSkipPreRoll = () => {
+    (document.activeElement as HTMLElement)?.blur();
+    setSkipPreRoll((prev) => {
+      const next = !prev;
+      skipPreRollRef.current = next;
+      const curSong = currentSongRef.current;
+      if (curSong && !isPlayingRef.current) {
+        const preRoll = getPreRoll(curSong);
+        // Si estamos en reposo al inicio de la canción (en zona pre-roll o en 0), reposicionar de inmediato
+        if (pauseTimeRef.current <= preRoll + 0.05) {
+          const nextGlobal = next ? preRoll : 0;
+          const nextVisual = next ? 0 : -preRoll;
+          pauseTimeRef.current = nextGlobal;
+          setCurrentTime(nextVisual);
+          setAudioTime(nextGlobal);
+        }
+      }
+      return next;
+    });
+  };
+
   const loadSongAudio = async (song: any, shouldAutoPlay = false) => {
     if (!audioCtxRef.current) return;
-    
+
+    const reqId = ++loadRequestIdRef.current;
+    loadAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    loadAbortControllerRef.current = abortController;
+
     pause(true);
-    setCurrentTime(-getPreRoll(song));
-    setAudioTime(0);
-    pauseTimeRef.current = 0;
+    const { globalOffset: initGlobal, visualTime: initVisual } = getInitialPositionsForSong(song);
+    setCurrentTime(initVisual);
+    setAudioTime(initGlobal);
+    pauseTimeRef.current = initGlobal;
     activeStemsRef.current = [];
     setLoadedStemsSummary([]);
-    
-    if (nextFohBufferRef.current && nextCueBufferRef.current) {
-      console.log('[LiveConcert] ✅ Usando buffers pre-cargados en silencio.');
-      fohBufferRef.current = nextFohBufferRef.current;
-      cueBufferRef.current = nextCueBufferRef.current;
-      nextFohBufferRef.current = null;
-      nextCueBufferRef.current = null;
-      setTotalDuration(fohBufferRef.current.duration);
-      setLoadStatus('');
-      if (routingModeRef.current === 'MultiChannel' && multiChannelPatchRef.current.consoleBusMode === 'multitrack_stems') {
-        await loadSongStemsForMultitrack(song.id);
-      }
-      if (broadcastEnabled) {
-        broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
-      }
-      if (shouldAutoPlay) {
-        setTimeout(() => play(), 100);
-      }
-      return;
-    }
 
-    fohBufferRef.current = null;
-    cueBufferRef.current = null;
-    
     const mode = playbackModeRef.current;
     const targetFohUrl = mode === 'REHEARSAL' && song.foh_mobile_url ? song.foh_mobile_url : song.foh_mix_url;
     const targetCueUrl = mode === 'REHEARSAL' && song.cue_mobile_url ? song.cue_mobile_url : song.cue_mix_url;
 
+    const prefetched = prefetchedSongRef.current;
+    if (
+      prefetched &&
+      prefetched.songId === song.id &&
+      prefetched.playbackMode === mode &&
+      prefetched.fohUrl === targetFohUrl &&
+      prefetched.cueUrl === targetCueUrl
+    ) {
+      console.log('[LiveConcert] ✅ Usando buffers pre-cargados validados por songId/modo.');
+      fohBufferRef.current = prefetched.fohBuffer;
+      cueBufferRef.current = prefetched.cueBuffer;
+      prefetchedSongRef.current = null;
+      const dur = fohBufferRef.current.duration;
+      totalDurationRef.current = dur;
+      setTotalDuration(dur);
+      setLoadStatus('');
+      if (routingModeRef.current === 'MultiChannel' && multiChannelPatchRef.current.consoleBusMode === 'multitrack_stems') {
+        await loadSongStemsForMultitrack(song.id);
+        if (loadRequestIdRef.current !== reqId) return;
+      }
+      if (broadcastEnabledRef.current) {
+        broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
+      }
+      if (shouldAutoPlay) {
+        setTimeout(() => {
+          if (loadRequestIdRef.current === reqId) playRef.current();
+        }, 60);
+      }
+      return;
+    }
+
+    // Descartar caché de prefetch si pertenecía a otra canción o modo
+    if (prefetched && (prefetched.songId === song.id || prefetched.playbackMode !== mode)) {
+      prefetchedSongRef.current = null;
+    }
+
+    fohBufferRef.current = null;
+    cueBufferRef.current = null;
+    totalDurationRef.current = 0;
+    setTotalDuration(0);
+
     if (!targetFohUrl || !targetCueUrl) {
+       setIsLoading(false);
        setLoadStatus('Falta exportar el Mix En Vivo de esta canción en Studio Prompter.');
        return;
     }
@@ -983,47 +1139,61 @@ export default function LiveConcert() {
     
     try {
       const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl),
-        fetch(targetCueUrl),
+        fetch(targetFohUrl, { signal: abortController.signal }),
+        fetch(targetCueUrl, { signal: abortController.signal }),
       ]);
+      if (!fohRes.ok || !cueRes.ok) {
+        throw new Error(`HTTP ${fohRes.status}/${cueRes.status} al descargar audio`);
+      }
       const [fohArray, cueArray] = await Promise.all([
         fohRes.arrayBuffer(),
         cueRes.arrayBuffer(),
       ]);
+      if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
+
       setLoadStatus('Decodificando canales en RAM (Cero Latencia)...');
       const [decodedFoh, decodedCue] = await Promise.all([
         audioCtxRef.current.decodeAudioData(fohArray),
         audioCtxRef.current.decodeAudioData(cueArray),
       ]);
+      if (loadRequestIdRef.current !== reqId) return;
+
       fohBufferRef.current = decodedFoh;
       cueBufferRef.current = decodedCue;
-      setTotalDuration(fohBufferRef.current.duration);
+      totalDurationRef.current = decodedFoh.duration;
+      setTotalDuration(decodedFoh.duration);
 
       if (routingModeRef.current === 'MultiChannel' && multiChannelPatchRef.current.consoleBusMode === 'multitrack_stems') {
         setLoadStatus('Cargando stems discretos multicanal para consola...');
         await loadSongStemsForMultitrack(song.id);
+        if (loadRequestIdRef.current !== reqId) return;
       }
 
       setLoadStatus('');
       
-      if (broadcastEnabled) {
+      if (broadcastEnabledRef.current) {
         broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
       }
 
       if (shouldAutoPlay) {
-        setTimeout(() => play(), 100);
+        setTimeout(() => {
+          if (loadRequestIdRef.current === reqId) playRef.current();
+        }, 60);
       }
       
     } catch (e: any) {
+      if (e?.name === 'AbortError' || loadRequestIdRef.current !== reqId) return;
       console.error(e);
       setLoadStatus('Error al cargar audio: ' + e.message);
     } finally {
-      setIsLoading(false);
+      if (loadRequestIdRef.current === reqId) {
+        setIsLoading(false);
+      }
     }
   };
 
   const prefetchNextSong = async (nextSong: any) => {
-    if (!audioCtxRef.current || isPrefetchingRef.current) return;
+    if (!audioCtxRef.current || isPrefetchingRef.current || !nextSong?.id) return;
     const mode = playbackModeRef.current;
     const targetFohUrl = mode === 'REHEARSAL' && nextSong.foh_mobile_url ? nextSong.foh_mobile_url : nextSong.foh_mix_url;
     const targetCueUrl = mode === 'REHEARSAL' && nextSong.cue_mobile_url ? nextSong.cue_mobile_url : nextSong.cue_mix_url;
@@ -1036,31 +1206,29 @@ export default function LiveConcert() {
         fetch(targetFohUrl),
         fetch(targetCueUrl),
       ]);
+      if (!fohRes.ok || !cueRes.ok) return;
       const [fohArray, cueArray] = await Promise.all([
         fohRes.arrayBuffer(),
         cueRes.arrayBuffer(),
       ]);
-      if (!audioCtxRef.current) return;
+      if (!audioCtxRef.current || playbackModeRef.current !== mode) return;
       const [fohBuf, cueBuf] = await Promise.all([
         audioCtxRef.current.decodeAudioData(fohArray),
         audioCtxRef.current.decodeAudioData(cueArray),
       ]);
-      nextFohBufferRef.current = fohBuf;
-      nextCueBufferRef.current = cueBuf;
-    } catch (e) {
-      nextFohBufferRef.current = null;
-      nextCueBufferRef.current = null;
+      prefetchedSongRef.current = {
+        songId: nextSong.id,
+        playbackMode: mode,
+        fohUrl: targetFohUrl,
+        cueUrl: targetCueUrl,
+        fohBuffer: fohBuf,
+        cueBuffer: cueBuf,
+      };
+    } catch {
+      prefetchedSongRef.current = null;
     } finally {
       isPrefetchingRef.current = false;
     }
-  };
-
-  const getPreRoll = (song: any) => {
-    const s = song || currentSongRef.current || currentSong;
-    if (!s?.prompter_data?.bpm) return 0;
-    const beatsPerMeasure = parseInt(s.prompter_data.timeSignature?.split('/')[0]) || 4;
-    const raw = (60 / s.prompter_data.bpm) * beatsPerMeasure * 2;
-    return Math.min(raw, 16);
   };
 
   const isUsingMultitrackStems = (): boolean => {
@@ -1094,7 +1262,7 @@ export default function LiveConcert() {
     try { masterGainRef.current?.disconnect(); } catch {}
 
     stemSourcesRef.current.forEach((st) => {
-      try { st.gainNode.disconnect(); } catch {}
+      try { st.pannerNode.disconnect(); } catch {}
     });
     stemTailNodesRef.current.forEach((n) => {
       try { n.disconnect(); } catch {}
@@ -1238,7 +1406,7 @@ export default function LiveConcert() {
               );
             }
           }
-          entry.gainNode.connect(busInput);
+          entry.pannerNode.connect(busInput);
         });
       } else {
         // Bus FOH Estéreo Real L/R (Split explícito de 2 canales para no colapsar estéreo a mono!)
@@ -1328,13 +1496,15 @@ export default function LiveConcert() {
       cueSourceRef.current = null;
     }
     stemSourcesRef.current.forEach((st) => {
-      try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); } catch {}
+      try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); st.pannerNode.disconnect(); } catch {}
     });
     stemSourcesRef.current = [];
 
     ensureDspGraph();
-    const offset = pauseTimeRef.current;
-    const delayMs = 300;
+    const maxOffset = Math.max(0, (fohBufferRef.current.duration || 0) - 0.05);
+    const offset = Math.max(0, Math.min(pauseTimeRef.current, maxOffset));
+    const hasActiveWifiSlaves = broadcastEnabledRef.current && connectionsRef.current > 0;
+    const delayMs = hasActiveWifiSlaves ? 250 : 25;
     const T_start = Date.now() + delayMs;
     const startAudioContextTime = audioCtxRef.current.currentTime + delayMs / 1000;
     const useMultitrack = isUsingMultitrackStems();
@@ -1346,13 +1516,17 @@ export default function LiveConcert() {
         src.buffer = stem.buffer;
         const gainNode = audioCtxRef.current!.createGain();
         gainNode.gain.value = stem.volume * fohVolumeRef.current;
+        const pannerNode = audioCtxRef.current!.createStereoPanner();
+        pannerNode.pan.value = stem.pan || 0;
         src.connect(gainNode);
+        gainNode.connect(pannerNode);
         return {
           id: stem.id,
           name: stem.name,
           category: stem.category,
           source: src,
           gainNode,
+          pannerNode,
           baseVolume: stem.volume,
           group: stem.group,
         };
@@ -1384,7 +1558,7 @@ export default function LiveConcert() {
     cueSourceRef.current.connect(cueGainRef.current!);
     cueSourceRef.current.start(startAudioContextTime, offset);
 
-    if (broadcastEnabled) {
+    if (broadcastEnabledRef.current) {
       const syncCompMs = Math.round(
         (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
       );
@@ -1395,7 +1569,7 @@ export default function LiveConcert() {
     setIsPlaying(true);
     isPlayingRef.current = true;
     updateTime();
-    triggerStageOsd('play', 'LANZANDO SHOW', currentSong?.title || '');
+    triggerStageOsd('play', 'LANZANDO SHOW', (currentSongRef.current || currentSong)?.title || '');
   };
 
   const pause = (silent = false) => {
@@ -1410,17 +1584,20 @@ export default function LiveConcert() {
       cueSourceRef.current = null;
     }
     stemSourcesRef.current.forEach((st) => {
-      try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); } catch {}
+      try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); st.pannerNode.disconnect(); } catch {}
     });
     stemSourcesRef.current = [];
 
-    pauseTimeRef.current = audioCtxRef.current.currentTime - startTimeRef.current;
-    setAudioTime(Math.max(0, pauseTimeRef.current));
+    const clampedPauseGlobal = Math.max(0, audioCtxRef.current.currentTime - startTimeRef.current);
+    pauseTimeRef.current = clampedPauseGlobal;
+    const curSong = currentSongRef.current || currentSong;
+    setAudioTime(clampedPauseGlobal);
+    setCurrentTime(clampedPauseGlobal - getPreRoll(curSong));
     setIsPlaying(false);
     isPlayingRef.current = false;
     cancelAnimationFrame(animationFrameRef.current);
 
-    if (broadcastEnabled) {
+    if (broadcastEnabledRef.current) {
       broadcast({ type: 'PAUSE' });
     }
 
@@ -1436,11 +1613,13 @@ export default function LiveConcert() {
   const updateTime = () => {
     if (!audioCtxRef.current || !isPlayingRef.current) return;
     
-    const globalTime = audioCtxRef.current.currentTime - startTimeRef.current;
+    const rawGlobalTime = audioCtxRef.current.currentTime - startTimeRef.current;
+    const globalTime = Math.max(0, rawGlobalTime);
     const curSong = currentSongRef.current || currentSong;
-    const preRoll = getPreRoll(curSong);
+    const curTotalDur = totalDurationRef.current;
+    const { preRollSec: preRoll, autoAdvanceAtGlobalSec } = resolveEffectivePlaybackBounds(curSong, curTotalDur);
     const visualTime = globalTime - preRoll;
-    const remaining = totalDuration - globalTime;
+    const remaining = autoAdvanceAtGlobalSec - globalTime;
 
     // Verificar Vamp Loop activo en vivo
     if (vampRangeRef.current.active && visualTime >= vampRangeRef.current.end) {
@@ -1454,25 +1633,34 @@ export default function LiveConcert() {
       const allSongs = songsRef.current;
       if (idx < allSongs.length - 1) {
         const next = allSongs[idx + 1];
-        if (next && !nextFohBufferRef.current && !isPrefetchingRef.current) {
+        const hasValidPrefetch =
+          prefetchedSongRef.current &&
+          prefetchedSongRef.current.songId === next?.id &&
+          prefetchedSongRef.current.playbackMode === playbackModeRef.current;
+        if (next && !hasValidPrefetch && !isPrefetchingRef.current) {
           prefetchNextSong(next);
         }
       }
     }
 
-    // Fin de canción: auto-avance al siguiente track
-    if (totalDuration > 0 && globalTime >= totalDuration) {
+    // Fin de canción: auto-avance al siguiente track usando duración musical real (sin cola muerta de 5s)
+    if (autoAdvanceAtGlobalSec > 0 && globalTime >= autoAdvanceAtGlobalSec) {
       pause(true);
       const idx = currentSongIndexRef.current;
       const allSongs = songsRef.current;
       if (idx < allSongs.length - 1) {
         autoPlayOnLoadRef.current = true;
         setCurrentSongIndex(idx + 1);
+      } else {
+        const { globalOffset: initGlobal, visualTime: initVisual } = getInitialPositionsForSong(curSong);
+        pauseTimeRef.current = initGlobal;
+        setCurrentTime(initVisual);
+        setAudioTime(initGlobal);
       }
       return;
     }
 
-    setAudioTime(Math.max(0, globalTime));
+    setAudioTime(globalTime);
     setCurrentTime(visualTime);
     animationFrameRef.current = requestAnimationFrame(updateTime);
   };
@@ -1485,18 +1673,21 @@ export default function LiveConcert() {
     
     const curSong = currentSongRef.current || currentSong;
     const preRoll = getPreRoll(curSong);
-    const globalTime = Math.max(0, Math.min(newVisualTime + preRoll, totalDuration));
+    const curTotalDur = totalDurationRef.current;
+    const maxGlobal = curTotalDur > 0 ? curTotalDur : Math.max(0, newVisualTime + preRoll);
+    const globalTime = Math.max(0, Math.min(newVisualTime + preRoll, maxGlobal));
+    const clampedVisual = globalTime - preRoll;
     
     pauseTimeRef.current = globalTime;
-    setCurrentTime(newVisualTime);
-    setAudioTime(Math.max(0, globalTime));
+    setCurrentTime(clampedVisual);
+    setAudioTime(globalTime);
     
-    if (broadcastEnabled) {
+    if (broadcastEnabledRef.current) {
        broadcast({ type: 'SEEK', offset: globalTime });
     }
     
     if (wasPlaying) {
-      setTimeout(() => play(), 40);
+      setTimeout(() => playRef.current(), 35);
     }
   };
 
@@ -1512,11 +1703,16 @@ export default function LiveConcert() {
 
   const stop = () => {
     pause(true);
-    pauseTimeRef.current = 0;
     const curSong = currentSongRef.current || currentSong;
-    setCurrentTime(-getPreRoll(curSong));
-    setAudioTime(0);
-    triggerStageOsd('stop', 'SHOW DETENIDO', 'Rebobinado al Conteo Pre-Roll');
+    const { globalOffset: initGlobal, visualTime: initVisual } = getInitialPositionsForSong(curSong);
+    pauseTimeRef.current = initGlobal;
+    setCurrentTime(initVisual);
+    setAudioTime(initGlobal);
+    triggerStageOsd(
+      'stop',
+      'SHOW DETENIDO',
+      initGlobal > 0 ? 'Rebobinado al Inicio Directo (00:00)' : 'Rebobinado al Conteo Pre-Roll'
+    );
   };
 
   const nextSong = () => {
@@ -1672,6 +1868,23 @@ export default function LiveConcert() {
   }
 
   const songSections = currentSong?.prompter_data?.sections || [];
+  const playbackBounds = resolveEffectivePlaybackBounds(currentSong, totalDuration);
+  const activePreRoll = playbackBounds.preRollSec;
+  const activePreRollBars = resolveEffectivePreRollBars(currentSong);
+  const displayMusicDuration = playbackBounds.musicDurationSec;
+  const sliderVisualValue = isDraggingSlider ? localSliderTime : currentTime;
+  const sliderTotalSpan = Math.max(0.001, displayMusicDuration + activePreRoll);
+  const sliderProgressPct =
+    currentSong && totalDuration > 0
+      ? Math.max(0, Math.min(100, ((sliderVisualValue + activePreRoll) / sliderTotalSpan) * 100))
+      : 0;
+  const lyricMapping = resolveLyricsTimeMapping(currentSong);
+  const syncedLyricTime = Math.max(0, currentTime + lyricMapping.lyricReferencePreRollSec);
+  const syncedLyricFirstBeatOffset =
+    (Number(currentSong?.prompter_data?.firstBeatOffset) || 0) + lyricMapping.lyricReferencePreRollSec;
+  const syncedLyricBeatTimes = Array.isArray(currentSong?.prompter_data?.beatTimes)
+    ? currentSong.prompter_data.beatTimes.map((t: number) => Number(t) + lyricMapping.lyricReferencePreRollSec)
+    : undefined;
 
   return (
     <div className="h-screen bg-white text-zinc-900 flex flex-col font-sans overflow-hidden select-none relative">
@@ -1773,7 +1986,7 @@ export default function LiveConcert() {
               )}
             </div>
 
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               <span className="text-3xl leading-none font-mono font-medium text-black tracking-tight tabular-nums">
                 {formatTime(currentTime)}
               </span>
@@ -1782,38 +1995,63 @@ export default function LiveConcert() {
                   {Math.round(currentSong.prompter_data.bpm)} BPM &bull; {currentSong.prompter_data?.timeSignature || '4/4'}
                 </span>
               )}
+              {activePreRoll > 0 && (
+                <button
+                  type="button"
+                  onClick={handleToggleSkipPreRoll}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+                    skipPreRoll
+                      ? 'bg-sky-600 text-white border-sky-600 shadow-2xs'
+                      : 'bg-zinc-100 text-zinc-700 border-zinc-200 hover:bg-zinc-200'
+                  }`}
+                  title={
+                    skipPreRoll
+                      ? 'Inicio Directo ACTIVO: Salta el Pre-Roll y arranca directo en 00:00'
+                      : `Pre-Roll activo (${activePreRollBars}C · ${activePreRoll.toFixed(1)}s). Clic para saltar al inicio directo`
+                  }
+                >
+                  <Zap size={10} />
+                  <span>{skipPreRoll ? 'Directo' : `PRE ${activePreRollBars}C`}</span>
+                </button>
+              )}
             </div>
           </div>
 
           <div className="w-full flex items-center gap-2.5 group">
             <input
               type="range"
-              min={-(getPreRoll(currentSong) || 0)}
-              max={totalDuration - getPreRoll(currentSong) || 100}
+              min={-activePreRoll}
+              max={displayMusicDuration > 0 ? displayMusicDuration : 100}
               step="0.1"
-              value={isDraggingSlider ? localSliderTime : currentTime}
-              onPointerDown={() => setIsDraggingSlider(true)}
+              value={sliderVisualValue}
+              onPointerDown={() => {
+                setLocalSliderTime(currentTime);
+                setIsDraggingSlider(true);
+              }}
               onPointerUp={(e) => {
+                const nextVal = parseFloat(e.currentTarget.value);
                 setIsDraggingSlider(false);
-                seekTo(parseFloat(e.currentTarget.value));
+                seekTo(nextVal);
               }}
               onChange={(e) => {
-                setLocalSliderTime(parseFloat(e.target.value));
+                const val = parseFloat(e.target.value);
+                setLocalSliderTime(val);
                 if (!isPlaying) {
-                  seekTo(parseFloat(e.target.value));
+                  seekTo(val);
                 }
               }}
               disabled={isLoading || !currentSong}
               className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-30 group-hover:h-2 transition-all"
               style={{
-                background: currentSong && totalDuration > 0
-                  ? `linear-gradient(to right, #e11d48 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%, #e2e8f0 ${((currentTime + getPreRoll(currentSong)) / totalDuration) * 100}%)`
-                  : '#e2e8f0'
+                background:
+                  currentSong && totalDuration > 0
+                    ? `linear-gradient(to right, #e11d48 ${sliderProgressPct}%, #e2e8f0 ${sliderProgressPct}%)`
+                    : '#e2e8f0',
               }}
             />
-            {totalDuration > 0 && (
+            {displayMusicDuration > 0 && (
               <span className="text-[10px] font-mono font-normal text-zinc-600 shrink-0 tabular-nums">
-                {formatTime(Math.max(0, totalDuration - (getPreRoll(currentSong) || 0))).slice(0, 5)}
+                {formatTime(displayMusicDuration).slice(0, 5)}
               </span>
             )}
           </div>
@@ -2106,12 +2344,12 @@ export default function LiveConcert() {
 
               // Progreso interactivo del track cuando está reproduciéndose
               const trackProgress = isSelected && totalDuration > 0
-                ? Math.min(100, Math.max(0, ((currentTime + (getPreRoll(currentSong) || 0)) / totalDuration) * 100))
+                ? sliderProgressPct
                 : 0;
 
               return (
                 <div
-                  key={idx}
+                  key={s.id || idx}
                   onClick={() => setCurrentSongIndex(idx)}
                   className={`group live-track-card ${themeClass} ${isSelected ? 'is-selected' : ''}`}
                 >
@@ -2119,12 +2357,8 @@ export default function LiveConcert() {
                   <div
                     className="live-track-progress"
                     style={{
-                      width: isSelected
-                        ? isPlaying
-                          ? `${trackProgress}%`
-                          : '100%'
-                        : '0%',
-                      opacity: isSelected ? 1 : 0,
+                      width: isSelected ? `${trackProgress}%` : '0%',
+                      opacity: isSelected && trackProgress > 0 ? 1 : 0,
                     }}
                   />
 
@@ -2478,6 +2712,10 @@ export default function LiveConcert() {
                   <div className="h-[46%] w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white">
                     <Prompter
                       currentTime={currentTime}
+                      totalDuration={displayMusicDuration > 0 ? displayMusicDuration : undefined}
+                      preRollDuration={activePreRoll}
+                      preRollBars={activePreRollBars}
+                      lyricsTimeOffset={lyricMapping.prompterLyricsOffsetSec}
                       bpm={currentSong.prompter_data?.bpm || 0}
                       timeSignature={currentSong.prompter_data?.timeSignature}
                       baseOffset={currentSong.prompter_data?.firstBeatOffset}
@@ -2495,13 +2733,13 @@ export default function LiveConcert() {
                   {currentHasLyrics ? (
                     <div className="flex-1 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black relative">
                       <LyricVisualizer
-                        currentTime={audioTime}
+                        currentTime={syncedLyricTime}
                         lyrics={currentSong.prompter_data?.lyrics || []}
                         isPlaying={isPlaying}
                         settings={currentSong.prompter_data?.lyric_settings}
                         bpm={currentSong.prompter_data?.bpm || 120}
-                        firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
-                        beatTimes={currentSong.prompter_data?.beatTimes}
+                        firstBeatOffset={syncedLyricFirstBeatOffset}
+                        beatTimes={syncedLyricBeatTimes}
                         background={currentSong.prompter_data?.background}
                       />
                     </div>
@@ -2542,6 +2780,10 @@ export default function LiveConcert() {
                 <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-white">
                   <Prompter
                     currentTime={currentTime}
+                    totalDuration={displayMusicDuration > 0 ? displayMusicDuration : undefined}
+                    preRollDuration={activePreRoll}
+                    preRollBars={activePreRollBars}
+                    lyricsTimeOffset={lyricMapping.prompterLyricsOffsetSec}
                     bpm={currentSong.prompter_data?.bpm || 0}
                     timeSignature={currentSong.prompter_data?.timeSignature}
                     baseOffset={currentSong.prompter_data?.firstBeatOffset}
@@ -2559,13 +2801,13 @@ export default function LiveConcert() {
                 <div className="h-full relative z-10 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-black">
                   {currentHasLyrics ? (
                     <LyricVisualizer
-                      currentTime={audioTime}
+                      currentTime={syncedLyricTime}
                       lyrics={currentSong.prompter_data?.lyrics || []}
                       isPlaying={isPlaying}
                       settings={currentSong.prompter_data?.lyric_settings}
                       bpm={currentSong.prompter_data?.bpm || 120}
-                      firstBeatOffset={currentSong.prompter_data?.firstBeatOffset || 0}
-                      beatTimes={currentSong.prompter_data?.beatTimes}
+                      firstBeatOffset={syncedLyricFirstBeatOffset}
+                      beatTimes={syncedLyricBeatTimes}
                       background={currentSong.prompter_data?.background}
                     />
                   ) : (

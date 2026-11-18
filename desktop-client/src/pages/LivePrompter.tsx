@@ -14,6 +14,7 @@ import {
 } from '../utils/instrumentIcons';
 import { decodeAudioUrlToBuffer } from '../utils/beatGridDSP';
 import { detectChordsAndBeatsLocalDSP, transposeChordSymbol } from '../utils/chordDetectorDSP';
+import { PreRollBars, resolveLyricsTimeMapping } from '../utils/cueEngine';
 import '../App.css';
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
@@ -37,8 +38,8 @@ export default function LivePrompter() {
     loadProgress,
     totalDuration,
     preRollDuration,
-    preRollEnabled,
-    togglePreRoll,
+    preRollBars,
+    setPreRollBars,
     exportLiveMix,
     exportMultitrackToZip,
     exportFullMixToMp3,
@@ -275,6 +276,12 @@ export default function LivePrompter() {
       const { data: songData } = await supabase.from('songs').select('prompter_data').eq('id', selectedSongId).single();
       if (isCancelled) return;
       const loadedPrompterData = songData?.prompter_data || {};
+      const savedPreRollBars = loadedPrompterData?.liveMixMeta?.preRollBars;
+      const initialBars: PreRollBars =
+        savedPreRollBars === 0 || savedPreRollBars === 1 || savedPreRollBars === 2
+          ? savedPreRollBars
+          : 1;
+      setPreRollBars(initialBars);
       if (songData && songData.prompter_data) {
         setPrompterData({
           chords: [],
@@ -1192,7 +1199,13 @@ export default function LivePrompter() {
 
   const handleExportLiveMix = async () => {
     if (!selectedSongId) return;
-    if (confirm('¿Exportar el Mix En Vivo con la distribución espacial estéreo actual?\n\n• Salida Público (FOH): Stems de instrumentos con balance y paneo estéreo real (L / C / R)\n• Salida Músicos (CUE): Metrónomo y Voz Guía balanceados (Centro o paneo configurado)\n• In-Ears de Práctica: Mezcla estéreo saludable para proteger los oídos de los músicos')) {
+    const preRollSummary =
+      preRollBars === 0
+        ? '0 Compases (Inicio directo en 00:00, sin silencio previo)'
+        : preRollBars === 1
+        ? `1 Compás de Conteo ("Intro, 2, 3, 4" en fase · ~${preRollDuration.toFixed(1)}s)`
+        : `2 Compases (1C Tempo + 1C Voz Guía en fase · ~${preRollDuration.toFixed(1)}s)`;
+    if (confirm(`¿Exportar el Mix En Vivo con la configuración actual?\n\n• Pre-Roll de Entrada: ${preRollSummary}\n• Salida Público (FOH): Stems de instrumentos con balance y paneo estéreo real (L / C / R)\n• Salida Músicos (CUE): Metrónomo y Voz Guía en fase exacta con el Compás 1\n• Live Concert usará exactamente este Pre-Roll guardado (paridad 1:1)`)) {
       setIsExporting(true);
       try {
         const clickStem = stems.find(s => s.id === 'synthetic-click');
@@ -1209,8 +1222,33 @@ export default function LivePrompter() {
         };
         const merged = await persistPrompterDataSafe(selectedSongId, updatedPrompterData);
         syncPrompterData(merged, 0);
-        await exportLiveMix(selectedSongId, FAKE_BAND_ID, merged, setExportProgress);
-        alert('¡Mix En Vivo (Público FOH Estéreo + Músicos CUE Balanceado) exportado y listo para el Setlist!');
+        const exportResult = await exportLiveMix(
+          selectedSongId,
+          FAKE_BAND_ID,
+          merged,
+          setExportProgress,
+          preRollBars
+        );
+        if (exportResult?.prompterData) {
+          setPrompterData(exportResult.prompterData);
+          syncPrompterData(exportResult.prompterData, 0);
+          if (typeof BroadcastChannel !== 'undefined') {
+            const channel = new BroadcastChannel('tandu_stage_sync');
+            channel.postMessage({
+              type: 'LIVE_MIX_EXPORTED',
+              senderId: broadcastSenderIdRef.current,
+              songId: selectedSongId,
+              foh_mix_url: exportResult.fohUrl,
+              cue_mix_url: exportResult.cueUrl,
+              foh_mobile_url: exportResult.fohMobileUrl,
+              cue_mobile_url: exportResult.cueMobileUrl,
+              prompterData: exportResult.prompterData,
+              prompter_data: exportResult.prompterData,
+            });
+            channel.close();
+          }
+        }
+        alert(`¡Mix En Vivo exportado con Pre-Roll ${preRollBars}C y sincronizado para Live Concert!`);
       } catch (err: any) {
         alert(err.message);
       } finally {
@@ -1327,20 +1365,41 @@ export default function LivePrompter() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => togglePreRoll()}
-            disabled={!audioLoaded}
-            className={`px-3 py-1.5 rounded-full text-[10.5px] font-extrabold uppercase tracking-wider border transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-45 ${
-              preRollEnabled
-                ? 'bg-sky-600 text-white border-sky-500 shadow-xs'
-                : 'bg-white/90 text-slate-600 border-slate-200/90 hover:bg-slate-50 hover:text-slate-900 shadow-2xs'
-            }`}
-            title={preRollEnabled ? 'Pre-Roll (2 compases de entrada) activado' : 'Activar Pre-Roll de 2 compases antes del inicio'}
+          {/* Selector Segmentado Apple de Pre-Roll (Paridad 1:1 Estudio ↔ Exportación Live Concert) */}
+          <div
+            className="flex items-center bg-slate-100/95 p-0.5 rounded-full border border-slate-200/90 shadow-inner"
+            title="Compases de conteo Pre-Roll antes del Compás 1 (se aplica idéntico en reproducción y en Exportar Mix En Vivo)"
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${preRollEnabled ? 'bg-white animate-pulse' : 'bg-slate-400'}`}></span>
-            Pre-Roll 2C
-          </button>
+            <span className="text-[9px] font-extrabold uppercase tracking-wider text-slate-500 pl-2.5 pr-1.5">
+              Pre-Roll
+            </span>
+            {([0, 1, 2] as PreRollBars[]).map((bars) => {
+              const active = preRollBars === bars;
+              return (
+                <button
+                  key={bars}
+                  type="button"
+                  onClick={() => setPreRollBars(bars)}
+                  className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider transition-all cursor-pointer ${
+                    active
+                      ? bars === 0
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'bg-sky-600 text-white shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-950'
+                  }`}
+                  title={
+                    bars === 0
+                      ? '0C: Arranque directo sin conteo previo'
+                      : bars === 1
+                      ? '1C (Recomendado): 1 compás limpio ("Intro, 2, 3, 4")'
+                      : '2C: 1 compás de tempo + 1 compás de Voz Guía'
+                  }
+                >
+                  {bars}C
+                </button>
+              );
+            })}
+          </div>
 
           <div className="bg-slate-100/90 border border-slate-200/90 px-4 py-1.5 rounded-full flex items-center justify-center min-w-[116px] shadow-inner">
             <span className="text-sm font-mono font-bold text-slate-900 tracking-tight tabular-nums">
@@ -2100,6 +2159,9 @@ export default function LivePrompter() {
                 <Prompter 
                   currentTime={currentTime}
                   totalDuration={totalDuration}
+                  preRollDuration={preRollDuration}
+                  preRollBars={preRollBars}
+                  lyricsTimeOffset={resolveLyricsTimeMapping(prompterData).prompterLyricsOffsetSec}
                   bpm={prompterData.bpm || 0}
                   timeSignature={prompterData.timeSignature}
                   baseOffset={prompterData.firstBeatOffset}

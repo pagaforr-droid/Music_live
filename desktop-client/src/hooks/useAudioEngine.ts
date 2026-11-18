@@ -5,7 +5,14 @@ import {
   loadCueBuffers,
   resolveCueBufferName,
   scheduleSectionVoiceCues,
-  buildShiftedBeatGrid
+  buildShiftedBeatGrid,
+  PreRollBars,
+  LiveMixMeta,
+  LIVE_EXPORT_TAIL_SECONDS,
+  getBeatsPerMeasure,
+  getBaseFirstBeatOffset,
+  computePreRollSecondsForBars,
+  computePhaseLockedPreRollSeconds,
 } from '../utils/cueEngine';
 import { findMasterAndDrumStems, repairAndRelockBeatGrid } from '../utils/beatGridDSP';
 import { loadLameJs } from '../utils/loadLameJs';
@@ -73,18 +80,19 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const startTime = useRef<number>(0);
   const pauseTime = useRef<number>(0);
   const loopState = useRef<{ isLooping: boolean; start: number; end: number }>({ isLooping: false, start: 0, end: 0 });
-  // Estado reactivo y referencia para la duración del Pre-Roll (Cuenta Regresiva de 2 compases)
-  const [preRollEnabled, setPreRollEnabledState] = useState<boolean>(false);
-  const preRollEnabledRef = useRef<boolean>(false);
+  // Estado reactivo y referencia para el Pre-Roll (0, 1 o 2 compases; por defecto 1C limpio)
+  const [preRollBars, setPreRollBarsState] = useState<PreRollBars>(1);
+  const preRollBarsRef = useRef<PreRollBars>(1);
+  const preRollEnabled = preRollBars > 0;
   const [preRollDuration, setPreRollDurationState] = useState<number>(0);
   const preRollDurationRef = useRef(0);
 
-  const computePreRollSeconds = useCallback((pd: any, enabled: boolean): number => {
-    if (!enabled || !pd || !(Number(pd.bpm) > 0)) return 0;
-    const beatsPerMeasure = parseInt(pd.timeSignature?.split('/')[0]) || 4;
-    const secondsPerBeat = 60 / Number(pd.bpm);
-    return Math.min(secondsPerBeat * beatsPerMeasure * 2, 16);
-  }, []);
+  const computePreRollSeconds = useCallback(
+    (pd: any, bars: PreRollBars, manualOffset: number = 0): number => {
+      return computePhaseLockedPreRollSeconds(pd, bars, manualOffset);
+    },
+    []
+  );
   
   // Referencias para programación en tiempo real
   const clickSources = useRef<AudioBufferSourceNode[]>([]);
@@ -261,23 +269,19 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     }
     // ------------------------------------------------------------------------
 
-    const nextPreRoll = computePreRollSeconds(prompterData, preRollEnabledRef.current);
+    // Guardar para uso interno respetando fallback chords[0].time ANTES de calcular Pre-Roll con fase exacta
+    prompterDataRef.current = prompterData;
+    const baseFirstBeat = getBaseFirstBeatOffset(prompterData);
+    const resolvedManualOffset = _gridOffsetTime - baseFirstBeat;
+    manualGridOffsetRef.current = resolvedManualOffset;
+
+    const nextPreRoll = computePreRollSeconds(prompterData, preRollBarsRef.current, resolvedManualOffset);
     preRollDurationRef.current = nextPreRoll;
     setPreRollDurationState(nextPreRoll);
     if (maxDuration > 0) {
       setTotalDuration(maxDuration);
       totalDurationRef.current = maxDuration;
     }
-
-    // Guardar para uso interno respetando fallback chords[0].time
-    prompterDataRef.current = prompterData;
-    const baseFirstBeat =
-      prompterData?.firstBeatOffset !== undefined
-        ? Number(prompterData.firstBeatOffset)
-        : prompterData?.chords?.[0]?.time !== undefined
-        ? Number(prompterData.chords[0].time)
-        : 0;
-    manualGridOffsetRef.current = _gridOffsetTime - baseFirstBeat;
 
     // Resetear el reloj visual al inicio del Pre-Roll
     setCurrentTime(-nextPreRoll);
@@ -444,8 +448,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       const currentStems = stemsRef.current;
       const currentTotalDuration = totalDurationRef.current;
-      const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
-      const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+      const beatsPerMeasure = getBeatsPerMeasure(prompterData.timeSignature);
+      const { shiftedBeatTimes, downbeatIndex, firstActiveBeatIndex } = buildShiftedBeatGrid(
         prompterData,
         preRollDuration,
         currentTotalDuration,
@@ -460,8 +464,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         : false;
 
       if (clickGainNode || !isClickMuted) {
-        let beatCount = 0;
-        for (const adjustedTime of shiftedBeatTimes) {
+        for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
+          const adjustedTime = shiftedBeatTimes[beatCount];
           if (adjustedTime >= globalOffset) {
             const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
             const normalizedMeasureBeat =
@@ -483,7 +487,6 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
               clickSources.current.push(source);
             }
           }
-          beatCount++;
         }
       }
 
@@ -494,11 +497,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         ? cueStem.muted || (currentStems.some((s) => s.solo) && !cueStem.solo)
         : false;
 
-      if (prompterData.sections && (cueGainNode || !isCueMuted)) {
+      if (cueGainNode || !isCueMuted) {
         const schedule = (bufName: string, bIdx: number) => {
           const buf = cueBuffersRef.current[bufName];
           const cueOffset = cueOffsetsRef.current[bufName] || 0;
-          if (buf && bIdx >= 0 && bIdx < shiftedBeatTimes.length && audioContext.current) {
+          if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length && audioContext.current) {
             const absoluteTime = shiftedBeatTimes[bIdx];
             if (absoluteTime >= globalOffset) {
               const source = audioContext.current.createBufferSource();
@@ -520,12 +523,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         };
 
         scheduleSectionVoiceCues(
-          prompterData.sections,
+          prompterData.sections || [],
           shiftedBeatTimes,
           beatsPerMeasure,
           preRollDuration,
           cueBuffersRef.current,
-          schedule
+          schedule,
+          downbeatIndex
         );
       }
     },
@@ -687,28 +691,44 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     }
   };
 
-  const togglePreRoll = useCallback((forceValue?: boolean) => {
-    const nextEnabled = typeof forceValue === 'boolean' ? forceValue : !preRollEnabledRef.current;
-    const oldPreRoll = preRollDurationRef.current;
-    const currentVisual = isPlayingRef.current && audioContext.current
-      ? (audioContext.current.currentTime - startTime.current) - oldPreRoll
-      : pauseTime.current - oldPreRoll;
+  const setPreRollBars = useCallback(
+    (nextBars: PreRollBars) => {
+      const oldPreRoll = preRollDurationRef.current;
+      const currentVisual =
+        isPlayingRef.current && audioContext.current
+          ? (audioContext.current.currentTime - startTime.current) - oldPreRoll
+          : pauseTime.current - oldPreRoll;
 
-    preRollEnabledRef.current = nextEnabled;
-    setPreRollEnabledState(nextEnabled);
+      preRollBarsRef.current = nextBars;
+      setPreRollBarsState(nextBars);
 
-    const nextPreRoll = computePreRollSeconds(prompterDataRef.current, nextEnabled);
-    preRollDurationRef.current = nextPreRoll;
-    setPreRollDurationState(nextPreRoll);
+      const nextPreRoll = computePreRollSeconds(
+        prompterDataRef.current,
+        nextBars,
+        manualGridOffsetRef.current
+      );
+      preRollDurationRef.current = nextPreRoll;
+      setPreRollDurationState(nextPreRoll);
 
-    if (!isPlayingRef.current && currentVisual <= 0.05) {
-      pauseTime.current = 0;
-      setCurrentTime(-nextPreRoll);
-    } else {
-      const nextVisual = Math.max(-nextPreRoll, currentVisual);
-      seekTo(nextVisual);
-    }
-  }, [computePreRollSeconds]);
+      if (!isPlayingRef.current && currentVisual <= 0.05) {
+        pauseTime.current = 0;
+        setCurrentTime(-nextPreRoll);
+      } else {
+        const nextVisual = Math.max(-nextPreRoll, currentVisual);
+        seekTo(nextVisual);
+      }
+    },
+    [computePreRollSeconds]
+  );
+
+  const togglePreRoll = useCallback(
+    (forceValue?: boolean) => {
+      const nextEnabled =
+        typeof forceValue === 'boolean' ? forceValue : preRollBarsRef.current === 0;
+      setPreRollBars(nextEnabled ? 1 : 0);
+    },
+    [setPreRollBars]
+  );
 
   const setLoop = (start: number, end: number, enable: boolean) => {
     loopState.current = { isLooping: enable, start, end };
@@ -736,28 +756,34 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     });
   }, [stems, isPlaying]);
 
-  const exportLiveMix = async (songId: string, bandId: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
+  const exportLiveMix = async (
+    songId: string,
+    bandId: string,
+    currentPrompterData: any,
+    onProgress: (msg: string) => void,
+    overridePreRollBars?: PreRollBars
+  ) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
     await ensureCueBuffersLoaded();
     
-    let maxBufDuration = totalDuration;
+    let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
 
     const prompterData = currentPrompterData || prompterDataRef.current;
-    
-    let calculatedPreRoll = 0;
-    if (prompterData && prompterData.bpm > 0) {
-       const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
-       const secondsPerBeat = 60 / prompterData.bpm;
-       // Tope 16s para evitar pre-rolls gigantes por tempo dividido
-       calculatedPreRoll = Math.min((secondsPerBeat * beatsPerMeasure) * 2, 16);
-    }
+    const activePreRollBars: PreRollBars =
+      overridePreRollBars !== undefined ? overridePreRollBars : preRollBarsRef.current;
+    const manualGridOffset = manualGridOffsetRef.current;
+    const calculatedPreRoll = computePhaseLockedPreRollSeconds(
+      prompterData,
+      activePreRollBars,
+      manualGridOffset
+    );
     
     const sampleRate = audioContext.current.sampleRate;
-    const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; // 5 seconds tail
+    const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS;
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
     const hasInstrumentSolo = stems.some((s) => s.type === 'Instrument' && s.solo);
 
@@ -765,7 +791,6 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       onProgress(`Preparando renderizado ${isFoh ? 'FOH' : 'CUE'}...`);
       const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
       
-      const manualGridOffset = manualGridOffsetRef.current;
       const preRollDuration = calculatedPreRoll;
 
       // Render Stems
@@ -801,10 +826,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         source.start(preRollDuration);
       });
 
-      // Render Clicks & Cues (Only for CUE) usando buildShiftedBeatGrid unificado
+      // Render Clicks & Cues (Only for CUE) usando buildShiftedBeatGrid unificado con fase exacta
       if (!isFoh && prompterData && prompterData.bpm) {
-        const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
-        const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+        const beatsPerMeasure = getBeatsPerMeasure(prompterData.timeSignature);
+        const { shiftedBeatTimes, downbeatIndex, firstActiveBeatIndex } = buildShiftedBeatGrid(
           prompterData,
           preRollDuration,
           maxBufDuration,
@@ -813,8 +838,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
         const clickStem = stems.find(s => s.id === 'synthetic-click');
         if (!clickStem || !clickStem.muted) {
-          let beatCount = 0;
-          for (const adjustedTime of shiftedBeatTimes) {
+          for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
+            const adjustedTime = shiftedBeatTimes[beatCount];
             if (adjustedTime >= 0 && adjustedTime < lengthSeconds) {
               const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
               const normalizedMeasureBeat = ((measureBeat % beatsPerMeasure) + beatsPerMeasure) % beatsPerMeasure;
@@ -835,16 +860,15 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                 source.start(adjustedTime);
               }
             }
-            beatCount++;
           }
         }
 
         const cueStem = stems.find(s => s.id === 'synthetic-cues');
-        if (prompterData.sections && (!cueStem || !cueStem.muted)) {
+        if (!cueStem || !cueStem.muted) {
           const schedule = (bufName: string, bIdx: number) => {
             const buf = cueBuffersRef.current[bufName];
             const cueOffset = cueOffsetsRef.current[bufName] || 0;
-            if (buf && bIdx >= 0 && bIdx < shiftedBeatTimes.length) {
+            if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length) {
               const absoluteTime = shiftedBeatTimes[bIdx];
               if (absoluteTime >= 0 && absoluteTime < lengthSeconds) {
                 const source = offlineCtx.createBufferSource();
@@ -863,12 +887,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
           };
 
           scheduleSectionVoiceCues(
-            prompterData.sections,
+            prompterData.sections || [],
             shiftedBeatTimes,
             beatsPerMeasure,
             preRollDuration,
             cueBuffersRef.current,
-            schedule
+            schedule,
+            downbeatIndex
           );
         }
       }
@@ -916,15 +941,66 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       await supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, { contentType: 'audio/mpeg', upsert: true });
       const cueMobileUrl = supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl;
 
-      onProgress('Guardando URLs en la base de datos...');
-      await supabase.from('songs').update({
+      onProgress('Guardando URLs y metadatos exactos de Pre-Roll...');
+      const { data: existingSongRow } = await supabase
+        .from('songs')
+        .select('foh_mix_url, prompter_data')
+        .eq('id', songId)
+        .single();
+      const latestRemote = existingSongRow?.prompter_data || {};
+
+      // Preservar sincronía de letras legacy que fueron grabadas contra un foh_mix antiguo (2C)
+      let preservedLyricsSyncMeta = latestRemote.lyricsSyncMeta ?? prompterData?.lyricsSyncMeta;
+      const hasExistingLyrics = Array.isArray(latestRemote.lyrics) && latestRemote.lyrics.length > 0;
+      if (!preservedLyricsSyncMeta && hasExistingLyrics && existingSongRow?.foh_mix_url && !latestRemote.liveMixMeta) {
+        preservedLyricsSyncMeta = {
+          reference: 'foh_mix',
+          preRollSec: computePreRollSecondsForBars(latestRemote, 2),
+          migratedFromLegacy: true,
+        };
+      }
+
+      const liveMixMeta: LiveMixMeta = {
+        preRollSec: Number(calculatedPreRoll.toFixed(4)),
+        preRollBars: activePreRollBars,
+        bpm: Number(prompterData?.bpm) || 120,
+        timeSignature: prompterData?.timeSignature || '4/4',
+        firstBeatOffset: Number(Math.max(0, getBaseFirstBeatOffset(prompterData) + manualGridOffset).toFixed(4)),
+        musicDurationSec: Number(maxBufDuration.toFixed(4)),
+        totalDurationSec: Number(lengthSeconds.toFixed(4)),
+        exportedAt: new Date().toISOString(),
+        version: 2,
+      };
+
+      const mergedPrompterData = {
+        ...latestRemote,
+        ...(prompterData || {}),
+        lyrics: latestRemote.lyrics ?? prompterData?.lyrics ?? [],
+        lyric_settings: latestRemote.lyric_settings ?? prompterData?.lyric_settings,
+        ...(latestRemote.background !== undefined ? { background: latestRemote.background } : {}),
+        ...(preservedLyricsSyncMeta ? { lyricsSyncMeta: preservedLyricsSyncMeta } : {}),
+        liveMixMeta,
+      };
+
+      const { error: dbErr } = await supabase.from('songs').update({
         foh_mix_url: fohUrl,
         cue_mix_url: cueUrl,
         foh_mobile_url: fohMobileUrl,
-        cue_mobile_url: cueMobileUrl
+        cue_mobile_url: cueMobileUrl,
+        prompter_data: mergedPrompterData,
       }).eq('id', songId);
+      if (dbErr) throw dbErr;
 
+      prompterDataRef.current = mergedPrompterData;
       onProgress('¡Exportación completada exitosamente!');
+      return {
+        fohUrl,
+        cueUrl,
+        fohMobileUrl,
+        cueMobileUrl,
+        liveMixMeta,
+        prompterData: mergedPrompterData,
+      };
     } catch (err: any) {
       console.error(err);
       throw new Error(`Error en la exportación: ${err.message}`);
@@ -1080,9 +1156,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (typeof nextManualGridOffset === 'number') {
         manualGridOffsetRef.current = nextManualGridOffset;
       }
-      if (preRollEnabledRef.current) {
+      if (preRollBarsRef.current > 0) {
         const oldPre = preRollDurationRef.current;
-        const nextPre = computePreRollSeconds(nextPrompterData, true);
+        const nextPre = computePreRollSeconds(
+          nextPrompterData,
+          preRollBarsRef.current,
+          manualGridOffsetRef.current
+        );
         if (Math.abs(nextPre - oldPre) > 0.001) {
           preRollDurationRef.current = nextPre;
           setPreRollDurationState(nextPre);
@@ -1113,15 +1193,19 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
     
-    let maxBufDuration = totalDuration;
+    let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
 
     const prompterData = prompterDataRef.current;
-    const calculatedPreRoll = computePreRollSeconds(prompterData, true);
+    const calculatedPreRoll = computePhaseLockedPreRollSeconds(
+      prompterData,
+      preRollBarsRef.current,
+      manualGridOffsetRef.current
+    );
     const sampleRate = audioContext.current.sampleRate;
-    const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; 
+    const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS; 
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
 
     onProgress('Preparando Ghost Bounce...');
@@ -1166,23 +1250,21 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
     await ensureCueBuffersLoaded();
     
-    let maxBufDuration = totalDuration;
+    let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
 
     const prompterData = currentPrompterData || prompterDataRef.current;
-    
-    let calculatedPreRoll = 0;
-    if (prompterData && prompterData.bpm > 0) {
-       const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
-       const secondsPerBeat = 60 / prompterData.bpm;
-       // Tope 16s para evitar pre-rolls gigantes por tempo dividido
-       calculatedPreRoll = Math.min((secondsPerBeat * beatsPerMeasure) * 2, 16);
-    }
+    const manualGridOffset = manualGridOffsetRef.current;
+    const calculatedPreRoll = computePhaseLockedPreRollSeconds(
+      prompterData,
+      preRollBarsRef.current,
+      manualGridOffset
+    );
 
     const sampleRate = audioContext.current.sampleRate;
-    const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; 
+    const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS; 
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
     const preRollDuration = calculatedPreRoll;
     const JSZip = (await import('jszip')).default;
@@ -1201,9 +1283,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       
       if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
         const prompterData = currentPrompterData || prompterDataRef.current;
-        const manualGridOffset = manualGridOffsetRef.current;
-        const beatsPerMeasure = parseInt(prompterData?.timeSignature?.split('/')[0]) || 4;
-        const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+        const beatsPerMeasure = getBeatsPerMeasure(prompterData?.timeSignature);
+        const { shiftedBeatTimes, downbeatIndex, firstActiveBeatIndex } = buildShiftedBeatGrid(
           prompterData,
           preRollDuration,
           maxBufDuration,
@@ -1211,8 +1292,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         );
         
         if (stem.id === 'synthetic-click' && prompterData && prompterData.bpm) {
-           let beatCount = 0;
-           for (const adjustedTime of shiftedBeatTimes) {
+           for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
+             const adjustedTime = shiftedBeatTimes[beatCount];
              if (adjustedTime >= 0 && adjustedTime < lengthSeconds) {
                const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
                const normalizedMeasureBeat = ((measureBeat % beatsPerMeasure) + beatsPerMeasure) % beatsPerMeasure;
@@ -1233,13 +1314,12 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                  source.start(adjustedTime);
                }
              }
-             beatCount++;
            }
-        } else if (stem.id === 'synthetic-cues' && prompterData && prompterData.sections && prompterData.bpm) {
+        } else if (stem.id === 'synthetic-cues' && prompterData && prompterData.bpm) {
            const schedule = (bufName: string, bIdx: number) => {
                  const buf = cueBuffersRef.current[bufName];
                  const cueOffset = cueOffsetsRef.current[bufName] || 0;
-                 if (buf && bIdx >= 0 && bIdx < shiftedBeatTimes.length) {
+                 if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length) {
                     const absoluteTime = shiftedBeatTimes[bIdx];
                     if (absoluteTime >= 0 && absoluteTime < lengthSeconds) {
                        const source = offlineCtx.createBufferSource();
@@ -1258,12 +1338,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
               };
 
               scheduleSectionVoiceCues(
-                 prompterData.sections,
+                 prompterData.sections || [],
                  shiftedBeatTimes,
                  beatsPerMeasure,
                  preRollDuration,
                  cueBuffersRef.current,
-                 schedule
+                 schedule,
+                 downbeatIndex
               );
         }
       } else {
@@ -1303,32 +1384,29 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
     await ensureCueBuffersLoaded();
     
-    let maxBufDuration = totalDuration;
+    let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
     
     const prompterData = currentPrompterData || prompterDataRef.current;
-    
-    let calculatedPreRoll = 0;
-    if (prompterData && prompterData.bpm > 0) {
-       const beatsPerMeasure = parseInt(prompterData.timeSignature?.split('/')[0]) || 4;
-       const secondsPerBeat = 60 / prompterData.bpm;
-       // Tope 16s para evitar pre-rolls gigantes por tempo dividido
-       calculatedPreRoll = Math.min((secondsPerBeat * beatsPerMeasure) * 2, 16);
-    }
+    const manualGridOffset = manualGridOffsetRef.current;
+    const calculatedPreRoll = computePhaseLockedPreRollSeconds(
+      prompterData,
+      preRollBarsRef.current,
+      manualGridOffset
+    );
 
     const sampleRate = audioContext.current.sampleRate;
-    const lengthSeconds = maxBufDuration + calculatedPreRoll + 5; 
+    const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS; 
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
 
     onProgress('Preparando renderizado Mezcla Completa...');
     const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
     
-    const manualGridOffset = manualGridOffsetRef.current;
     const preRollDuration = calculatedPreRoll;
-    const beatsPerMeasure = parseInt(prompterData?.timeSignature?.split('/')[0]) || 4;
-    const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(
+    const beatsPerMeasure = getBeatsPerMeasure(prompterData?.timeSignature);
+    const { shiftedBeatTimes, downbeatIndex, firstActiveBeatIndex } = buildShiftedBeatGrid(
       prompterData,
       preRollDuration,
       maxBufDuration,
@@ -1342,8 +1420,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
       if (stem.id === 'synthetic-click' || stem.id === 'synthetic-cues') {
          if (stem.id === 'synthetic-click' && prompterData && prompterData.bpm) {
-           let beatCount = 0;
-           for (const adjustedTime of shiftedBeatTimes) {
+           for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
+             const adjustedTime = shiftedBeatTimes[beatCount];
              if (adjustedTime >= 0 && adjustedTime < lengthSeconds) {
                const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
                const normalizedMeasureBeat = ((measureBeat % beatsPerMeasure) + beatsPerMeasure) % beatsPerMeasure;
@@ -1364,13 +1442,12 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                  source.start(adjustedTime);
                }
              }
-             beatCount++;
            }
-        } else if (stem.id === 'synthetic-cues' && prompterData && prompterData.sections && prompterData.bpm) {
+        } else if (stem.id === 'synthetic-cues' && prompterData && prompterData.bpm) {
            const schedule = (bufName: string, bIdx: number) => {
                  const buf = cueBuffersRef.current[bufName];
                  const cueOffset = cueOffsetsRef.current[bufName] || 0;
-                 if (buf && bIdx >= 0 && bIdx < shiftedBeatTimes.length) {
+                 if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length) {
                     const absoluteTime = shiftedBeatTimes[bIdx];
                     if (absoluteTime >= 0 && absoluteTime < lengthSeconds) {
                        const source = offlineCtx.createBufferSource();
@@ -1389,12 +1466,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
               };
 
               scheduleSectionVoiceCues(
-                 prompterData.sections,
+                 prompterData.sections || [],
                  shiftedBeatTimes,
                  beatsPerMeasure,
                  preRollDuration,
                  cueBuffersRef.current,
-                 schedule
+                 schedule,
+                 downbeatIndex
               );
         }
       } else {
@@ -1488,6 +1566,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     loadProgress,
     totalDuration,
     preRollDuration,
+    preRollBars,
+    setPreRollBars,
     preRollEnabled,
     togglePreRoll,
     exportLiveMix,

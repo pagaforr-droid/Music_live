@@ -62,6 +62,9 @@ export interface PrompterProps {
   onSeek?: (time: number) => void;
   // Capacidades CapCut Studio Prompter (Opcionales y 100% retrocompatibles)
   totalDuration?: number;
+  preRollDuration?: number;
+  preRollBars?: 0 | 1 | 2;
+  lyricsTimeOffset?: number;
   waveformPeaks?: number[];
   onUpdateSections?: (nextSections: SectionEvent[], recordUndo?: boolean) => void;
   onPreviewVoiceCue?: (sectionName: string) => void;
@@ -202,7 +205,7 @@ export const getSectionSolidStyle = (name: string): SectionSolidStyle => {
   };
 };
 
-const DEFAULT_PIXELS_PER_BEAT_LIVE = 150;
+const DEFAULT_PIXELS_PER_BEAT_LIVE = 115;
 const DEFAULT_PIXELS_PER_BEAT_STUDIO = 95;
 const PLAYHEAD_ANCHOR_X = 140;
 
@@ -248,6 +251,9 @@ export const Prompter: React.FC<PrompterProps> = ({
   onRemoveChord,
   onSeek,
   totalDuration = 240,
+  preRollDuration = 0,
+  preRollBars,
+  lyricsTimeOffset = 0,
   waveformPeaks = [],
   onUpdateSections,
   onPreviewVoiceCue,
@@ -300,6 +306,20 @@ export const Prompter: React.FC<PrompterProps> = ({
   const beatsPerSecond = activeBpm / 60;
   const pixelsPerSecond = beatsPerSecond * pixelsPerBeat;
   const scrollPosition = currentTime * pixelsPerSecond;
+
+  const effectivePreRollDuration = Math.max(0, Number(preRollDuration) || 0);
+  const effectiveFirstBeat = useMemo(() => {
+    const baseFirstBeat =
+      baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0;
+    return Math.max(0, baseFirstBeat + (gridOffset || 0));
+  }, [baseOffset, chords, gridOffset]);
+
+  const effectivePreRollBars: 0 | 1 | 2 = useMemo(() => {
+    if (preRollBars === 0 || preRollBars === 1 || preRollBars === 2) return preRollBars;
+    if (effectivePreRollDuration <= 0.001) return 0;
+    const est = Math.round((effectivePreRollDuration + effectiveFirstBeat) / Math.max(0.25, barDuration));
+    return est <= 1 ? 1 : 2;
+  }, [preRollBars, effectivePreRollDuration, effectiveFirstBeat, barDuration]);
 
   const effectiveTotalDuration = useMemo(() => {
     const maxSecEnd = (sections || []).reduce(
@@ -357,11 +377,13 @@ export const Prompter: React.FC<PrompterProps> = ({
       ? sectionBlocks[selectedSectionIdx]
       : null;
 
-  // Construir grilla musical de Beats y Downbeats (Compases) para Snap Magnético y Renderizado
+  // Construir grilla musical de Beats y Downbeats (Compases) incluyendo zona Pre-Roll [-preRoll, 0)
   const beatGrid = useMemo(() => {
-    const baseFirstBeat =
-      baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0;
-    const effOffset = baseFirstBeat + (gridOffset || 0);
+    const effOffset = effectiveFirstBeat;
+    const minPreRollTime =
+      effectivePreRollDuration > 0.001
+        ? -(effectivePreRollDuration + beatDuration * 0.25)
+        : -0.001;
 
     const points: { time: number; isDownbeat: boolean; bar: number; beat: number }[] = [];
 
@@ -369,9 +391,11 @@ export const Prompter: React.FC<PrompterProps> = ({
       const shiftedBeats = beatTimes.map((rawT) => rawT + (gridOffset || 0));
       let unshiftedCount = 0;
       let firstBeat = shiftedBeats[0];
-      while (firstBeat - beatDuration >= -0.001) {
+      while (firstBeat - beatDuration >= minPreRollTime) {
         firstBeat -= beatDuration;
-        shiftedBeats.unshift(Math.max(0, firstBeat));
+        const pushedTime =
+          effectivePreRollDuration > 0.001 ? firstBeat : Math.max(0, firstBeat);
+        shiftedBeats.unshift(pushedTime);
         unshiftedCount++;
       }
       let lastBeat = shiftedBeats[shiftedBeats.length - 1];
@@ -399,11 +423,13 @@ export const Prompter: React.FC<PrompterProps> = ({
       return points;
     }
 
-    const startBeatIdx = -Math.ceil(effOffset / beatDuration) - beatsPerBar * 2;
+    const startBeatIdx =
+      -Math.ceil((effOffset + effectivePreRollDuration) / beatDuration) - beatsPerBar;
     const totalBeatsCount = Math.ceil(effectiveTotalDuration / beatDuration) + beatsPerBar * 4;
 
     for (let i = startBeatIdx; i <= totalBeatsCount; i++) {
       const t = effOffset + i * beatDuration;
+      if (t < minPreRollTime - barDuration) continue;
       const beatInBar = (((i % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
       const barNum = Math.floor(i / beatsPerBar) + 1;
       points.push({
@@ -414,7 +440,16 @@ export const Prompter: React.FC<PrompterProps> = ({
       });
     }
     return points;
-  }, [beatTimes, baseOffset, gridOffset, chords, beatsPerBar, beatDuration, barDuration, effectiveTotalDuration]);
+  }, [
+    beatTimes,
+    effectiveFirstBeat,
+    effectivePreRollDuration,
+    gridOffset,
+    beatsPerBar,
+    beatDuration,
+    barDuration,
+    effectiveTotalDuration,
+  ]);
 
   // Calcular el número de compás para cualquier timestamp en segundos sincronizado 1:1 con beatGrid
   const getBarNumberAtTime = useCallback(
@@ -513,18 +548,15 @@ export const Prompter: React.FC<PrompterProps> = ({
     [snapEnabled, snapToDownbeatOnly, pixelsPerSecond, currentTime, beatGrid, barDuration]
   );
 
-  // Calcular compás y pulso actual para indicador visual de compás sincronizado con beatGrid
+  // Calcular compás y pulso actual para indicador visual de compás sincronizado 1:1 con beatGrid (incluyendo Pre-Roll)
   const currentBeatInfo = useMemo(() => {
-    const effOffset =
-      (baseOffset !== undefined ? baseOffset : chords.length > 0 ? chords[0].time : 0) +
-      (gridOffset || 0);
+    const effOffset = effectiveFirstBeat;
     const beatDur = 60 / activeBpm;
-    const rel = currentTime - effOffset;
-    const totalBeats = Math.floor(rel / beatDur);
-    const isPreRoll = currentTime < 0;
-    const preRollBarIndex = totalBeats < -beatsPerBar ? 1 : 2;
+    const isPreRoll =
+      currentTime < 0 || (effectivePreRollDuration > 0.001 && currentTime < effOffset - 0.025);
+    const totalPreRollBars = Math.max(1, effectivePreRollBars || 1);
 
-    if (!isPreRoll && beatGrid.length > 0) {
+    if (beatGrid.length > 0) {
       let activePt = beatGrid[0];
       for (let i = 0; i < beatGrid.length; i++) {
         if (beatGrid[i].time <= currentTime + 0.025) {
@@ -534,19 +566,41 @@ export const Prompter: React.FC<PrompterProps> = ({
         }
       }
       if (activePt) {
+        const preRollBarIndex =
+          activePt.bar <= 0
+            ? Math.max(1, Math.min(totalPreRollBars, totalPreRollBars + activePt.bar))
+            : totalPreRollBars;
         return {
           beatInBar: activePt.beat,
           barNumber: Math.max(1, activePt.bar),
-          isPreRoll: false,
+          isPreRoll: isPreRoll && activePt.bar <= 0,
           preRollBarIndex,
+          totalPreRollBars,
         };
       }
     }
 
+    const rel = currentTime - effOffset;
+    const totalBeats = Math.floor((rel + 0.025) / beatDur);
     const beatInBar = (((totalBeats % beatsPerBar) + beatsPerBar) % beatsPerBar) + 1;
-    const barNumber = Math.max(1, Math.floor(totalBeats / beatsPerBar) + 1);
-    return { beatInBar, barNumber, isPreRoll, preRollBarIndex };
-  }, [currentTime, baseOffset, gridOffset, chords, activeBpm, beatsPerBar, beatGrid]);
+    const rawBarNum = Math.floor(totalBeats / beatsPerBar) + 1;
+    const preRollBarIndex = Math.max(1, Math.min(totalPreRollBars, totalPreRollBars + rawBarNum));
+    return {
+      beatInBar,
+      barNumber: Math.max(1, rawBarNum),
+      isPreRoll,
+      preRollBarIndex,
+      totalPreRollBars,
+    };
+  }, [
+    currentTime,
+    effectiveFirstBeat,
+    effectivePreRollDuration,
+    effectivePreRollBars,
+    activeBpm,
+    beatsPerBar,
+    beatGrid,
+  ]);
 
   // Auto-scroll horizontal sincronizado con currentTime
   useEffect(() => {
@@ -694,21 +748,25 @@ export const Prompter: React.FC<PrompterProps> = ({
     });
   }, [chords, currentTime, activeBpm, gridOffset, beatTimes, baseOffset]);
 
-  // Preparar cinta de letras sincronizadas (compatible con startMs/durationMs de LyricStudio y time/duration)
+  // Preparar cinta de letras sincronizadas (compatible con startMs/durationMs de LyricStudio y lyricsTimeOffset)
   const lyricBlocks = useMemo(() => {
     if (!lyrics || lyrics.length === 0) return [];
+    const offsetSec = Number(lyricsTimeOffset) || 0;
     const normalized = lyrics
       .filter((l) => l.placed !== false)
-      .map((l) => ({
-        ...l,
-        time: typeof l.time === 'number' ? l.time : (l.startMs || 0) / 1000,
-        duration:
-          typeof l.duration === 'number' && l.duration > 0
-            ? l.duration
-            : typeof l.durationMs === 'number' && l.durationMs > 0
-            ? l.durationMs / 1000
-            : undefined,
-      }));
+      .map((l) => {
+        const rawTime = typeof l.time === 'number' ? l.time : (l.startMs || 0) / 1000;
+        return {
+          ...l,
+          time: Math.max(0, rawTime + offsetSec),
+          duration:
+            typeof l.duration === 'number' && l.duration > 0
+              ? l.duration
+              : typeof l.durationMs === 'number' && l.durationMs > 0
+              ? l.durationMs / 1000
+              : undefined,
+        };
+      });
     const sorted = [...normalized].sort((a, b) => a.time - b.time);
     return sorted.map((line, i) => {
       const next = sorted[i + 1];
@@ -721,7 +779,7 @@ export const Prompter: React.FC<PrompterProps> = ({
       const isActive = currentTime >= line.time && currentTime < line.time + dur;
       return { ...line, duration: dur, isActive };
     });
-  }, [lyrics, currentTime]);
+  }, [lyrics, currentTime, lyricsTimeOffset]);
 
   // Handler Vamp Loop (respeta la duración recortada/estirada en CapCut)
   const handleVamp = () => {
@@ -1145,13 +1203,15 @@ export const Prompter: React.FC<PrompterProps> = ({
 
   // Convertir coordenada X del cliente dentro de trackAreaRef a segundos en la canción
   const clientXToSongTime = useCallback(
-    (clientX: number): number => {
-      if (!trackAreaRef.current) return Math.max(0, currentTime);
+    (clientX: number, allowPreRoll = false): number => {
+      if (!trackAreaRef.current) return allowPreRoll ? currentTime : Math.max(0, currentTime);
       const rect = trackAreaRef.current.getBoundingClientRect();
       const offsetFromPlayheadPx = clientX - rect.left - PLAYHEAD_ANCHOR_X;
-      return Math.max(0, currentTime + offsetFromPlayheadPx / pixelsPerSecond);
+      const rawSec = currentTime + offsetFromPlayheadPx / pixelsPerSecond;
+      const minSec = allowPreRoll ? -effectivePreRollDuration : 0;
+      return Math.max(minSec, rawSec);
     },
-    [currentTime, pixelsPerSecond]
+    [currentTime, pixelsPerSecond, effectivePreRollDuration]
   );
 
   // Atajos de teclado CapCut cuando estamos en Studio Prompter (Delete/Backspace, S para dividir, Ctrl+D duplicar, Ctrl+Z/Y)
@@ -1205,12 +1265,63 @@ export const Prompter: React.FC<PrompterProps> = ({
   ]);
 
   const formatMmSs = (sec: number) => {
-    const abs = Math.max(0, sec);
+    const isNeg = sec < -0.001;
+    const abs = Math.abs(sec);
     const m = Math.floor(abs / 60);
     const s = Math.floor(abs % 60);
     const d = Math.floor((abs % 1) * 10);
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${d}`;
+    return `${isNeg ? '-' : ''}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${d}`;
   };
+
+  // Metadatos visuales de la pista de Pre-Roll (para eliminar el vacío blanco inicial)
+  const preRollVisualMeta = useMemo(() => {
+    if (effectivePreRollDuration <= 0.001) return null;
+    const openingSec = sectionBlocks.find((s) => s.time <= effectiveFirstBeat + 0.35);
+    const openingName = openingSec ? openingSec.name : 'INTRO';
+    const openingStyle = getSectionSolidStyle(openingName);
+    const totalBars = Math.max(1, effectivePreRollBars || 1);
+    const bars: Array<{
+      index: number;
+      isFinalVoiceBar: boolean;
+      startSec: number;
+      endSec: number;
+      label: string;
+    }> = [];
+
+    for (let k = totalBars; k >= 1; k--) {
+      const startSec = effectiveFirstBeat - k * barDuration;
+      const endSec = effectiveFirstBeat - (k - 1) * barDuration;
+      const barOrdinal = totalBars - k + 1;
+      const isFinalVoiceBar = k === 1;
+      bars.push({
+        index: barOrdinal,
+        isFinalVoiceBar,
+        startSec,
+        endSec,
+        label: isFinalVoiceBar ? openingStyle.name : 'TEMPO',
+      });
+    }
+
+    const runwayStartSec = Math.min(-effectivePreRollDuration, bars[0]?.startSec ?? -effectivePreRollDuration);
+    const runwayEndSec = effectiveFirstBeat;
+    const firstChord = chordBlocks[0] || null;
+    return {
+      runwayStartSec,
+      runwayEndSec,
+      openingStyle,
+      openingName,
+      totalBars,
+      bars,
+      firstChord,
+    };
+  }, [
+    effectivePreRollDuration,
+    effectivePreRollBars,
+    effectiveFirstBeat,
+    barDuration,
+    sectionBlocks,
+    chordBlocks,
+  ]);
 
   return (
     <div className="prompter-container bg-white text-zinc-900 p-0 rounded-2xl overflow-hidden h-full w-full relative border border-zinc-200 select-none flex flex-col">
@@ -1221,8 +1332,8 @@ export const Prompter: React.FC<PrompterProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-[#e11d48]" />
               <h2 className="text-sm font-bold text-black uppercase tracking-[0.14em] leading-none">
-                {currentTime < 0
-                  ? currentBeatInfo.preRollBarIndex === 1
+                {currentBeatInfo.isPreRoll
+                  ? currentBeatInfo.totalPreRollBars > 1 && currentBeatInfo.preRollBarIndex === 1
                     ? 'CONTEO PRE-ROLL (TEMPO)'
                     : 'CONTEO PRE-ROLL (VOZ GUÍA)'
                   : activeSection
@@ -1343,8 +1454,8 @@ export const Prompter: React.FC<PrompterProps> = ({
           {/* Indicador de Pulso del Compás en Tiempo Real */}
           <div className="apple-glass-island flex items-center gap-1.5 p-1 px-3 rounded-full bg-zinc-100 border border-zinc-200">
             <span className="text-[10px] font-mono font-semibold text-zinc-700 uppercase mr-1 tracking-wider tabular-nums">
-              {currentTime < 0
-                ? `PRE ${currentBeatInfo.preRollBarIndex}/2`
+              {currentBeatInfo.isPreRoll
+                ? `PRE ${currentBeatInfo.preRollBarIndex}/${currentBeatInfo.totalPreRollBars}`
                 : `COMPÁS ${Math.max(1, currentBeatInfo.barNumber)}`}
             </span>
             {Array.from({ length: beatsPerBar }).map((_, bIdx) => {
@@ -1797,7 +1908,7 @@ export const Prompter: React.FC<PrompterProps> = ({
             setPixelsPerBeat((z) => Math.max(40, Math.min(200, z + delta)));
           } else {
             const deltaSec = (e.deltaX !== 0 ? e.deltaX : e.deltaY) / pixelsPerSecond;
-            onSeek(Math.max(0, Math.min(effectiveTotalDuration, currentTime + deltaSec)));
+            onSeek(Math.max(-effectivePreRollDuration, Math.min(effectiveTotalDuration, currentTime + deltaSec)));
           }
         }}
         onDragOver={(e) => {
@@ -1876,6 +1987,24 @@ export const Prompter: React.FC<PrompterProps> = ({
           ref={containerRef}
           className="absolute left-0 h-full flex flex-col justify-center gap-2 transition-transform duration-75 ease-linear z-10 will-change-transform"
         >
+          {/* Pista Visual de Zona Pre-Roll [-preRoll, Compás 1) — Elimina el vacío blanco inicial */}
+          {preRollVisualMeta && (
+            <div
+              className="absolute top-0 bottom-0 pointer-events-none z-0 bg-gradient-to-r from-slate-100/80 via-slate-50/70 to-rose-50/75 border-r-2 border-dashed border-[#e11d48]/70"
+              style={{
+                left: `${preRollVisualMeta.runwayStartSec * pixelsPerSecond}px`,
+                width: `${Math.max(
+                  12,
+                  (preRollVisualMeta.runwayEndSec - preRollVisualMeta.runwayStartSec) * pixelsPerSecond
+                )}px`,
+              }}
+            >
+              <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-[#e11d48] text-white text-[8px] font-mono font-black uppercase tracking-wider shadow-xs">
+                ▶ INICIO C.1
+              </div>
+            </div>
+          )}
+
           {/* Onda de Audio Real (Waveform de Fondo en Modo Studio CapCut) */}
           {isStudioCapCutMode && waveformPeaks && waveformPeaks.length > 0 && (
             <div className="absolute left-0 top-1/2 -translate-y-1/2 h-16 opacity-60 pointer-events-none z-0">
@@ -1896,34 +2025,47 @@ export const Prompter: React.FC<PrompterProps> = ({
             onPointerDown={(e) => {
               if (!onSeek || e.button !== 0) return;
               isScrubbingRulerRef.current = true;
-              onSeek(clientXToSongTime(e.clientX));
+              onSeek(clientXToSongTime(e.clientX, true));
             }}
             onPointerMove={(e) => {
               if (!isScrubbingRulerRef.current || !onSeek) return;
-              onSeek(clientXToSongTime(e.clientX));
+              onSeek(clientXToSongTime(e.clientX, true));
             }}
           >
             {beatGrid
               .filter(
                 (pt) =>
                   pt.isDownbeat &&
-                  pt.time >= currentTime - 10 &&
-                  pt.time <= currentTime + Math.max(25, 1600 / pixelsPerSecond)
+                  pt.time >= Math.max(currentTime - 10, -(effectivePreRollDuration + barDuration)) &&
+                  pt.time <= currentTime + Math.max(25, 1600 / pixelsPerSecond) &&
+                  (pt.bar > 0 || (effectivePreRollDuration > 0.001 && pt.time >= -(effectivePreRollDuration + 0.15)))
               )
-              .map((pt) => (
-                <div
-                  key={`bar-lbl-${pt.bar}-${pt.time.toFixed(3)}`}
-                  className="absolute top-0 bottom-0 border-l-2 border-zinc-300 pl-1.5 flex items-center gap-1 pointer-events-none"
-                  style={{ left: `${pt.time * pixelsPerSecond}px` }}
-                >
-                  <span className="text-[9.5px] font-mono font-extrabold text-zinc-600 uppercase whitespace-nowrap">
-                    {pt.bar <= 0 ? 'PRE' : `C.${pt.bar}`}
-                  </span>
-                  <span className="text-[8.5px] font-mono text-zinc-400 whitespace-nowrap">
-                    {formatMmSs(pt.time)}
-                  </span>
-                </div>
-              ))}
+              .map((pt) => {
+                const isPreBar = pt.bar <= 0;
+                const preOrdinal = isPreBar
+                  ? Math.max(1, (effectivePreRollBars || 1) + pt.bar)
+                  : 0;
+                return (
+                  <div
+                    key={`bar-lbl-${pt.bar}-${pt.time.toFixed(3)}`}
+                    className={`absolute top-0 bottom-0 border-l-2 pl-1.5 flex items-center gap-1 pointer-events-none ${
+                      isPreBar ? 'border-rose-300' : 'border-zinc-300'
+                    }`}
+                    style={{ left: `${pt.time * pixelsPerSecond}px` }}
+                  >
+                    <span
+                      className={`text-[9.5px] font-mono font-extrabold uppercase whitespace-nowrap ${
+                        isPreBar ? 'text-[#e11d48]' : 'text-zinc-600'
+                      }`}
+                    >
+                      {isPreBar ? `PRE ${preOrdinal}` : `C.${pt.bar}`}
+                    </span>
+                    <span className="text-[8.5px] font-mono text-zinc-400 whitespace-nowrap">
+                      {formatMmSs(pt.time)}
+                    </span>
+                  </div>
+                );
+              })}
           </div>
 
           {/* CARRIL 1: SECCIONES Y VOZ GUÍA (CAPCUT DRAG, TRIM LEFT, TRIM RIGHT & LEAD-IN COUNTDOWN) */}
@@ -1936,6 +2078,69 @@ export const Prompter: React.FC<PrompterProps> = ({
               }
             }}
           >
+            {/* Bloques Visuales de Conteo Pre-Roll (Compás de Tempo + Compás de Voz Guía en vivo) */}
+            {preRollVisualMeta &&
+              preRollVisualMeta.bars.map((preBar) => {
+                const isBarActiveNow =
+                  currentTime >= preBar.startSec - 0.025 && currentTime < preBar.endSec - 0.025;
+                const barWidthPx = Math.max(44, (preBar.endSec - preBar.startSec) * pixelsPerSecond - 3);
+                return (
+                  <div
+                    key={`preroll-bar-${preBar.index}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onSeek) onSeek(Math.max(-effectivePreRollDuration, preBar.startSec));
+                    }}
+                    className={`absolute top-1.5 bottom-1.5 rounded-xl border border-dashed flex items-center overflow-hidden transition-all cursor-pointer select-none ${
+                      preBar.isFinalVoiceBar
+                        ? `${preRollVisualMeta.openingStyle.leadInBg} ${preRollVisualMeta.openingStyle.leadInBorder}`
+                        : 'bg-slate-200/65 border-slate-400/60'
+                    } ${
+                      isBarActiveNow
+                        ? 'ring-2 ring-[#e11d48] shadow-sm z-30 opacity-100'
+                        : 'opacity-90 hover:opacity-100 z-15'
+                    }`}
+                    style={{
+                      left: `${preBar.startSec * pixelsPerSecond}px`,
+                      width: `${barWidthPx}px`,
+                    }}
+                    title={
+                      preBar.isFinalVoiceBar
+                        ? `Pre-Roll Voz Guía (PRE ${preBar.index}/${preRollVisualMeta.totalBars}): "${preRollVisualMeta.openingName}, 2, 3, 4" antes del Compás 1`
+                        : `Pre-Roll Tempo (PRE ${preBar.index}/${preRollVisualMeta.totalBars}): Clic de pulso previo`
+                    }
+                  >
+                    <div
+                      className="w-full h-full grid divide-x divide-zinc-400/30 text-[10px] font-mono font-extrabold text-zinc-800"
+                      style={{ gridTemplateColumns: `repeat(${beatsPerBar}, minmax(0, 1fr))` }}
+                    >
+                      {Array.from({ length: beatsPerBar }).map((_, bIdx) => {
+                        const beatNum = bIdx + 1;
+                        const isBeatLit = isBarActiveNow && currentBeatInfo.beatInBar === beatNum;
+                        return (
+                          <div
+                            key={beatNum}
+                            className={`flex items-center justify-center px-1 truncate transition-colors ${
+                              isBeatLit
+                                ? beatNum === 1
+                                  ? 'bg-[#e11d48] text-white font-black'
+                                  : 'bg-zinc-900 text-white font-black'
+                                : ''
+                            }`}
+                          >
+                            {beatNum === 1
+                              ? preBar.isFinalVoiceBar
+                                ? `🗣️ ${preRollVisualMeta.openingStyle.name.slice(0, 6)}`
+                                : '🥁 TEMPO'
+                              : beatNum}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
             {/* Ghost Drop Preview al arrastrar una píldora desde el dock */}
             {isStudioCapCutMode && dropPreviewTime !== null && (
               <div
@@ -1979,8 +2184,11 @@ export const Prompter: React.FC<PrompterProps> = ({
               // Cola de Pre-Anuncio de Voz Guía (-1 Compás antes del Downbeat de la sección)
               const leadInStartSec = block.time - barDuration;
               const prevSecEnd = i > 0 ? sectionBlocks[i - 1].time + sectionBlocks[i - 1].duration : 0;
+              const isCoveredByPreRollBar =
+                Boolean(preRollVisualMeta) && block.time <= effectiveFirstBeat + 0.35;
               const showLeadInCueTail =
                 block.cueEnabled &&
+                !isCoveredByPreRollBar &&
                 leadInStartSec >= -0.05 &&
                 barDuration * pixelsPerSecond >= 48;
               const isInLeadInNow =
@@ -2263,6 +2471,54 @@ export const Prompter: React.FC<PrompterProps> = ({
                 : undefined
             }
           >
+            {/* Tarjeta Guía de Pre-Roll en Carril de Acordes: muestra el primer acorde desde el segundo 0 */}
+            {preRollVisualMeta && (
+              <div
+                className={`absolute h-[86%] rounded-xl border border-dashed flex flex-col justify-center px-4 transition-all ${
+                  currentBeatInfo.isPreRoll
+                    ? 'border-[#e11d48]/55 bg-white/90 shadow-xs z-20'
+                    : 'border-slate-300/80 bg-white/60 opacity-65 z-10'
+                }`}
+                style={{
+                  left: `${preRollVisualMeta.runwayStartSec * pixelsPerSecond}px`,
+                  width: `${Math.max(
+                    130,
+                    (Math.min(
+                      preRollVisualMeta.runwayEndSec,
+                      preRollVisualMeta.firstChord && preRollVisualMeta.firstChord.time > preRollVisualMeta.runwayStartSec
+                        ? preRollVisualMeta.firstChord.time
+                        : preRollVisualMeta.runwayEndSec
+                    ) -
+                      preRollVisualMeta.runwayStartSec) *
+                      pixelsPerSecond -
+                      4
+                  )}px`,
+                }}
+              >
+                <span className="text-[9.5px] font-mono font-bold uppercase tracking-[0.14em] text-[#e11d48]">
+                  {preRollVisualMeta.totalBars === 1
+                    ? 'CONTEO DE ENTRADA (1C)'
+                    : `CONTEO DE ENTRADA (${preRollVisualMeta.totalBars}C)`}
+                </span>
+                <div className="flex items-baseline gap-2 mt-0.5 truncate">
+                  {preRollVisualMeta.firstChord ? (
+                    <>
+                      <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider shrink-0">
+                        Primer Acorde →
+                      </span>
+                      <span className="text-2xl font-black text-zinc-900 tracking-tight truncate">
+                        {preRollVisualMeta.firstChord.chord}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-sm font-bold text-zinc-700 truncate">
+                      {preRollVisualMeta.openingName} • Compás 1
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {chordBlocks.map((block, i) => {
               const isPast = currentTime >= block.time + block.duration;
 

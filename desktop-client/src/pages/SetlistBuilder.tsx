@@ -329,7 +329,7 @@ export default function SetlistBuilder() {
                           <button
                             onClick={() => {
                               sessionStorage.setItem('tandu_active_song_id', ss.songId);
-                              navigate('/prompter');
+                              navigate('/editor');
                             }}
                             className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
                             title="Haz clic para abrir en Studio Prompter y exportar la mezcla"

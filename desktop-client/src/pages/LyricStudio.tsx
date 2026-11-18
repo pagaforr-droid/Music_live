@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { resolveEffectivePreRoll } from '../utils/cueEngine';
 import {
   Play,
   Pause,
@@ -885,10 +886,17 @@ export default function LyricStudio() {
   // Save to Supabase (100% compatible with LiveConcert.tsx)
   const handleSave = async () => {
     if (!songData) return;
+    const syncedAgainstFohMix = Boolean(songData.foh_mix_url && selectedAudioUrl === songData.foh_mix_url);
+    const lyricsSyncMeta = {
+      reference: (syncedAgainstFohMix ? 'foh_mix' : 'stem') as 'foh_mix' | 'stem',
+      preRollSec: syncedAgainstFohMix ? resolveEffectivePreRoll(songData) : 0,
+      savedAt: new Date().toISOString(),
+    };
     const newPrompterData = {
       ...songData.prompter_data,
       lyrics,
       background: backgroundConfig,
+      lyricsSyncMeta,
     };
     const { error } = await supabase
       .from('songs')
