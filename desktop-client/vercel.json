@@ -7,7 +7,7 @@
       "destination": "/api/$1"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/((?!api/|cues/|assets/|.*\\.(?:wav|mp3|ogg|js|mjs|css|svg|png|jpg|jpeg|webp|ico|woff2|wasm|json|html)$).*)",
       "destination": "/index.html"
     }
   ]

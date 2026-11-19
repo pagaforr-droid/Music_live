@@ -8,6 +8,12 @@ import { useSyncMaster } from '../hooks/useSyncMaster';
 import { StageEqualizerConsole, LoadedStemSummary } from '../components/StageEqualizerConsole';
 import { detectInstrumentCategory, InstrumentCategory } from '../utils/instrumentIcons';
 import {
+  CUE_NAMES,
+  CueBuffersMap,
+  CueOffsetsMap,
+  loadCueBuffers,
+  synthesizeLiveCueBuffer,
+  shouldSynthesizeLiveCueInRam,
   resolveEffectivePreRoll,
   resolveEffectivePreRollBars,
   resolveEffectivePlaybackBounds,
@@ -363,13 +369,22 @@ export default function LiveConcert() {
   // UI States
   const [isLoading, setIsLoading] = useState(false);
   const [loadStatus, setLoadStatus] = useState('');
+  const [liveCueSource, setLiveCueSource] = useState<'mix' | 'ram'>('mix');
 
-  // Pre-carga silenciosa de la SIGUIENTE canción (indexada por songId + playbackMode + URLs para evitar cruces)
+  // Caché global en RAM de las 11 Voces Guía (WAV PCM prioritario) para síntesis en vivo / actualizaciones instantáneas
+  const cueBuffersCacheRef = useRef<CueBuffersMap>({});
+  const cueOffsetsCacheRef = useRef<CueOffsetsMap>({});
+  const cueLoadPromiseRef = useRef<Promise<number> | null>(null);
+  const activeCueSignatureRef = useRef<string>('');
+
+  // Pre-carga silenciosa de la SIGUIENTE canción (indexada por songId + playbackMode + URLs + firma CUE para evitar cruces)
   const prefetchedSongRef = useRef<{
     songId: string;
     playbackMode: 'LIVE' | 'REHEARSAL';
     fohUrl: string;
     cueUrl: string;
+    cueSignature: string;
+    cueSource: 'mix' | 'ram';
     fohBuffer: AudioBuffer;
     cueBuffer: AudioBuffer;
   } | null>(null);
@@ -524,6 +539,127 @@ export default function LiveConcert() {
     } catch {}
   };
 
+  const getSongCueSignature = (song: any): string => {
+    const pd = song?.prompter_data || {};
+    return JSON.stringify({
+      v: pd.liveMixMeta?.version ?? 0,
+      exp: pd.liveMixMeta?.exportedAt ?? '',
+      upd: pd.sectionsUpdatedAt ?? '',
+      cnt: Array.isArray(pd.sections) ? pd.sections.length : 0,
+      secHash: Array.isArray(pd.sections)
+        ? pd.sections
+            .map((s: any) => `${s?.name || s?.section || ''}:${s?.time ?? ''}:${s?.cueEnabled !== false ? 1 : 0}`)
+            .join('|')
+        : '',
+      bpm: pd.bpm ?? 0,
+      ts: pd.timeSignature ?? '4/4',
+      firstBeat: pd.firstBeatOffset ?? 0,
+      click: pd.mixConfig?.click ?? null,
+      cues: pd.mixConfig?.cues ?? null,
+    });
+  };
+
+  const ensureLiveCueBuffersLoaded = async (ctx: AudioContext): Promise<number> => {
+    if (!ctx || ctx.state === 'closed') return Object.keys(cueBuffersCacheRef.current).length;
+    const existing = Object.keys(cueBuffersCacheRef.current).length;
+    if (existing >= CUE_NAMES.length) return existing;
+    if (cueLoadPromiseRef.current) return cueLoadPromiseRef.current;
+
+    const promise = (async () => {
+      try {
+        const loaded = await loadCueBuffers(ctx);
+        cueBuffersCacheRef.current = { ...cueBuffersCacheRef.current, ...loaded.cueBuffers };
+        cueOffsetsCacheRef.current = { ...cueOffsetsCacheRef.current, ...loaded.cueOffsets };
+        return Object.keys(cueBuffersCacheRef.current).length;
+      } catch (err) {
+        console.warn('[LiveConcert] Error precargando voces guía en RAM:', err);
+        return Object.keys(cueBuffersCacheRef.current).length;
+      } finally {
+        cueLoadPromiseRef.current = null;
+      }
+    })();
+
+    cueLoadPromiseRef.current = promise;
+    return promise;
+  };
+
+  const resolveCueBufferForSong = async (
+    song: any,
+    decodedFoh: AudioBuffer,
+    decodedCue: AudioBuffer | null,
+    forceRam = false
+  ): Promise<{ buffer: AudioBuffer; source: 'mix' | 'ram' } | null> => {
+    const ctx = audioCtxRef.current;
+    const needsRam = forceRam || !decodedCue || shouldSynthesizeLiveCueInRam(song);
+    if (!needsRam && decodedCue) {
+      return { buffer: decodedCue, source: 'mix' };
+    }
+
+    if (ctx && Number(song?.prompter_data?.bpm) > 0) {
+      try {
+        const loadedCount = await ensureLiveCueBuffersLoaded(ctx);
+        if (loadedCount > 0 || !decodedCue) {
+          const savedClick = song?.prompter_data?.mixConfig?.click;
+          const savedCues = song?.prompter_data?.mixConfig?.cues;
+          const synthBuf = await synthesizeLiveCueBuffer(
+            ctx,
+            song.prompter_data,
+            decodedFoh.duration,
+            cueBuffersCacheRef.current,
+            cueOffsetsCacheRef.current,
+            0.85,
+            {
+              exactPreRollSec: resolveEffectivePreRoll(song),
+              clickVolume:
+                typeof savedClick?.volume === 'number' && Number.isFinite(savedClick.volume)
+                  ? savedClick.volume
+                  : 0.8,
+              clickPan:
+                typeof savedClick?.pan === 'number' && Number.isFinite(savedClick.pan)
+                  ? savedClick.pan
+                  : 0,
+              clickMuted: savedClick?.muted === true,
+              cueVolume:
+                typeof savedCues?.volume === 'number' && Number.isFinite(savedCues.volume)
+                  ? savedCues.volume
+                  : 0.85,
+              cuePan:
+                typeof savedCues?.pan === 'number' && Number.isFinite(savedCues.pan)
+                  ? savedCues.pan
+                  : 0,
+              cueMuted: savedCues?.muted === true,
+            }
+          );
+          return { buffer: synthBuf, source: 'ram' };
+        }
+      } catch (err) {
+        console.warn('[LiveConcert] Fallo síntesis de Voz Guía en RAM, usando CUE exportado:', err);
+      }
+    }
+
+    return decodedCue ? { buffer: decodedCue, source: 'mix' } : null;
+  };
+
+  const refreshActiveCueInRam = async (updatedSong: any) => {
+    if (!audioCtxRef.current || !fohBufferRef.current || !updatedSong?.id) return;
+    if (currentSongRef.current?.id !== updatedSong.id) return;
+    const nextSig = `${updatedSong.id}|${getSongCueSignature(updatedSong)}`;
+    if (nextSig === activeCueSignatureRef.current) return;
+    if (!shouldSynthesizeLiveCueInRam(updatedSong)) return;
+
+    const resolved = await resolveCueBufferForSong(
+      updatedSong,
+      fohBufferRef.current,
+      cueBufferRef.current,
+      true
+    );
+    if (resolved && currentSongRef.current?.id === updatedSong.id) {
+      cueBufferRef.current = resolved.buffer;
+      activeCueSignatureRef.current = nextSig;
+      setLiveCueSource(resolved.source);
+    }
+  };
+
   useEffect(() => {
     if (isProjectorWindow) return;
     fetchSetlists();
@@ -533,6 +669,7 @@ export default function LiveConcert() {
     ensureDspGraph();
     applyAllDspParams(activeEqProfileRef.current);
     refreshHardwareDevices();
+    void ensureLiveCueBuffersLoaded(audioCtxRef.current);
 
     let deviceChangeTimer: number | null = null;
     const handleDeviceChange = () => {
@@ -792,9 +929,21 @@ export default function LiveConcert() {
 
       if (error) throw error;
       if (data) {
+        const prevMatch = songsRef.current.find((s) => s.id === songId) || (currentSongRef.current?.id === songId ? currentSongRef.current : null);
+        const mergedUpdatedSong = prevMatch ? { ...prevMatch, ...data } : data;
         setSongs((prevSongs) =>
           prevSongs.map((s) => (s.id === songId ? { ...s, ...data } : s))
         );
+        if (mergedUpdatedSong && currentSongRef.current?.id === songId) {
+          const urlsChanged =
+            mergedUpdatedSong.foh_mix_url !== prevMatch?.foh_mix_url ||
+            mergedUpdatedSong.cue_mix_url !== prevMatch?.cue_mix_url ||
+            mergedUpdatedSong.foh_mobile_url !== prevMatch?.foh_mobile_url ||
+            mergedUpdatedSong.cue_mobile_url !== prevMatch?.cue_mobile_url;
+          if (!urlsChanged) {
+            void refreshActiveCueInRam(mergedUpdatedSong);
+          }
+        }
         setSyncFeedback('¡Letras sincronizadas!');
         setTimeout(() => setSyncFeedback(null), 2500);
       }
@@ -820,9 +969,23 @@ export default function LiveConcert() {
         incomingData
       ) {
         const { songId } = event.data;
-        if (msgType === 'LIVE_MIX_EXPORTED' && prefetchedSongRef.current?.songId === songId) {
+        if (
+          (msgType === 'LIVE_MIX_EXPORTED' || msgType === 'PROMPTER_UPDATED') &&
+          prefetchedSongRef.current?.songId === songId
+        ) {
           prefetchedSongRef.current = null;
         }
+        const prevMatch = songsRef.current.find((s) => s.id === songId) || (currentSongRef.current?.id === songId ? currentSongRef.current : null);
+        const updatedSongForCue = prevMatch
+          ? {
+              ...prevMatch,
+              prompter_data: incomingData || prevMatch.prompter_data,
+              ...(event.data.foh_mix_url ? { foh_mix_url: event.data.foh_mix_url } : {}),
+              ...(event.data.cue_mix_url ? { cue_mix_url: event.data.cue_mix_url } : {}),
+              ...(event.data.foh_mobile_url ? { foh_mobile_url: event.data.foh_mobile_url } : {}),
+              ...(event.data.cue_mobile_url ? { cue_mobile_url: event.data.cue_mobile_url } : {}),
+            }
+          : null;
         setSongs((prevSongs) =>
           prevSongs.map((s) =>
             s.id === songId
@@ -837,6 +1000,9 @@ export default function LiveConcert() {
               : s
           )
         );
+        if (msgType === 'PROMPTER_UPDATED' && updatedSongForCue && currentSongRef.current?.id === songId) {
+          void refreshActiveCueInRam(updatedSongForCue);
+        }
         setSyncFeedback(
           msgType === 'LIVE_MIX_EXPORTED'
             ? '¡Mix En Vivo actualizado desde Studio!'
@@ -864,12 +1030,21 @@ export default function LiveConcert() {
         (payload) => {
           if (payload.new && payload.new.id) {
             const updated = payload.new as any;
-            if (
-              prefetchedSongRef.current?.songId === updated.id &&
-              (updated.foh_mix_url || updated.cue_mix_url)
-            ) {
+            if (prefetchedSongRef.current?.songId === updated.id) {
               prefetchedSongRef.current = null;
             }
+            const prevMatch = songsRef.current.find((s) => s.id === updated.id) || (currentSongRef.current?.id === updated.id ? currentSongRef.current : null);
+            const updatedSongForCue = prevMatch
+              ? {
+                  ...prevMatch,
+                  prompter_data: updated.prompter_data || prevMatch.prompter_data,
+                  title: updated.title || prevMatch.title,
+                  ...(updated.foh_mix_url ? { foh_mix_url: updated.foh_mix_url } : {}),
+                  ...(updated.cue_mix_url ? { cue_mix_url: updated.cue_mix_url } : {}),
+                  ...(updated.foh_mobile_url ? { foh_mobile_url: updated.foh_mobile_url } : {}),
+                  ...(updated.cue_mobile_url ? { cue_mobile_url: updated.cue_mobile_url } : {}),
+                }
+              : null;
             setSongs((prevSongs) =>
               prevSongs.map((s) =>
                 s.id === updated.id
@@ -885,6 +1060,16 @@ export default function LiveConcert() {
                   : s
               )
             );
+            if (updatedSongForCue && currentSongRef.current?.id === updated.id) {
+              const urlsChanged =
+                updatedSongForCue.foh_mix_url !== prevMatch?.foh_mix_url ||
+                updatedSongForCue.cue_mix_url !== prevMatch?.cue_mix_url ||
+                updatedSongForCue.foh_mobile_url !== prevMatch?.foh_mobile_url ||
+                updatedSongForCue.cue_mobile_url !== prevMatch?.cue_mobile_url;
+              if (!urlsChanged) {
+                void refreshActiveCueInRam(updatedSongForCue);
+              }
+            }
           }
         }
       )
@@ -1086,6 +1271,8 @@ export default function LiveConcert() {
     const mode = playbackModeRef.current;
     const targetFohUrl = mode === 'REHEARSAL' && song.foh_mobile_url ? song.foh_mobile_url : song.foh_mix_url;
     const targetCueUrl = mode === 'REHEARSAL' && song.cue_mobile_url ? song.cue_mobile_url : song.cue_mix_url;
+    const songCueSig = getSongCueSignature(song);
+    const fullCueSig = `${song.id}|${songCueSig}`;
 
     const prefetched = prefetchedSongRef.current;
     if (
@@ -1093,11 +1280,14 @@ export default function LiveConcert() {
       prefetched.songId === song.id &&
       prefetched.playbackMode === mode &&
       prefetched.fohUrl === targetFohUrl &&
-      prefetched.cueUrl === targetCueUrl
+      prefetched.cueUrl === (targetCueUrl || '') &&
+      prefetched.cueSignature === songCueSig
     ) {
-      console.log('[LiveConcert] ✅ Usando buffers pre-cargados validados por songId/modo.');
+      console.log('[LiveConcert] ✅ Usando buffers pre-cargados validados por songId/modo/CUE.');
       fohBufferRef.current = prefetched.fohBuffer;
       cueBufferRef.current = prefetched.cueBuffer;
+      activeCueSignatureRef.current = fullCueSig;
+      setLiveCueSource(prefetched.cueSource);
       prefetchedSongRef.current = null;
       const dur = fohBufferRef.current.duration;
       totalDurationRef.current = dur;
@@ -1118,48 +1308,96 @@ export default function LiveConcert() {
       return;
     }
 
-    // Descartar caché de prefetch si pertenecía a otra canción o modo
+    // Descartar caché de prefetch si pertenecía a otra canción, modo o firma CUE obsoleta
     if (prefetched && (prefetched.songId === song.id || prefetched.playbackMode !== mode)) {
       prefetchedSongRef.current = null;
     }
 
     fohBufferRef.current = null;
     cueBufferRef.current = null;
+    activeCueSignatureRef.current = '';
+    setLiveCueSource('mix');
     totalDurationRef.current = 0;
     setTotalDuration(0);
 
-    if (!targetFohUrl || !targetCueUrl) {
+    const canSynthesizeRamCue = Number(song?.prompter_data?.bpm) > 0;
+    if (!targetFohUrl || (!targetCueUrl && !canSynthesizeRamCue)) {
        setIsLoading(false);
        setLoadStatus('Falta exportar el Mix En Vivo de esta canción en Studio Prompter.');
        return;
     }
 
+    const wantsRamCue = !targetCueUrl || shouldSynthesizeLiveCueInRam(song);
     setIsLoading(true);
     setLoadStatus(mode === 'REHEARSAL' ? 'Cargando Audio Ligero de Práctica...' : 'Cargando Audio Master de Consola (FOH + Músicos)...');
     
     try {
-      const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl, { signal: abortController.signal }),
-        fetch(targetCueUrl, { signal: abortController.signal }),
-      ]);
-      if (!fohRes.ok || !cueRes.ok) {
-        throw new Error(`HTTP ${fohRes.status}/${cueRes.status} al descargar audio`);
+      let decodedFoh: AudioBuffer;
+      let decodedCue: AudioBuffer | null = null;
+
+      if (wantsRamCue) {
+        // Precargar 11 WAVs de Voz Guía en paralelo mientras descarga FOH (ahorra ancho de banda y garantiza Voz Guía al día)
+        const [fohRes] = await Promise.all([
+          fetch(targetFohUrl, { signal: abortController.signal }),
+          ensureLiveCueBuffersLoaded(audioCtxRef.current),
+        ]);
+        if (!fohRes.ok) {
+          throw new Error(`HTTP ${fohRes.status} al descargar audio FOH`);
+        }
+        const fohArray = await fohRes.arrayBuffer();
+        if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
+
+        setLoadStatus('Decodificando FOH y sintetizando Click + Voz Guía en RAM...');
+        decodedFoh = await audioCtxRef.current.decodeAudioData(fohArray);
+        if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
+
+        let resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true);
+        if (!resolvedCue && targetCueUrl) {
+          const fallbackCueRes = await fetch(targetCueUrl, { signal: abortController.signal });
+          if (fallbackCueRes.ok) {
+            const fallbackCueArr = await fallbackCueRes.arrayBuffer();
+            if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
+            decodedCue = await audioCtxRef.current.decodeAudioData(fallbackCueArr);
+            resolvedCue = { buffer: decodedCue, source: 'mix' };
+          }
+        }
+        if (loadRequestIdRef.current !== reqId) return;
+        if (!resolvedCue) {
+          throw new Error('No se pudo generar ni descargar el canal CUE de músicos.');
+        }
+        fohBufferRef.current = decodedFoh;
+        cueBufferRef.current = resolvedCue.buffer;
+        activeCueSignatureRef.current = fullCueSig;
+        setLiveCueSource(resolvedCue.source);
+      } else {
+        const [fohRes, cueRes] = await Promise.all([
+          fetch(targetFohUrl, { signal: abortController.signal }),
+          fetch(targetCueUrl, { signal: abortController.signal }),
+        ]);
+        if (!fohRes.ok || !cueRes.ok) {
+          throw new Error(`HTTP ${fohRes.status}/${cueRes.status} al descargar audio`);
+        }
+        const [fohArray, cueArray] = await Promise.all([
+          fohRes.arrayBuffer(),
+          cueRes.arrayBuffer(),
+        ]);
+        if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
+
+        setLoadStatus('Decodificando canales en RAM (Cero Latencia)...');
+        [decodedFoh, decodedCue] = await Promise.all([
+          audioCtxRef.current.decodeAudioData(fohArray),
+          audioCtxRef.current.decodeAudioData(cueArray),
+        ]);
+        if (loadRequestIdRef.current !== reqId) return;
+
+        const resolvedCue = await resolveCueBufferForSong(song, decodedFoh, decodedCue, false);
+        if (loadRequestIdRef.current !== reqId) return;
+        fohBufferRef.current = decodedFoh;
+        cueBufferRef.current = resolvedCue?.buffer || decodedCue;
+        activeCueSignatureRef.current = fullCueSig;
+        setLiveCueSource(resolvedCue?.source || 'mix');
       }
-      const [fohArray, cueArray] = await Promise.all([
-        fohRes.arrayBuffer(),
-        cueRes.arrayBuffer(),
-      ]);
-      if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
 
-      setLoadStatus('Decodificando canales en RAM (Cero Latencia)...');
-      const [decodedFoh, decodedCue] = await Promise.all([
-        audioCtxRef.current.decodeAudioData(fohArray),
-        audioCtxRef.current.decodeAudioData(cueArray),
-      ]);
-      if (loadRequestIdRef.current !== reqId) return;
-
-      fohBufferRef.current = decodedFoh;
-      cueBufferRef.current = decodedCue;
       totalDurationRef.current = decodedFoh.duration;
       setTotalDuration(decodedFoh.duration);
 
@@ -1197,32 +1435,66 @@ export default function LiveConcert() {
     const mode = playbackModeRef.current;
     const targetFohUrl = mode === 'REHEARSAL' && nextSong.foh_mobile_url ? nextSong.foh_mobile_url : nextSong.foh_mix_url;
     const targetCueUrl = mode === 'REHEARSAL' && nextSong.cue_mobile_url ? nextSong.cue_mobile_url : nextSong.cue_mix_url;
+    const canSynthesizeRamCue = Number(nextSong?.prompter_data?.bpm) > 0;
 
-    if (!targetFohUrl || !targetCueUrl) return;
+    if (!targetFohUrl || (!targetCueUrl && !canSynthesizeRamCue)) return;
+
+    const wantsRamCue = !targetCueUrl || shouldSynthesizeLiveCueInRam(nextSong);
+    const cueSignature = getSongCueSignature(nextSong);
 
     isPrefetchingRef.current = true;
     try {
-      const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl),
-        fetch(targetCueUrl),
-      ]);
-      if (!fohRes.ok || !cueRes.ok) return;
-      const [fohArray, cueArray] = await Promise.all([
-        fohRes.arrayBuffer(),
-        cueRes.arrayBuffer(),
-      ]);
-      if (!audioCtxRef.current || playbackModeRef.current !== mode) return;
-      const [fohBuf, cueBuf] = await Promise.all([
-        audioCtxRef.current.decodeAudioData(fohArray),
-        audioCtxRef.current.decodeAudioData(cueArray),
-      ]);
+      let fohBuf: AudioBuffer;
+      let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null = null;
+
+      if (wantsRamCue) {
+        const [fohRes] = await Promise.all([
+          fetch(targetFohUrl),
+          ensureLiveCueBuffersLoaded(audioCtxRef.current),
+        ]);
+        if (!fohRes.ok) return;
+        const fohArray = await fohRes.arrayBuffer();
+        if (!audioCtxRef.current || playbackModeRef.current !== mode) return;
+        fohBuf = await audioCtxRef.current.decodeAudioData(fohArray);
+        if (!audioCtxRef.current || playbackModeRef.current !== mode) return;
+        resolvedCue = await resolveCueBufferForSong(nextSong, fohBuf, null, true);
+        if (!resolvedCue && targetCueUrl) {
+          const cueRes = await fetch(targetCueUrl);
+          if (cueRes.ok && audioCtxRef.current) {
+            const cueArr = await cueRes.arrayBuffer();
+            const cueBuf = await audioCtxRef.current.decodeAudioData(cueArr);
+            resolvedCue = { buffer: cueBuf, source: 'mix' };
+          }
+        }
+      } else {
+        const [fohRes, cueRes] = await Promise.all([
+          fetch(targetFohUrl),
+          fetch(targetCueUrl),
+        ]);
+        if (!fohRes.ok || !cueRes.ok) return;
+        const [fohArray, cueArray] = await Promise.all([
+          fohRes.arrayBuffer(),
+          cueRes.arrayBuffer(),
+        ]);
+        if (!audioCtxRef.current || playbackModeRef.current !== mode) return;
+        const [decodedFoh, decodedCue] = await Promise.all([
+          audioCtxRef.current.decodeAudioData(fohArray),
+          audioCtxRef.current.decodeAudioData(cueArray),
+        ]);
+        fohBuf = decodedFoh;
+        resolvedCue = await resolveCueBufferForSong(nextSong, decodedFoh, decodedCue, false);
+      }
+
+      if (!resolvedCue || playbackModeRef.current !== mode) return;
       prefetchedSongRef.current = {
         songId: nextSong.id,
         playbackMode: mode,
         fohUrl: targetFohUrl,
-        cueUrl: targetCueUrl,
+        cueUrl: targetCueUrl || '',
+        cueSignature,
+        cueSource: resolvedCue.source,
         fohBuffer: fohBuf,
-        cueBuffer: cueBuf,
+        cueBuffer: resolvedCue.buffer,
       };
     } catch {
       prefetchedSongRef.current = null;
@@ -2091,8 +2363,20 @@ export default function LiveConcert() {
           {/* Fader Músicos CUE (L) + Mini Medidor VU */}
           <div className="flex flex-col w-24">
             <div className="flex justify-between items-center mb-1">
-              <span className="text-[9px] text-[#b45309] font-bold uppercase tracking-wider flex items-center gap-1">
-                <Headphones size={11} /> MÚSICOS (L)
+              <span
+                className="text-[9px] text-[#b45309] font-bold uppercase tracking-wider flex items-center gap-1"
+                title={
+                  liveCueSource === 'ram'
+                    ? 'Click y Voz Guía sintetizados en RAM desde las secciones actualizadas'
+                    : 'Click y Voz Guía reproducidos desde el Mix CUE exportado'
+                }
+              >
+                <Headphones size={11} /> MÚSICOS
+                {liveCueSource === 'ram' && (
+                  <span className="text-[7px] px-1 py-0 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold">
+                    IA
+                  </span>
+                )}
               </span>
               <button
                 type="button"
@@ -2128,6 +2412,20 @@ export default function LiveConcert() {
               />
             </div>
           </div>
+
+          {(multiChannelPatch.cueBalance ?? 0) <= -0.8 && (
+            <button
+              type="button"
+              onClick={() => {
+                (document.activeElement as HTMLElement)?.blur();
+                setIsEqDrawerOpen(true);
+              }}
+              className="px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-[9px] font-extrabold uppercase tracking-wider hover:bg-amber-100 transition-all cursor-pointer"
+              title="El Balance CUE está cargado al canal L (Solo Click) y puede atenuar la Voz Guía (R). Haz clic para ajustarlo en EQ 18B / Matriz."
+            >
+              ⚠️ Solo Click (L)
+            </button>
+          )}
 
           <div className="w-px h-7 bg-zinc-200" />
 
@@ -2328,7 +2626,7 @@ export default function LiveConcert() {
 
           <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
             {songs.map((s, idx) => {
-              const hasMix = Boolean(s.foh_mix_url && s.cue_mix_url);
+              const hasMix = Boolean(s.foh_mix_url && (s.cue_mix_url || Number(s.prompter_data?.bpm) > 0));
               const hasLyrics = Boolean(s.prompter_data?.lyrics?.length > 0);
               const isSelected = idx === currentSongIndex;
 

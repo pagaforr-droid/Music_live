@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import {
+  CUE_NAMES,
   generateClickBuffer,
   loadCueBuffers,
   resolveCueBufferName,
@@ -38,6 +39,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const isPlayingRef = useRef(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [routingMode, setRoutingMode] = useState<RoutingMode>('StereoInEar');
+  const routingModeRef = useRef<RoutingMode>('StereoInEar');
+  useEffect(() => {
+    routingModeRef.current = routingMode;
+  }, [routingMode]);
   const [masterVolume, setMasterVolume] = useState<number>(1.0);
   const globalMasterGainNode = useRef<GainNode | null>(null);
 
@@ -101,17 +106,71 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const cueSources = useRef<AudioBufferSourceNode[]>([]);
   const cueBuffersRef = useRef<Record<string, AudioBuffer>>({});
   const cueOffsetsRef = useRef<Record<string, number>>({});
+  const cueLoadPromiseRef = useRef<Promise<{ loaded: number; total: number; failed: string[] }> | null>(null);
+  const [cueBuffersStatus, setCueBuffersStatus] = useState<{
+    loaded: number;
+    total: number;
+    failed: string[];
+    ready: boolean;
+  }>({ loaded: 0, total: CUE_NAMES.length, failed: [], ready: false });
   
   // Referencias para el auto-play al buscar sin perder el estado en scrubbing continuo
   const prompterDataRef = useRef<any>(null);
   const manualGridOffsetRef = useRef<number>(0);
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
+  const playRef = useRef<() => Promise<void>>(async () => {});
+  const seekToRef = useRef<(newVisualTime: number) => void>(() => {});
   
   const animationFrame = useRef<number>(0);
   const seekTimeoutRef = useRef<number | null>(null);
 
+  // Asegurar que las 11 voces guía estén cargadas y validadas en RAM (WAV PCM prioritario + fallback MP3 + deduplicación)
+  const ensureCueBuffersLoaded = useCallback(async (allowResume = true) => {
+    const ctx = audioContext.current;
+    if (!ctx || ctx.state === 'closed') {
+      return { loaded: Object.keys(cueBuffersRef.current).length, total: CUE_NAMES.length, failed: [...CUE_NAMES] };
+    }
+    if (allowResume && ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch {}
+    }
+    const existingCount = Object.keys(cueBuffersRef.current).length;
+    if (existingCount >= CUE_NAMES.length) {
+      return { loaded: existingCount, total: CUE_NAMES.length, failed: [] };
+    }
+    if (cueLoadPromiseRef.current) {
+      return cueLoadPromiseRef.current;
+    }
+
+    const loadPromise = (async () => {
+      try {
+        const activeCtx = audioContext.current;
+        if (!activeCtx || activeCtx.state === 'closed') {
+          return { loaded: 0, total: CUE_NAMES.length, failed: [...CUE_NAMES] };
+        }
+        const loadedCues = await loadCueBuffers(activeCtx);
+        cueBuffersRef.current = { ...cueBuffersRef.current, ...loadedCues.cueBuffers };
+        cueOffsetsRef.current = { ...cueOffsetsRef.current, ...loadedCues.cueOffsets };
+        const loadedCount = Object.keys(cueBuffersRef.current).length;
+        const missing = CUE_NAMES.filter((n) => !cueBuffersRef.current[n]);
+        setCueBuffersStatus({
+          loaded: loadedCount,
+          total: CUE_NAMES.length,
+          failed: missing,
+          ready: loadedCount === CUE_NAMES.length,
+        });
+        return { loaded: loadedCount, total: CUE_NAMES.length, failed: missing };
+      } finally {
+        cueLoadPromiseRef.current = null;
+      }
+    })();
+
+    cueLoadPromiseRef.current = loadPromise;
+    return loadPromise;
+  }, []);
+
   // 1. Inicialización y Prevención de Desconexiones (Fail-Safe)
   useEffect(() => {
+    let isDisposed = false;
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     audioContext.current = new AudioContextClass();
     globalMasterGainNode.current = audioContext.current.createGain();
@@ -120,6 +179,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     
     clickHighBufferRef.current = generateClickBuffer(audioContext.current, 1200);
     clickLowBufferRef.current = generateClickBuffer(audioContext.current, 800);
+
+    // Pre-cargar voces guía en segundo plano desde el montaje (el parser PCM WAV funciona incluso con contexto suspendido)
+    void ensureCueBuffersLoaded(false).catch(() => {
+      if (!isDisposed) {
+        console.warn('[AudioEngine] Pre-carga inicial de voces guía diferida hasta interacción del usuario.');
+      }
+    });
     
     const handleDeviceChange = async () => {
       console.warn("Hardware device change detected! Suspending audio to prevent bleeding.");
@@ -133,6 +199,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
 
     navigator.mediaDevices?.addEventListener('devicechange', handleDeviceChange);
     return () => {
+      isDisposed = true;
+      cueLoadPromiseRef.current = null;
       navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
       if (seekTimeoutRef.current) clearTimeout(seekTimeoutRef.current);
       cancelAnimationFrame(animationFrame.current);
@@ -144,7 +212,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         try { audioContext.current.close(); } catch {}
       }
     };
-  }, []);
+  }, [ensureCueBuffersLoaded]);
 
   // 2. Cargar Buffers en Memoria
   const loadStems = async (_bpm: number, _gridOffsetTime: number = 0, _timeSignature: string = '4/4', _beatTimes: number[] = [], prompterData?: any, stemsToLoad?: StemTrack[]) => {
@@ -229,8 +297,14 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     }
 
     // --- AUTO-ADAPTACIÓN RÍTMICA Y RE-SINCRONIZACIÓN MULTI-ISLA (MASTER + DRUMS) ---
-    if (prompterData && prompterData.beatTimes && prompterData.beatTimes.length > 0) {
-      const hasAlreadyRepairedGrid = Array.isArray(prompterData.downbeats) && prompterData.downbeats.length > 0;
+    // Clonar para evitar mutación en sitio del estado React y calcular offset manual antes de reparar la grilla
+    const workingPrompterData = prompterData ? { ...prompterData } : prompterData;
+    const originalBaseFirstBeat = getBaseFirstBeatOffset(workingPrompterData);
+    let didRepairGrid = false;
+
+    if (workingPrompterData && workingPrompterData.beatTimes && workingPrompterData.beatTimes.length > 0) {
+      const hasAlreadyRepairedGrid =
+        Array.isArray(workingPrompterData.downbeats) && workingPrompterData.downbeats.length > 0;
       if (!hasAlreadyRepairedGrid) {
         try {
           const { masterStem, drumStem } = findMasterAndDrumStems(activeStemsArray);
@@ -245,21 +319,25 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
               currentFile: `Re-sincronizando silencios y transitorios con ${masterStem?.name || drumStem?.name || 'Master'}...`
             });
             const repaired = repairAndRelockBeatGrid({
-              rawBeats: prompterData.beatTimes,
-              rawDownbeats: prompterData.firstBeatOffset !== undefined ? [Number(prompterData.firstBeatOffset)] : [],
-              rawBpm: Number(prompterData.bpm) || _bpm || 120,
-              timeSignature: prompterData.timeSignature || _timeSignature || '4/4',
+              rawBeats: workingPrompterData.beatTimes,
+              rawDownbeats:
+                workingPrompterData.firstBeatOffset !== undefined
+                  ? [Number(workingPrompterData.firstBeatOffset)]
+                  : [],
+              rawBpm: Number(workingPrompterData.bpm) || _bpm || 120,
+              timeSignature: workingPrompterData.timeSignature || _timeSignature || '4/4',
               masterBuffer: primaryBuffer,
               drumBuffer: masterBuffer && drumBuffer && drumStem?.id !== masterStem?.id ? drumBuffer : null,
               referenceTrackName: masterStem?.name || drumStem?.name || 'Master'
             });
 
-            prompterData.beatTimes = repaired.beatTimes;
-            prompterData.downbeats = repaired.downbeats;
-            prompterData.firstBeatOffset = repaired.firstBeatOffset;
+            workingPrompterData.beatTimes = repaired.beatTimes;
+            workingPrompterData.downbeats = repaired.downbeats;
+            workingPrompterData.firstBeatOffset = repaired.firstBeatOffset;
             if (repaired.bpm > 0) {
-              prompterData.bpm = repaired.bpm;
+              workingPrompterData.bpm = repaired.bpm;
             }
+            didRepairGrid = true;
             console.log(`[Auto-Sync DSP] ${repaired.telemetrySummary}`);
           }
         } catch (e) {
@@ -270,12 +348,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     // ------------------------------------------------------------------------
 
     // Guardar para uso interno respetando fallback chords[0].time ANTES de calcular Pre-Roll con fase exacta
-    prompterDataRef.current = prompterData;
-    const baseFirstBeat = getBaseFirstBeatOffset(prompterData);
-    const resolvedManualOffset = _gridOffsetTime - baseFirstBeat;
+    prompterDataRef.current = workingPrompterData;
+    const resolvedManualOffset = didRepairGrid ? 0 : (_gridOffsetTime - originalBaseFirstBeat);
     manualGridOffsetRef.current = resolvedManualOffset;
 
-    const nextPreRoll = computePreRollSeconds(prompterData, preRollBarsRef.current, resolvedManualOffset);
+    const nextPreRoll = computePreRollSeconds(workingPrompterData, preRollBarsRef.current, resolvedManualOffset);
     preRollDurationRef.current = nextPreRoll;
     setPreRollDurationState(nextPreRoll);
     if (maxDuration > 0) {
@@ -287,24 +364,28 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     setCurrentTime(-nextPreRoll);
     pauseTime.current = 0;
     
-    // Pre-cargar todas las voces desde public/cues/ usando loadCueBuffers unificado (margen 5ms)
-    if (Object.keys(cueBuffersRef.current).length < 11 && audioContext.current) {
-      const loadedCues = await loadCueBuffers(audioContext.current);
-      cueBuffersRef.current = { ...cueBuffersRef.current, ...loadedCues.cueBuffers };
-      cueOffsetsRef.current = { ...cueOffsetsRef.current, ...loadedCues.cueOffsets };
+    // Pre-cargar y validar todas las voces guía en RAM (WAV PCM prioritario + fallback MP3)
+    const cueStatus = await ensureCueBuffersLoaded(true);
+    if (cueStatus.loaded < cueStatus.total) {
+      console.warn(
+        `[AudioEngine] Voces guía cargadas parcialmente (${cueStatus.loaded}/${cueStatus.total}). Faltantes:`,
+        cueStatus.failed
+      );
     }
 
     setLoadProgress({ loaded: activeStemsArray.length, total: activeStemsArray.length, currentFile: '¡Todas las pistas cargadas en RAM!' });
-    return prompterData;
+    return workingPrompterData;
   };
 
 
 
 
-  // 3. Matriz de Ruteo (Routing Engine)
+  // 3. Matriz de Ruteo (Routing Engine) — usa refs para evitar stale closures en seek/setPreRollBars
   const buildRoutingGraph = useCallback(() => {
     if (!audioContext.current) return;
     const ctx = audioContext.current;
+    const activeStems = stemsRef.current;
+    const activeRoutingMode = routingModeRef.current;
 
     sourceNodes.current.forEach(node => { try { node.disconnect(); } catch {} });
     gainNodes.current.forEach(node => { try { node.disconnect(); } catch {} });
@@ -313,10 +394,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     try { globalMasterGainNode.current?.disconnect(); } catch {}
 
     const maxChannels = ctx.destination.maxChannelCount || 2;
-    let effectiveMode = routingMode;
-    if (routingMode === 'MultiChannel' && maxChannels < 4) {
+    let effectiveMode = activeRoutingMode;
+    if (activeRoutingMode === 'MultiChannel' && maxChannels < 4) {
       console.warn('Hardware interface only supports', maxChannels, 'channels. Falling back safely to StereoSplit (L=CUE, R=FOH).');
       effectiveMode = 'StereoSplit';
+      routingModeRef.current = 'StereoSplit';
       setRoutingMode('StereoSplit');
     }
 
@@ -350,9 +432,9 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       }
     }
 
-    const hasSolo = stems.some(s => s.solo);
+    const hasSolo = activeStems.some(s => s.solo);
 
-    stems.forEach(stem => {
+    activeStems.forEach(stem => {
       const isMuted = stem.muted || (hasSolo && !stem.solo);
       const isClickOrCue = stem.type === 'Click' || stem.type === 'Cues';
 
@@ -420,7 +502,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       sourceNodes.current.set(stem.id, source);
       gainNodes.current.set(stem.id, gain);
     });
-  }, [stems, routingMode]);
+  }, []);
 
   // Programador unificado en tiempo real de Metrónomo (Click) + Voz Guía (Cues)
   const scheduleLiveClicksAndCues = useCallback(
@@ -547,6 +629,18 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       await audioContext.current.resume();
     }
 
+    // Garantizar que las voces guía estén en RAM antes de tomar `now` y programar la reproducción
+    if (Object.keys(cueBuffersRef.current).length < CUE_NAMES.length) {
+      await ensureCueBuffersLoaded(true);
+    }
+
+    // Limpiar cualquier fuente activa previa antes de reconstruir el grafo (evita duplicados en disparos rápidos)
+    sourceNodes.current.forEach((src) => { try { src.stop(); src.disconnect(); } catch {} });
+    clickSources.current.forEach((src) => { try { src.stop(); src.disconnect(); } catch {} });
+    cueSources.current.forEach((src) => { try { src.stop(); src.disconnect(); } catch {} });
+    clickSources.current = [];
+    cueSources.current = [];
+
     buildRoutingGraph();
     
     const preRollDuration = preRollDurationRef.current;
@@ -649,7 +743,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (loopState.current.isLooping && visualTime >= loopState.current.end) {
       pause(true);
       pauseTime.current = Math.max(0, loopState.current.start + preRollDurationRef.current);
-      void play();
+      void playRef.current();
       return;
     }
 
@@ -686,10 +780,13 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       seekTimeoutRef.current = window.setTimeout(() => {
         seekTimeoutRef.current = null;
         wasPlayingBeforeSeekRef.current = false;
-        void play();
+        void playRef.current();
       }, 50);
     }
   };
+
+  playRef.current = play;
+  seekToRef.current = seekTo;
 
   const setPreRollBars = useCallback(
     (nextBars: PreRollBars) => {
@@ -715,7 +812,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         setCurrentTime(-nextPreRoll);
       } else {
         const nextVisual = Math.max(-nextPreRoll, currentVisual);
-        seekTo(nextVisual);
+        seekToRef.current(nextVisual);
       }
     },
     [computePreRollSeconds]
@@ -739,6 +836,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     if (!audioContext.current || !isPlaying) return;
     
     const hasSolo = stems.some(s => s.solo);
+    const activeMode = routingModeRef.current;
     
     stems.forEach(stem => {
       const gainNode = gainNodes.current.get(stem.id);
@@ -751,10 +849,12 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       }
       const pannerNode = pannerNodes.current.get(stem.id);
       if (pannerNode && audioContext.current) {
-         pannerNode.pan.setTargetAtTime(stem.pan || 0, audioContext.current.currentTime, 0.01);
+        const isClickOrCue = stem.type === 'Click' || stem.type === 'Cues';
+        const targetPan = activeMode === 'StereoSplit' ? (isClickOrCue ? -1 : 1) : (stem.pan || 0);
+        pannerNode.pan.setTargetAtTime(targetPan, audioContext.current.currentTime, 0.01);
       }
     });
-  }, [stems, isPlaying]);
+  }, [stems, isPlaying, routingMode]);
 
   const exportLiveMix = async (
     songId: string,
@@ -765,14 +865,22 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   ) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
-    await ensureCueBuffersLoaded();
+    const cueLoadResult = await ensureCueBuffersLoaded(true);
+
+    const activeStems = stemsRef.current;
+    const cueStemForCheck = activeStems.find((s) => s.id === 'synthetic-cues');
+    const prompterData = currentPrompterData || prompterDataRef.current;
+    if (prompterData?.bpm > 0 && (!cueStemForCheck || !cueStemForCheck.muted) && cueLoadResult.loaded === 0) {
+      throw new Error(
+        "No se pudieron cargar los archivos de Voz Guía (/cues/*.wav). Verifica tu conexión o recarga la página antes de exportar el Mix En Vivo."
+      );
+    }
     
     let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
        if (buf.duration > maxBufDuration) maxBufDuration = buf.duration;
     });
 
-    const prompterData = currentPrompterData || prompterDataRef.current;
     const activePreRollBars: PreRollBars =
       overridePreRollBars !== undefined ? overridePreRollBars : preRollBarsRef.current;
     const manualGridOffset = manualGridOffsetRef.current;
@@ -785,7 +893,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const sampleRate = audioContext.current.sampleRate;
     const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS;
     const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
-    const hasInstrumentSolo = stems.some((s) => s.type === 'Instrument' && s.solo);
+    const hasInstrumentSolo = activeStems.some((s) => s.type === 'Instrument' && s.solo);
+    let scheduledVoiceCuesCount = 0;
 
     const renderMix = async (isFoh: boolean): Promise<{ buffer: AudioBuffer, blob: Blob }> => {
       onProgress(`Preparando renderizado ${isFoh ? 'FOH' : 'CUE'}...`);
@@ -794,7 +903,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       const preRollDuration = calculatedPreRoll;
 
       // Render Stems
-      stems.forEach(stem => {
+      activeStems.forEach(stem => {
         const isMusic = stem.type === 'Instrument';
         if (isFoh && !isMusic) return; // FOH only gets instruments
         if (!isFoh && isMusic) return; // CUE only gets click and cues
@@ -836,7 +945,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
           manualGridOffset
         );
 
-        const clickStem = stems.find(s => s.id === 'synthetic-click');
+        const clickStem = activeStems.find(s => s.id === 'synthetic-click');
         if (!clickStem || !clickStem.muted) {
           for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
             const adjustedTime = shiftedBeatTimes[beatCount];
@@ -863,7 +972,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
           }
         }
 
-        const cueStem = stems.find(s => s.id === 'synthetic-cues');
+        const cueStem = activeStems.find(s => s.id === 'synthetic-cues');
         if (!cueStem || !cueStem.muted) {
           const schedule = (bufName: string, bIdx: number) => {
             const buf = cueBuffersRef.current[bufName];
@@ -882,6 +991,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
                 gain.connect(panner);
                 panner.connect(offlineCtx.destination);
                 source.start(absoluteTime, cueOffset);
+                scheduledVoiceCuesCount++;
               }
             }
           };
@@ -960,6 +1070,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         };
       }
 
+      const exportedAtIso = new Date().toISOString();
       const liveMixMeta: LiveMixMeta = {
         preRollSec: Number(calculatedPreRoll.toFixed(4)),
         preRollBars: activePreRollBars,
@@ -968,8 +1079,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         firstBeatOffset: Number(Math.max(0, getBaseFirstBeatOffset(prompterData) + manualGridOffset).toFixed(4)),
         musicDurationSec: Number(maxBufDuration.toFixed(4)),
         totalDurationSec: Number(lengthSeconds.toFixed(4)),
-        exportedAt: new Date().toISOString(),
-        version: 2,
+        exportedAt: exportedAtIso,
+        version: 3,
+        cueVoiceCount: scheduledVoiceCuesCount,
+        sectionsUpdatedAt: exportedAtIso,
       };
 
       const mergedPrompterData = {
@@ -979,6 +1092,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
         lyric_settings: latestRemote.lyric_settings ?? prompterData?.lyric_settings,
         ...(latestRemote.background !== undefined ? { background: latestRemote.background } : {}),
         ...(preservedLyricsSyncMeta ? { lyricsSyncMeta: preservedLyricsSyncMeta } : {}),
+        sectionsUpdatedAt: exportedAtIso,
         liveMixMeta,
       };
 
@@ -1109,22 +1223,11 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     return peaks.map((p) => Math.max(0.04, Math.min(1, p / globalMax)));
   }, [stems]);
 
-  // Asegurar que los audios de voz guía estén cargados en RAM incluso antes de Cargar Stems (con margen 5ms)
-  const ensureCueBuffersLoaded = useCallback(async () => {
-    if (!audioContext.current) return;
-    if (audioContext.current.state === 'suspended') {
-      try { await audioContext.current.resume(); } catch {}
-    }
-    if (Object.keys(cueBuffersRef.current).length >= 11) return;
-    const loadedCues = await loadCueBuffers(audioContext.current);
-    cueBuffersRef.current = { ...cueBuffersRef.current, ...loadedCues.cueBuffers };
-    cueOffsetsRef.current = { ...cueOffsetsRef.current, ...loadedCues.cueOffsets };
-  }, []);
-
   // Pre-escucha inmediata de una etiqueta de Voz Guía (al soltar o hacer clic en 🔊)
+  // Se enruta directamente al bus maestro para que siempre suene al previsualizar, incluso con Solo/Mute en el mixer.
   const previewVoiceCue = useCallback(async (sectionName: string) => {
     if (!audioContext.current) return;
-    await ensureCueBuffersLoaded();
+    await ensureCueBuffersLoaded(true);
     const resolved = resolveCueBufferName(sectionName, cueBuffersRef.current);
     const buf = resolved ? cueBuffersRef.current[resolved] : undefined;
     if (!buf || !audioContext.current) return;
@@ -1132,22 +1235,19 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const cueOffset = cueOffsetsRef.current[resolved] || 0;
     const source = audioContext.current.createBufferSource();
     const gain = audioContext.current.createGain();
-    const cueStem = stems.find((s) => s.id === 'synthetic-cues');
-    gain.gain.value = cueStem ? Math.max(0.35, cueStem.volume) : 0.85;
+    const cueStem = stemsRef.current.find((s) => s.id === 'synthetic-cues');
+    gain.gain.value = cueStem ? Math.max(0.45, cueStem.volume) : 0.85;
     source.buffer = buf;
     source.connect(gain);
 
-    const masterGain = gainNodes.current.get('synthetic-cues');
-    if (masterGain && cueStem && !cueStem.muted) {
-      gain.connect(masterGain);
-    } else if (globalMasterGainNode.current) {
+    if (globalMasterGainNode.current) {
       gain.connect(globalMasterGainNode.current);
     } else {
       gain.connect(audioContext.current.destination);
     }
 
     source.start(0, cueOffset);
-  }, [ensureCueBuffersLoaded, stems]);
+  }, [ensureCueBuffersLoaded]);
 
   // Sincronización en caliente de prompterData y manualGridOffset en RAM (reprograma Metrónomo + Voz Guía al vuelo sin cortar la música)
   const syncPrompterData = useCallback(
@@ -1212,9 +1312,10 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
     
     const preRollDur = calculatedPreRoll;
-    const hasInstrumentSolo = stems.some((s) => s.type === 'Instrument' && s.solo);
+    const activeStemList = stemsRef.current;
+    const hasInstrumentSolo = activeStemList.some((s) => s.type === 'Instrument' && s.solo);
 
-    stems.forEach(stem => {
+    activeStemList.forEach(stem => {
       const isMusic = stem.type === 'Instrument';
       if (!isMusic) return;
       if (stem.muted || (hasInstrumentSolo && !stem.solo)) return;
@@ -1248,7 +1349,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const exportMultitrackToZip = async (songName: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
-    await ensureCueBuffersLoaded();
+    const cueLoadResult = await ensureCueBuffersLoaded(true);
     
     let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
@@ -1271,9 +1372,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     const { saveAs } = await import('file-saver');
 
     const zip = new JSZip();
-    const hasSolo = stems.some((s) => s.solo);
-    const activeStems = stems.filter((s) => !(s.muted || (hasSolo && !s.solo)));
-    const stemsToExport = activeStems.length > 0 ? activeStems : stems;
+    const activeStemList = stemsRef.current;
+    const hasSolo = activeStemList.some((s) => s.solo);
+    const activeStems = activeStemList.filter((s) => !(s.muted || (hasSolo && !s.solo)));
+    const stemsToExport = activeStems.length > 0 ? activeStems : activeStemList;
+
+    if (stemsToExport.some((s) => s.id === 'synthetic-cues') && prompterData?.bpm > 0 && cueLoadResult.loaded === 0) {
+      throw new Error(
+        `No se pudieron cargar las voces guía (0/${CUE_NAMES.length}). Verifica tu conexión o recarga la aplicación antes de exportar los stems.`
+      );
+    }
 
     for (let i = 0; i < stemsToExport.length; i++) {
       const stem = stemsToExport[i];
@@ -1382,7 +1490,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   const exportFullMixToMp3 = async (songName: string, currentPrompterData: any, onProgress: (msg: string) => void) => {
     if (!audioContext.current) throw new Error("AudioContext not initialized");
     if (buffers.current.size === 0) throw new Error("Las pistas no están cargadas en memoria. Por favor presiona 'Cargar a RAM' primero.");
-    await ensureCueBuffersLoaded();
+    const cueLoadResult = await ensureCueBuffersLoaded(true);
     
     let maxBufDuration = totalDurationRef.current || totalDuration;
     buffers.current.forEach(buf => {
@@ -1396,6 +1504,16 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       preRollBarsRef.current,
       manualGridOffset
     );
+
+    const activeStemList = stemsRef.current;
+    const hasSolo = activeStemList.some((s) => s.solo);
+    const cueStemForFullMix = activeStemList.find((s) => s.id === 'synthetic-cues');
+    const willRenderCues = cueStemForFullMix && !(cueStemForFullMix.muted || (hasSolo && !cueStemForFullMix.solo));
+    if (willRenderCues && prompterData?.bpm > 0 && cueLoadResult.loaded === 0) {
+      throw new Error(
+        `No se pudieron cargar las voces guía (0/${CUE_NAMES.length}). Verifica tu conexión o recarga la aplicación antes de exportar la mezcla.`
+      );
+    }
 
     const sampleRate = audioContext.current.sampleRate;
     const lengthSeconds = maxBufDuration + calculatedPreRoll + LIVE_EXPORT_TAIL_SECONDS; 
@@ -1412,9 +1530,8 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       maxBufDuration,
       manualGridOffset
     );
-    const hasSolo = stems.some((s) => s.solo);
 
-    stems.forEach(stem => {
+    activeStemList.forEach(stem => {
       const isMuted = stem.muted || (hasSolo && !stem.solo);
       if (isMuted) return;
 
@@ -1578,6 +1695,7 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
     getCompositePeaks,
     previewVoiceCue,
     syncPrompterData,
+    cueBuffersStatus,
     resetEngine
   };
 };

@@ -12,6 +12,26 @@ export interface LiveMixMeta {
   totalDurationSec: number;
   exportedAt: string;
   version?: number;
+  cueVoiceCount?: number;
+  sectionsUpdatedAt?: string;
+}
+
+export interface LoadCueBuffersResult {
+  cueBuffers: CueBuffersMap;
+  cueOffsets: CueOffsetsMap;
+  loadedNames: string[];
+  failedNames: string[];
+}
+
+export interface SynthesizeLiveCueOptions {
+  preRollBars?: PreRollBars;
+  exactPreRollSec?: number;
+  clickVolume?: number;
+  cueVolume?: number;
+  clickPan?: number;
+  cuePan?: number;
+  clickMuted?: boolean;
+  cueMuted?: boolean;
 }
 
 export interface LyricsSyncMeta {
@@ -224,52 +244,300 @@ export const generateClickBuffer = (ctx: BaseAudioContext, frequency: number): A
   return buffer;
 };
 
+const normalizeCueText = (raw: string): string =>
+  (raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
 // Resolver de forma inteligente el archivo de voz guía según el nombre de sección (Español / Inglés)
 export const resolveCueBufferName = (rawName: string, cueBuffers: Record<string, any>): string => {
-  const lower = (rawName || '').toLowerCase().trim();
+  const lower = normalizeCueText(rawName);
+  if (!lower) return '';
   if (cueBuffers[lower]) return lower;
   if (lower.includes('intro') && cueBuffers['intro']) return 'intro';
-  if ((lower.includes('pre-coro') || lower.includes('precoro') || lower.includes('pre chorus') || lower.includes('prechorus')) && cueBuffers['pre-coro']) return 'pre-coro';
-  if ((lower.includes('coro') || lower.includes('chorus')) && cueBuffers['coro']) return 'coro';
-  if ((lower.includes('verso') || lower.includes('verse')) && cueBuffers['verso']) return 'verso';
-  if ((lower.includes('puente') || lower.includes('bridge')) && cueBuffers['puente']) return 'puente';
-  if (lower.includes('solo') && cueBuffers['solo']) return 'solo';
-  if ((lower.includes('final') || lower.includes('outro') || lower.includes('ending')) && cueBuffers['final']) return 'final';
+  if (
+    (lower.includes('pre-coro') ||
+      lower.includes('precoro') ||
+      lower.includes('pre coro') ||
+      lower.includes('pre-chorus') ||
+      lower.includes('prechorus') ||
+      lower.includes('pre chorus')) &&
+    cueBuffers['pre-coro']
+  ) {
+    return 'pre-coro';
+  }
+  if ((lower.includes('coro') || lower.includes('chorus') || lower.includes('estribillo')) && cueBuffers['coro']) {
+    return 'coro';
+  }
+  if ((lower.includes('verso') || lower.includes('verse') || lower.includes('estrofa')) && cueBuffers['verso']) {
+    return 'verso';
+  }
+  if ((lower.includes('puente') || lower.includes('bridge')) && cueBuffers['puente']) {
+    return 'puente';
+  }
+  if (lower.includes('solo') && cueBuffers['solo']) {
+    return 'solo';
+  }
+  if (
+    (lower.includes('final') ||
+      lower.includes('outro') ||
+      lower.includes('ending') ||
+      lower.includes('coda') ||
+      /\bend\b/.test(lower)) &&
+    cueBuffers['final']
+  ) {
+    return 'final';
+  }
+  if (
+    (lower.includes('instrumental') ||
+      lower.includes('interludio') ||
+      lower.includes('interlude') ||
+      /\b(inst|instr)\b/.test(lower)) &&
+    cueBuffers['solo']
+  ) {
+    return 'solo';
+  }
   return '';
 };
 
-// Pre-cargar todas las voces de voz guía desde /cues/*.mp3
-export const loadCueBuffers = async (audioCtx: BaseAudioContext): Promise<{ cueBuffers: CueBuffersMap; cueOffsets: CueOffsetsMap }> => {
+const getCueAssetBaseUrl = (): string => {
+  try {
+    const base = (import.meta as any)?.env?.BASE_URL;
+    if (typeof base === 'string' && base.length > 0) {
+      return base.endsWith('/') ? base : `${base}/`;
+    }
+  } catch {
+    // Fallback outside Vite runtime (e.g. Node tests)
+  }
+  return '/';
+};
+
+/**
+ * Decodificador PCM WAV nativo en JS puro (RIFF/WAVE 16-bit PCM o 32-bit Float).
+ * Garantiza 100% de decodificación determinista incluso si el códec nativo o `decodeAudioData`
+ * falla en WebView2 (Windows/Tauri), Safari o contextos suspendidos.
+ */
+export const parsePcmWavToAudioBuffer = (
+  audioCtx: BaseAudioContext,
+  arrayBuffer: ArrayBuffer
+): AudioBuffer | null => {
+  if (!arrayBuffer || arrayBuffer.byteLength < 44) return null;
+  const view = new DataView(arrayBuffer);
+
+  const readFourCC = (offset: number): string =>
+    String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3)
+    );
+
+  if (readFourCC(0) !== 'RIFF' || readFourCC(8) !== 'WAVE') return null;
+
+  let audioFormat = 0;
+  let numChannels = 0;
+  let sampleRate = 0;
+  let bitsPerSample = 0;
+  let dataOffset = -1;
+  let dataSize = 0;
+
+  let pos = 12;
+  while (pos + 8 <= view.byteLength) {
+    const chunkId = readFourCC(pos);
+    const chunkSize = view.getUint32(pos + 4, true);
+    const chunkDataStart = pos + 8;
+
+    if (chunkId === 'fmt ' && chunkSize >= 16 && chunkDataStart + 16 <= view.byteLength) {
+      audioFormat = view.getUint16(chunkDataStart, true);
+      numChannels = view.getUint16(chunkDataStart + 2, true);
+      sampleRate = view.getUint32(chunkDataStart + 4, true);
+      bitsPerSample = view.getUint16(chunkDataStart + 14, true);
+    } else if (chunkId === 'data') {
+      dataOffset = chunkDataStart;
+      dataSize = Math.min(chunkSize, view.byteLength - chunkDataStart);
+      break;
+    }
+
+    pos = chunkDataStart + chunkSize + (chunkSize % 2);
+  }
+
+  if (
+    dataOffset < 0 ||
+    dataSize <= 0 ||
+    numChannels < 1 ||
+    numChannels > 8 ||
+    sampleRate < 8000 ||
+    sampleRate > 192000
+  ) {
+    return null;
+  }
+
+  const bytesPerSample = bitsPerSample / 8;
+  if (
+    !(audioFormat === 1 && bitsPerSample === 16) &&
+    !(audioFormat === 3 && bitsPerSample === 32)
+  ) {
+    return null;
+  }
+
+  const frameSize = numChannels * bytesPerSample;
+  const numFrames = Math.floor(dataSize / frameSize);
+  if (numFrames <= 0) return null;
+
+  const buffer = audioCtx.createBuffer(numChannels, numFrames, sampleRate);
+  for (let ch = 0; ch < numChannels; ch++) {
+    const channelData = buffer.getChannelData(ch);
+    if (audioFormat === 1 && bitsPerSample === 16) {
+      for (let i = 0; i < numFrames; i++) {
+        const byteIdx = dataOffset + i * frameSize + ch * 2;
+        channelData[i] = view.getInt16(byteIdx, true) / 32768;
+      }
+    } else {
+      for (let i = 0; i < numFrames; i++) {
+        const byteIdx = dataOffset + i * frameSize + ch * 4;
+        channelData[i] = view.getFloat32(byteIdx, true);
+      }
+    }
+  }
+
+  return buffer;
+};
+
+const measureAudioBufferPeak = (audioBuffer: AudioBuffer): number => {
+  if (!audioBuffer || audioBuffer.length === 0 || audioBuffer.duration <= 0) return 0;
+  const data = audioBuffer.getChannelData(0);
+  let maxPeak = 0;
+  const step = data.length > 48000 ? 4 : 1;
+  for (let i = 0; i < data.length; i += step) {
+    const v = Math.abs(data[i]);
+    if (v > maxPeak) maxPeak = v;
+  }
+  return maxPeak;
+};
+
+const computeSafeCueOffset = (audioBuffer: AudioBuffer, isPreTrimmedWav: boolean): number => {
+  if (!audioBuffer || audioBuffer.duration <= 0.05) return 0;
+  if (isPreTrimmedWav) return 0;
+
+  const data = audioBuffer.getChannelData(0);
+  let startSample = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (Math.abs(data[i]) > 0.03) {
+      startSample = Math.max(0, i - Math.floor(audioBuffer.sampleRate * 0.005));
+      break;
+    }
+  }
+  const rawOffset = startSample / audioBuffer.sampleRate;
+  return Math.min(Math.max(0, rawOffset), Math.max(0, audioBuffer.duration - 0.12));
+};
+
+// Pre-cargar todas las voces de voz guía desde /cues/*.wav (PCM 16-bit prioritario) con fallback automático a /cues/*.mp3
+export const loadCueBuffers = async (
+  audioCtx: BaseAudioContext
+): Promise<LoadCueBuffersResult> => {
   const cueBuffers: CueBuffersMap = {};
   const cueOffsets: CueOffsetsMap = {};
+  const loadedNames: string[] = [];
+  const failedNames: string[] = [];
+  const baseUrl = getCueAssetBaseUrl();
+
+  const tryDecodeSingleFormat = async (
+    name: string,
+    ext: 'wav' | 'mp3'
+  ): Promise<{ buffer: AudioBuffer; isWav: boolean } | null> => {
+    const url = `${baseUrl}cues/${name}.${ext}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+
+    const contentType = (res.headers?.get?.('content-type') || '').toLowerCase();
+    // Evitar tragar respuestas HTML 200 OK procedentes de rewrites SPA
+    if (contentType.includes('text/html') || contentType.includes('application/json')) {
+      return null;
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    if (!arrayBuffer || arrayBuffer.byteLength < 44) return null;
+
+    // Verificar firma rápida HTML ('<!DO' o '<htm') por si el servidor omitió Content-Type
+    const headBytes = new Uint8Array(arrayBuffer, 0, Math.min(8, arrayBuffer.byteLength));
+    if (headBytes[0] === 0x3c /* '<' */) {
+      return null;
+    }
+
+    let decoded: AudioBuffer | null = null;
+    try {
+      decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    } catch {
+      decoded = null;
+    }
+
+    if ((!decoded || measureAudioBufferPeak(decoded) < 0.001) && ext === 'wav') {
+      decoded = parsePcmWavToAudioBuffer(audioCtx, arrayBuffer);
+    }
+
+    if (!decoded || decoded.duration <= 0.02 || measureAudioBufferPeak(decoded) < 0.001) {
+      return null;
+    }
+
+    return { buffer: decoded, isWav: ext === 'wav' };
+  };
 
   await Promise.all(
     CUE_NAMES.map(async (name) => {
       try {
-        const res = await fetch(`/cues/${name}.mp3`);
-        if (res.ok) {
-          const arrayBuffer = await res.arrayBuffer();
-          const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-          cueBuffers[name] = audioBuffer;
+        const result =
+          (await tryDecodeSingleFormat(name, 'wav')) ||
+          (await tryDecodeSingleFormat(name, 'mp3'));
 
-          // Auto-Trim: Detectar el inicio real de la voz para saltar el silencio (padding del MP3)
-          const data = audioBuffer.getChannelData(0);
-          let startSample = 0;
-          for (let i = 0; i < data.length; i++) {
-            if (Math.abs(data[i]) > 0.05) {
-              startSample = Math.max(0, i - Math.floor(audioBuffer.sampleRate * 0.005));
-              break;
-            }
-          }
-          cueOffsets[name] = startSample / audioBuffer.sampleRate;
+        if (result) {
+          cueBuffers[name] = result.buffer;
+          cueOffsets[name] = computeSafeCueOffset(result.buffer, result.isWav);
+          loadedNames.push(name);
+        } else {
+          failedNames.push(name);
+          console.warn(`[cueEngine] Voz guía no disponible o inválida para "${name}" (.wav/.mp3)`);
         }
       } catch (e) {
-        console.warn(`[cueEngine] No se pudo cargar voz guía /cues/${name}.mp3:`, e);
+        failedNames.push(name);
+        console.warn(`[cueEngine] Error cargando voz guía "${name}":`, e);
       }
     })
   );
 
-  return { cueBuffers, cueOffsets };
+  return { cueBuffers, cueOffsets, loadedNames, failedNames };
+};
+
+/**
+ * Determina si LiveConcert debe sintetizar el bus CUE en RAM para garantizar que la Voz Guía
+ * siempre esté presente y actualizada respecto a las secciones guardadas en Studio Prompter.
+ */
+export const shouldSynthesizeLiveCueInRam = (song: any): boolean => {
+  if (!song) return false;
+  const pd = extractPrompterData(song);
+  const bpm = Number(pd?.bpm);
+  if (!Number.isFinite(bpm) || bpm <= 0) return false;
+
+  const clickMuted = pd?.mixConfig?.click?.muted === true;
+  const cuesMuted = pd?.mixConfig?.cues?.muted === true;
+  if (clickMuted && cuesMuted) return false;
+
+  const meta = pd?.liveMixMeta as LiveMixMeta | undefined;
+  // 1. Mezclas previas a v3 (exportadas antes del fix de WAV PCM + phase-locked cue grid)
+  if (!meta || (meta.version ?? 0) < 3) return true;
+  // 2. Mezcla exportada sin voces guía válidas cuando el canal de voz guía no estaba muteado
+  if (!cuesMuted && typeof meta.cueVoiceCount === 'number' && meta.cueVoiceCount === 0) return true;
+  // 3. Las secciones de Voz Guía se editaron en Studio Prompter después del último Exportar Mix En Vivo
+  const sectionsUpdatedAt = pd?.sectionsUpdatedAt;
+  if (sectionsUpdatedAt && meta.exportedAt) {
+    const secTs = Date.parse(sectionsUpdatedAt);
+    const expTs = Date.parse(meta.exportedAt);
+    if (Number.isFinite(secTs) && Number.isFinite(expTs) && secTs > expTs + 1000) {
+      return true;
+    }
+  }
+  return false;
 };
 
 // Programador unificado de Guías de Voz: Coloca el conteo en el compás inmediatamente previo al inicio de la sección
@@ -308,9 +576,13 @@ export const scheduleSectionVoiceCues = (
   const approxBarDur = approxBeatDur * beatsPerMeasure;
   const songStartTime = bTimes[songStartBeatIdx] ?? preRollDuration;
 
-  // 2. Programar cues para todas las secciones válidas
+  // 2. Programar cues para todas las secciones válidas (aceptando strings numéricos heredados)
   const validSections = (sections || [])
-    .filter((s: any) => typeof s.time === 'number')
+    .map((s: any) => ({
+      ...s,
+      time: typeof s?.time === 'number' ? s.time : Number(s?.time),
+    }))
+    .filter((s: any) => Number.isFinite(s.time))
     .sort((a: any, b: any) => a.time - b.time);
 
   // Detectar si ya existe una sección explícitamente posicionada sobre Compás 1
@@ -335,14 +607,14 @@ export const scheduleSectionVoiceCues = (
     if (minDiff > 1.2 || nearestBeatIdx < 0) return;
 
     // Si es la sección de apertura colocada en t≈0 pero el Compás 1 real (firstBeatOffset) está
-    // dentro del primer compás y no hay otra sección en Compás 1, anclar su conteo al Compás 1 real
+    // desplazado y no hay otra sección en Compás 1, anclar su conteo al Compás 1 real
     // para que "Intro, 2, 3, 4" caiga exactamente en fase con los downbeats y sin duplicar conteos.
     if (
       typeof downbeatIndex === 'number' &&
       sIdx === 0 &&
       !hasExplicitBar1Section &&
       secTime <= songStartTime + 0.15 &&
-      songStartTime - secTime < approxBarDur
+      (songStartTime - secTime < approxBarDur || section.time <= 0.15)
     ) {
       nearestBeatIdx = songStartBeatIdx;
     }
@@ -429,6 +701,8 @@ export const buildShiftedBeatGrid = (
   const beatInterval = 60 / Math.max(20, Math.min(300, bpm));
   const maxGlobalTime = preRollDuration + (maxSongDuration > 0 ? maxSongDuration : 600);
   const baseFirstBeat = getBaseFirstBeatOffset(prompterData);
+  // Tolerancia de enganche al origen t=0 (absorbe drift de ±10..80ms de IA o Nudge negativo sin amputar el compás Pre-Roll)
+  const startSnapTolerance = Math.min(0.08, beatInterval * 0.18);
 
   const computeFirstActiveBeatIndex = (downbeatIdx: number): number => {
     if (preRollDuration <= 0.001) return 0;
@@ -441,11 +715,16 @@ export const buildShiftedBeatGrid = (
     const bTimes = prompterData.beatTimes.map(
       (t: number) => Number(t) + preRollDuration + manualGridOffset
     );
+    if (bTimes[0] < 0 && bTimes[0] >= -startSnapTolerance) {
+      bTimes[0] = 0;
+    }
     let unshiftedCount = 0;
     let firstBeat = bTimes[0];
-    while (firstBeat - beatInterval >= -0.005 && firstBeat > 0.015) {
+    while (firstBeat - beatInterval >= -startSnapTolerance && firstBeat > 0.015) {
       firstBeat -= beatInterval;
-      bTimes.unshift(Math.max(0, firstBeat));
+      const clampedBeat = Math.max(0, firstBeat);
+      if (clampedBeat >= bTimes[0] - 0.001) break;
+      bTimes.unshift(clampedBeat);
       unshiftedCount++;
     }
     let lastBeat = bTimes[bTimes.length - 1];
@@ -454,8 +733,16 @@ export const buildShiftedBeatGrid = (
       bTimes.push(lastBeat);
     }
 
-    const targetFirstBeatGlobal = preRollDuration + baseFirstBeat + manualGridOffset;
-    let downbeatIndex = bTimes.findIndex((t: number) => Math.abs(t - targetFirstBeatGlobal) < 0.05);
+    const targetFirstBeatGlobal = Math.max(0, preRollDuration + baseFirstBeat + manualGridOffset);
+    let downbeatIndex = -1;
+    let bestDownbeatDiff = Math.min(0.15, beatInterval * 0.45);
+    for (let i = 0; i < bTimes.length; i++) {
+      const diff = Math.abs(bTimes[i] - targetFirstBeatGlobal);
+      if (diff < bestDownbeatDiff) {
+        bestDownbeatDiff = diff;
+        downbeatIndex = i;
+      }
+    }
     if (downbeatIndex === -1) {
       downbeatIndex = unshiftedCount;
     }
@@ -472,9 +759,11 @@ export const buildShiftedBeatGrid = (
   let unshiftedCount = 0;
 
   let prevBeat = anchorGlobalTime;
-  while (prevBeat - beatInterval >= -0.005 && prevBeat > 0.015) {
+  while (prevBeat - beatInterval >= -startSnapTolerance && prevBeat > 0.015) {
     prevBeat -= beatInterval;
-    bTimes.unshift(Math.max(0, prevBeat));
+    const clampedBeat = Math.max(0, prevBeat);
+    if (clampedBeat >= bTimes[0] - 0.001) break;
+    bTimes.unshift(clampedBeat);
     unshiftedCount++;
   }
 
@@ -499,14 +788,42 @@ export const synthesizeLiveCueBuffer = async (
   cueBuffers: Record<string, AudioBuffer>,
   cueOffsets: Record<string, number>,
   volume: number = 0.9,
-  preRollBars?: PreRollBars
+  preRollOrOptions?: PreRollBars | SynthesizeLiveCueOptions
 ): Promise<AudioBuffer> => {
+  const opts: SynthesizeLiveCueOptions =
+    typeof preRollOrOptions === 'object' && preRollOrOptions !== null
+      ? preRollOrOptions
+      : preRollOrOptions !== undefined
+      ? { preRollBars: preRollOrOptions }
+      : {};
+
   const beatsPerMeasure = getBeatsPerMeasure(prompterData?.timeSignature);
-  const effectiveBars: PreRollBars = preRollBars ?? resolveEffectivePreRollBars(prompterData);
+  const effectiveBars: PreRollBars = opts.preRollBars ?? resolveEffectivePreRollBars(prompterData);
   const preRollDuration =
-    preRollBars !== undefined
+    typeof opts.exactPreRollSec === 'number' && Number.isFinite(opts.exactPreRollSec) && opts.exactPreRollSec >= 0
+      ? opts.exactPreRollSec
+      : opts.preRollBars !== undefined
       ? computePhaseLockedPreRollSeconds(prompterData, effectiveBars, 0)
       : resolveEffectivePreRoll(prompterData);
+
+  const clickMuted = Boolean(opts.clickMuted);
+  const cueMuted = Boolean(opts.cueMuted);
+  const clickVol =
+    typeof opts.clickVolume === 'number' && Number.isFinite(opts.clickVolume)
+      ? Math.max(0, Math.min(1.5, opts.clickVolume))
+      : volume;
+  const cueVol =
+    typeof opts.cueVolume === 'number' && Number.isFinite(opts.cueVolume)
+      ? Math.max(0, Math.min(1.5, opts.cueVolume))
+      : volume;
+  const clickPan =
+    typeof opts.clickPan === 'number' && Number.isFinite(opts.clickPan)
+      ? Math.max(-1, Math.min(1, opts.clickPan))
+      : 0;
+  const cuePan =
+    typeof opts.cuePan === 'number' && Number.isFinite(opts.cuePan)
+      ? Math.max(-1, Math.min(1, opts.cuePan))
+      : 0;
 
   const sampleRate = audioCtx.sampleRate;
   const lengthSeconds = Math.max(totalDuration, preRollDuration + LIVE_EXPORT_TAIL_SECONDS);
@@ -514,8 +831,8 @@ export const synthesizeLiveCueBuffer = async (
 
   const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
 
-  const clickHighBuffer = generateClickBuffer(offlineCtx, 1000);
-  const clickLowBuffer = generateClickBuffer(offlineCtx, 600);
+  const clickHighBuffer = generateClickBuffer(offlineCtx, 1200);
+  const clickLowBuffer = generateClickBuffer(offlineCtx, 800);
 
   const { shiftedBeatTimes, downbeatIndex, firstActiveBeatIndex } = buildShiftedBeatGrid(
     prompterData,
@@ -524,51 +841,62 @@ export const synthesizeLiveCueBuffer = async (
     0
   );
 
-  for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
-    const time = shiftedBeatTimes[beatCount];
-    if (time >= 0 && time < lengthSeconds) {
-      const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
-      const normalizedMeasureBeat = ((measureBeat % beatsPerMeasure) + beatsPerMeasure) % beatsPerMeasure;
-      const isHigh = normalizedMeasureBeat === 0;
-      const buffer = isHigh ? clickHighBuffer : clickLowBuffer;
+  // 1. Programar Clics de Metrónomo
+  if (!clickMuted && clickVol > 0) {
+    for (let beatCount = firstActiveBeatIndex; beatCount < shiftedBeatTimes.length; beatCount++) {
+      const time = shiftedBeatTimes[beatCount];
+      if (time >= 0 && time < lengthSeconds) {
+        const measureBeat = (beatCount - downbeatIndex) % beatsPerMeasure;
+        const normalizedMeasureBeat = ((measureBeat % beatsPerMeasure) + beatsPerMeasure) % beatsPerMeasure;
+        const isHigh = normalizedMeasureBeat === 0;
+        const buffer = isHigh ? clickHighBuffer : clickLowBuffer;
 
-      const source = offlineCtx.createBufferSource();
-      source.buffer = buffer;
-      const gain = offlineCtx.createGain();
-      gain.gain.value = volume;
-      source.connect(gain);
-      gain.connect(offlineCtx.destination);
-      source.start(time);
+        const source = offlineCtx.createBufferSource();
+        source.buffer = buffer;
+        const gain = offlineCtx.createGain();
+        gain.gain.value = clickVol;
+        const panner = offlineCtx.createStereoPanner();
+        panner.pan.value = clickPan;
+        source.connect(gain);
+        gain.connect(panner);
+        panner.connect(offlineCtx.destination);
+        source.start(time);
+      }
     }
   }
 
   // 2. Programar Guías de Voz (Secciones y Conteo)
-  const scheduleCue = (bufName: string, bIdx: number) => {
-    const buf = cueBuffers[bufName];
-    const cueOffset = cueOffsets[bufName] || 0;
-    if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length) {
-      const absoluteTime = shiftedBeatTimes[bIdx];
-      if (absoluteTime >= 0 && absoluteTime < lengthSeconds) {
-        const source = offlineCtx.createBufferSource();
-        source.buffer = buf;
-        const gain = offlineCtx.createGain();
-        gain.gain.value = volume;
-        source.connect(gain);
-        gain.connect(offlineCtx.destination);
-        source.start(absoluteTime, cueOffset);
+  if (!cueMuted && cueVol > 0) {
+    const scheduleCue = (bufName: string, bIdx: number) => {
+      const buf = cueBuffers[bufName];
+      const cueOffset = cueOffsets[bufName] || 0;
+      if (buf && bIdx >= firstActiveBeatIndex && bIdx < shiftedBeatTimes.length) {
+        const absoluteTime = shiftedBeatTimes[bIdx];
+        if (absoluteTime >= 0 && absoluteTime < lengthSeconds) {
+          const source = offlineCtx.createBufferSource();
+          source.buffer = buf;
+          const gain = offlineCtx.createGain();
+          gain.gain.value = cueVol;
+          const panner = offlineCtx.createStereoPanner();
+          panner.pan.value = cuePan;
+          source.connect(gain);
+          gain.connect(panner);
+          panner.connect(offlineCtx.destination);
+          source.start(absoluteTime, cueOffset);
+        }
       }
-    }
-  };
+    };
 
-  scheduleSectionVoiceCues(
-    prompterData?.sections,
-    shiftedBeatTimes,
-    beatsPerMeasure,
-    preRollDuration,
-    cueBuffers,
-    scheduleCue,
-    downbeatIndex
-  );
+    scheduleSectionVoiceCues(
+      prompterData?.sections,
+      shiftedBeatTimes,
+      beatsPerMeasure,
+      preRollDuration,
+      cueBuffers,
+      scheduleCue,
+      downbeatIndex
+    );
+  }
 
   return await offlineCtx.startRendering();
 };

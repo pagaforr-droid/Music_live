@@ -47,6 +47,7 @@ export default function LivePrompter() {
     getCompositePeaks,
     previewVoiceCue,
     syncPrompterData,
+    cueBuffersStatus,
     resetEngine,
   } = useAudioEngine([]);
 
@@ -65,6 +66,8 @@ export default function LivePrompter() {
     lyric_settings?: any;
     mixConfig?: any;
     lastAiDetection?: string;
+    sectionsUpdatedAt?: string;
+    liveMixMeta?: any;
   }>({ chords: [], sections: [], lyrics: [] });
   
   const [isDetectingChords, setIsDetectingChords] = useState(false);
@@ -180,6 +183,7 @@ export default function LivePrompter() {
       // Preservar siempre las letras de Lyric Studio si existen en remoto
       lyrics: latestRemote.lyrics ?? dataToPersist.lyrics ?? [],
       lyric_settings: latestRemote.lyric_settings ?? dataToPersist.lyric_settings,
+      sectionsUpdatedAt: new Date().toISOString(),
     };
     const { error } = await supabase
       .from('songs')
@@ -1067,6 +1071,17 @@ export default function LivePrompter() {
     });
   }, []);
 
+  // Refs siempre frescos para atajos de teclado (evita stale closures de play/pause/save)
+  const playFnRef = useRef(play);
+  const pauseFnRef = useRef(pause);
+  const isPlayingStateRef = useRef(isPlaying);
+  const savePrompterDataRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    playFnRef.current = play;
+    pauseFnRef.current = pause;
+    isPlayingStateRef.current = isPlaying;
+  }, [play, pause, isPlaying]);
+
   // Atajos de teclado en vivo (Espacio = Play/Pause, I/V/P/C/B/S/F = Insertar Sección CapCut al Playhead, Ctrl+S = Guardar)
   useEffect(() => {
     if (!selectedSongId || isEditingPrompter) return;
@@ -1078,13 +1093,13 @@ export default function LivePrompter() {
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        savePrompterData();
+        savePrompterDataRef.current();
         return;
       }
 
       if (e.code === 'Space') {
         e.preventDefault();
-        isPlaying ? pause() : play();
+        isPlayingStateRef.current ? pauseFnRef.current() : playFnRef.current();
         return;
       }
 
@@ -1196,6 +1211,7 @@ export default function LivePrompter() {
       alert('Error guardando: ' + e.message);
     }
   };
+  savePrompterDataRef.current = savePrompterData;
 
   const handleExportLiveMix = async () => {
     if (!selectedSongId) return;
@@ -1205,7 +1221,12 @@ export default function LivePrompter() {
         : preRollBars === 1
         ? `1 Compás de Conteo ("Intro, 2, 3, 4" en fase · ~${preRollDuration.toFixed(1)}s)`
         : `2 Compases (1C Tempo + 1C Voz Guía en fase · ~${preRollDuration.toFixed(1)}s)`;
-    if (confirm(`¿Exportar el Mix En Vivo con la configuración actual?\n\n• Pre-Roll de Entrada: ${preRollSummary}\n• Salida Público (FOH): Stems de instrumentos con balance y paneo estéreo real (L / C / R)\n• Salida Músicos (CUE): Metrónomo y Voz Guía en fase exacta con el Compás 1\n• Live Concert usará exactamente este Pre-Roll guardado (paridad 1:1)`)) {
+    const cueStemCheck = stems.find((s) => s.id === 'synthetic-cues');
+    const cueMutedWarning =
+      cueStemCheck && (cueStemCheck.muted || cueStemCheck.volume <= 0.01)
+        ? '\n\n⚠️ AVISO: El canal "Voz Guía IA" está silenciado o en 0%. Se exportará SIN voz guía en el canal CUE.'
+        : '';
+    if (confirm(`¿Exportar el Mix En Vivo con la configuración actual?\n\n• Pre-Roll de Entrada: ${preRollSummary}\n• Salida Público (FOH): Stems de instrumentos con balance y paneo estéreo real (L / C / R)\n• Salida Músicos (CUE): Metrónomo y Voz Guía en fase exacta con el Compás 1\n• Live Concert usará exactamente este Pre-Roll guardado (paridad 1:1)${cueMutedWarning}`)) {
       setIsExporting(true);
       try {
         const clickStem = stems.find(s => s.id === 'synthetic-click');
@@ -1406,6 +1427,16 @@ export default function LivePrompter() {
               {formatTime(currentTime)}
             </span>
           </div>
+
+          {audioLoaded && cueBuffersStatus.loaded < cueBuffersStatus.total && (
+            <div
+              className="flex items-center gap-1 bg-amber-50 border border-amber-300 text-amber-800 px-2.5 py-1 rounded-full text-[10px] font-bold shadow-2xs"
+              title={`Voces Guía cargadas: ${cueBuffersStatus.loaded}/${cueBuffersStatus.total}. Faltantes: ${cueBuffersStatus.failed.join(', ') || 'ninguna'}`}
+            >
+              <AlertCircle size={11} className="text-amber-600 shrink-0" />
+              <span>Voz Guía {cueBuffersStatus.loaded}/{cueBuffersStatus.total}</span>
+            </div>
+          )}
         </div>
 
         {/* Right: AI Chords, Transposer, Tempo & Nudge */}

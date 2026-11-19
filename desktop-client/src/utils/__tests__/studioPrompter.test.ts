@@ -1,8 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
+  CUE_NAMES,
   buildShiftedBeatGrid,
   scheduleSectionVoiceCues,
   resolveCueBufferName,
+  parsePcmWavToAudioBuffer,
+  loadCueBuffers,
 } from '../cueEngine';
 import {
   detectChordsAndBeatsLocalDSP,
@@ -222,6 +227,117 @@ describe('Studio Prompter Engine & Cue Synchronization (Pasada 1 & Pasada 2)', (
     // Verificar monotonicidad temporal estricta en todo el grid
     for (let i = 1; i < shiftedBeatTimes.length; i++) {
       expect(shiftedBeatTimes[i]).toBeGreaterThan(shiftedBeatTimes[i - 1]);
+    }
+  });
+
+  it('10. resolveCueBufferName resolves accented, hyphenated, and bilingual aliases without breaking precedence', () => {
+    expect(resolveCueBufferName('PRE-CHORUS', mockCueBuffers)).toBe('pre-coro');
+    expect(resolveCueBufferName('Pre Coro 2', mockCueBuffers)).toBe('pre-coro');
+    expect(resolveCueBufferName('Estribillo', mockCueBuffers)).toBe('coro');
+    expect(resolveCueBufferName('Estrofa 1', mockCueBuffers)).toBe('verso');
+    expect(resolveCueBufferName('Instrumental', mockCueBuffers)).toBe('solo');
+    expect(resolveCueBufferName('Interludio', mockCueBuffers)).toBe('solo');
+    expect(resolveCueBufferName('Coda', mockCueBuffers)).toBe('final');
+    expect(resolveCueBufferName('Introducción', mockCueBuffers)).toBe('intro');
+    // Precedence invariants
+    expect(resolveCueBufferName('Outro Instrumental', mockCueBuffers)).toBe('final');
+    expect(resolveCueBufferName('CHORUS FINAL', mockCueBuffers)).toBe('coro');
+  });
+
+  const createMockAudioContext = (failDecodeAudioData = false) => {
+    return {
+      sampleRate: 44100,
+      createBuffer: (channels: number, length: number, sampleRate: number) => {
+        const channelData = Array.from({ length: channels }, () => new Float32Array(length));
+        return {
+          numberOfChannels: channels,
+          length,
+          sampleRate,
+          duration: length / sampleRate,
+          getChannelData: (ch: number) => channelData[ch],
+        } as unknown as AudioBuffer;
+      },
+      decodeAudioData: async () => {
+        if (failDecodeAudioData) {
+          throw new Error('Simulated codec failure');
+        }
+        throw new Error('Unexpected native decode in Node mock');
+      },
+    } as unknown as BaseAudioContext;
+  };
+
+  it('11. parsePcmWavToAudioBuffer decodes all 11 real public/cues/*.wav assets with valid duration and non-silent peak', () => {
+    const cuesDir = path.resolve(__dirname, '../../../public/cues');
+    const mockCtx = createMockAudioContext(true);
+
+    for (const name of CUE_NAMES) {
+      const wavPath = path.join(cuesDir, `${name}.wav`);
+      expect(fs.existsSync(wavPath), `Missing WAV cue asset: ${wavPath}`).toBe(true);
+      const fileBuf = fs.readFileSync(wavPath);
+      const arrayBuf = fileBuf.buffer.slice(fileBuf.byteOffset, fileBuf.byteOffset + fileBuf.byteLength);
+
+      const decoded = parsePcmWavToAudioBuffer(mockCtx, arrayBuf);
+      expect(decoded, `Failed to parse WAV for "${name}"`).not.toBeNull();
+      expect(decoded!.sampleRate).toBe(44100);
+      expect(decoded!.duration).toBeGreaterThan(0.25);
+
+      const samples = decoded!.getChannelData(0);
+      let peak = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const abs = Math.abs(samples[i]);
+        if (abs > peak) peak = abs;
+      }
+      expect(peak).toBeGreaterThan(0.5);
+    }
+  });
+
+  it('12. loadCueBuffers rejects SPA HTML 200 OK rewrites and recovers all 11 cues via pure-JS PCM WAV parser when decodeAudioData fails', async () => {
+    const cuesDir = path.resolve(__dirname, '../../../public/cues');
+    const mockCtx = createMockAudioContext(true);
+
+    // Case A: All endpoints return SPA HTML 200 OK -> must reject all (0 loaded, 11 failed)
+    const htmlPayload = new TextEncoder().encode('<!DOCTYPE html><html><body>SPA</body></html>').buffer;
+    const htmlFetch = vi.fn(async () => ({
+      ok: true,
+      headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+      arrayBuffer: async () => htmlPayload.slice(0),
+    }));
+    vi.stubGlobal('fetch', htmlFetch);
+    try {
+      const htmlRes = await loadCueBuffers(mockCtx);
+      expect(htmlRes.loadedNames.length).toBe(0);
+      expect(htmlRes.failedNames.length).toBe(CUE_NAMES.length);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Case B: .wav serves real PCM WAV bytes while decodeAudioData throws -> pure-JS WAV parser rescues all 11
+    const wavFetch = vi.fn(async (input: string | URL) => {
+      const urlStr = String(input);
+      const match = urlStr.match(/cues\/([^/]+)\.wav$/);
+      if (!match) {
+        return { ok: false, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      const wavPath = path.join(cuesDir, `${match[1]}.wav`);
+      const fileBuf = fs.readFileSync(wavPath);
+      const ab = fileBuf.buffer.slice(fileBuf.byteOffset, fileBuf.byteOffset + fileBuf.byteLength);
+      return {
+        ok: true,
+        headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'audio/wav' : null) },
+        arrayBuffer: async () => ab,
+      };
+    });
+    vi.stubGlobal('fetch', wavFetch);
+    try {
+      const okRes = await loadCueBuffers(mockCtx);
+      expect(okRes.loadedNames.length).toBe(CUE_NAMES.length);
+      expect(okRes.failedNames.length).toBe(0);
+      for (const name of CUE_NAMES) {
+        expect(okRes.cueBuffers[name]).toBeDefined();
+        expect(okRes.cueOffsets[name]).toBe(0); // Pre-trimmed WAVs start cleanly at 0
+      }
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

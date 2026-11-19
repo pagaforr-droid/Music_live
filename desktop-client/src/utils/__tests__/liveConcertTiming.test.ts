@@ -8,6 +8,7 @@ import {
   resolveEffectivePlaybackBounds,
   resolveLyricsTimeMapping,
   scheduleSectionVoiceCues,
+  shouldSynthesizeLiveCueInRam,
 } from '../cueEngine';
 
 describe('Live Concert & Studio Prompter — Phase-Locked Pre-Roll, Cue Alignment & Sync Contract', () => {
@@ -263,5 +264,167 @@ describe('Live Concert & Studio Prompter — Phase-Locked Pre-Roll, Cue Alignmen
       lyricReferencePreRollSec: 4.0,
       prompterLyricsOffsetSec: -4.0,
     });
+  });
+
+  it('8. buildShiftedBeatGrid + scheduleSectionVoiceCues preserves full 1C Pre-Roll despite beatTimes[0] 10ms jitter or negative Nudge (-20ms)', () => {
+    // Case A: beatTimes[0] has 10ms early jitter vs firstBeatOffset (0.49 vs 0.50)
+    const pdJitter = {
+      bpm: 120,
+      timeSignature: '4/4',
+      firstBeatOffset: 0.5,
+      beatTimes: Array.from({ length: 32 }, (_, i) => Number((0.49 + i * 0.5).toFixed(4))),
+    };
+    const pre1 = computePhaseLockedPreRollSeconds(pdJitter, 1); // 1.50s
+    const gridJitter = buildShiftedBeatGrid(pdJitter, pre1, 16, 0);
+    expect(gridJitter.downbeatIndex).toBe(4);
+    expect(gridJitter.firstActiveBeatIndex).toBe(0);
+    expect(gridJitter.shiftedBeatTimes[0]).toBeGreaterThanOrEqual(0);
+
+    const cuesJitter: Array<{ cue: string; beatIdx: number }> = [];
+    scheduleSectionVoiceCues(
+      [{ time: 0.5, name: 'INTRO', cueEnabled: true }],
+      gridJitter.shiftedBeatTimes,
+      4,
+      pre1,
+      mockCueBuffers,
+      (bufName, beatIdx) => cuesJitter.push({ cue: bufName, beatIdx }),
+      gridJitter.downbeatIndex
+    );
+    expect(cuesJitter).toEqual([
+      { cue: 'intro', beatIdx: 0 },
+      { cue: '2', beatIdx: 1 },
+      { cue: '3', beatIdx: 2 },
+      { cue: '4', beatIdx: 3 },
+    ]);
+
+    // Case B: Negative Nudge (-20ms) on 1C Pre-Roll must NOT wipe out the 4-beat count-in
+    const pdNudge = {
+      bpm: 120,
+      timeSignature: '4/4',
+      firstBeatOffset: 0.5,
+      beatTimes: Array.from({ length: 32 }, (_, i) => Number((0.5 + i * 0.5).toFixed(4))),
+    };
+    const gridNudge = buildShiftedBeatGrid(pdNudge, pre1, 16, -0.02);
+    expect(gridNudge.downbeatIndex).toBe(4);
+    expect(gridNudge.firstActiveBeatIndex).toBe(0);
+    expect(gridNudge.shiftedBeatTimes[0]).toBe(0);
+
+    // Case C: 0C with negative Nudge (-20ms) clamps Beat 0 to 0 so opening INTRO is not dropped
+    const pdZero = {
+      bpm: 120,
+      timeSignature: '4/4',
+      firstBeatOffset: 0,
+      beatTimes: Array.from({ length: 16 }, (_, i) => i * 0.5),
+    };
+    const gridZero = buildShiftedBeatGrid(pdZero, 0, 8, -0.02);
+    expect(gridZero.downbeatIndex).toBe(0);
+    expect(gridZero.shiftedBeatTimes[0]).toBe(0);
+    const cuesZero: Array<{ cue: string; beatIdx: number }> = [];
+    scheduleSectionVoiceCues(
+      [{ time: 0, name: 'INTRO', cueEnabled: true }],
+      gridZero.shiftedBeatTimes,
+      4,
+      0,
+      mockCueBuffers,
+      (bufName, beatIdx) => cuesZero.push({ cue: bufName, beatIdx }),
+      gridZero.downbeatIndex
+    );
+    expect(cuesZero).toEqual([{ cue: 'intro', beatIdx: 0 }]);
+  });
+
+  it('9. scheduleSectionVoiceCues anchors opening INTRO cleanly when firstBeatOffset > barDur without duplicates and accepts numeric string times', () => {
+    const pd = { bpm: 120, timeSignature: '4/4', firstBeatOffset: 2.5 };
+    const pre1 = computePhaseLockedPreRollSeconds(pd, 1); // 1.5s -> Bar 1 at 4.0s (idx 8)
+    const { shiftedBeatTimes, downbeatIndex } = buildShiftedBeatGrid(pd, pre1, 20, 0);
+    expect(downbeatIndex).toBe(8);
+
+    const scheduled: Array<{ cue: string; beatIdx: number }> = [];
+    scheduleSectionVoiceCues(
+      [
+        { time: '0' as any, name: 'INTRO', cueEnabled: true },
+        { time: '6.5' as any, name: 'VERSO 1', cueEnabled: true },
+      ],
+      shiftedBeatTimes,
+      4,
+      pre1,
+      mockCueBuffers,
+      (bufName, beatIdx) => scheduled.push({ cue: bufName, beatIdx }),
+      downbeatIndex
+    );
+
+    expect(scheduled.filter((c) => c.cue === 'intro').length).toBe(1);
+    expect(scheduled.slice(0, 4)).toEqual([
+      { cue: 'intro', beatIdx: 4 },
+      { cue: '2', beatIdx: 5 },
+      { cue: '3', beatIdx: 6 },
+      { cue: '4', beatIdx: 7 },
+    ]);
+    // VERSO 1 at 6.5s -> global 1.5 + 6.5 = 8.0s (beatIdx 16) -> cue bar at 12..15
+    expect(scheduled.slice(4, 8)).toEqual([
+      { cue: 'verso', beatIdx: 12 },
+      { cue: '2', beatIdx: 13 },
+      { cue: '3', beatIdx: 14 },
+      { cue: '4', beatIdx: 15 },
+    ]);
+  });
+
+  it('10. shouldSynthesizeLiveCueInRam detects legacy exports, 0-voice exports, and post-export section edits', () => {
+    // Legacy song without liveMixMeta -> true
+    expect(shouldSynthesizeLiveCueInRam({ prompter_data: { bpm: 120 } })).toBe(true);
+
+    // Older v2 mix -> true
+    expect(
+      shouldSynthesizeLiveCueInRam({
+        prompter_data: {
+          bpm: 120,
+          liveMixMeta: { version: 2, exportedAt: '2026-11-18T10:00:00Z' },
+        },
+      })
+    ).toBe(true);
+
+    // v3 mix with cueVoiceCount === 0 (unmuted) -> true
+    expect(
+      shouldSynthesizeLiveCueInRam({
+        prompter_data: {
+          bpm: 120,
+          liveMixMeta: { version: 3, cueVoiceCount: 0, exportedAt: '2026-11-18T10:00:00Z' },
+        },
+      })
+    ).toBe(true);
+
+    // v3 mix where sections were edited AFTER exportedAt -> true
+    expect(
+      shouldSynthesizeLiveCueInRam({
+        prompter_data: {
+          bpm: 120,
+          sectionsUpdatedAt: '2026-11-18T10:05:00Z',
+          liveMixMeta: { version: 3, cueVoiceCount: 16, exportedAt: '2026-11-18T10:00:00Z' },
+        },
+      })
+    ).toBe(true);
+
+    // Fresh v3 mix with voices & up-to-date sections -> false (plays exported cue_mix_url directly)
+    expect(
+      shouldSynthesizeLiveCueInRam({
+        prompter_data: {
+          bpm: 120,
+          sectionsUpdatedAt: '2026-11-18T10:00:00Z',
+          liveMixMeta: { version: 3, cueVoiceCount: 16, exportedAt: '2026-11-18T10:00:00Z' },
+        },
+      })
+    ).toBe(false);
+
+    // Both click and cues muted -> false
+    expect(
+      shouldSynthesizeLiveCueInRam({
+        prompter_data: {
+          bpm: 120,
+          mixConfig: { click: { muted: true }, cues: { muted: true } },
+        },
+      })
+    ).toBe(false);
+
+    // Invalid BPM -> false
+    expect(shouldSynthesizeLiveCueInRam({ prompter_data: { bpm: 0 } })).toBe(false);
   });
 });
