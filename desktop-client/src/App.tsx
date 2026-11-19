@@ -19,10 +19,14 @@ const BandContentStudio = lazy(() => import('./pages/BandContentStudio'));
 const DesignTools = lazy(() => import('./pages/DesignTools'));
 const LyricStudio = lazy(() => import('./pages/LyricStudio'));
 const StudioMasteringModule = lazy(() =>
-  import('./modules/mastering-pro').then((m) => ({ default: m.StudioMasteringModule }))
+  import('./modules/mastering-pro/components/MasteringRack').then((m) => ({
+    default: m.StudioMasteringModule,
+  }))
 );
 const SampleLabModule = lazy(() =>
-  import('./modules/mastering-pro').then((m) => ({ default: m.SampleLabModule }))
+  import('./modules/mastering-pro/sampler/components/SampleLabPanel').then((m) => ({
+    default: m.SampleLabModule,
+  }))
 );
 
 const RouteSuspenseFallback = () => (
