@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type, Headphones, Sliders, Grid, Activity } from 'lucide-react';
+import { MonitorPlay, CloudUpload, LogOut, User, Music, ListMusic, ChevronLeft, ChevronRight, Wand2, Type, Headphones, Sliders, Grid, Activity, Disc3, Globe } from 'lucide-react';
 import { TanduMusicosLogo } from './TanduMusicosLogo';
 
 export default function Layout() {
@@ -262,6 +262,53 @@ export default function Layout() {
                 </>
               )}
             </NavLink>
+          </div>
+
+          {/* Group 2B: Web Oficial & Contenido de la Banda */}
+          <div className="space-y-1.5 pt-2 border-t border-white/[0.05]">
+            {isSidebarOpen && (
+              <div className="px-3 pb-1 text-[9.5px] font-medium uppercase tracking-[0.2em] text-[#ff7324]">
+                La Nación del León
+              </div>
+            )}
+            <NavLink to="/nacion-cms" className={({ isActive }) => navLinkClass(isActive)} title="Gestor Web: Álbumes, Videos y Fotos">
+              {({ isActive }) => (
+                <>
+                  <Disc3
+                    size={19}
+                    className={`shrink-0 transition-colors ${
+                      isActive ? 'text-[#ff5412]' : 'text-[#ff7324]/80 group-hover:text-[#ff5412]'
+                    }`}
+                  />
+                  {isSidebarOpen && (
+                    <span className="text-[13px] tracking-tight whitespace-nowrap">
+                      Contenido Web CMS
+                    </span>
+                  )}
+                  {isActive && (
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#ff5412] rounded-l-full" />
+                  )}
+                </>
+              )}
+            </NavLink>
+
+            <a
+              href="/lanacion_delleon_web"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`group flex items-center ${
+                isSidebarOpen ? 'space-x-3 px-3.5' : 'justify-center px-0'
+              } py-2.5 rounded-xl transition-all duration-200 text-[#8e96a4] hover:bg-[#1a120d] hover:text-white border border-dashed border-[#ff5412]/30 hover:border-[#ff5412]`}
+              title="Abrir Web Pública (/lanacion_delleon_web)"
+            >
+              <Globe size={18} className="text-[#ff7324] group-hover:text-[#ff5412] shrink-0 transition-colors" />
+              {isSidebarOpen && (
+                <div className="flex flex-col leading-tight overflow-hidden">
+                  <span className="font-medium text-xs text-zinc-200 whitespace-nowrap">Web Pública ↗</span>
+                  <span className="text-[9px] font-mono text-[#ff7324] tracking-wider truncate">/lanacion_delleon_web</span>
+                </div>
+              )}
+            </a>
           </div>
 
           {/* Group 3: Monitoreo Auxiliar */}

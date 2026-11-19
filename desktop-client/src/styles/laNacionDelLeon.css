@@ -1,0 +1,340 @@
+/* ==========================================================================
+   LA NACIÓN DEL LEÓN · Editorial Rock System
+   Typography inspired by jeremycamp.com (Anton + Atkinson Hyperlegible Next)
+   Palette: Obsidian Black (#060505 / #0d0b0a) & Molten Ember Orange (#ff5412)
+   Motion: Emil Kowalski spring / cubic-bezier discipline (zero linear UI)
+   ========================================================================== */
+
+.lion-root {
+  --lion-void: #060505;
+  --lion-obsidian: #0d0b0a;
+  --lion-charcoal: #15110e;
+  --lion-surface: #1b1511;
+  --lion-ember: #ff5412;
+  --lion-flame: #ff7324;
+  --lion-amber: #ffaa3b;
+  --lion-bone: #f4efe6;
+  --lion-ash: #b3a89a;
+  --lion-smoke: #72675d;
+  --lion-hair: rgba(244, 239, 230, 0.14);
+  --lion-hair-ember: rgba(255, 84, 18, 0.38);
+
+  --lion-f-display: 'Anton', Impact, 'Arial Narrow Bold', sans-serif;
+  --lion-f-label: 'Atkinson Hyperlegible Next', -apple-system, BlinkMacSystemFont, sans-serif;
+  --lion-f-body: 'Atkinson Hyperlegible Next', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --lion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --lion-spring: cubic-bezier(0.16, 1, 0.3, 1);
+
+  background-color: var(--lion-void);
+  color: var(--lion-bone);
+  font-family: var(--lion-f-body);
+  font-size: 17px;
+  line-height: 1.62;
+  letter-spacing: 0;
+  scroll-behavior: smooth;
+  min-height: 100vh;
+}
+
+.lion-root ::selection {
+  background-color: var(--lion-ember);
+  color: var(--lion-void);
+}
+
+/* Display typography — jeremycamp.com Anton spec */
+.lion-display {
+  font-family: var(--lion-f-display);
+  font-weight: 400;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.012em;
+  line-height: 0.94;
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+.lion-display-xl {
+  font-family: var(--lion-f-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 0.9;
+  font-size: clamp(3.6rem, 9.2vw, 9.25rem);
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+.lion-display-l {
+  font-family: var(--lion-f-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.012em;
+  line-height: 0.96;
+  font-size: clamp(2.4rem, 4.8vw, 4.75rem);
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+/* Uppercase tracked labels, nav & buttons — jeremycamp.com Atkinson spec */
+.lion-label {
+  font-family: var(--lion-f-label);
+  font-weight: 700;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.085em;
+  line-height: 1.3;
+}
+
+.lion-body {
+  font-family: var(--lion-f-body);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--lion-ash);
+}
+
+.lion-lead {
+  font-family: var(--lion-f-body);
+  font-size: clamp(1.0625rem, 1.35vw, 1.25rem);
+  line-height: 1.55;
+  color: var(--lion-ash);
+}
+
+/* Subtle analog 35mm film grain overlay */
+.lion-grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.88' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  opacity: 0.075;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+/* Masthead animated underline (jeremycamp.com .masthead__nav a) */
+.lion-nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 0;
+  color: rgba(244, 239, 230, 0.86);
+  transition: color 220ms var(--lion-ease);
+}
+
+.lion-nav-link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 2px;
+  background-color: var(--lion-ember);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 240ms var(--lion-ease);
+}
+
+.lion-nav-link:hover,
+.lion-nav-link[data-active='true'] {
+  color: var(--lion-bone);
+}
+
+.lion-nav-link:hover::after,
+.lion-nav-link[data-active='true']::after {
+  transform: scaleX(1);
+}
+
+/* Solid Ember CTA Button (sharp architectural geometry, zero generic rounded pill) */
+.lion-btn-ember {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 12px 26px;
+  background-color: var(--lion-ember);
+  color: var(--lion-void);
+  border: 0;
+  cursor: pointer;
+  transition:
+    background-color 220ms var(--lion-ease),
+    transform 180ms var(--lion-spring);
+}
+
+.lion-btn-ember:hover:not(:disabled) {
+  background-color: var(--lion-amber);
+}
+
+.lion-btn-ember:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.lion-btn-ember:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Wireframe Hairline Button */
+.lion-btn-wire {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 12px 24px;
+  background-color: transparent;
+  color: var(--lion-bone);
+  border: 1px solid rgba(244, 239, 230, 0.28);
+  cursor: pointer;
+  transition:
+    border-color 220ms var(--lion-ease),
+    color 220ms var(--lion-ease),
+    background-color 220ms var(--lion-ease),
+    transform 180ms var(--lion-spring);
+}
+
+.lion-btn-wire:hover:not(:disabled) {
+  border-color: var(--lion-ember);
+  color: var(--lion-ember);
+  background-color: rgba(255, 84, 18, 0.08);
+}
+
+.lion-btn-wire:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+/* Vinyl sleeve + protruding spinning LP (jeremycamp.com cv--record pattern) */
+.lion-vinyl-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.lion-vinyl-disc {
+  position: absolute;
+  top: 3.5%;
+  left: 3.5%;
+  width: 93%;
+  height: 93%;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 30deg,
+      rgba(255, 255, 255, 0) 0deg,
+      rgba(255, 255, 255, 0.1) 30deg,
+      rgba(255, 255, 255, 0) 68deg 180deg,
+      rgba(255, 84, 18, 0.14) 212deg,
+      rgba(255, 255, 255, 0) 252deg
+    ),
+    repeating-radial-gradient(circle, #0d0b0a 0 1.5px, #1a1512 1.5px 4px);
+  box-shadow:
+    0 0 0 1px rgba(255, 84, 18, 0.22),
+    0 28px 54px -18px rgba(0, 0, 0, 0.9);
+  transform: translateX(30%);
+  transition: transform 680ms var(--lion-spring);
+  z-index: 1;
+}
+
+.lion-vinyl-wrap:hover .lion-vinyl-disc,
+.lion-vinyl-wrap[data-playing='true'] .lion-vinyl-disc {
+  transform: translateX(46%);
+}
+
+@keyframes lionVinylSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.lion-vinyl-rotor {
+  animation: lionVinylSpin 5.5s linear infinite;
+  animation-play-state: paused;
+}
+
+.lion-vinyl-wrap[data-playing='true'] .lion-vinyl-rotor {
+  animation-play-state: running;
+}
+
+/* Continuous Tour Marquee (strict single-line nowrap ribbon) */
+@keyframes lionTicker {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.lion-ticker-track {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  width: max-content;
+  white-space: nowrap;
+  text-wrap: nowrap;
+  font-family: var(--lion-f-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  line-height: 1;
+  animation: lionTicker 28s linear infinite;
+}
+
+.lion-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  text-wrap: nowrap;
+}
+
+.lion-ticker-wrap:hover .lion-ticker-track {
+  animation-play-state: paused;
+}
+
+/* Precision Scrubber Sliders scoped to .lion-root (overrides global rose thumb) */
+.lion-root input[type='range'].lion-scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(244, 239, 230, 0.16);
+  height: 4px;
+  border-radius: 9999px;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.lion-root input[type='range'].lion-scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--lion-ember);
+  border: 2px solid var(--lion-bone);
+  box-shadow: 0 0 12px rgba(255, 84, 18, 0.72);
+  cursor: pointer;
+  transition: transform 160ms var(--lion-spring), background-color 160ms var(--lion-ease);
+}
+
+.lion-root input[type='range'].lion-scrubber::-webkit-slider-thumb:hover {
+  transform: scale(1.28);
+  background: var(--lion-amber);
+}
+
+.lion-root input[type='range'].lion-scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--lion-ember);
+  border: 2px solid var(--lion-bone);
+  box-shadow: 0 0 12px rgba(255, 84, 18, 0.72);
+  cursor: pointer;
+}
+
+/* Scrollbar harmonized in Obsidian & Ember */
+.lion-root ::-webkit-scrollbar-thumb {
+  background: rgba(255, 84, 18, 0.35);
+}
+.lion-root ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 84, 18, 0.75);
+}

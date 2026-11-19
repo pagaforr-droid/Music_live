@@ -14,6 +14,8 @@ const StageSoundcheck = lazy(() => import('./pages/StageSoundcheck'));
 const MobileInEar = lazy(() => import('./pages/MobileInEar'));
 const MusicHub = lazy(() => import('./pages/MusicHub'));
 const AdminCMS = lazy(() => import('./pages/AdminCMS'));
+const LaNacionDelLeon = lazy(() => import('./pages/LaNacionDelLeon'));
+const BandContentStudio = lazy(() => import('./pages/BandContentStudio'));
 const DesignTools = lazy(() => import('./pages/DesignTools'));
 const LyricStudio = lazy(() => import('./pages/LyricStudio'));
 const StudioMasteringModule = lazy(() =>
@@ -36,7 +38,10 @@ const RouteSuspenseFallback = () => (
 
 // Protected Route Wrapper
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { session } = useAuth();
+  const { session, authReady } = useAuth();
+  if (!authReady) {
+    return <RouteSuspenseFallback />;
+  }
   if (!session) {
     return <Navigate to="/login" replace />;
   }
@@ -45,7 +50,10 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
 // Auth Route Wrapper (redirect to home if already logged in)
 const AuthRoute = ({ children }: { children: React.ReactNode }) => {
-  const { session } = useAuth();
+  const { session, authReady } = useAuth();
+  if (!authReady) {
+    return <RouteSuspenseFallback />;
+  }
   if (session) {
     return <Navigate to="/" replace />;
   }
@@ -76,11 +84,15 @@ function AppRoutes() {
           <Route path="/sample-lab" element={<SampleLabModule />} />
           <Route path="/setlists" element={<SetlistBuilder />} />
           <Route path="/admin/cms" element={<AdminCMS />} />
+          <Route path="/nacion-cms" element={<BandContentStudio />} />
           <Route path="/design" element={<DesignTools />} />
           <Route path="/lyrics" element={<LyricStudio />} />
         </Route>
         
-        {/* Public Landing Page */}
+        {/* Public Band Websites */}
+        <Route path="/lanacion_delleon_web" element={<LaNacionDelLeon />} />
+        <Route path="/la-nacion-del-leon" element={<Navigate to="/lanacion_delleon_web" replace />} />
+        <Route path="/la-nacion-del-leon-web" element={<Navigate to="/lanacion_delleon_web" replace />} />
         <Route path="/hub" element={<MusicHub />} />
 
         {/* Standalone Mobile Route */}
