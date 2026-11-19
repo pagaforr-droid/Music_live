@@ -26,7 +26,14 @@ import {
   Link2,
   X,
   Edit3,
+  AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
+import {
+  formatBytes,
+  isLosslessOrHeavyAudio,
+  optimizeAudioForWeb,
+} from '../utils/webAudioOptimizer';
 import {
   BAND_CMS_SQL_MIGRATION,
   cleanTrackTitleFromFilename,
@@ -84,13 +91,16 @@ export default function BandContentStudio() {
   const [photos, setPhotos] = useState<BandPhoto[]>([]);
   const [events, setEvents] = useState<BandEvent[]>([]);
 
-  // Feedback toast
+  // Feedback toast (errors stay longer so they are never missed)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const notify = useCallback((kind: 'ok' | 'err', text: string) => {
     setNotice({ kind, text });
-    window.setTimeout(() => {
-      setNotice((prev) => (prev?.text === text ? null : prev));
-    }, 4500);
+    window.setTimeout(
+      () => {
+        setNotice((prev) => (prev?.text === text ? null : prev));
+      },
+      kind === 'err' ? 10000 : 4500
+    );
   }, []);
 
   // =========================================================================
@@ -112,6 +122,10 @@ export default function BandContentStudio() {
 
   // Audio batch upload state
   const [audioUploadStatus, setAudioUploadStatus] = useState<string | null>(null);
+  const [audioUploadPct, setAudioUploadPct] = useState<number>(0);
+  const [audioUploadError, setAudioUploadError] = useState<string | null>(null);
+  const [autoOptimizeMp3, setAutoOptimizeMp3] = useState<boolean>(true);
+  const [isAudioDragOver, setIsAudioDragOver] = useState<boolean>(false);
   const [manualTrackForm, setManualTrackForm] = useState({ title: '', duration: '', audio_url: '' });
   const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
   const [editingTrackTitle, setEditingTrackTitle] = useState('');
@@ -132,6 +146,8 @@ export default function BandContentStudio() {
     is_featured: false,
   });
   const [uploadingVideo, setUploadingVideo] = useState<string | null>(null);
+  const [videoUploadPct, setVideoUploadPct] = useState<number>(0);
+  const [videoUploadError, setVideoUploadError] = useState<string | null>(null);
   const [savingVideo, setSavingVideo] = useState(false);
 
   // =========================================================================
@@ -139,6 +155,7 @@ export default function BandContentStudio() {
   // =========================================================================
   const [photoUploadCategory, setPhotoUploadCategory] = useState('En Vivo');
   const [photoUploadProgress, setPhotoUploadProgress] = useState<string | null>(null);
+  const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
   const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
   const [editingPhotoDraft, setEditingPhotoDraft] = useState({ title: '', caption: '', category: 'En Vivo' });
 
@@ -312,35 +329,78 @@ export default function BandContentStudio() {
     }
   };
 
-  const handleBatchTrackUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files;
-    if (!fileList || fileList.length === 0 || !selectedAlbum) {
-      e.target.value = '';
-      return;
-    }
+  const processAudioFilesUpload = async (files: File[]) => {
+    if (files.length === 0 || !selectedAlbum) return;
 
-    const files = Array.from(fileList);
-    e.target.value = '';
+    setAudioUploadError(null);
+    setAudioUploadPct(0);
 
     let nextOrder = (selectedAlbum.tracks?.length || 0) + 1;
     const addedTracks: BandTrack[] = [];
+    let optimizedSummary = '';
 
     try {
       for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setAudioUploadStatus(`Subiendo pista ${i + 1} de ${files.length}: ${file.name}`);
-        const [duration, uploaded] = await Promise.all([
-          detectMediaDuration(file, 'audio'),
-          uploadBandMedia(file, 'tracks'),
-        ]);
+        const rawFile = files[i];
+        const prefix = `Pista ${i + 1}/${files.length} · ${rawFile.name}`;
+        let fileToUpload: File = rawFile;
+        let duration = '0:00';
+
+        // Automatically transcode studio WAV / AIFF / FLAC into 320 kbps Hi-Fi MP3
+        // so 70+ MB 24-bit WAV masters never hit Supabase's 50 MB limit and stream instantly on mobile
+        const shouldOptimize =
+          (autoOptimizeMp3 && isLosslessOrHeavyAudio(rawFile)) ||
+          (isLosslessOrHeavyAudio(rawFile) && rawFile.size > 48 * 1024 * 1024);
+
+        if (shouldOptimize) {
+          setAudioUploadStatus(`${prefix} — Optimizando a MP3 320 kbps...`);
+          try {
+            const opt = await optimizeAudioForWeb(rawFile, (stage, pct) => {
+              setAudioUploadStatus(`${prefix} — ${stage}`);
+              setAudioUploadPct(Math.round(pct * 0.55)); // 0% -> 55% encoding phase
+            });
+            fileToUpload = opt.file;
+            duration = opt.duration;
+            optimizedSummary = ` (${formatBytes(opt.originalBytes)} → ${formatBytes(opt.finalBytes)} MP3 320k)`;
+          } catch (optErr) {
+            console.error('[BandCMS] Error optimizando WAV a MP3:', optErr);
+            if (rawFile.size > 49.5 * 1024 * 1024) {
+              throw new Error(
+                `No se pudo convertir "${rawFile.name}" (${formatBytes(rawFile.size)}) a MP3 en el navegador y el WAV original supera los 50 MB de Supabase Storage. Exporta la pista en MP3 320 kbps o WAV 16-bit y vuelve a subirla.`
+              );
+            }
+            // If file is <= 49.5 MB, fall back to uploading the original file directly
+            duration = await detectMediaDuration(rawFile, 'audio');
+          }
+        } else {
+          setAudioUploadStatus(`${prefix} — Leyendo duración (${formatBytes(rawFile.size)})...`);
+          setAudioUploadPct(10);
+          duration = await detectMediaDuration(rawFile, 'audio');
+        }
+
+        const basePct = shouldOptimize ? 55 : 15;
+        const spanPct = shouldOptimize ? 40 : 80;
+
+        setAudioUploadStatus(`${prefix} — Subiendo ${formatBytes(fileToUpload.size)} (0%)...`);
+        const uploaded = await uploadBandMedia(fileToUpload, 'tracks', (pct, loaded, total) => {
+          setAudioUploadPct(basePct + Math.round((pct / 100) * spanPct));
+          setAudioUploadStatus(
+            `${prefix} — Subiendo ${formatBytes(loaded)} / ${formatBytes(total)} (${pct}%)`
+          );
+        });
+
+        setAudioUploadStatus(`${prefix} — Guardando pista en base de datos...`);
+        setAudioUploadPct(97);
+
         const track = await createBandTrack({
           album_id: selectedAlbum.id,
-          title: cleanTrackTitleFromFilename(file.name),
+          title: cleanTrackTitleFromFilename(rawFile.name),
           duration,
           audio_url: uploaded.publicUrl,
           track_number: nextOrder++,
         });
         addedTracks.push(track);
+        setAudioUploadPct(100);
       }
 
       setAlbums((prev) =>
@@ -348,17 +408,46 @@ export default function BandContentStudio() {
           a.id === selectedAlbum.id ? { ...a, tracks: [...a.tracks, ...addedTracks] } : a
         )
       );
-      notify('ok', `${addedTracks.length} pista(s) de audio agregadas a "${selectedAlbum.title}".`);
+      notify(
+        'ok',
+        `${addedTracks.length} pista(s) subidas a "${selectedAlbum.title}"${optimizedSummary}.`
+      );
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'Error subiendo audios');
+      const msg = err instanceof Error ? err.message : 'Error inesperado subiendo audios';
+      console.error('[BandCMS] Track upload failed:', err);
+      setAudioUploadError(msg);
+      notify('err', msg);
     } finally {
       setAudioUploadStatus(null);
+      setAudioUploadPct(0);
     }
+  };
+
+  const handleBatchTrackUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) {
+      e.target.value = '';
+      return;
+    }
+    const files = Array.from(fileList);
+    e.target.value = '';
+    await processAudioFilesUpload(files);
   };
 
   const handleManualAddTrack = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAlbum || !manualTrackForm.title.trim()) return;
+    if (!selectedAlbum) return;
+    if (!manualTrackForm.title.trim()) {
+      setAudioUploadError('Escribe el título de la canción.');
+      return;
+    }
+    if (!manualTrackForm.audio_url.trim()) {
+      setAudioUploadError(
+        'Este formulario inferior requiere una URL directa (https://...mp3). Para subir un archivo desde tu PC, usa el recuadro superior de subida.'
+      );
+      return;
+    }
+    setAudioUploadError(null);
     try {
       const created = await createBandTrack({
         album_id: selectedAlbum.id,
@@ -375,7 +464,10 @@ export default function BandContentStudio() {
       setManualTrackForm({ title: '', duration: '', audio_url: '' });
       notify('ok', `Pista "${created.title}" añadida.`);
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'Error al agregar pista');
+      const msg = err instanceof Error ? err.message : 'Error al agregar pista';
+      console.error('[BandCMS] Manual add track failed:', err);
+      setAudioUploadError(msg);
+      notify('err', msg);
     }
   };
 
@@ -443,12 +535,15 @@ export default function BandContentStudio() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setUploadingVideo(`Subiendo video: ${file.name}...`);
+    setVideoUploadError(null);
+    setVideoUploadPct(0);
+    setUploadingVideo(`Subiendo video (${formatBytes(file.size)}): ${file.name}...`);
     try {
-      const [duration, uploaded] = await Promise.all([
-        detectMediaDuration(file, 'video'),
-        uploadBandMedia(file, 'videos'),
-      ]);
+      const duration = await detectMediaDuration(file, 'video');
+      const uploaded = await uploadBandMedia(file, 'videos', (pct, loaded, total) => {
+        setVideoUploadPct(pct);
+        setUploadingVideo(`Subiendo ${formatBytes(loaded)} / ${formatBytes(total)} (${pct}%)`);
+      });
       setVideoForm((prev) => ({
         ...prev,
         title: prev.title || cleanTrackTitleFromFilename(file.name),
@@ -457,9 +552,13 @@ export default function BandContentStudio() {
       }));
       notify('ok', 'Video subido al Storage. Completa el título y pulsa Publicar.');
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'Error subiendo video');
+      const msg = err instanceof Error ? err.message : 'Error subiendo video';
+      console.error('[BandCMS] Video upload failed:', err);
+      setVideoUploadError(msg);
+      notify('err', msg);
     } finally {
       setUploadingVideo(null);
+      setVideoUploadPct(0);
     }
   };
 
@@ -556,17 +655,21 @@ export default function BandContentStudio() {
     const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
     e.target.value = '';
     if (files.length === 0) {
+      setPhotoUploadError('Selecciona archivos de imagen válidos (JPG, PNG, WEBP).');
       notify('err', 'Selecciona archivos de imagen válidos (JPG, PNG, WEBP).');
       return;
     }
 
+    setPhotoUploadError(null);
     const added: BandPhoto[] = [];
     let order = photos.length + 1;
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         setPhotoUploadProgress(`Subiendo foto ${i + 1} de ${files.length}: ${file.name}`);
-        const { publicUrl } = await uploadBandMedia(file, 'photos');
+        const { publicUrl } = await uploadBandMedia(file, 'photos', (pct) => {
+          setPhotoUploadProgress(`Subiendo foto ${i + 1}/${files.length}: ${file.name} (${pct}%)`);
+        });
         const created = await createBandPhoto({
           title: cleanTrackTitleFromFilename(file.name),
           caption: '',
@@ -579,7 +682,10 @@ export default function BandContentStudio() {
       setPhotos((prev) => [...added, ...prev]);
       notify('ok', `${added.length} foto(s) publicadas en la galería.`);
     } catch (err) {
-      notify('err', err instanceof Error ? err.message : 'Error subiendo fotos');
+      const msg = err instanceof Error ? err.message : 'Error subiendo fotos';
+      console.error('[BandCMS] Photo upload failed:', err);
+      setPhotoUploadError(msg);
+      notify('err', msg);
     } finally {
       setPhotoUploadProgress(null);
     }
@@ -1122,35 +1228,113 @@ export default function BandContentStudio() {
                             TRACKLIST ({selectedAlbum.tracks.length})
                           </h3>
                         </div>
+
+                        <label
+                          className="inline-flex items-center gap-2.5 px-3 py-2 border border-white/[0.12] bg-[#110e0c] hover:border-[#ff5412]/60 cursor-pointer transition-colors"
+                          title="Convierte WAV/FLAC de estudio (70+ MB) a MP3 320 kbps (~9 MB) para streaming instantáneo sin superar el límite de 50 MB de Supabase."
+                        >
+                          <input
+                            type="checkbox"
+                            checked={autoOptimizeMp3}
+                            onChange={(e) => setAutoOptimizeMp3(e.target.checked)}
+                            className="accent-[#ff5412] w-4 h-4"
+                          />
+                          <Sparkles size={14} className="text-[#ffaa3b] shrink-0" />
+                          <span className="lion-label text-[11px] text-[#d4cbc0]">
+                            OPTIMIZAR WAV → MP3 320 KBPS (WEB HI-FI)
+                          </span>
+                        </label>
                       </div>
 
-                      {/* Batch Multi-Audio Dropzone */}
-                      <label className="block border-2 border-dashed border-[#ff5412]/45 hover:border-[#ff5412] bg-[#110e0c] hover:bg-[#181310] p-7 text-center cursor-pointer transition-colors">
+                      {/* Batch Multi-Audio Dropzone (Click + Drag & Drop + Real Progress Bar) */}
+                      <label
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          if (!audioUploadStatus) setIsAudioDragOver(true);
+                        }}
+                        onDragLeave={() => setIsAudioDragOver(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setIsAudioDragOver(false);
+                          if (audioUploadStatus) return;
+                          const dropped = Array.from(e.dataTransfer.files || []).filter(
+                            (f) =>
+                              f.type.startsWith('audio/') ||
+                              /\.(mp3|wav|wave|flac|ogg|m4a|aif|aiff)$/i.test(f.name)
+                          );
+                          if (dropped.length === 0) {
+                            setAudioUploadError(
+                              'Solo se aceptan archivos de audio (MP3, WAV, FLAC, OGG, M4A).'
+                            );
+                            return;
+                          }
+                          void processAudioFilesUpload(dropped);
+                        }}
+                        className={`block border-2 border-dashed p-7 text-center cursor-pointer transition-colors ${
+                          isAudioDragOver
+                            ? 'border-[#ffaa3b] bg-[#ff5412]/12'
+                            : 'border-[#ff5412]/45 hover:border-[#ff5412] bg-[#110e0c] hover:bg-[#181310]'
+                        }`}
+                      >
                         <input
                           type="file"
-                          accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a"
+                          accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aif,.aiff"
                           multiple
                           disabled={Boolean(audioUploadStatus)}
                           onChange={handleBatchTrackUpload}
                           className="hidden"
                         />
                         {audioUploadStatus ? (
-                          <div className="flex flex-col items-center gap-2.5">
+                          <div className="flex flex-col items-center gap-3 max-w-lg mx-auto">
                             <Loader2 size={28} className="animate-spin text-[#ff5412]" />
-                            <span className="lion-label text-xs text-[#ffaa3b]">{audioUploadStatus}</span>
+                            <span className="lion-label text-xs text-[#ffaa3b] break-all">
+                              {audioUploadStatus}
+                            </span>
+                            <div className="w-full h-2 bg-white/[0.08] overflow-hidden">
+                              <div
+                                className="h-full bg-[#ff5412] transition-[width] duration-200"
+                                style={{ width: `${Math.max(4, audioUploadPct)}%` }}
+                              />
+                            </div>
+                            <span className="text-[11px] tnum text-[#b3a89a]">
+                              {audioUploadPct}% completado
+                            </span>
                           </div>
                         ) : (
                           <div className="flex flex-col items-center gap-2">
                             <UploadCloud size={32} className="text-[#ff5412]" />
                             <div className="lion-label text-xs text-[#f4efe6]">
-                              HAZ CLIC PARA SUBIR UNA O VARIAS CANCIONES (MP3, WAV, FLAC, M4A)
+                              ARRASTRA O HAZ CLIC PARA SUBIR CANCIONES (WAV 24-BIT, MP3, FLAC, M4A)
                             </div>
-                            <p className="text-xs text-[#8e8378]">
-                              Detecta automáticamente la duración real y limpia los nombres de pista al subir a Supabase Storage.
+                            <p className="text-xs text-[#8e8378] max-w-xl">
+                              Los archivos WAV/FLAC pesados se optimizan automáticamente a MP3 320 kbps estéreo para evitar el límite de 50 MB de Supabase y reproducirse sin cortes en la web.
                             </p>
                           </div>
                         )}
                       </label>
+
+                      {/* Persistent Inline Error Box (Never silent!) */}
+                      {audioUploadError && (
+                        <div className="border border-[#ef4444]/55 bg-[#2a0c0a] px-4 py-3.5 flex items-start justify-between gap-3 text-xs text-[#fecaca]">
+                          <div className="flex items-start gap-2.5">
+                            <AlertTriangle size={16} className="text-[#ef4444] shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                              <div className="lion-label text-[11px] text-[#fca5a5]">
+                                NO SE PUDO SUBIR LA PISTA
+                              </div>
+                              <p className="leading-relaxed">{audioUploadError}</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setAudioUploadError(null)}
+                            className="text-[#fca5a5] hover:text-white p-1 cursor-pointer shrink-0"
+                            aria-label="Cerrar error"
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                      )}
 
                       {/* Tracklist Table */}
                       {selectedAlbum.tracks.length > 0 && (
@@ -1261,14 +1445,13 @@ export default function BandContentStudio() {
                       )}
 
                       {/* Optional Manual URL Add Track */}
-                      <form onSubmit={handleManualAddTrack} className="pt-2 space-y-3">
+                      <form onSubmit={handleManualAddTrack} noValidate className="pt-2 space-y-3">
                         <div className="lion-label text-[11px] text-[#8e8378]">
-                          O AÑADIR PISTA MEDIANTE ENLACE DIRECTO MP3/WAV
+                          O VINCULAR UNA PISTA EXISTENTE MEDIANTE URL DIRECTA (HTTPS)
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                           <input
                             type="text"
-                            required
                             value={manualTrackForm.title}
                             onChange={(e) => setManualTrackForm((p) => ({ ...p, title: e.target.value }))}
                             placeholder="Título de la canción"
@@ -1283,7 +1466,6 @@ export default function BandContentStudio() {
                           />
                           <input
                             type="url"
-                            required
                             value={manualTrackForm.audio_url}
                             onChange={(e) => setManualTrackForm((p) => ({ ...p, audio_url: e.target.value }))}
                             placeholder="https://.../pista.mp3"
@@ -1291,7 +1473,7 @@ export default function BandContentStudio() {
                           />
                           <button type="submit" className="lion-btn-wire lion-label text-xs sm:col-span-2 !min-h-[42px] !py-2">
                             <Music size={14} />
-                            <span>AÑADIR</span>
+                            <span>VINCULAR</span>
                           </button>
                         </div>
                       </form>
@@ -1350,18 +1532,28 @@ export default function BandContentStudio() {
                         className="hidden"
                       />
                       {uploadingVideo ? (
-                        <div className="flex flex-col items-center gap-2">
+                        <div className="flex flex-col items-center gap-2.5">
                           <Loader2 size={24} className="animate-spin text-[#ff5412]" />
                           <span className="lion-label text-xs text-[#ffaa3b]">{uploadingVideo}</span>
+                          {videoUploadPct > 0 && (
+                            <div className="w-full max-w-xs h-1.5 bg-white/[0.08] overflow-hidden">
+                              <div
+                                className="h-full bg-[#ff5412] transition-[width] duration-200"
+                                style={{ width: `${videoUploadPct}%` }}
+                              />
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="space-y-1.5">
                           <Film size={28} className="mx-auto text-[#ff5412]" />
                           <div className="lion-label text-xs text-[#f4efe6]">
-                            SELECCIONAR VIDEO (MP4 / WEBM / MOV)
+                            SELECCIONAR VIDEO (MP4 / WEBM · MÁX 50 MB)
                           </div>
                           <div className="text-xs text-[#8e8378]">
-                            {videoForm.video_url ? 'Archivo cargado listo para publicar ✓' : 'Se alojará directamente en Supabase Storage'}
+                            {videoForm.video_url
+                              ? 'Archivo cargado listo para publicar ✓'
+                              : 'Para videos largos en 4K usa la pestaña YouTube / Vimeo'}
                           </div>
                         </div>
                       )}
@@ -1377,6 +1569,22 @@ export default function BandContentStudio() {
                         placeholder="https://www.youtube.com/watch?v=..."
                         className={inputCls}
                       />
+                    </div>
+                  )}
+
+                  {videoUploadError && (
+                    <div className="border border-[#ef4444]/55 bg-[#2a0c0a] px-3.5 py-3 flex items-start justify-between gap-2 text-xs text-[#fecaca]">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle size={15} className="text-[#ef4444] shrink-0 mt-0.5" />
+                        <span>{videoUploadError}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setVideoUploadError(null)}
+                        className="text-[#fca5a5] hover:text-white cursor-pointer"
+                      >
+                        <X size={14} />
+                      </button>
                     </div>
                   )}
 
@@ -1587,6 +1795,22 @@ export default function BandContentStudio() {
                     </div>
                   )}
                 </label>
+
+                {photoUploadError && (
+                  <div className="border border-[#ef4444]/55 bg-[#2a0c0a] px-4 py-3 flex items-start justify-between gap-3 text-xs text-[#fecaca]">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={15} className="text-[#ef4444] shrink-0 mt-0.5" />
+                      <span>{photoUploadError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPhotoUploadError(null)}
+                      className="text-[#fca5a5] hover:text-white cursor-pointer"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
 
                 {photos.length === 0 ? (
                   <div className="py-12 text-center text-sm text-[#8e8378]">

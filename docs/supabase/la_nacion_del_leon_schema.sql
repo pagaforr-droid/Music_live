@@ -97,10 +97,22 @@ CREATE INDEX IF NOT EXISTS idx_band_photos_slug_order ON public.band_photos(band
 CREATE INDEX IF NOT EXISTS idx_band_events_slug_date ON public.band_events(band_slug, event_date ASC);
 
 -- 6. Habilitar Row Level Security (lectura pública, escritura autenticada)
+ALTER TABLE public.albums ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tracks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_site_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_videos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_photos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public read albums" ON public.albums;
+CREATE POLICY "Public read albums" ON public.albums FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth write albums" ON public.albums;
+CREATE POLICY "Auth write albums" ON public.albums FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public read tracks" ON public.tracks;
+CREATE POLICY "Public read tracks" ON public.tracks FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth write tracks" ON public.tracks;
+CREATE POLICY "Auth write tracks" ON public.tracks FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Public read band_site_profiles" ON public.band_site_profiles;
 CREATE POLICY "Public read band_site_profiles" ON public.band_site_profiles FOR SELECT USING (true);

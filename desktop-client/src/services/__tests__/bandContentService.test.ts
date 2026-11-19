@@ -9,6 +9,7 @@ import {
   getEmbedVideoUrl,
   sanitizeFileName,
 } from '../bandContentService';
+import { formatBytes, isLosslessOrHeavyAudio } from '../../utils/webAudioOptimizer';
 
 describe('bandContentService media helpers', () => {
   it('cleans track titles from audio filenames cleanly', () => {
@@ -55,5 +56,21 @@ describe('bandContentService media helpers', () => {
     expect(getAutoVideoThumbnail('https://youtu.be/dQw4w9WgXcQ')).toBe(
       'https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg'
     );
+  });
+
+  it('detects lossless WAV/FLAC studio files and formats byte sizes cleanly', () => {
+    const wav = new File([new Uint8Array(10)], 'TU_ERES_STADIUM-POP-ROCK_24BIT_48KHZ.WAV', {
+      type: 'audio/wav',
+    });
+    const mp3 = new File([new Uint8Array(10)], 'rugido.mp3', { type: 'audio/mpeg' });
+    const flac = new File([new Uint8Array(10)], 'master.flac', { type: '' });
+
+    expect(isLosslessOrHeavyAudio(wav)).toBe(true);
+    expect(isLosslessOrHeavyAudio(flac)).toBe(true);
+    expect(isLosslessOrHeavyAudio(mp3)).toBe(false);
+
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(512 * 1024)).toBe('512 KB');
+    expect(formatBytes(72.4 * 1024 * 1024)).toBe('72.4 MB');
   });
 });

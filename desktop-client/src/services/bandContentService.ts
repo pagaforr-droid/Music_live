@@ -148,10 +148,22 @@ CREATE TABLE IF NOT EXISTS public.band_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE public.albums ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tracks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_site_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_videos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_photos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.band_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public read albums" ON public.albums;
+CREATE POLICY "Public read albums" ON public.albums FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth write albums" ON public.albums;
+CREATE POLICY "Auth write albums" ON public.albums FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public read tracks" ON public.tracks;
+CREATE POLICY "Public read tracks" ON public.tracks FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth write tracks" ON public.tracks;
+CREATE POLICY "Auth write tracks" ON public.tracks FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Public read band_site_profiles" ON public.band_site_profiles;
 CREATE POLICY "Public read band_site_profiles" ON public.band_site_profiles FOR SELECT USING (true);
@@ -293,39 +305,205 @@ export function getAutoVideoThumbnail(url: string, fallback = DEFAULT_HERO_IMAGE
   return fallback;
 }
 
+export const SUPABASE_MAX_OBJECT_BYTES = 49.5 * 1024 * 1024; // 50 MB Supabase Standard / Free limit
+
+interface BucketUploadError {
+  status?: number;
+  message: string;
+}
+
+function isBucketMissingError(err: BucketUploadError): boolean {
+  const msg = (err.message || '').toLowerCase();
+  return (
+    err.status === 404 ||
+    msg.includes('bucket not found') ||
+    (msg.includes('bucket') && msg.includes('not exist'))
+  );
+}
+
+function formatUploadErrorMessage(fileName: string, err: BucketUploadError): string {
+  const msg = err.message || 'Error desconocido';
+  const lower = msg.toLowerCase();
+  if (err.status === 413 || lower.includes('maximum allowed size') || lower.includes('payload too large')) {
+    return `"${fileName}" excede el límite de tamaño de Supabase Storage (50 MB). Activa "Optimizar WAV a MP3 320 kbps" para reducirlo a ~9 MB con calidad de estudio.`;
+  }
+  if (err.status === 401 || err.status === 403 || lower.includes('row-level security') || lower.includes('unauthorized')) {
+    return `Sin permisos para subir "${fileName}" (${msg}). Verifica que iniciaste sesión y que ejecutaste el script SQL de políticas Storage/RLS.`;
+  }
+  return `No se pudo subir "${fileName}": ${msg}`;
+}
+
+async function uploadToBucketWithProgress(
+  bucket: string,
+  objectPath: string,
+  file: File,
+  contentType: string,
+  onProgress?: (pct: number, loaded: number, total: number) => void
+): Promise<{ error: BucketUploadError | null }> {
+  const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '');
+  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+  // Use XMLHttpRequest against Supabase Storage REST API so we get real byte-level upload progress (0-100%)
+  if (supabaseUrl && supabaseAnonKey && typeof XMLHttpRequest !== 'undefined') {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const bearer = sessionData.session?.access_token || supabaseAnonKey;
+    const encodedPath = objectPath
+      .split('/')
+      .map((seg) => encodeURIComponent(seg))
+      .join('/');
+    const endpoint = `${supabaseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`;
+
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', endpoint, true);
+      xhr.timeout = 180_000; // 3 minutes max so it never hangs silently forever
+      xhr.setRequestHeader('apikey', supabaseAnonKey);
+      xhr.setRequestHeader('Authorization', `Bearer ${bearer}`);
+      xhr.setRequestHeader('x-upsert', 'false');
+
+      // Mirror @supabase/storage-js multipart FormData contract for Blob/File uploads
+      const formData = new FormData();
+      formData.append('cacheControl', '3600');
+      const typedBlob =
+        file.type === contentType
+          ? file
+          : new Blob([file], { type: contentType || 'application/octet-stream' });
+      formData.append('', typedBlob, file.name);
+
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && ev.total > 0) {
+          const pct = Math.min(99, Math.round((ev.loaded / ev.total) * 100));
+          onProgress?.(pct, ev.loaded, ev.total);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100, file.size, file.size);
+          resolve({ error: null });
+          return;
+        }
+        let message = xhr.statusText || `HTTP ${xhr.status}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText || '{}') as { message?: string; error?: string };
+          message = parsed.message || parsed.error || message;
+        } catch {
+          if (xhr.responseText) message = xhr.responseText.slice(0, 200);
+        }
+        resolve({ error: { status: xhr.status, message } });
+      };
+
+      xhr.onerror = () => {
+        resolve({
+          error: {
+            status: 0,
+            message: 'Error de red o CORS durante la subida. Verifica tu conexión a internet.',
+          },
+        });
+      };
+
+      xhr.ontimeout = () => {
+        resolve({
+          error: {
+            status: 408,
+            message: 'Tiempo de espera agotado subiendo el archivo (más de 3 minutos).',
+          },
+        });
+      };
+
+      xhr.send(formData);
+    });
+  }
+
+  // Fallback for non-browser/test environments
+  const { error } = await supabase.storage
+    .from(bucket)
+    .upload(objectPath, file, { contentType: contentType || undefined, upsert: false });
+
+  if (error) {
+    const status = (error as { statusCode?: string | number }).statusCode;
+    return {
+      error: {
+        status: status ? Number(status) : undefined,
+        message: error.message,
+      },
+    };
+  }
+  onProgress?.(100, file.size, file.size);
+  return { error: null };
+}
+
 /**
- * Uploads any band media file (audio, cover, photo, video) to Supabase Storage.
- * Tries dedicated 'band-media' bucket first, then falls back cleanly to existing 'audios' bucket.
+ * Uploads any band media file (audio, cover, photo, video) to Supabase Storage with real progress.
+ * Tries dedicated 'band-media' bucket first, falling back to 'audios' ONLY if 'band-media' does not exist.
  */
 export async function uploadBandMedia(
   file: File,
-  folder: 'covers' | 'tracks' | 'videos' | 'photos' | 'hero'
+  folder: 'covers' | 'tracks' | 'videos' | 'photos' | 'hero',
+  onProgress?: (pct: number, loaded: number, total: number) => void
 ): Promise<{ publicUrl: string; bucket: string; path: string }> {
+  if (file.size > SUPABASE_MAX_OBJECT_BYTES) {
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+    throw new Error(
+      `"${file.name}" pesa ${sizeMb} MB y supera el límite de 50 MB por archivo de Supabase Storage. ` +
+        (folder === 'tracks'
+          ? 'Activa "Optimizar WAV a MP3 320 kbps" para comprimirlo automáticamente a ~9 MB en calidad de estudio.'
+          : 'Reduce el tamaño del archivo por debajo de 50 MB o enlázalo desde YouTube/Vimeo.')
+    );
+  }
+
   const cleanName = sanitizeFileName(file.name) || `media_${Date.now()}`;
   const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${cleanName}`;
   const primaryPath = `${BAND_SLUG}/${folder}/${uniqueName}`;
   const fallbackPath = `band-media/${BAND_SLUG}/${folder}/${uniqueName}`;
 
-  const contentType = file.type || undefined;
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+  const inferredMime =
+    file.type ||
+    (ext === 'mp3'
+      ? 'audio/mpeg'
+      : ext === 'wav'
+        ? 'audio/wav'
+        : ext === 'flac'
+          ? 'audio/flac'
+          : ext === 'ogg'
+            ? 'audio/ogg'
+            : ext === 'm4a'
+              ? 'audio/mp4'
+              : ext === 'mp4'
+                ? 'video/mp4'
+                : ext === 'webm'
+                  ? 'video/webm'
+                  : 'application/octet-stream');
 
-  const firstAttempt = await supabase.storage
-    .from('band-media')
-    .upload(primaryPath, file, { contentType, upsert: false });
+  const firstAttempt = await uploadToBucketWithProgress(
+    'band-media',
+    primaryPath,
+    file,
+    inferredMime,
+    onProgress
+  );
 
   if (!firstAttempt.error) {
     const { data } = supabase.storage.from('band-media').getPublicUrl(primaryPath);
     return { publicUrl: data.publicUrl, bucket: 'band-media', path: primaryPath };
   }
 
-  // Fallback to existing public 'audios' bucket used across TANDU Stage
-  const fallbackAttempt = await supabase.storage
-    .from('audios')
-    .upload(fallbackPath, file, { contentType, upsert: false });
+  // Only fall back to existing 'audios' bucket if 'band-media' bucket itself doesn't exist
+  if (!isBucketMissingError(firstAttempt.error)) {
+    throw new Error(formatUploadErrorMessage(file.name, firstAttempt.error));
+  }
+
+  const fallbackAttempt = await uploadToBucketWithProgress(
+    'audios',
+    fallbackPath,
+    file,
+    inferredMime,
+    onProgress
+  );
 
   if (fallbackAttempt.error) {
-    throw new Error(
-      `No se pudo subir "${file.name}" al Storage: ${fallbackAttempt.error.message || firstAttempt.error.message}`
-    );
+    throw new Error(formatUploadErrorMessage(file.name, fallbackAttempt.error));
   }
 
   const { data } = supabase.storage.from('audios').getPublicUrl(fallbackPath);
@@ -579,7 +757,15 @@ export async function createBandTrack(input: {
     .select()
     .single();
 
-  if (error || !data) throw new Error(error?.message || 'Error al agregar pista');
+  if (error || !data) {
+    const msg = error?.message || 'Error al agregar pista';
+    if (error?.code === '42501' || msg.toLowerCase().includes('row-level security')) {
+      throw new Error(
+        `Permiso denegado (RLS) al insertar en tabla "tracks": ${msg}. Ejecuta el botón "SQL Supabase" para habilitar escritura autenticada en tracks.`
+      );
+    }
+    throw new Error(`Error guardando pista en la base de datos: ${msg}`);
+  }
   return data as BandTrack;
 }
 
