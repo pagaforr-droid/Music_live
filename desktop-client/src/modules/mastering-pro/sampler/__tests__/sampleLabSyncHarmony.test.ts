@@ -758,4 +758,113 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
     expect(fused.counts.hat).toBeGreaterThanOrEqual(8);
     expect(fused.counts.crash).toBeGreaterThanOrEqual(1);
   });
+
+  it('never confuses Deep Floor Toms (76-96Hz), Mid Toms (136Hz) or High Toms (192Hz) with Kick Drums even when musicalKey/chords exist or MT3 MIDI mislabels Toms as Kick (36)', () => {
+    const sr = 48000;
+    const bpm = 112;
+    const beatSec = 60 / bpm;
+    const eighthSec = beatSec * 0.5;
+    const len = Math.floor((8 * eighthSec + 0.5) * sr);
+    const mono = new Float32Array(len);
+
+    // Step 0 & 2: Sub-Kick (48 Hz body with 140 Hz beater chirp)
+    // Step 1 & 3: Acoustic Snare
+    // Step 4: High Tom (192 Hz) with stick click
+    // Step 5: Mid Tom (136 Hz) with stick click
+    // Step 6: Floor Tom (94 Hz) with stick click
+    // Step 7: Deep 18" Floor Tom (76 Hz) with stick click
+    for (let e = 0; e < 8; e++) {
+      const s0 = Math.floor(e * eighthSec * sr);
+      if (e === 0 || e === 2) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.22) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (48 + 92 * Math.exp(-t * 36))) / sr;
+          mono[s0 + i] += Math.sin(ph) * Math.exp(-t * 14) * 0.78;
+        }
+      } else if (e === 1 || e === 3) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.19) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (195 + 65 * Math.exp(-t * 48))) / sr;
+          const noise = Math.sin(i * 12.9898) * 43758.5453;
+          const w = (noise - Math.floor(noise)) * 2 - 1;
+          mono[s0 + i] +=
+            (Math.sin(ph) * Math.exp(-t * 22) * 0.45 +
+              w * Math.exp(-t * 18) * 0.5 +
+              Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 220) * 0.3) *
+            0.65;
+        }
+      } else {
+        const tomFreq = e === 4 ? 192 : e === 5 ? 136 : e === 6 ? 94 : 76;
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.26) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (tomFreq + 38 * Math.exp(-t * 34))) / sr;
+          // Realistic dual-head tom resonance + initial 8ms stick attack click at 2.6 kHz
+          const stickClick = Math.sin(2 * Math.PI * 2600 * t) * Math.exp(-t * 210) * 0.18;
+          const shell = (Math.sin(ph) * 0.84 + Math.sin(ph * 1.52) * 0.16) * Math.exp(-t * 10.2);
+          mono[s0 + i] += (shell + stickClick) * 0.74;
+        }
+      }
+    }
+
+    // 1. Run pre-import analyzer (which may detect tonal key/chords from the pitched toms)
+    clearPreImportMemoryCache();
+    const pre = analyzeImportedAudioFirst(mono, sr, { bpmHint: bpm, sensitivity: 0.65 });
+
+    // Even when musicalKey and detectedChords from pre-import memory are passed in,
+    // all 4 Toms (192Hz, 136Hz, 94Hz, 76Hz) must be recognized as 'tom' and the 2 Kicks as 'kick'!
+    const res = analyzeDrumStemFull(mono, sr, {
+      sensitivity: 0.65,
+      lockedBpm: bpm,
+      musicalKey: pre.memory.musicalKey,
+      detectedChords: pre.memory.chords,
+      quantizeMode: 'off',
+    });
+
+    expect(res.counts.kick).toBe(2);
+    expect(res.counts.snare).toBe(2);
+    expect(res.counts.tom).toBe(4);
+
+    const detectedToms = res.drumHits.filter((h) => h.role === 'tom');
+    expect(detectedToms[0].midiNote).toBe(50); // High Tom (192 Hz)
+    expect(detectedToms[1].midiNote).toBe(47); // Mid Tom (136 Hz)
+    expect(detectedToms[2].midiNote).toBe(43); // Floor Tom (94 Hz)
+    expect(detectedToms[3].midiNote).toBe(43); // Deep Floor Tom (76 Hz)
+
+    // 2. Simulate Replicate MT3 mistakenly emitting GM 36 (Kick) on ALL 4 Tom hits:
+    // fuseMidiWithAcousticDrumAudio must acoustically verify each hit and reclassify the 4 false Kicks into Toms!
+    const mislabeledAnalysis = {
+      ...res,
+      drumHits: res.drumHits.map((h) =>
+        h.role === 'tom'
+          ? {
+              ...h,
+              role: 'kick' as const,
+              midiNote: 36,
+              subRoleLabel: 'Kick Drum 1 (36)',
+              articulation: 'closed' as const,
+              pitchOffsetSemis: 0,
+            }
+          : h
+      ),
+    };
+    const badMidiBytes = encodeAnalysisToStandardMidi(mislabeledAnalysis);
+    const corrected = fuseMidiWithAcousticDrumAudio({
+      midiBytes: badMidiBytes,
+      mono,
+      sampleRate: sr,
+      lockedBpm: bpm,
+      quantizeMode: 'off',
+      sourceEngine: 'replicate-mt3',
+    });
+
+    expect(corrected.counts.kick).toBe(2);
+    expect(corrected.counts.tom).toBe(4);
+    const correctedTomNotes = corrected.drumHits
+      .filter((h) => h.role === 'tom')
+      .map((h) => h.midiNote);
+    expect(correctedTomNotes).toEqual([50, 47, 43, 43]);
+  });
 });

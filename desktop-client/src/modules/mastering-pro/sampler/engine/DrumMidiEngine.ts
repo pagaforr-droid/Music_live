@@ -1,4 +1,10 @@
-import { analyzeDrumStemFull, quantizeDrumHitsToTempo, quantizeNoteEventsToTempo } from './FullStemAnalyzer';
+import {
+  analyzeDrumStemFull,
+  applyBiquadBandPassOrLp,
+  evaluateTomResonanceAtSample,
+  quantizeDrumHitsToTempo,
+  quantizeNoteEventsToTempo,
+} from './FullStemAnalyzer';
 import { midiNoteToName } from './PitchDetector';
 import type {
   DetectedChordSegment,
@@ -532,8 +538,11 @@ export function fuseMidiWithAcousticDrumAudio(params: {
     quantizeMode: 'off',
   });
 
-  const subKickSig = applyBandFilter(mono, sampleRate, 30, 118);
-  const tomSig = applyBandFilter(mono, sampleRate, 85, 345);
+  const subKickCoreSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 76, 1);
+  const subKickSig = applyBandFilter(mono, sampleRate, 28, 110);
+  const lowBodySig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 340, 1);
+  const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 80, 340, 1);
+  const crackSig = applyBandFilter(mono, sampleRate, 1850, 6200);
   const snareSig = applyBandFilter(mono, sampleRate, 180, 5800);
   const cymbalSig = applyBandFilter(mono, sampleRate, 2800, 12000);
   const hatSig = applyBandFilter(mono, sampleRate, 5600, null);
@@ -606,16 +615,53 @@ export function fuseMidiWithAcousticDrumAudio(params: {
       }
     }
 
-    // Acoustic verification for Low Tom (41/43/45) vs Kick (36):
-    if (role === 'tom' && (midiNote === 41 || midiNote === 43 || midiNote === 45)) {
-      const kM = measureBandPeakAndRms(subKickSig, hit.timeSec);
-      const tM = measureBandPeakAndRms(tomSig, hit.timeSec);
-      if (kM.rms > tM.rms * 1.45) {
-        role = 'kick';
-        midiNote = 36;
-        subRoleLabel = 'Kick Drum 1 (36)';
-        articulation = 'closed';
-        pitchOffsetSemis = 0;
+    // Bidirectional Acoustic Verification for Kick (35/36) <-> Toms (41/43/45/47/48/50):
+    // Prevents Replicate MT3 or imported MIDI from confusing Floor/Mid/High Toms with Kick Drums!
+    if (role === 'kick' || role === 'tom') {
+      const hitSampleIdx = Math.max(0, Math.min(mono.length - 1, Math.round(hit.timeSec * sampleRate)));
+      const tomEval = evaluateTomResonanceAtSample({
+        sampleIdx: hitSampleIdx,
+        sampleRate,
+        subKickSig: subKickCoreSig,
+        tomSig,
+        crackSig,
+        lowBodySig,
+        isFullMix: false,
+      });
+      const matchingAcousticTom = acousticAnalysis.drumHits.find(
+        (ah) =>
+          ah.role === 'tom' &&
+          (Math.abs(ah.peakTimeSec - hit.timeSec) < 0.036 ||
+            Math.abs(ah.timeSec - hit.timeSec) < 0.036)
+      );
+
+      if (role === 'kick' && (tomEval.isPitchedTom || matchingAcousticTom)) {
+        // MT3 emitted a Kick (36) on a pitched Tom hit -> Reclassify to exact High/Mid/Floor Tom!
+        role = 'tom';
+        midiNote = matchingAcousticTom?.midiNote ?? tomEval.midiNote;
+        subRoleLabel = matchingAcousticTom?.subRoleLabel ?? tomEval.subRoleLabel;
+        articulation = matchingAcousticTom?.articulation ?? tomEval.articulation;
+        pitchOffsetSemis = matchingAcousticTom?.pitchOffsetSemis ?? tomEval.pitchOffsetSemis;
+      } else if (role === 'tom') {
+        if (
+          !tomEval.isPitchedTom &&
+          !matchingAcousticTom &&
+          (midiNote === 41 || midiNote === 43 || midiNote === 45) &&
+          tomEval.subRms > tomEval.tomRms * 1.38
+        ) {
+          // Deep sub-bass (<66 Hz) dominates with no pitched tom ring -> Reclassify to Kick (36)
+          role = 'kick';
+          midiNote = 36;
+          subRoleLabel = 'Kick Drum 1 (36)';
+          articulation = 'closed';
+          pitchOffsetSemis = 0;
+        } else if (tomEval.isPitchedTom || matchingAcousticTom) {
+          // Lock tom articulation (High 50 / Mid 47 / Floor 43) to actual acoustic pitch
+          midiNote = matchingAcousticTom?.midiNote ?? tomEval.midiNote;
+          subRoleLabel = matchingAcousticTom?.subRoleLabel ?? tomEval.subRoleLabel;
+          articulation = matchingAcousticTom?.articulation ?? tomEval.articulation;
+          pitchOffsetSemis = matchingAcousticTom?.pitchOffsetSemis ?? tomEval.pitchOffsetSemis;
+        }
       }
     }
 
@@ -636,14 +682,19 @@ export function fuseMidiWithAcousticDrumAudio(params: {
     });
   }
 
-  // Hybrid Acoustic Fallback: merge high-confidence acoustic hits that had no MIDI hit within ±38ms
+  // Hybrid Acoustic Fallback: merge high-confidence acoustic hits that had no MIDI hit within ±42ms
   if (includeAcousticFallback && sourceEngine === 'replicate-mt3') {
     for (const acHit of acousticAnalysis.drumHits) {
       const minVelocityForFallback =
         acHit.role === 'kick' || acHit.role === 'snare' || acHit.role === 'tom' ? 0.42 : 0.48;
       if (acHit.velocity < minVelocityForFallback) continue;
+      // Avoid injecting a fallback Kick on top of an already-verified Tom (or vice versa) within ±42ms
       const alreadyCovered = rawRefined.some(
-        (m) => m.role === acHit.role && Math.abs(m.peakTimeSec - acHit.peakTimeSec) < 0.042
+        (m) =>
+          (m.role === acHit.role ||
+            (m.role === 'tom' && acHit.role === 'kick') ||
+            (m.role === 'kick' && acHit.role === 'tom')) &&
+          Math.abs(m.peakTimeSec - acHit.peakTimeSec) < 0.042
       );
       if (!alreadyCovered) {
         const sig = bandMap[acHit.role];

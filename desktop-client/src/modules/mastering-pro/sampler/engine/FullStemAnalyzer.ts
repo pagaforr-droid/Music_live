@@ -483,55 +483,294 @@ export function estimateBpmFromOnsets(
   return Math.round(minBpm + bestBin * step);
 }
 
-function applyBiquadBandPassOrLp(
+export function applyBiquadBandPassOrLp(
   mono: Float32Array,
   sr: number,
   hpHz: number | null,
-  lpHz: number | null
+  lpHz: number | null,
+  stages = 1
 ): Float32Array {
   const n = mono.length;
   const out = new Float32Array(n);
   out.set(mono);
 
-  if (hpHz !== null && hpHz > 0 && hpHz < sr * 0.45) {
-    const w = (2 * Math.PI * hpHz) / sr;
-    const c = Math.cos(w);
-    const a = Math.sin(w) / (2 * Math.SQRT1_2);
-    const a0 = 1 + a;
-    const b0 = ((1 + c) * 0.5) / a0;
-    const b1 = -(1 + c) / a0;
-    const b2 = b0;
-    const a1 = (-2 * c) / a0;
-    const a2 = (1 - a) / a0;
-    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-    for (let i = 0; i < n; i++) {
-      const x = out[i];
-      const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-      x2 = x1; x1 = x; y2 = y1; y1 = y;
-      out[i] = y;
+  const passes = Math.max(1, Math.min(4, stages));
+  for (let pass = 0; pass < passes; pass++) {
+    if (hpHz !== null && hpHz > 0 && hpHz < sr * 0.45) {
+      const w = (2 * Math.PI * hpHz) / sr;
+      const c = Math.cos(w);
+      const a = Math.sin(w) / (2 * Math.SQRT1_2);
+      const a0 = 1 + a;
+      const b0 = ((1 + c) * 0.5) / a0;
+      const b1 = -(1 + c) / a0;
+      const b2 = b0;
+      const a1 = (-2 * c) / a0;
+      const a2 = (1 - a) / a0;
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (let i = 0; i < n; i++) {
+        const x = out[i];
+        const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = x; y2 = y1; y1 = y;
+        out[i] = y;
+      }
     }
-  }
 
-  if (lpHz !== null && lpHz > 0 && lpHz < sr * 0.45) {
-    const w = (2 * Math.PI * lpHz) / sr;
-    const c = Math.cos(w);
-    const a = Math.sin(w) / (2 * Math.SQRT1_2);
-    const a0 = 1 + a;
-    const b0 = ((1 - c) * 0.5) / a0;
-    const b1 = (1 - c) / a0;
-    const b2 = b0;
-    const a1 = (-2 * c) / a0;
-    const a2 = (1 - a) / a0;
-    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-    for (let i = 0; i < n; i++) {
-      const x = out[i];
-      const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-      x2 = x1; x1 = x; y2 = y1; y1 = y;
-      out[i] = y;
+    if (lpHz !== null && lpHz > 0 && lpHz < sr * 0.45) {
+      const w = (2 * Math.PI * lpHz) / sr;
+      const c = Math.cos(w);
+      const a = Math.sin(w) / (2 * Math.SQRT1_2);
+      const a0 = 1 + a;
+      const b0 = ((1 - c) * 0.5) / a0;
+      const b1 = (1 - c) / a0;
+      const b2 = b0;
+      const a1 = (-2 * c) / a0;
+      const a2 = (1 - a) / a0;
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (let i = 0; i < n; i++) {
+        const x = out[i];
+        const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = x; y2 = y1; y1 = y;
+        out[i] = y;
+      }
     }
   }
 
   return out;
+}
+
+export interface TomResonanceEvaluation {
+  isPitchedTom: boolean;
+  freqHz: number;
+  clarity: number;
+  tomRms: number;
+  subRms: number;
+  crackRms: number;
+  decayRatio: number;
+  midiNote: number;
+  subRoleLabel: string;
+  articulation: DrumArticulation;
+  pitchOffsetSemis: number;
+}
+
+/**
+ * High-precision Acoustic Tom vs. Kick & Snare Discriminator.
+ * Evaluates the settled resonant drum-head window [+22ms .. +88ms] (after the Kick's 0..22ms
+ * beater pitch-chirp has already dropped below 72 Hz into the sub-bass, while a Floor/Mid/High Tom
+ * continues ringing at its true 76..270 Hz shell fundamental).
+ */
+export function evaluateTomResonanceAtSample(params: {
+  sampleIdx: number;
+  sampleRate: number;
+  subKickSig: Float32Array;
+  tomSig: Float32Array;
+  crackSig: Float32Array;
+  lowBodySig?: Float32Array;
+  isFullMix?: boolean;
+}): TomResonanceEvaluation {
+  const { sampleIdx, sampleRate, subKickSig, tomSig, crackSig, lowBodySig, isFullMix = false } = params;
+  const totalLen = tomSig.length;
+  const pitchSig = lowBodySig ?? tomSig;
+  const fallback: TomResonanceEvaluation = {
+    isPitchedTom: false,
+    freqHz: 130,
+    clarity: 0,
+    tomRms: 0,
+    subRms: 0,
+    crackRms: 0,
+    decayRatio: 1,
+    midiNote: 47,
+    subRoleLabel: 'Mid Tom (47)',
+    articulation: 'mid-tom',
+    pitchOffsetSemis: 0,
+  };
+
+  // Settled resonant body window [+22ms .. +86ms]:
+  // By +22ms, a Kick Drum's beater chirp (140Hz -> 50Hz) has dropped below 74Hz into subKickSig,
+  // whereas Floor Toms (78..120Hz), Mid Toms (122..168Hz), and High Toms (170..265Hz) ring above 78Hz!
+  const wStart = Math.min(totalLen - 1, sampleIdx + Math.round(sampleRate * 0.022));
+  const wEnd = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.086));
+  const wLen = wEnd - wStart;
+  if (wLen < Math.round(sampleRate * 0.022)) {
+    return fallback;
+  }
+
+  // Also measure crackRms across [+6ms .. +58ms] so Snare wire rattle is captured in full
+  const cStart = Math.min(totalLen - 1, sampleIdx + Math.round(sampleRate * 0.006));
+  const cEnd = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.058));
+  let sqCrack = 0;
+  for (let k = cStart; k < cEnd; k++) {
+    const cv = crackSig[k];
+    sqCrack += cv * cv;
+  }
+  const crackRms = Math.sqrt(sqCrack / Math.max(1, cEnd - cStart));
+
+  let sqTom = 0;
+  let sqSub = 0;
+  const zcTom: number[] = [];
+  const zcBody: number[] = [];
+  for (let k = wStart; k < wEnd; k++) {
+    const tv = tomSig[k];
+    const sv = subKickSig[k];
+    const bv = pitchSig[k];
+    sqTom += tv * tv;
+    sqSub += sv * sv;
+    if (k > wStart && tomSig[k - 1] <= 0 && tv > 0) {
+      zcTom.push(k);
+    }
+    if (k > wStart && pitchSig[k - 1] <= 0 && bv > 0) {
+      zcBody.push(k);
+    }
+  }
+  const tomRms = Math.sqrt(sqTom / wLen);
+  const subRms = Math.sqrt(sqSub / wLen);
+  if (zcTom.length < 3 || tomRms < 1e-4) {
+    return { ...fallback, tomRms, subRms, crackRms };
+  }
+
+  // Check unbiased full low-body (32..340 Hz) zero-crossing median frequency in [+22ms .. +86ms]:
+  // On a Kick Drum, the full waveform zero-crossings in [+22ms..+86ms] are at 42..67 Hz!
+  if (zcBody.length >= 2) {
+    const bodyPeriods: number[] = [];
+    for (let z = 1; z < zcBody.length; z++) {
+      const p = zcBody[z] - zcBody[z - 1];
+      const f = sampleRate / Math.max(1, p);
+      if (f >= 36 && f <= 300) {
+        bodyPeriods.push(p);
+      }
+    }
+    if (bodyPeriods.length >= 2) {
+      bodyPeriods.sort((a, b) => a - b);
+      const bodyMedLag = bodyPeriods[Math.floor(bodyPeriods.length / 2)];
+      const bodyFreqHz = sampleRate / Math.max(1, bodyMedLag);
+      // If the unfiltered low-body fundamental in the tail is in the Sub-Kick zone (< 68 Hz), it is a Kick, NOT a Tom!
+      if (bodyFreqHz < 68) {
+        return { ...fallback, freqHz: bodyFreqHz, tomRms, subRms, crackRms };
+      }
+    }
+  }
+
+  // Measure pre-onset [-46ms .. -16ms] vs early body [+6ms .. +46ms] vs late decay [+70ms .. +138ms]
+  // Using -46ms..-16ms ensures that even if sampleIdx is aligned to the transient peak (+10ms after onset),
+  // the pre-window remains strictly before the drum hit attack!
+  const preS = Math.max(0, sampleIdx - Math.round(sampleRate * 0.046));
+  const preE = Math.max(preS, sampleIdx - Math.round(sampleRate * 0.016));
+  let preTomRms = 0;
+  if (preE > preS + 16) {
+    let sqPre = 0;
+    for (let k = preS; k < preE; k++) sqPre += tomSig[k] * tomSig[k];
+    preTomRms = Math.sqrt(sqPre / (preE - preS));
+  }
+
+  const earlyS = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.008));
+  const earlyE = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.046));
+  let earlyTomRms = tomRms;
+  if (earlyE > earlyS + 16) {
+    let sqE = 0;
+    for (let k = earlyS; k < earlyE; k++) sqE += tomSig[k] * tomSig[k];
+    earlyTomRms = Math.sqrt(sqE / (earlyE - earlyS));
+  }
+
+  const lateWin = Math.max(16, Math.round(sampleRate * 0.016));
+  const lateHop = Math.max(8, Math.round(sampleRate * 0.008));
+  const lateRegionS = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.070));
+  const lateRegionE = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.138));
+  let minLateTomRms = earlyTomRms * 0.5;
+  if (lateRegionE >= lateRegionS + lateWin) {
+    minLateTomRms = Infinity;
+    for (let s = lateRegionS; s + lateWin <= lateRegionE; s += lateHop) {
+      let sqL = 0;
+      for (let k = s; k < s + lateWin; k++) sqL += tomSig[k] * tomSig[k];
+      const r = Math.sqrt(sqL / lateWin);
+      if (r < minLateTomRms) minLateTomRms = r;
+    }
+  }
+  const decayRatio = earlyTomRms / Math.max(1e-5, minLateTomRms);
+  const attackStepRatio = earlyTomRms / Math.max(1e-5, preTomRms);
+
+  const periods: number[] = [];
+  for (let z = 1; z < zcTom.length; z++) {
+    const p = zcTom[z] - zcTom[z - 1];
+    const f = sampleRate / Math.max(1, p);
+    if (f >= 68 && f <= 285) {
+      periods.push(p);
+    }
+  }
+  if (periods.length < 2) {
+    return { ...fallback, tomRms, subRms, crackRms, decayRatio };
+  }
+  periods.sort((a, b) => a - b);
+  const medLag = Math.round(periods[Math.floor(periods.length / 2)]);
+  const minLag = Math.max(8, Math.floor(sampleRate / 285));
+  const maxLag = Math.min(wLen - 8, Math.ceil(sampleRate / 68));
+
+  // Search ±5 samples around zero-crossing median lag for peak autocorrelation clarity (handles dual-head overtones)
+  let bestLag = Math.max(minLag, Math.min(maxLag, medLag));
+  let bestClarity = -1;
+  for (let lag = Math.max(minLag, medLag - 5); lag <= Math.min(maxLag, medLag + 5); lag++) {
+    let acNum = 0;
+    let acDenA = 0;
+    let acDenB = 0;
+    for (let k = wStart; k < wEnd - lag; k++) {
+      const a = tomSig[k];
+      const b = tomSig[k + lag];
+      acNum += a * b;
+      acDenA += a * a;
+      acDenB += b * b;
+    }
+    const c = acNum / Math.max(1e-9, Math.sqrt(acDenA * acDenB));
+    if (c > bestClarity) {
+      bestClarity = c;
+      bestLag = lag;
+    }
+  }
+  const freqHz = sampleRate / Math.max(1, bestLag);
+  const clarity = Math.max(0, bestClarity);
+
+  let midiNote = 47;
+  let subRoleLabel = 'Mid Tom (47)';
+  let articulation: DrumArticulation = 'mid-tom';
+  let pitchOffsetSemis = 0;
+  if (freqHz >= 168) {
+    midiNote = 50;
+    subRoleLabel = 'High Tom (50)';
+    articulation = 'high-tom';
+    pitchOffsetSemis = 3;
+  } else if (freqHz >= 122) {
+    midiNote = 47;
+    subRoleLabel = 'Mid Tom (47)';
+    articulation = 'mid-tom';
+    pitchOffsetSemis = 0;
+  } else {
+    midiNote = 43;
+    subRoleLabel = 'Floor Tom (43)';
+    articulation = 'floor-tom';
+    pitchOffsetSemis = -3;
+  }
+
+  const minDecayRatio = isFullMix ? 1.52 : 1.15;
+  const minCrackRatio = isFullMix ? 2.25 : 1.65;
+  const isPitchedTom =
+    freqHz >= 69 &&
+    freqHz <= 275 &&
+    clarity >= (isFullMix ? 0.58 : 0.48) &&
+    attackStepRatio >= (isFullMix ? 1.52 : 1.25) &&
+    decayRatio >= minDecayRatio &&
+    tomRms > subRms * 1.16 &&
+    tomRms > crackRms * minCrackRatio;
+
+  return {
+    isPitchedTom,
+    freqHz,
+    clarity,
+    tomRms,
+    subRms,
+    crackRms,
+    decayRatio,
+    midiNote,
+    subRoleLabel,
+    articulation,
+    pitchOffsetSemis,
+  };
 }
 
 function computePercentileFloat(arr: Float32Array, pct: number): number {
@@ -565,13 +804,14 @@ export function analyzeDrumStemFull(
   );
 
   // 1. 6-Band Butterworth isolation for accurate drum peak timing & transient separation (resistant to dirty stem bleed)
-  const subKickSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 84);
-  const kickSig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 138);
-  const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 84, 340);
-  const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 155, 360);
-  const crackSig = applyBiquadBandPassOrLp(mono, sampleRate, 1850, 6200);
-  const cymbalSig = applyBiquadBandPassOrLp(mono, sampleRate, 2800, 11800);
-  const hatSig = applyBiquadBandPassOrLp(mono, sampleRate, 5800, null);
+  const subKickSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 76, 1);
+  const kickSig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 132, 1);
+  const lowBodySig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 340, 1);
+  const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 80, 340, 1);
+  const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 155, 360, 1);
+  const crackSig = applyBiquadBandPassOrLp(mono, sampleRate, 1850, 6200, 1);
+  const cymbalSig = applyBiquadBandPassOrLp(mono, sampleRate, 2800, 11800, 1);
+  const hatSig = applyBiquadBandPassOrLp(mono, sampleRate, 5800, null, 1);
 
   // 500Hz (2ms) band RMS envelopes smoothed with cycle-spanning windows (eliminates 50Hz bass zero-crossing ripple!)
   const envHz = 500;
@@ -698,7 +938,7 @@ export function analyzeDrumStemFull(
   collectBandPeaks(envCymbal, refCymbalEnv, 1.58, 0.14);
   if (!isFullMix) {
     collectBandPeaks(envShell, refShellEnv, 1.58, 0.095);
-    collectBandPeaks(envTom, refTomEnv, 1.48, 0.085);
+    collectBandPeaks(envTom, refTomEnv, 1.44, 0.085);
   }
 
   // Cluster candidates within 26ms so separate beats/offbeat hits stay distinct while collapsing double-triggers
@@ -719,68 +959,17 @@ export function analyzeDrumStemFull(
     candidateTimes.push(cur.t);
   }
 
-  // Helper to measure pitched Tom resonance (82..265 Hz) vs Sub-Kick (28..84 Hz) vs Snare Wire (1850..6200 Hz)
-  const measureTomResonance = (sampleIdx: number) => {
-    const wStart = Math.min(mono.length - 1, sampleIdx + Math.round(sampleRate * 0.006));
-    const wEnd = Math.min(mono.length, sampleIdx + Math.round(sampleRate * 0.056));
-    const wLen = wEnd - wStart;
-    if (wLen < Math.round(sampleRate * 0.018)) {
-      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms: 0, subRms: 0, crackRms: 0 };
-    }
-    let sqTom = 0;
-    let sqSub = 0;
-    let sqCrack = 0;
-    const zcIndices: number[] = [];
-    for (let k = wStart; k < wEnd; k++) {
-      const tv = tomSig[k];
-      const sv = subKickSig[k];
-      const cv = crackSig[k];
-      sqTom += tv * tv;
-      sqSub += sv * sv;
-      sqCrack += cv * cv;
-      if (k > wStart && tomSig[k - 1] <= 0 && tv > 0) {
-        zcIndices.push(k);
-      }
-    }
-    const tomRms = Math.sqrt(sqTom / wLen);
-    const subRms = Math.sqrt(sqSub / wLen);
-    const crackRms = Math.sqrt(sqCrack / wLen);
-    if (zcIndices.length < 3 || tomRms < 1e-4) {
-      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms, subRms, crackRms };
-    }
-    const periods: number[] = [];
-    for (let z = 1; z < zcIndices.length; z++) {
-      const p = zcIndices[z] - zcIndices[z - 1];
-      const f = sampleRate / Math.max(1, p);
-      if (f >= 74 && f <= 285) {
-        periods.push(p);
-      }
-    }
-    if (periods.length < 2) {
-      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms, subRms, crackRms };
-    }
-    periods.sort((a, b) => a - b);
-    const medLag = Math.round(periods[Math.floor(periods.length / 2)]);
-    const freqHz = sampleRate / Math.max(1, medLag);
-    let acNum = 0;
-    let acDenA = 0;
-    let acDenB = 0;
-    for (let k = wStart; k < wEnd - medLag; k++) {
-      const a = tomSig[k];
-      const b = tomSig[k + medLag];
-      acNum += a * b;
-      acDenA += a * a;
-      acDenB += b * b;
-    }
-    const clarity = acNum / Math.max(1e-9, Math.sqrt(acDenA * acDenB));
-    const isPitchedTom =
-      freqHz >= 82 &&
-      freqHz <= 265 &&
-      clarity >= 0.62 &&
-      tomRms > subRms * 1.24 &&
-      tomRms > crackRms * 2.25;
-    return { isPitchedTom, freqHz, clarity, tomRms, subRms, crackRms };
-  };
+  // Helper to measure pitched Tom resonance (76..270 Hz) vs Sub-Kick Core (28..76 Hz) vs Snare Wire (1850..6200 Hz)
+  const measureTomResonance = (sampleIdx: number): TomResonanceEvaluation =>
+    evaluateTomResonanceAtSample({
+      sampleIdx,
+      sampleRate,
+      subKickSig,
+      tomSig,
+      crackSig,
+      lowBodySig,
+      isFullMix,
+    });
 
   // 3. Pre/Post Delta-Spectrum FFT Classifier (cancels sustaining guitars/bass/vocals/bleed!)
   const fftSize = 1024;
@@ -951,6 +1140,36 @@ export function analyzeDrumStemFull(
     const cymbalStrength = ySt.step / Math.max(1e-4, refCymbalEnv);
     const hatStrength = hSt.step / Math.max(1e-4, refHatEnv);
 
+    const hasSnareWireNoise =
+      crackStrength >= 0.27 &&
+      cSt.ratio >= 1.36 &&
+      crackFlatness >= 0.092 &&
+      (rCrack >= 0.12 || crackStrength > tomStrength * 0.58);
+
+    // Evaluate pitched Tom resonance (Floor Tom 76-121Hz, Mid Tom 122-167Hz, High Tom 168-270Hz)
+    // Always evaluated regardless of isFullMix so Tom fills are never misclassified as Kick Drums!
+    const rawTomInfo: TomResonanceEvaluation =
+      (tomStrength >= 0.22 || shellStrength >= 0.22 || kickStrength >= 0.24) &&
+      Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.32
+        ? measureTomResonance(sampleIdx)
+        : {
+            isPitchedTom: false,
+            freqHz: 130,
+            clarity: 0,
+            tomRms: 0,
+            subRms: 0,
+            crackRms: 0,
+            decayRatio: 1,
+            midiNote: 47,
+            subRoleLabel: 'Mid Tom (47)',
+            articulation: 'mid-tom',
+            pitchOffsetSemis: 0,
+          };
+    const tomInfo: TomResonanceEvaluation =
+      hasSnareWireNoise && rawTomInfo.tomRms < rawTomInfo.crackRms * 4.5
+        ? { ...rawTomInfo, isPitchedTom: false }
+        : rawTomInfo;
+
     // Dirty stem & Full-mix gating: reject intro pads, solo bass plucks, vocal syllables, and non-percussive bleed!
     if (isFullMix) {
       const hasKickPulse =
@@ -967,7 +1186,8 @@ export function analyzeDrumStemFull(
         (hatStrength >= 0.34 - sensitivity * 0.12 && hSt.ratio >= 1.48 && rHat >= 0.20) ||
         (cymbalStrength >= 0.42 - sensitivity * 0.12 && ySt.ratio >= 1.55 && rCrackHat >= 0.28 && crackFlatness >= 0.11 && cymHoldRatio >= 0.24);
       const hasTomPulse =
-        shellStrength >= 0.38 && sSt.ratio >= 1.72 && rTom >= 0.36 && crackFlatness < 0.095;
+        (tomInfo.isPitchedTom && Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.42) ||
+        (shellStrength >= 0.38 && sSt.ratio >= 1.72 && rTom >= 0.36 && crackFlatness < 0.095);
       if (!hasKickPulse && !hasSnarePulse && !hasHatOrCrashPulse && !hasTomPulse) {
         continue;
       }
@@ -979,7 +1199,7 @@ export function analyzeDrumStemFull(
         continue;
       }
       // Reject sustained bass guitar bleed (high low-end with flat tail and zero beater/shell attack)
-      if (rKick > 0.65 && kTailDrop < 1.12 && kSt.ratio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
+      if (!tomInfo.isPitchedTom && rKick > 0.65 && kTailDrop < 1.12 && kSt.ratio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
         continue;
       }
     }
@@ -995,12 +1215,6 @@ export function analyzeDrumStemFull(
       ySt.post >= refCymbalEnv * 0.28 &&
       cymTailAvg >= refCymbalEnv * 0.12 &&
       (!isFullMix || crackFlatness >= 0.08);
-
-    // Check pitched Tom resonance (Floor Tom 85-115Hz, Mid Tom 115-165Hz, High Tom 165-260Hz)
-    const tomInfo =
-      !isFullMix && (tomStrength >= 0.26 || shellStrength >= 0.26) && Math.max(tSt.ratio, sSt.ratio) >= 1.38
-        ? measureTomResonance(sampleIdx)
-        : { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms: 0, subRms: 0, crackRms: 0 };
 
     let role: DrumPieceRole = 'snare';
     const strongKickRise =
@@ -1112,22 +1326,10 @@ export function analyzeDrumStemFull(
       subRoleLabel = isOpenHat ? 'Open Hi-Hat (46)' : 'Closed Hi-Hat (42)';
       articulation = isOpenHat ? 'open' : 'closed';
     } else if (role === 'tom') {
-      if (tomInfo.freqHz >= 172) {
-        midiNote = 50;
-        subRoleLabel = 'High Tom (50)';
-        articulation = 'high-tom';
-        pitchOffsetSemis = 3;
-      } else if (tomInfo.freqHz >= 126) {
-        midiNote = 47;
-        subRoleLabel = 'Mid Tom (47)';
-        articulation = 'mid-tom';
-        pitchOffsetSemis = 0;
-      } else {
-        midiNote = 43;
-        subRoleLabel = 'Floor Tom (43)';
-        articulation = 'floor-tom';
-        pitchOffsetSemis = -3;
-      }
+      midiNote = tomInfo.midiNote;
+      subRoleLabel = tomInfo.subRoleLabel;
+      articulation = tomInfo.articulation;
+      pitchOffsetSemis = tomInfo.pitchOffsetSemis;
     }
 
     // Prevent spurious overlapping duplicate detections inside 55ms (preserving distinct co-occurring drum pieces)

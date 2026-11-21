@@ -6,6 +6,7 @@ import {
   encodeAnalysisToStandardMidi,
   encodeAudioBufferToCompactWavBase64,
   fuseMidiWithAcousticDrumAudio,
+  mapMidiNoteToDrumPiece,
   parseStandardMidiFile,
 } from '../engine/DrumMidiEngine';
 import {
@@ -53,6 +54,7 @@ import type {
   CustomReplacementSampleItem,
   CustomSampleCategory,
   DefaultInstrumentId,
+  DrumArticulation,
   DrumPieceRole,
   FullStemAnalysisResult,
   ImportedAudioMemoryAnalysis,
@@ -60,6 +62,7 @@ import type {
   SongStemEntry,
   SongWithStemsFolder,
   StemAnalysisMode,
+  StemDrumHitEvent,
   StemQuantizeMode,
   StemReplaceMixOptions,
 } from '../types/sampler.types';
@@ -168,6 +171,10 @@ export function useStemReplacer() {
   const [drumSlots, setDrumSlots] = useState<Record<DrumPieceRole, ReplacementSlotConfig>>(
     () => createDefaultDrumSlots()
   );
+  const [soloDrumRole, setSoloDrumRole] = useState<DrumPieceRole | null>(null);
+  const toggleSoloDrumRole = useCallback((role: DrumPieceRole) => {
+    setSoloDrumRole((prev) => (prev === role ? null : role));
+  }, []);
   const [melodicSlot, setMelodicSlot] = useState<ReplacementSlotConfig>(() =>
     createDefaultMelodicSlot('inst-piano-grand')
   );
@@ -660,10 +667,19 @@ export function useStemReplacer() {
     const timer = setTimeout(() => {
       setIsRendering(true);
       try {
+        const effectiveDrumSlots = soloDrumRole
+          ? {
+              kick: { ...drumSlots.kick, enabled: soloDrumRole === 'kick' },
+              snare: { ...drumSlots.snare, enabled: soloDrumRole === 'snare' },
+              tom: { ...drumSlots.tom, enabled: soloDrumRole === 'tom' },
+              hat: { ...drumSlots.hat, enabled: soloDrumRole === 'hat' },
+              crash: { ...drumSlots.crash, enabled: soloDrumRole === 'crash' },
+            }
+          : drumSlots;
         const rendered = renderFullStemReplacement({
           originalBuffer,
           analysis,
-          drumSlots,
+          drumSlots: effectiveDrumSlots,
           melodicSlot,
           mix: mixOptions,
         });
@@ -673,7 +689,7 @@ export function useStemReplacer() {
       }
     }, 140);
     return () => clearTimeout(timer);
-  }, [originalBuffer, analysis, drumSlots, melodicSlot, mixOptions]);
+  }, [originalBuffer, analysis, drumSlots, soloDrumRole, melodicSlot, mixOptions]);
 
   // Smooth real-time A/B gain crossfade while playing
   useEffect(() => {
@@ -780,6 +796,7 @@ export function useStemReplacer() {
         setOriginalBuffer(decoded);
         setCurrentTimeSec(0);
 
+        const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStatusMessage('Detectando tempo, grilla Stem Studio y acordes en memoria...');
         const pre = await runPreImportAnalysis(
           decoded,
@@ -789,12 +806,14 @@ export function useStemReplacer() {
                 timeSignature: song.timeSignature,
                 seedBeatTimes: song.beatTimes,
                 seedDownbeats: song.downbeats,
-                seedKey: song.musicalKey,
+                seedKey:
+                  inferredMode === 'drums' && !stem.isMaster
+                    ? 'Percusión (Sin tono)'
+                    : song.musicalKey,
               }
             : undefined
         );
 
-        const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStemMode(inferredMode);
         const chosenPreset = chooseDefaultMelodicPresetForName(stem.name);
         const nextFocus = inferredMode !== 'drums' && isBassPresetId(chosenPreset);
@@ -2136,35 +2155,142 @@ export function useStemReplacer() {
     [originalBuffer, stemMode, sensitivity, selectedSong?.bpm, ensureCtx]
   );
 
-  // Interactive MIDI Drum Roll Hit Editor: add a hit on any of the 5 drum lanes
+  // Audition a single drum hit with its exact assigned replacement sample, velocity & multi-tom pitch offset
+  const auditionDrumHit = useCallback(
+    (hit: StemDrumHitEvent) => {
+      const slot = drumSlots[hit.role];
+      if (!slot) return;
+      const ctx = ensureCtx();
+      const buf =
+        slot.sourceType !== 'preset' && slot.customBuffer
+          ? slot.customBuffer
+          : getPresetAuditionBuffer(ctx, slot.presetId);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const pitchSemis = slot.pitchSemis + (hit.pitchOffsetSemis ?? 0);
+      src.playbackRate.value = Math.pow(2, pitchSemis / 12);
+      const g = ctx.createGain();
+      g.gain.value =
+        Math.pow(10, slot.gainDb / 20) * Math.max(0.22, Math.min(1.0, hit.velocity));
+      src.connect(g);
+      g.connect(ctx.destination);
+      src.start();
+    },
+    [drumSlots, ensureCtx]
+  );
+
+  // Interactive MIDI Drum Roll Hit Editor: add a hit on any of the 5 drum lanes (with articulation support)
   const addManualDrumHit = useCallback(
-    (role: DrumPieceRole, rawTimeSec: number, velocity = 0.88) => {
-      if (!analysis || analysis.mode !== 'drums') return;
+    (
+      role: DrumPieceRole,
+      rawTimeSec: number,
+      velocity = 0.88,
+      articulation?: DrumArticulation
+    ) => {
+      if (!analysis || analysis.mode !== 'drums') return null;
       const clampedSec = Number(
         Math.max(0, Math.min(analysis.durationSec - 0.01, rawTimeSec)).toFixed(4)
       );
-      const gmNote = defaultGmNoteForDrumRole(role);
-      const roleLabels: Record<DrumPieceRole, string> = {
-        kick: 'Kick Drum 1 (36)',
-        snare: 'Acoustic Snare (38)',
-        hat: 'Closed Hi-Hat (42)',
-        tom: 'Mid Tom (47)',
-        crash: 'Crash Cymbal 1 (49)',
+      const gmNote = defaultGmNoteForDrumRole(role, articulation);
+      const desc = mapMidiNoteToDrumPiece(gmNote);
+      const newHit: StemDrumHitEvent = {
+        id: `dh-manual-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        timeSec: clampedSec,
+        peakTimeSec: clampedSec,
+        role: desc.role,
+        velocity: Number(Math.max(0.12, Math.min(1.0, velocity)).toFixed(3)),
+        midiNote: desc.midiNote,
+        subRoleLabel: desc.subRoleLabel,
+        articulation: articulation ?? desc.articulation,
+        pitchOffsetSemis: desc.pitchOffsetSemis,
+        sourceEngine: 'manual',
       };
-      const nextHits = [
-        ...analysis.drumHits,
-        {
-          id: `dh-manual-${Date.now()}`,
-          timeSec: clampedSec,
-          peakTimeSec: clampedSec,
-          role,
-          velocity,
-          midiNote: gmNote,
-          subRoleLabel: roleLabels[role],
-          pitchOffsetSemis: 0,
-          sourceEngine: 'manual' as const,
-        },
-      ].sort((a, b) => a.timeSec - b.timeSec);
+      const nextHits = [...analysis.drumHits, newHit].sort(
+        (a, b) => a.timeSec - b.timeSec
+      );
+
+      const counts = {
+        total: nextHits.length,
+        kick: nextHits.filter((h) => h.role === 'kick').length,
+        snare: nextHits.filter((h) => h.role === 'snare').length,
+        hat: nextHits.filter((h) => h.role === 'hat').length,
+        crash: nextHits.filter((h) => h.role === 'crash').length,
+        tom: nextHits.filter((h) => h.role === 'tom').length,
+        notes: analysis.counts.notes,
+      };
+      setAnalysis({
+        ...analysis,
+        drumHits: nextHits,
+        counts,
+      });
+      return newHit;
+    },
+    [analysis]
+  );
+
+  // Interactive MIDI Drum Roll Hit Editor: update role (e.g. Kick <-> Tom <-> Snare), articulation, velocity or timing
+  const updateDrumHit = useCallback(
+    (
+      hitId: string,
+      patch: {
+        role?: DrumPieceRole;
+        midiNote?: number;
+        articulation?: DrumArticulation;
+        velocity?: number;
+        timeSec?: number;
+        pitchOffsetSemis?: number;
+      }
+    ) => {
+      if (!analysis || analysis.mode !== 'drums') return;
+      const nextHits = analysis.drumHits
+        .map((h) => {
+          if (h.id !== hitId) return h;
+          const nextRole = patch.role ?? h.role;
+          const nextArt =
+            patch.articulation ??
+            (patch.role && patch.role !== h.role ? undefined : h.articulation);
+          const targetGmNote =
+            patch.midiNote ??
+            (patch.role !== undefined || patch.articulation !== undefined
+              ? defaultGmNoteForDrumRole(nextRole, nextArt)
+              : h.midiNote ?? defaultGmNoteForDrumRole(nextRole, nextArt));
+          const desc = mapMidiNoteToDrumPiece(targetGmNote);
+          const nextTime =
+            patch.timeSec !== undefined
+              ? Number(
+                  Math.max(0, Math.min(analysis.durationSec - 0.005, patch.timeSec)).toFixed(4)
+                )
+              : h.timeSec;
+          const timeDelta = nextTime - h.timeSec;
+          const nextPeakTime =
+            patch.timeSec !== undefined
+              ? Number(
+                  Math.max(
+                    0,
+                    Math.min(analysis.durationSec - 0.002, h.peakTimeSec + timeDelta)
+                  ).toFixed(5)
+                )
+              : h.peakTimeSec;
+          const nextVel =
+            patch.velocity !== undefined
+              ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
+              : h.velocity;
+          return {
+            ...h,
+            role: desc.role,
+            midiNote: desc.midiNote,
+            subRoleLabel: desc.subRoleLabel,
+            articulation: patch.articulation ?? desc.articulation,
+            pitchOffsetSemis:
+              patch.pitchOffsetSemis !== undefined
+                ? patch.pitchOffsetSemis
+                : desc.pitchOffsetSemis,
+            velocity: nextVel,
+            timeSec: nextTime,
+            peakTimeSec: nextPeakTime,
+          };
+        })
+        .sort((a, b) => a.timeSec - b.timeSec);
 
       const counts = {
         total: nextHits.length,
@@ -2233,6 +2359,8 @@ export function useStemReplacer() {
     importedMemory,
     analysis,
     drumSlots,
+    soloDrumRole,
+    toggleSoloDrumRole,
     melodicSlot,
     customSamples,
     mixOptions,
@@ -2250,7 +2378,9 @@ export function useStemReplacer() {
     exportCurrentMidiFile,
     importMidiFileForReplacement,
     addManualDrumHit,
+    updateDrumHit,
     removeDrumHit,
+    auditionDrumHit,
     isRendering,
     isExportingPc,
     isSavingCloud,
