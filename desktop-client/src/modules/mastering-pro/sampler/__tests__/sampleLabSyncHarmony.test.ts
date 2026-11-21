@@ -7,6 +7,12 @@ import {
   constrainNotesToDetectedHarmony,
   parseMusicalKeyInfo,
 } from '../engine/FullStemAnalyzer';
+import {
+  encodeAnalysisToStandardMidi,
+  fuseMidiWithAcousticDrumAudio,
+  mapMidiNoteToDrumPiece,
+  parseStandardMidiFile,
+} from '../engine/DrumMidiEngine';
 import { detectPitchYin } from '../engine/PitchDetector';
 import {
   analyzeImportedAudioFirst,
@@ -621,5 +627,135 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
     for (let i = 0; i < outCh.length; i += 4) maxOut = Math.max(maxOut, Math.abs(outCh[i]));
     expect(maxOut).toBeGreaterThan(0.25);
     expect(maxOut).toBeLessThanOrEqual(0.92);
+  });
+
+  it('recognizes all 5 drum pieces (Kick, Snare, Toms High/Mid/Floor, Hi-Hats, Crash), round-trips General MIDI (.mid) and fuses MT3 MIDI with 48kHz acoustic audio', () => {
+    const sr = 48000;
+    const bpm = 116;
+    const beatSec = 60 / bpm;
+    const eighthSec = beatSec * 0.5;
+    const bars = 2;
+    const len = Math.floor((bars * 4 * beatSec + 0.4) * sr);
+    const mono = new Float32Array(len);
+
+    let seed = 0x778899aa;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    // Bar 1: Kick + Crash on 0, Hat on 1, Snare + Hat on 2, Hat on 3, Kick + Hat on 4, Kick + Hat on 5, Snare + Hat on 6, Hat on 7
+    // Bar 2: Kick + Hat on 8, Hat on 9, Snare + Hat on 10, Hat on 11, High Tom (190Hz) on 12, Mid Tom (140Hz) on 13, Floor Tom (96Hz) on 14, Crash on 15
+    for (let e = 0; e < 16; e++) {
+      const t0 = e * eighthSec;
+      const s0 = Math.floor(t0 * sr);
+      const isTom = e === 12 || e === 13 || e === 14;
+      const isCrash = e === 0 || e === 15;
+      const isKick = e === 0 || e === 4 || e === 5 || e === 8;
+      const isSnare = e === 2 || e === 6 || e === 10;
+      const isHat = !isTom && !isCrash;
+
+      if (isKick) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.22) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (48 + 92 * Math.exp(-t * 36))) / sr;
+          mono[s0 + i] += Math.sin(ph) * Math.exp(-t * 14) * 0.75;
+        }
+      }
+      if (isSnare) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.19) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (196 + 65 * Math.exp(-t * 48))) / sr;
+          mono[s0 + i] +=
+            (Math.sin(ph) * Math.exp(-t * 22) * 0.45 +
+              rnd() * Math.exp(-t * 18) * 0.5 +
+              Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 230) * 0.3) *
+            0.65;
+        }
+      }
+      if (isHat) {
+        let prev = 0;
+        for (let i = 0; i < Math.floor(sr * 0.065) && s0 + i < len; i++) {
+          const t = i / sr;
+          const n = rnd();
+          const hp = n - 0.86 * prev;
+          prev = n;
+          mono[s0 + i] += hp * Math.exp(-t * 68) * 0.26;
+        }
+      }
+      if (isCrash) {
+        for (let i = 0; i < Math.floor(sr * 0.55) && s0 + i < len; i++) {
+          const t = i / sr;
+          mono[s0 + i] +=
+            (Math.sin(2 * Math.PI * 3400 * t) * 0.25 +
+              Math.sin(2 * Math.PI * 5200 * t) * 0.22 +
+              rnd() * 0.55) *
+            Math.exp(-t * 3.9) *
+            0.38;
+        }
+      }
+      if (isTom) {
+        const tomF = e === 12 ? 190 : e === 13 ? 138 : 96;
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.25) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (tomF + 40 * Math.exp(-t * 32))) / sr;
+          mono[s0 + i] += (Math.sin(ph) * 0.85 + Math.sin(ph * 1.52) * 0.15) * Math.exp(-t * 10) * 0.72;
+        }
+      }
+    }
+
+    const localRes = analyzeDrumStemFull(mono, sr, {
+      sensitivity: 0.65,
+      lockedBpm: bpm,
+      quantizeMode: 'soft',
+    });
+
+    expect(localRes.counts.kick).toBeGreaterThanOrEqual(4);
+    expect(localRes.counts.snare).toBeGreaterThanOrEqual(3);
+    expect(localRes.counts.tom).toBeGreaterThanOrEqual(3);
+    expect(localRes.counts.hat).toBeGreaterThanOrEqual(8);
+    expect(localRes.counts.crash).toBeGreaterThanOrEqual(1);
+
+    // Check High, Mid, Floor Tom articulation detection
+    const tomNotes = localRes.drumHits.filter((h) => h.role === 'tom').map((h) => h.midiNote);
+    expect(tomNotes).toContain(50); // High Tom
+    expect(tomNotes).toContain(47); // Mid Tom
+    expect(tomNotes).toContain(43); // Floor Tom
+
+    // Standard MIDI File (.mid) round-trip encode -> parse -> acoustic fuse
+    const midiBytes = encodeAnalysisToStandardMidi(localRes);
+    expect(midiBytes.length).toBeGreaterThan(40);
+
+    const parsedMidi = parseStandardMidiFile(midiBytes, { forceDrumMode: true });
+    expect(Math.abs(parsedMidi.bpm - bpm)).toBeLessThanOrEqual(1);
+    expect(parsedMidi.drumHits.length).toBe(localRes.drumHits.length);
+
+    // Verify GM drum mapping for Toms, Snare, Kick, Hat, Crash
+    expect(mapMidiNoteToDrumPiece(36).role).toBe('kick');
+    expect(mapMidiNoteToDrumPiece(38).role).toBe('snare');
+    expect(mapMidiNoteToDrumPiece(50).role).toBe('tom');
+    expect(mapMidiNoteToDrumPiece(47).role).toBe('tom');
+    expect(mapMidiNoteToDrumPiece(43).role).toBe('tom');
+    expect(mapMidiNoteToDrumPiece(42).role).toBe('hat');
+    expect(mapMidiNoteToDrumPiece(46).role).toBe('hat');
+    expect(mapMidiNoteToDrumPiece(49).role).toBe('crash');
+
+    const fused = fuseMidiWithAcousticDrumAudio({
+      midiBytes,
+      mono,
+      sampleRate: sr,
+      lockedBpm: bpm,
+      quantizeMode: 'soft',
+      sourceEngine: 'replicate-mt3',
+    });
+    expect(fused.analysisEngine).toBe('replicate-mt3');
+    expect(fused.counts.kick).toBeGreaterThanOrEqual(4);
+    expect(fused.counts.snare).toBeGreaterThanOrEqual(3);
+    expect(fused.counts.tom).toBeGreaterThanOrEqual(3);
+    expect(fused.counts.hat).toBeGreaterThanOrEqual(8);
+    expect(fused.counts.crash).toBeGreaterThanOrEqual(1);
   });
 });

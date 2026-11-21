@@ -57,16 +57,24 @@ interface StemReplacerPanelProps {
   ) => void;
 }
 
-const DRUM_ROLES: Array<{ role: DrumPieceRole; label: string; color: string }> = [
-  { role: 'kick', label: 'Kick (Bombo)', color: '#FF6B00' },
-  { role: 'snare', label: 'Snare / Snake (Caja)', color: '#00E5FF' },
-  { role: 'hat', label: 'Hi-Hat (Hit-Hat)', color: '#F59E0B' },
-  { role: 'crash', label: 'Crash (Platillo)', color: '#EC4899' },
-  { role: 'tom', label: 'Tom / Perc', color: '#10B981' },
+const DRUM_ROLES: Array<{ role: DrumPieceRole; label: string; shortLabel: string; gmNotes: string; color: string }> = [
+  { role: 'kick', label: 'Kick (Bombo)', shortLabel: 'KICK', gmNotes: 'GM 36', color: '#FF6B00' },
+  { role: 'snare', label: 'Snare / Snake (Caja)', shortLabel: 'SNARE', gmNotes: 'GM 38/37', color: '#00E5FF' },
+  { role: 'tom', label: 'Toms (High / Mid / Floor)', shortLabel: 'TOMS', gmNotes: 'GM 50/47/43', color: '#10B981' },
+  { role: 'hat', label: 'Hi-Hats (Cerrado / Abierto)', shortLabel: 'HI-HAT', gmNotes: 'GM 42/46', color: '#F59E0B' },
+  { role: 'crash', label: 'Crash / Ride (Platillos)', shortLabel: 'CRASH', gmNotes: 'GM 49/51', color: '#EC4899' },
+];
+
+const MIDI_ROLL_LANES: Array<{ role: DrumPieceRole; title: string; gmHint: string; color: string }> = [
+  { role: 'crash', title: 'CRASH / RIDE', gmHint: 'GM 49/51', color: '#EC4899' },
+  { role: 'hat', title: 'HI-HATS', gmHint: 'GM 42/46', color: '#F59E0B' },
+  { role: 'tom', title: 'TOMS (H/M/L)', gmHint: 'GM 50/47/43', color: '#10B981' },
+  { role: 'snare', title: 'SNARE / SNAKE', gmHint: 'GM 38/37', color: '#00E5FF' },
+  { role: 'kick', title: 'KICK (BOMBO)', gmHint: 'GM 36', color: '#FF6B00' },
 ];
 
 const MODE_LABELS: Array<{ id: StemAnalysisMode; label: string; hint: string }> = [
-  { id: 'drums', label: 'Batería (Golpes)', hint: 'Kick · Snare · Hi-Hat · Crash · Tom' },
+  { id: 'drums', label: 'Batería (Golpes + MIDI)', hint: 'Kick · Snare/Snake · Toms · Hi-Hat · Crash/Ride' },
   { id: 'monophonic', label: 'Melódico Mono', hint: 'Bajo · Lead · 1 nota a la vez' },
   { id: 'polyphonic', label: 'Polifónico (Acordes)', hint: 'Guitarra · Piano · Keys+' },
 ];
@@ -76,7 +84,7 @@ const CATEGORY_BADGES: Record<CustomSampleCategory, { label: string; color: stri
   snare: { label: 'SNARE', color: '#00E5FF' },
   hat: { label: 'HI-HAT', color: '#F59E0B' },
   crash: { label: 'CRASH', color: '#EC4899' },
-  tom: { label: 'TOM', color: '#10B981' },
+  tom: { label: 'TOMS', color: '#10B981' },
   melodic: { label: 'TONAL', color: '#A855F7' },
 };
 
@@ -97,6 +105,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const stemFileInputRef = useRef<HTMLInputElement | null>(null);
   const slotFileInputRef = useRef<HTMLInputElement | null>(null);
   const bankBatchFileInputRef = useRef<HTMLInputElement | null>(null);
+  const midiFileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadTargetRef = useRef<DrumPieceRole | 'melodic'>('melodic');
 
   const [songSearch, setSongSearch] = useState('');
@@ -110,6 +119,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
   const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | null>(null);
   const [showBeatGrid, setShowBeatGrid] = useState(true);
+  const [showMidiRoll, setShowMidiRoll] = useState(true);
+  const [midiEditMode, setMidiEditMode] = useState(false);
+  const [showReplicateTokenBar, setShowReplicateTokenBar] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState(r.replicateApiKey || '');
   const [bpmDraft, setBpmDraft] = useState<string>('120');
   const tapTimesRef = useRef<number[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -573,6 +586,17 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           e.target.value = '';
         }}
       />
+      <input
+        ref={midiFileInputRef}
+        type="file"
+        accept=".mid,.midi,audio/midi"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void r.importMidiFileForReplacement(f);
+          e.target.value = '';
+        }}
+      />
 
       {/* STEP 1: SONG FOLDER -> 1 STEM SELECTION */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
@@ -794,21 +818,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       </div>
 
       {/* STATUS & PROGRESS BANNER */}
-      {(r.statusMessage || r.isAnalyzing || r.isLoadingStem) && (
+      {(r.statusMessage || r.isAnalyzing || r.isLoadingStem || r.isTranscribingAi) && (
         <div className="rounded-xl bg-slate-900/90 border border-[#00E5FF]/35 px-3 py-2 text-xs font-mono text-[#00E5FF] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            {(r.isAnalyzing || r.isLoadingStem || r.isRendering) && (
+            {(r.isAnalyzing || r.isLoadingStem || r.isRendering || r.isTranscribingAi) && (
               <Loader2 size={14} className="animate-spin shrink-0" />
             )}
             <span>
               {r.isLoadingStem
                 ? 'Cargando stem...'
+                : r.isTranscribingAi
+                ? r.aiStageMessage || 'Transcribiendo Batería y Tempo a MIDI con IA Replicate...'
                 : r.isAnalyzing
                 ? 'Analizando tempo y cada golpe/nota de toda la pista...'
                 : r.statusMessage}
             </span>
           </div>
-          {r.statusMessage && !r.isAnalyzing && (
+          {r.statusMessage && !r.isAnalyzing && !r.isTranscribingAi && (
             <button
               type="button"
               onClick={() => r.setStatusMessage(null)}
@@ -959,8 +985,131 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         </div>
       )}
 
-      {/* STEP 2: FULL-STEM ANALYSIS CONTROLS + WAVEFORM & MARKERS + A/B TRANSPORT */}
+      {/* STEP 2: FULL-STEM ANALYSIS CONTROLS + REPLICATE AI MIDI + WAVEFORM & MIDI DRUM ROLL */}
       <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3">
+        {/* REPLICATE AI NEURAL AUDIO-TO-MIDI & BEAT BAR */}
+        <div className="rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-[#00E5FF]/45 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono shadow-md">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!r.originalBuffer || r.isTranscribingAi || r.isLoadingStem}
+              onClick={() => void r.runReplicateAiMidiTranscription()}
+              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-[0_0_18px_rgba(0,229,255,0.28)] disabled:opacity-40 transition-all"
+              title="Ejecuta Google Magenta MT3 (Audio → General MIDI Canal 10) + Harmonix All-In-One Beat AI en GPU NVIDIA A100 de Replicate y fusiona con picos acústicos 48kHz"
+            >
+              {r.isTranscribingAi ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Sparkles size={13} />
+              )}
+              <span>
+                {r.isTranscribingAi
+                  ? 'Procesando MIDI con IA Replicate...'
+                  : '✨ IA Replicate: Reconocer Batería → MIDI + Tempo (MT3)'}
+              </span>
+            </button>
+
+            {r.stemMode === 'drums' && (
+              <label
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-700 text-[10.5px] text-slate-200 cursor-pointer hover:border-[#00E5FF]/50"
+                title="Si subiste una canción completa o mezcla muy sucia, Demucs v4 aísla la batería primero en Replicate antes de convertir cada golpe a MIDI con MT3"
+              >
+                <input
+                  type="checkbox"
+                  checked={r.isolateDrumsWithDemucs}
+                  onChange={(e) => r.setIsolateDrumsWithDemucs(e.target.checked)}
+                  className="accent-[#00E5FF]"
+                />
+                <span>Aislar Batería 1° (Demucs IA)</span>
+              </label>
+            )}
+
+            {r.analysis?.analysisEngine && (
+              <span
+                className={`px-2 py-0.5 rounded-lg border text-[10px] font-bold ${
+                  r.analysis.analysisEngine === 'replicate-mt3'
+                    ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                    : r.analysis.analysisEngine === 'midi-import'
+                    ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
+                    : 'bg-slate-950 border-slate-700 text-slate-300'
+                }`}
+              >
+                {r.analysis.analysisEngine === 'replicate-mt3'
+                  ? '✓ Motor: IA Replicate MT3 MIDI + Acústico 48kHz'
+                  : r.analysis.analysisEngine === 'midi-import'
+                  ? '✓ Motor: Archivo MIDI (.mid) Sincronizado'
+                  : '⚡ Motor: DSP Polifónico 6-Bandas → MIDI'}
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={!r.analysis}
+              onClick={() => r.exportCurrentMidiFile(saveStemName || r.stemTitle)}
+              className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+              title="Descargar archivo MIDI estándar (.mid) con Kick (36), Snare (38), Toms (43/47/50), Hi-Hat (42/46) y Crash (49)"
+            >
+              <Download size={12} />
+              <span>Exportar MIDI (.mid)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => midiFileInputRef.current?.click()}
+              className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-slate-800 border border-amber-500/50 text-amber-300 font-bold flex items-center gap-1 cursor-pointer"
+              title="Importar un archivo .mid desde tu PC para disparar tus muestras propias de reemplazo"
+            >
+              <Upload size={12} />
+              <span>Importar MIDI (.mid)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowReplicateTokenBar((v) => !v)}
+              className="px-2 py-1 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white cursor-pointer text-[10px]"
+              title="Configurar o verificar tu API Token de Replicate (r8_...)"
+            >
+              {r.replicateApiKey || import.meta.env.VITE_REPLICATE_API_TOKEN
+                ? '🔑 Replicate: Conectado'
+                : '🔑 Configurar Replicate'}
+            </button>
+          </div>
+        </div>
+
+        {showReplicateTokenBar && (
+          <div className="rounded-xl bg-slate-950 border border-[#00E5FF]/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+            <span className="text-slate-300">
+              Token Replicate API (<code className="text-[#00E5FF]">r8_...</code> · o configurado en{' '}
+              <code className="text-emerald-300">.env</code>):
+            </span>
+            <div className="flex items-center gap-2 flex-1 max-w-md">
+              <input
+                type="password"
+                value={tokenDraft}
+                onChange={(e) => setTokenDraft(e.target.value)}
+                placeholder={
+                  import.meta.env.VITE_REPLICATE_API_TOKEN
+                    ? 'Usando VITE_REPLICATE_API_TOKEN de .env (opcional sobreescribir)...'
+                    : 'Pega tu token r8_...'
+                }
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white focus:border-[#00E5FF] focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  r.saveReplicateApiKey(tokenDraft);
+                  setShowReplicateTokenBar(false);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-[#00E5FF] text-slate-950 font-bold cursor-pointer"
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
           <div className="flex flex-wrap items-center gap-1.5">
             {MODE_LABELS.map((m) => {
@@ -1015,6 +1164,21 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </div>
             )}
 
+            {r.stemMode === 'drums' && (
+              <button
+                type="button"
+                onClick={() => setShowMidiRoll((v) => !v)}
+                className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer transition-all ${
+                  showMidiRoll
+                    ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+                title="Mostrar/ocultar Mapa MIDI de Batería de 5 Carriles (Kick, Snare, Toms, Hi-Hats, Crash)"
+              >
+                Mapa MIDI 5-Pistas {showMidiRoll ? 'ON' : 'OFF'}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setShowBeatGrid((v) => !v)}
@@ -1062,14 +1226,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-[#00E5FF]/50 text-[#00E5FF]">
                     S: {r.analysis.counts.snare}
                   </span>
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-emerald-500/50 text-emerald-400">
+                    TOMS: {r.analysis.counts.tom}
+                  </span>
                   <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-amber-500/50 text-amber-400">
                     HH: {r.analysis.counts.hat}
                   </span>
                   <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-pink-500/50 text-pink-400">
                     CR: {r.analysis.counts.crash}
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-emerald-500/50 text-emerald-400">
-                    T: {r.analysis.counts.tom}
                   </span>
                 </>
               ) : (
@@ -1083,6 +1247,151 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             </div>
           )}
         </div>
+
+        {/* INTERACTIVE 5-LANE GENERAL MIDI DRUM ROLL (CRASH · HI-HAT · TOMS · SNARE · KICK) */}
+        {r.stemMode === 'drums' && showMidiRoll && r.analysis && duration > 0 && (
+          <div className="rounded-xl border border-slate-800 bg-[#050914] overflow-hidden flex flex-col">
+            <div className="px-3 py-1.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[10.5px] font-mono">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[#00E5FF] font-bold">
+                  🎹 MAPA MIDI DE BATERÍA (GM CANAL 10 · {r.analysis.counts.total} GOLPES):
+                </span>
+                <span className="text-slate-400">
+                  Cada carril dispara tu sonido propio asignado abajo (Kick, Snare/Snake, Toms, Hi-Hats, Crash/Ride)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMidiEditMode((v) => !v)}
+                  className={`px-2.5 py-0.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    midiEditMode
+                      ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950'
+                      : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white'
+                  }`}
+                  title="Cuando está activo: haz clic en cualquier carril vacío para añadir un golpe MIDI o haz clic sobre un golpe existente para borrarlo"
+                >
+                  {midiEditMode
+                    ? '✏️ Edición MIDI Activa (Clic = Añadir / Borrar Golpe)'
+                    : '✏️ Editar Golpes MIDI'}
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-slate-800/80">
+              {MIDI_ROLL_LANES.map((lane) => {
+                const slot = r.drumSlots[lane.role];
+                const laneHits = r.analysis!.drumHits.filter(
+                  (h) =>
+                    h.role === lane.role &&
+                    h.peakTimeSec >= viewStartSec - 0.02 &&
+                    h.peakTimeSec <= viewEndSec + 0.02
+                );
+                const totalRoleHits = r.analysis!.counts[lane.role];
+
+                return (
+                  <div
+                    key={`midi-lane-${lane.role}`}
+                    className={`flex items-stretch h-8 text-[10px] font-mono ${
+                      slot.enabled ? '' : 'opacity-45'
+                    }`}
+                  >
+                    {/* Left Lane Header + Mute/Enable Toggle */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        r.updateDrumSlot(lane.role, { enabled: !slot.enabled })
+                      }
+                      className="w-36 sm:w-44 shrink-0 px-2.5 bg-slate-950/90 border-r border-slate-800 flex items-center justify-between gap-1.5 cursor-pointer hover:bg-slate-900 text-left"
+                      title={`Activar/Silenciar reemplazo de ${lane.title} (${lane.gmHint})`}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{
+                            backgroundColor: slot.enabled ? lane.color : '#475569',
+                          }}
+                        />
+                        <span className="font-bold text-white truncate">
+                          {lane.title}
+                        </span>
+                      </div>
+                      <span className="text-[9.5px] text-slate-400 shrink-0">
+                        {totalRoleHits}
+                      </span>
+                    </button>
+
+                    {/* Right Interactive MIDI Note Lane */}
+                    <div
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const norm = Math.max(
+                          0,
+                          Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
+                        );
+                        const clickedSec = viewStartSec + norm * viewSpanSec;
+                        if (midiEditMode) {
+                          r.addManualDrumHit(lane.role, clickedSec, 0.88);
+                        } else {
+                          r.seekToSec(clickedSec);
+                        }
+                      }}
+                      className={`relative flex-1 bg-[#040711] overflow-hidden ${
+                        midiEditMode ? 'cursor-crosshair' : 'cursor-pointer'
+                      }`}
+                      title={
+                        midiEditMode
+                          ? `Clic para insertar golpe MIDI de ${lane.title}`
+                          : `Clic para saltar al segundo exacto en ${lane.title}`
+                      }
+                    >
+                      {/* Playhead line across MIDI lane */}
+                      {r.currentTimeSec >= viewStartSec &&
+                        r.currentTimeSec <= viewEndSec && (
+                          <div
+                            className="absolute top-0 bottom-0 w-[1.5px] bg-white/90 pointer-events-none z-20"
+                            style={{
+                              left: `${((r.currentTimeSec - viewStartSec) / viewSpanSec) * 100}%`,
+                            }}
+                          />
+                        )}
+
+                      {laneHits.map((hit) => {
+                        const leftPct =
+                          ((hit.peakTimeSec - viewStartSec) / viewSpanSec) * 100;
+                        const heightPct = Math.max(38, Math.round(hit.velocity * 92));
+                        return (
+                          <div
+                            key={hit.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (midiEditMode) {
+                                r.removeDrumHit(hit.id);
+                              } else {
+                                r.seekToSec(hit.peakTimeSec);
+                              }
+                            }}
+                            style={{
+                              left: `${leftPct}%`,
+                              height: `${heightPct}%`,
+                              backgroundColor: lane.color,
+                            }}
+                            className="absolute bottom-0.5 -translate-x-1/2 w-[5px] min-w-[4px] rounded-t-sm shadow-sm hover:brightness-125 hover:scale-x-150 transition-transform z-10"
+                            title={`${
+                              hit.subRoleLabel || lane.title
+                            } · ${hit.peakTimeSec.toFixed(3)}s · Vel ${Math.round(
+                              hit.velocity * 100
+                            )}%${midiEditMode ? ' (Clic para borrar)' : ''}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Horizontal Timeline Scrollbar + Pan Navigator */}
         {duration > 0 && (
@@ -2175,27 +2484,38 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-1.5">
               <button
                 type="button"
                 disabled={(!r.replacedBuffer && !r.originalBuffer) || r.isRendering || r.isExportingPc}
                 onClick={() => void r.downloadReplacedAudio('wav', saveStemName)}
-                className="py-2 px-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
                 title="Exportar al PC en WAV 24-Bit sin compresión (48 kHz)"
               >
-                {r.isExportingPc ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                <span>PC: WAV 24-Bit</span>
+                {r.isExportingPc ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                <span>WAV 24-Bit</span>
               </button>
 
               <button
                 type="button"
                 disabled={(!r.replacedBuffer && !r.originalBuffer) || r.isRendering || r.isExportingPc}
                 onClick={() => void r.downloadReplacedAudio('mp3', saveStemName)}
-                className="py-2 px-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-[#FF6B00] font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-[#FF6B00] font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
                 title="Exportar al PC en MP3 320 kbps"
               >
-                {r.isExportingPc ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                <span>PC: MP3 320k</span>
+                {r.isExportingPc ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                <span>MP3 320k</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!r.analysis}
+                onClick={() => r.exportCurrentMidiFile(saveStemName || r.stemTitle)}
+                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-emerald-500/50 text-emerald-300 font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
+                title="Exportar archivo MIDI estándar (.mid) con todos los golpes/notas detectados"
+              >
+                <Download size={12} />
+                <span>MIDI (.mid)</span>
               </button>
             </div>
 

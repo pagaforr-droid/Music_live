@@ -152,7 +152,7 @@ export function renderFullStemReplacement(params: {
       if (!slot || !slot.enabled || !zone) continue;
 
       const srRatio = zone.sampleRate / sr;
-      let semiShift = slot.pitchSemis;
+      let semiShift = slot.pitchSemis + (hit.role === 'tom' ? (hit.pitchOffsetSemis ?? 0) : 0);
       let ampScale = Math.pow(10, slot.gainDb / 20) * (0.24 + 0.76 * hit.velocity);
       let panSkew = 0;
 
@@ -169,7 +169,12 @@ export function renderFullStemReplacement(params: {
         } else if (hit.role === 'crash') {
           panSkew = (hIdx % 2 === 0 ? 0.12 : -0.10) + (f2 - 0.5) * 0.04;
         } else if (hit.role === 'tom') {
-          panSkew = ((hIdx % 3) - 1) * 0.09;
+          panSkew =
+            hit.articulation === 'high-tom'
+              ? -0.13
+              : hit.articulation === 'floor-tom'
+              ? 0.15
+              : ((hIdx % 3) - 1) * 0.09;
         }
       }
 

@@ -206,7 +206,9 @@ export type DefaultDrumPresetId =
   | 'drum-crash-bright'
   | 'drum-crash-warm'
   | 'drum-crash-ride'
-  | 'drum-tom-deep';
+  | 'drum-tom-deep'
+  | 'drum-tom-rack'
+  | 'drum-tom-floor';
 
 export type DefaultMelodicPresetId =
   | 'inst-piano-grand'
@@ -228,12 +230,28 @@ export type DefaultMelodicPresetId =
 
 export type DefaultInstrumentId = DefaultDrumPresetId | DefaultMelodicPresetId;
 
+export type DrumArticulation =
+  | 'closed'
+  | 'open'
+  | 'pedal'
+  | 'rim'
+  | 'high-tom'
+  | 'mid-tom'
+  | 'floor-tom'
+  | 'crash'
+  | 'ride';
+
 export interface StemDrumHitEvent {
   id: string;
   timeSec: number;
   peakTimeSec: number;
   role: DrumPieceRole;
   velocity: number; // 0.1..1.0
+  midiNote?: number; // General MIDI Drum note (35..81, e.g. 36 Kick, 38 Snare, 42/46 Hat, 43/47/50 Tom, 49/51 Crash/Ride)
+  subRoleLabel?: string;
+  pitchOffsetSemis?: number;
+  articulation?: DrumArticulation;
+  sourceEngine?: 'local-dsp' | 'replicate-mt3' | 'midi-import' | 'manual';
 }
 
 export interface StemNoteEvent {
@@ -248,6 +266,7 @@ export interface StemNoteEvent {
 
 export interface FullStemAnalysisResult {
   mode: StemAnalysisMode;
+  analysisEngine?: 'local-dsp' | 'replicate-mt3' | 'midi-import';
   bassFocusApplied?: boolean;
   quantizeMode?: StemQuantizeMode;
   bpm: number;

@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  base64ToUint8Array,
+  buildMelodicAnalysisFromParsedMidi,
+  defaultGmNoteForDrumRole,
+  encodeAnalysisToStandardMidi,
+  encodeAudioBufferToCompactWavBase64,
+  fuseMidiWithAcousticDrumAudio,
+  parseStandardMidiFile,
+} from '../engine/DrumMidiEngine';
+import {
   encodeBufferToMp3,
   encodeBufferToWav24WithMetadata,
   sanitizeDownloadBaseName,
@@ -174,6 +183,16 @@ export function useStemReplacer() {
   const [customSamples, setCustomSamples] = useState<CustomReplacementSampleItem[]>([]);
   const [isLoadingStem, setIsLoadingStem] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isTranscribingAi, setIsTranscribingAi] = useState<boolean>(false);
+  const [aiStageMessage, setAiStageMessage] = useState<string | null>(null);
+  const [isolateDrumsWithDemucs, setIsolateDrumsWithDemucs] = useState<boolean>(false);
+  const [replicateApiKey, setReplicateApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('replicate_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
   const [isRendering, setIsRendering] = useState<boolean>(false);
   const [isExportingPc, setIsExportingPc] = useState<boolean>(false);
   const [isSavingCloud, setIsSavingCloud] = useState<boolean>(false);
@@ -892,11 +911,12 @@ export function useStemReplacer() {
         for (let e = 0; e < totalEighths; e++) {
           const hitTime = e * eighth;
           const start = Math.floor(hitTime * sr);
-          const isKick = e % 4 === 0 || e % 8 === 6;
-          const isSnare = e % 4 === 2;
+          const isTomFill = e === 15 || e === 30 || e === 31;
+          const isKick = !isTomFill && (e % 4 === 0 || e % 8 === 6);
+          const isSnare = !isTomFill && e % 4 === 2;
           const isCrash = e % 16 === 0;
-          // Hat on every 8th (except when Crash hits on bar 1 & 3 downbeat)
-          if (!isCrash) {
+          // Hat on every 8th (except when Crash hits on bar 1 & 3 downbeat or during Tom fill)
+          if (!isCrash && !isTomFill) {
             for (let i = 0; i < Math.floor(sr * 0.08) && start + i < len; i++) {
               const t = i / sr;
               const hat = rnd() * Math.exp(-t * 68) * 0.16;
@@ -933,8 +953,20 @@ export function useStemReplacer() {
               R[start + i] += v;
             }
           }
+          if (isTomFill) {
+            // Descending High Tom (186 Hz) -> Mid Tom (138 Hz) -> Floor Tom (96 Hz)
+            const tomFreq = e === 15 ? 186 : e === 30 ? 138 : 96;
+            let ph = 0;
+            for (let i = 0; i < Math.floor(sr * 0.26) && start + i < len; i++) {
+              const t = i / sr;
+              ph += (2 * Math.PI * (tomFreq + 42 * Math.exp(-t * 32))) / sr;
+              const v = (Math.sin(ph) * 0.85 + Math.sin(ph * 1.52) * 0.15) * Math.exp(-t * 10.5) * 0.68;
+              L[start + i] += v;
+              R[start + i] += v;
+            }
+          }
         }
-        setStemTitle('Demo Stem Batería 112 BPM');
+        setStemTitle('Demo Stem Batería 112 BPM (Kick · Snare · Hi-Hat · Toms · Crash)');
       } else if (kind === 'monophonic') {
         // Bass progression: A1 (55Hz) -> F1 (43.65Hz) -> C2 (65.41Hz) -> G1 (49Hz)
         const bassSeq = [33, 33, 40, 33, 29, 29, 36, 29, 36, 36, 43, 36, 31, 31, 38, 31];
@@ -1759,6 +1791,422 @@ export function useStemReplacer() {
     ]
   );
 
+  const saveReplicateApiKey = useCallback((token: string) => {
+    const clean = token.trim();
+    setReplicateApiKey(clean);
+    try {
+      if (clean) {
+        localStorage.setItem('replicate_api_key', clean);
+      } else {
+        localStorage.removeItem('replicate_api_key');
+      }
+    } catch {
+      // ignore storage restrictions
+    }
+  }, []);
+
+  // Replicate AI Neural Audio -> General MIDI & Beat Transcription (Google Magenta MT3 + Harmonix All-In-One + Optional Demucs v4)
+  const runReplicateAiMidiTranscription = useCallback(
+    async (overrideIsolateDrums?: boolean) => {
+      if (!originalBuffer) {
+        setStatusMessage('Carga un stem o archivo de audio primero antes de transcribir con IA.');
+        return;
+      }
+      setIsTranscribingAi(true);
+      const useDemucs =
+        overrideIsolateDrums !== undefined ? overrideIsolateDrums : isolateDrumsWithDemucs;
+
+      try {
+        setAiStageMessage('Codificando audio compacto (16kHz PCM) para Replicate Cloud GPU...');
+        const audioBase64 = encodeAudioBufferToCompactWavBase64(originalBuffer, 240);
+        const activeToken =
+          replicateApiKey ||
+          (import.meta.env.VITE_REPLICATE_API_TOKEN as string | undefined) ||
+          '';
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (activeToken) {
+          headers['x-replicate-token'] = activeToken;
+        }
+
+        setAiStageMessage(
+          useDemucs && stemMode === 'drums'
+            ? 'Iniciando Demucs v4 (Aislamiento Batería) + Google Magenta MT3 (MIDI) en Replicate...'
+            : 'Iniciando Google Magenta MT3 (Audio → MIDI) + Harmonix Beat AI en Replicate...'
+        );
+
+        const startRes = await fetch('/api/ai/drum-transcribe', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            audioBase64,
+            mode: stemMode,
+            isolateDrumsFirst: useDemucs && stemMode === 'drums',
+            includeBeats: true,
+          }),
+        });
+        const startData = await startRes.json().catch(() => ({}));
+        if (!startRes.ok) {
+          throw new Error(
+            startData.error || `Error ${startRes.status} iniciando transcripción en Replicate`
+          );
+        }
+
+        let mt3PredictionId: string | null = startData.mt3PredictionId ?? null;
+        let demucsPredictionId: string | null = startData.demucsPredictionId ?? null;
+        const beatsPredictionId: string | null = startData.beatsPredictionId ?? null;
+
+        let midiBase64 = '';
+        let beatData: {
+          bpm?: number;
+          beats?: number[];
+          downbeats?: number[];
+          beat_positions?: number[];
+        } | null = null;
+
+        const maxPolls = 90; // up to ~180s for cold GPU boots
+        for (let poll = 1; poll <= maxPolls; poll++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const pollRes = await fetch('/api/ai/drum-transcribe-status', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              mt3PredictionId,
+              demucsPredictionId,
+              beatsPredictionId,
+            }),
+          });
+          const pollData = await pollRes.json().catch(() => ({}));
+          if (!pollRes.ok) {
+            throw new Error(
+              pollData.error || `Error ${pollRes.status} consultando Replicate`
+            );
+          }
+
+          if (pollData.mt3PredictionId) {
+            mt3PredictionId = pollData.mt3PredictionId;
+          }
+
+          if (pollData.done) {
+            if (pollData.failed) {
+              throw new Error(pollData.error || 'La transcripción MIDI falló en Replicate.');
+            }
+            midiBase64 = pollData.midiBase64 || '';
+            beatData = pollData.beatData ?? null;
+            break;
+          }
+
+          if (pollData.stage === 'demucs-isolating') {
+            setAiStageMessage(
+              `Demucs v4 IA aislando la batería limpia en GPU Replicate... (${poll * 2}s)`
+            );
+          } else if (pollData.status === 'starting') {
+            setAiStageMessage(
+              `Despertando GPU NVIDIA A100 en Replicate (Google Magenta MT3)... (${poll * 2}s)`
+            );
+          } else {
+            setAiStageMessage(
+              `Transcribiendo golpes (Kick, Snare, Toms, Hi-Hats, Crash) a MIDI General con MT3... (${poll * 2}s)`
+            );
+          }
+        }
+
+        if (!midiBase64) {
+          throw new Error('Tiempo agotado esperando la transcripción MIDI de Replicate.');
+        }
+
+        setAiStageMessage('Fusionando MIDI neuronal MT3 con picos acústicos 48kHz y velocidades reales...');
+        const midiBytes = base64ToUint8Array(midiBase64);
+        const mono = buildMonoSliceFromBuffer(originalBuffer, 0, originalBuffer.duration);
+
+        // Apply neural Beat & Tempo grid from Harmonix All-In-One if returned
+        let activeMem = importedMemoryRef.current;
+        if (beatData && typeof beatData.bpm === 'number' && beatData.bpm >= 45 && beatData.bpm <= 220) {
+          const neuralBpm = Math.round(beatData.bpm * 10) / 10;
+          const neuralBeats = Array.isArray(beatData.beats) ? beatData.beats : activeMem?.beatTimes;
+          const neuralDownbeats = Array.isArray(beatData.downbeats)
+            ? beatData.downbeats
+            : activeMem?.downbeats;
+          const neuralOffset =
+            neuralBeats && neuralBeats.length > 0
+              ? neuralBeats[0]
+              : activeMem?.beatOffsetSec ?? 0;
+
+          if (activeMem) {
+            activeMem = {
+              ...activeMem,
+              bpm: neuralBpm,
+              bpmConfidence: 0.99,
+              beatOffsetSec: neuralOffset,
+              beatTimes: neuralBeats,
+              downbeats: neuralDownbeats,
+            };
+            importedMemoryRef.current = activeMem;
+            setImportedMemory(activeMem);
+          }
+        }
+
+        if (stemMode === 'drums') {
+          const fused = fuseMidiWithAcousticDrumAudio({
+            midiBytes,
+            mono,
+            sampleRate: originalBuffer.sampleRate,
+            sensitivity,
+            lockedBpm: activeMem?.bpm,
+            bpmHint: selectedSong?.bpm,
+            beatOffsetSec: activeMem?.beatOffsetSec,
+            beatTimes: activeMem?.beatTimes,
+            downbeats: activeMem?.downbeats,
+            quantizeMode: quantizeModeRef.current,
+            musicalKey: activeMem?.musicalKey,
+            camelotKey: activeMem?.camelotKey,
+            detectedChords: activeMem?.chords,
+            sourceEngine: 'replicate-mt3',
+            includeAcousticFallback: true,
+          });
+          setAnalysis(fused);
+          setStatusMessage(
+            `IA Replicate MT3 + MIDI completado: ${fused.bpm} BPM · ${fused.counts.total} golpes MIDI (${fused.counts.kick} Kick · ${fused.counts.snare} Snare · ${fused.counts.tom} Toms · ${fused.counts.hat} Hi-Hat · ${fused.counts.crash} Crash/Ride).`
+          );
+        } else {
+          const parsed = parseStandardMidiFile(midiBytes, {
+            forceDrumMode: false,
+            fallbackBpm: activeMem?.bpm ?? selectedSong?.bpm ?? 120,
+          });
+          if (parsed.noteEvents.length > 0) {
+            const melodicRes = buildMelodicAnalysisFromParsedMidi({
+              parsed,
+              mode: stemMode,
+              durationSec: originalBuffer.duration,
+              lockedBpm: activeMem?.bpm,
+              beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
+              quantizeMode: quantizeModeRef.current,
+              musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
+              detectedChords: activeMem?.chords,
+              sourceEngine: 'replicate-mt3',
+            });
+            setAnalysis(melodicRes);
+            setStatusMessage(
+              `IA Replicate MT3 MIDI Melódico completado: ${melodicRes.bpm} BPM · ${melodicRes.counts.notes} notas MIDI transcritas.`
+            );
+          } else {
+            throw new Error('MT3 no detectó notas melódicas en este audio (prueba en modo Batería).');
+          }
+        }
+      } catch (err: any) {
+        setStatusMessage(
+          err instanceof Error
+            ? `Error IA Replicate: ${err.message}`
+            : 'Error durante la transcripción MIDI en Replicate.'
+        );
+      } finally {
+        setIsTranscribingAi(false);
+        setAiStageMessage(null);
+      }
+    },
+    [
+      originalBuffer,
+      isolateDrumsWithDemucs,
+      replicateApiKey,
+      stemMode,
+      sensitivity,
+      selectedSong?.bpm,
+    ]
+  );
+
+  // Export recognized drum hits or melodic notes as a Standard MIDI File (.mid) to PC
+  const exportCurrentMidiFile = useCallback(
+    (customFileName?: string) => {
+      if (!analysis) {
+        setStatusMessage('Analiza o carga un stem primero para exportar su MIDI.');
+        return;
+      }
+      const midiBytes = encodeAnalysisToStandardMidi(analysis);
+      const rawBase = (customFileName || stemTitle || 'tandao_drums_midi').trim();
+      const clean = sanitizeDownloadBaseName(rawBase, 'tandao_drums_midi');
+      const fileName = `${clean}.mid`;
+      const blob = new Blob([midiBytes], { type: 'audio/midi' });
+      triggerFileDownload(blob, fileName);
+      setStatusMessage(
+        `Archivo MIDI exportado al PC: "${fileName}" (${analysis.bpm} BPM · ${
+          analysis.mode === 'drums'
+            ? `${analysis.counts.total} golpes GM Canal 10: Kick 36, Snare 38, Toms 43/47/50, Hi-Hat 42/46, Crash 49`
+            : `${analysis.counts.notes} notas`
+        }).`
+      );
+    },
+    [analysis, stemTitle]
+  );
+
+  // Import an external .mid file from PC and fuse/align it to drive the sample replacement engine
+  const importMidiFileForReplacement = useCallback(
+    async (file: File) => {
+      try {
+        const raw = await file.arrayBuffer();
+        const midiBytes = new Uint8Array(raw);
+        const activeMem = importedMemoryRef.current;
+
+        if (originalBuffer) {
+          const mono = buildMonoSliceFromBuffer(originalBuffer, 0, originalBuffer.duration);
+          if (stemMode === 'drums') {
+            const fused = fuseMidiWithAcousticDrumAudio({
+              midiBytes,
+              mono,
+              sampleRate: originalBuffer.sampleRate,
+              sensitivity,
+              lockedBpm: activeMem?.bpm,
+              bpmHint: selectedSong?.bpm,
+              beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
+              quantizeMode: quantizeModeRef.current,
+              musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
+              detectedChords: activeMem?.chords,
+              sourceEngine: 'midi-import',
+              includeAcousticFallback: false,
+            });
+            setAnalysis(fused);
+            setStatusMessage(
+              `MIDI "${file.name}" importado y sincronizado: ${fused.counts.total} golpes (${fused.counts.kick} Kick · ${fused.counts.snare} Snare · ${fused.counts.tom} Toms · ${fused.counts.hat} Hi-Hat · ${fused.counts.crash} Crash).`
+            );
+          } else {
+            const parsed = parseStandardMidiFile(midiBytes, {
+              forceDrumMode: false,
+              fallbackBpm: activeMem?.bpm ?? 120,
+            });
+            const melodicRes = buildMelodicAnalysisFromParsedMidi({
+              parsed,
+              mode: stemMode,
+              durationSec: originalBuffer.duration,
+              lockedBpm: activeMem?.bpm,
+              beatOffsetSec: activeMem?.beatOffsetSec,
+              beatTimes: activeMem?.beatTimes,
+              downbeats: activeMem?.downbeats,
+              quantizeMode: quantizeModeRef.current,
+              musicalKey: activeMem?.musicalKey,
+              camelotKey: activeMem?.camelotKey,
+              detectedChords: activeMem?.chords,
+              sourceEngine: 'midi-import',
+            });
+            setAnalysis(melodicRes);
+            setStatusMessage(
+              `MIDI "${file.name}" importado: ${melodicRes.counts.notes} notas listas para reemplazo.`
+            );
+          }
+        } else {
+          // If no audio buffer is loaded yet, create a silent reference buffer matching the MIDI file duration
+          const parsed = parseStandardMidiFile(midiBytes, {
+            forceDrumMode: stemMode === 'drums',
+            fallbackBpm: 120,
+          });
+          const ctx = ensureCtx();
+          const dur = Math.max(4, parsed.durationSec + 1.0);
+          const silentBuf = ctx.createBuffer(2, Math.ceil(dur * ctx.sampleRate), ctx.sampleRate);
+          setOriginalBuffer(silentBuf);
+          setStemTitle(file.name.replace(/\.[^.]+$/, ''));
+          const mono = new Float32Array(silentBuf.length);
+          const fused = fuseMidiWithAcousticDrumAudio({
+            midiBytes,
+            mono,
+            sampleRate: silentBuf.sampleRate,
+            lockedBpm: parsed.bpm,
+            quantizeMode: 'off',
+            sourceEngine: 'midi-import',
+            includeAcousticFallback: false,
+          });
+          setAnalysis(fused);
+          setStatusMessage(
+            `MIDI "${file.name}" cargado (${parsed.bpm} BPM · ${fused.counts.total} golpes).`
+          );
+        }
+      } catch (err: any) {
+        setStatusMessage(
+          err instanceof Error
+            ? `Error importando MIDI: ${err.message}`
+            : 'No se pudo leer el archivo MIDI.'
+        );
+      }
+    },
+    [originalBuffer, stemMode, sensitivity, selectedSong?.bpm, ensureCtx]
+  );
+
+  // Interactive MIDI Drum Roll Hit Editor: add a hit on any of the 5 drum lanes
+  const addManualDrumHit = useCallback(
+    (role: DrumPieceRole, rawTimeSec: number, velocity = 0.88) => {
+      if (!analysis || analysis.mode !== 'drums') return;
+      const clampedSec = Number(
+        Math.max(0, Math.min(analysis.durationSec - 0.01, rawTimeSec)).toFixed(4)
+      );
+      const gmNote = defaultGmNoteForDrumRole(role);
+      const roleLabels: Record<DrumPieceRole, string> = {
+        kick: 'Kick Drum 1 (36)',
+        snare: 'Acoustic Snare (38)',
+        hat: 'Closed Hi-Hat (42)',
+        tom: 'Mid Tom (47)',
+        crash: 'Crash Cymbal 1 (49)',
+      };
+      const nextHits = [
+        ...analysis.drumHits,
+        {
+          id: `dh-manual-${Date.now()}`,
+          timeSec: clampedSec,
+          peakTimeSec: clampedSec,
+          role,
+          velocity,
+          midiNote: gmNote,
+          subRoleLabel: roleLabels[role],
+          pitchOffsetSemis: 0,
+          sourceEngine: 'manual' as const,
+        },
+      ].sort((a, b) => a.timeSec - b.timeSec);
+
+      const counts = {
+        total: nextHits.length,
+        kick: nextHits.filter((h) => h.role === 'kick').length,
+        snare: nextHits.filter((h) => h.role === 'snare').length,
+        hat: nextHits.filter((h) => h.role === 'hat').length,
+        crash: nextHits.filter((h) => h.role === 'crash').length,
+        tom: nextHits.filter((h) => h.role === 'tom').length,
+        notes: analysis.counts.notes,
+      };
+      setAnalysis({
+        ...analysis,
+        drumHits: nextHits,
+        counts,
+      });
+    },
+    [analysis]
+  );
+
+  // Interactive MIDI Drum Roll Hit Editor: remove a specific hit by ID
+  const removeDrumHit = useCallback(
+    (hitId: string) => {
+      if (!analysis || analysis.mode !== 'drums') return;
+      const nextHits = analysis.drumHits.filter((h) => h.id !== hitId);
+      const counts = {
+        total: nextHits.length,
+        kick: nextHits.filter((h) => h.role === 'kick').length,
+        snare: nextHits.filter((h) => h.role === 'snare').length,
+        hat: nextHits.filter((h) => h.role === 'hat').length,
+        crash: nextHits.filter((h) => h.role === 'crash').length,
+        tom: nextHits.filter((h) => h.role === 'tom').length,
+        notes: analysis.counts.notes,
+      };
+      setAnalysis({
+        ...analysis,
+        drumHits: nextHits,
+        counts,
+      });
+    },
+    [analysis]
+  );
+
   return {
     songs,
     loadingSongs,
@@ -1792,6 +2240,17 @@ export function useStemReplacer() {
     applyMixPreset,
     isLoadingStem,
     isAnalyzing,
+    isTranscribingAi,
+    aiStageMessage,
+    isolateDrumsWithDemucs,
+    setIsolateDrumsWithDemucs,
+    replicateApiKey,
+    saveReplicateApiKey,
+    runReplicateAiMidiTranscription,
+    exportCurrentMidiFile,
+    importMidiFileForReplacement,
+    addManualDrumHit,
+    removeDrumHit,
     isRendering,
     isExportingPc,
     isSavingCloud,

@@ -6,6 +6,7 @@ import {
 import { detectPitchYin, midiNoteToName } from './PitchDetector';
 import type {
   DetectedChordSegment,
+  DrumArticulation,
   DrumPieceRole,
   FullStemAnalysisResult,
   StemAnalysisMode,
@@ -563,8 +564,10 @@ export function analyzeDrumStemFull(
     (options.musicalKey && !/^percusi/i.test(options.musicalKey))
   );
 
-  // 1. 5-Band Butterworth isolation for accurate drum peak timing & transient separation (resistant to dirty stem bleed)
+  // 1. 6-Band Butterworth isolation for accurate drum peak timing & transient separation (resistant to dirty stem bleed)
+  const subKickSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 84);
   const kickSig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 138);
+  const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 84, 340);
   const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 155, 360);
   const crackSig = applyBiquadBandPassOrLp(mono, sampleRate, 1850, 6200);
   const cymbalSig = applyBiquadBandPassOrLp(mono, sampleRate, 2800, 11800);
@@ -575,6 +578,7 @@ export function analyzeDrumStemFull(
   const envHop = Math.max(1, Math.round(sampleRate / envHz));
   const numEnv = Math.max(1, Math.floor(mono.length / envHop));
   const psK = new Float64Array(numEnv + 1);
+  const psT = new Float64Array(numEnv + 1);
   const psS = new Float64Array(numEnv + 1);
   const psC = new Float64Array(numEnv + 1);
   const psY = new Float64Array(numEnv + 1);
@@ -584,20 +588,23 @@ export function analyzeDrumStemFull(
     const st = f * envHop;
     const en = Math.min(mono.length, st + envHop);
     const inv = 1 / Math.max(1, en - st);
-    let sqK = 0, sqS = 0, sqC = 0, sqY = 0, sqH = 0;
+    let sqK = 0, sqT = 0, sqS = 0, sqC = 0, sqY = 0, sqH = 0;
     for (let i = st; i < en; i++) {
       const k = kickSig[i];
+      const tm = tomSig[i];
       const s = shellSig[i];
       const c = crackSig[i];
       const y = cymbalSig[i];
       const h = hatSig[i];
       sqK += k * k;
+      sqT += tm * tm;
       sqS += s * s;
       sqC += c * c;
       sqY += y * y;
       sqH += h * h;
     }
     psK[f + 1] = psK[f] + sqK * inv;
+    psT[f + 1] = psT[f] + sqT * inv;
     psS[f + 1] = psS[f] + sqS * inv;
     psC[f + 1] = psC[f] + sqC * inv;
     psY[f + 1] = psY[f] + sqY * inv;
@@ -616,19 +623,20 @@ export function analyzeDrumStemFull(
 
   // Strict causal/short-forward RMS envelopes (zero early pre-smearing before transient attacks!)
   const envKick = buildCausalRms(psK, 8, 2);   // ~22ms span, max +4ms lookahead
+  const envTom = buildCausalRms(psT, 6, 2);    // ~18ms span for Floor/Mid/High Toms (84..340Hz)
   const envShell = buildCausalRms(psS, 5, 1);  // ~14ms span, max +2ms lookahead
   const envCrack = buildCausalRms(psC, 2, 1);  // ~8ms span
   const envCymbal = buildCausalRms(psY, 3, 1); // ~10ms span for Crash/Ride wash
   const envHat = buildCausalRms(psH, 2, 1);
 
   const refKickEnv = computePercentileFloat(envKick, 0.92);
+  const refTomEnv = computePercentileFloat(envTom, 0.92);
   const refShellEnv = computePercentileFloat(envShell, 0.92);
   const refCrackEnv = computePercentileFloat(envCrack, 0.92);
   const refCymbalEnv = computePercentileFloat(envCymbal, 0.92);
   const refHatEnv = computePercentileFloat(envHat, 0.92);
 
-  // 2. Collect onset candidates from Spectral Flux + ALL 5 causal drum band step impulses
-  //    (Fixes bug where Hi-Hat band peaks were previously skipped on drum stems!)
+  // 2. Collect onset candidates from Spectral Flux + ALL causal drum band step impulses
   const res = detectOnsetsSpectralFlux(mono, sampleRate, {
     sensitivity,
     minIntervalMs,
@@ -638,6 +646,7 @@ export function analyzeDrumStemFull(
   const bandCandidates: number[] = [];
   if (
     envKick[0] > refKickEnv * 0.26 ||
+    envTom[0] > refTomEnv * 0.26 ||
     envCrack[0] > refCrackEnv * 0.26 ||
     envHat[0] > refHatEnv * 0.26
   ) {
@@ -688,7 +697,8 @@ export function analyzeDrumStemFull(
   collectBandPeaks(envHat, refHatEnv, isFullMix ? 1.62 : 1.44, 0.068);
   collectBandPeaks(envCymbal, refCymbalEnv, 1.58, 0.14);
   if (!isFullMix) {
-    collectBandPeaks(envShell, refShellEnv, 1.58, 0.11);
+    collectBandPeaks(envShell, refShellEnv, 1.58, 0.095);
+    collectBandPeaks(envTom, refTomEnv, 1.48, 0.085);
   }
 
   // Cluster candidates within 26ms so separate beats/offbeat hits stay distinct while collapsing double-triggers
@@ -709,6 +719,69 @@ export function analyzeDrumStemFull(
     candidateTimes.push(cur.t);
   }
 
+  // Helper to measure pitched Tom resonance (82..265 Hz) vs Sub-Kick (28..84 Hz) vs Snare Wire (1850..6200 Hz)
+  const measureTomResonance = (sampleIdx: number) => {
+    const wStart = Math.min(mono.length - 1, sampleIdx + Math.round(sampleRate * 0.006));
+    const wEnd = Math.min(mono.length, sampleIdx + Math.round(sampleRate * 0.056));
+    const wLen = wEnd - wStart;
+    if (wLen < Math.round(sampleRate * 0.018)) {
+      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms: 0, subRms: 0, crackRms: 0 };
+    }
+    let sqTom = 0;
+    let sqSub = 0;
+    let sqCrack = 0;
+    const zcIndices: number[] = [];
+    for (let k = wStart; k < wEnd; k++) {
+      const tv = tomSig[k];
+      const sv = subKickSig[k];
+      const cv = crackSig[k];
+      sqTom += tv * tv;
+      sqSub += sv * sv;
+      sqCrack += cv * cv;
+      if (k > wStart && tomSig[k - 1] <= 0 && tv > 0) {
+        zcIndices.push(k);
+      }
+    }
+    const tomRms = Math.sqrt(sqTom / wLen);
+    const subRms = Math.sqrt(sqSub / wLen);
+    const crackRms = Math.sqrt(sqCrack / wLen);
+    if (zcIndices.length < 3 || tomRms < 1e-4) {
+      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms, subRms, crackRms };
+    }
+    const periods: number[] = [];
+    for (let z = 1; z < zcIndices.length; z++) {
+      const p = zcIndices[z] - zcIndices[z - 1];
+      const f = sampleRate / Math.max(1, p);
+      if (f >= 74 && f <= 285) {
+        periods.push(p);
+      }
+    }
+    if (periods.length < 2) {
+      return { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms, subRms, crackRms };
+    }
+    periods.sort((a, b) => a - b);
+    const medLag = Math.round(periods[Math.floor(periods.length / 2)]);
+    const freqHz = sampleRate / Math.max(1, medLag);
+    let acNum = 0;
+    let acDenA = 0;
+    let acDenB = 0;
+    for (let k = wStart; k < wEnd - medLag; k++) {
+      const a = tomSig[k];
+      const b = tomSig[k + medLag];
+      acNum += a * b;
+      acDenA += a * a;
+      acDenB += b * b;
+    }
+    const clarity = acNum / Math.max(1e-9, Math.sqrt(acDenA * acDenB));
+    const isPitchedTom =
+      freqHz >= 82 &&
+      freqHz <= 265 &&
+      clarity >= 0.62 &&
+      tomRms > subRms * 1.24 &&
+      tomRms > crackRms * 2.25;
+    return { isPitchedTom, freqHz, clarity, tomRms, subRms, crackRms };
+  };
+
   // 3. Pre/Post Delta-Spectrum FFT Classifier (cancels sustaining guitars/bass/vocals/bleed!)
   const fftSize = 1024;
   const half = fftSize / 2;
@@ -727,6 +800,10 @@ export function analyzeDrumStemFull(
     role: DrumPieceRole;
     peakAmp: number;
     percScore: number;
+    midiNote?: number;
+    subRoleLabel?: string;
+    articulation?: DrumArticulation;
+    pitchOffsetSemis?: number;
   }> = [];
 
   const preGapSamples = Math.round(sampleRate * 0.005);
@@ -760,6 +837,7 @@ export function analyzeDrumStemFull(
     const envIdx = Math.min(numEnv - 1, Math.round(timeSec * envHz));
 
     const kSt = getStep(envKick, envIdx);
+    const tSt = getStep(envTom, envIdx);
     const sSt = getStep(envShell, envIdx);
     const cSt = getStep(envCrack, envIdx);
     const ySt = getStep(envCymbal, envIdx);
@@ -867,6 +945,7 @@ export function analyzeDrumStemFull(
     }
 
     const kickStrength = kSt.step / Math.max(1e-4, refKickEnv);
+    const tomStrength = tSt.step / Math.max(1e-4, refTomEnv);
     const shellStrength = sSt.step / Math.max(1e-4, refShellEnv);
     const crackStrength = cSt.step / Math.max(1e-4, refCrackEnv);
     const cymbalStrength = ySt.step / Math.max(1e-4, refCymbalEnv);
@@ -894,8 +973,8 @@ export function analyzeDrumStemFull(
       }
     } else {
       // Dirty isolated drum stem bleed filter: ignore slow non-percussive bleed fluctuations
-      const maxBandRatio = Math.max(kSt.ratio, sSt.ratio, cSt.ratio, ySt.ratio, hSt.ratio);
-      const maxBandStrength = Math.max(kickStrength, shellStrength, crackStrength, cymbalStrength, hatStrength);
+      const maxBandRatio = Math.max(kSt.ratio, tSt.ratio, sSt.ratio, cSt.ratio, ySt.ratio, hSt.ratio);
+      const maxBandStrength = Math.max(kickStrength, tomStrength, shellStrength, crackStrength, cymbalStrength, hatStrength);
       if (maxBandRatio < 1.24 || maxBandStrength < 0.16 - sensitivity * 0.08) {
         continue;
       }
@@ -917,16 +996,24 @@ export function analyzeDrumStemFull(
       cymTailAvg >= refCymbalEnv * 0.12 &&
       (!isFullMix || crackFlatness >= 0.08);
 
+    // Check pitched Tom resonance (Floor Tom 85-115Hz, Mid Tom 115-165Hz, High Tom 165-260Hz)
+    const tomInfo =
+      !isFullMix && (tomStrength >= 0.26 || shellStrength >= 0.26) && Math.max(tSt.ratio, sSt.ratio) >= 1.38
+        ? measureTomResonance(sampleIdx)
+        : { isPitchedTom: false, freqHz: 130, clarity: 0, tomRms: 0, subRms: 0, crackRms: 0 };
+
     let role: DrumPieceRole = 'snare';
     const strongKickRise =
       kickStrength >= 0.32 &&
       kSt.ratio >= 1.45 &&
       dSubKick > totalDelta * 0.075 &&
+      !tomInfo.isPitchedTom &&
       (!isFullMix || kTailDrop >= 1.30 || cSt.ratio >= 1.45);
     const strongSnareCrack =
       crackStrength >= 0.27 &&
       cSt.ratio >= 1.36 &&
       crackFlatness >= 0.092 &&
+      !tomInfo.isPitchedTom &&
       (shellStrength >= 0.20 || dSnareMid + dTomBody > dHat * 0.68 || rCrack >= 0.20);
 
     // Standalone Crash vs Snare distinction:
@@ -940,7 +1027,9 @@ export function analyzeDrumStemFull(
       role = 'kick';
     } else if (isStandaloneCrash) {
       role = 'crash';
-    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.14 && rSnareMid + rCrack > rKick && shellStrength >= 0.16)) {
+    } else if (tomInfo.isPitchedTom && !isCrashCandidate) {
+      role = 'tom';
+    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.14 && rSnareMid + rCrack > rKick && shellStrength >= 0.16 && !tomInfo.isPitchedTom)) {
       role = 'snare';
     } else if (rTom > 0.35 && rKick < 0.24 && rCrackHat < 0.24 && shellStrength >= 0.34) {
       role = 'tom';
@@ -961,7 +1050,7 @@ export function analyzeDrumStemFull(
         : role === 'crash'
         ? cymbalSig
         : role === 'tom'
-        ? shellSig
+        ? tomSig
         : crackSig;
     const pSearchStart = Math.max(0, sampleIdx - Math.round(sampleRate * 0.002));
     const pSearchEnd = Math.min(mono.length, sampleIdx + Math.round(sampleRate * 0.022));
@@ -987,22 +1076,70 @@ export function analyzeDrumStemFull(
         ? Math.max(ySt.post, bandPeakAmp)
         : role === 'hat'
         ? Math.max(hSt.post, bandPeakAmp)
-        : Math.max(sSt.post, bandPeakAmp);
+        : Math.max(tSt.post, sSt.post, bandPeakAmp);
 
     // Tail ripple / bass-rebound guard against decaying resonance inside 145ms of same non-hat hit
     const prevSame = [...rawHits].reverse().find((h) => h.role === role);
-    const sameRoleThresh = role === 'kick' ? 0.72 : role === 'crash' ? 0.78 : 0.48;
-    const minSameRoleGap = role === 'crash' ? 0.32 : 0.145;
+    const sameRoleThresh = role === 'kick' ? 0.72 : role === 'crash' ? 0.78 : role === 'tom' ? 0.44 : 0.48;
+    const minSameRoleGap = role === 'crash' ? 0.32 : role === 'tom' ? 0.088 : 0.145;
     if (prevSame && timeSec - prevSame.timeSec < minSameRoleGap && role !== 'hat') {
       if (roleAmp < prevSame.peakAmp * sameRoleThresh) {
         continue;
       }
     }
 
-    // Prevent spurious overlapping duplicate detections inside 55ms (preserving distinct co-occurring crash)
+    // Assign General MIDI attributes (Kick 36, Snare 38, Closed/Open Hat 42/46, High/Mid/Floor Tom 50/47/43, Crash 49)
+    let midiNote = 38;
+    let subRoleLabel = 'Acoustic Snare (38)';
+    let articulation: DrumArticulation = 'closed';
+    let pitchOffsetSemis = 0;
+
+    if (role === 'kick') {
+      midiNote = 36;
+      subRoleLabel = 'Kick Drum 1 (36)';
+      articulation = 'closed';
+    } else if (role === 'snare') {
+      midiNote = 38;
+      subRoleLabel = 'Acoustic Snare (38)';
+      articulation = 'closed';
+    } else if (role === 'crash') {
+      midiNote = 49;
+      subRoleLabel = 'Crash Cymbal 1 (49)';
+      articulation = 'crash';
+    } else if (role === 'hat') {
+      const isOpenHat = cymTailRatio >= 0.21 && hSt.post >= refHatEnv * 0.26;
+      midiNote = isOpenHat ? 46 : 42;
+      subRoleLabel = isOpenHat ? 'Open Hi-Hat (46)' : 'Closed Hi-Hat (42)';
+      articulation = isOpenHat ? 'open' : 'closed';
+    } else if (role === 'tom') {
+      if (tomInfo.freqHz >= 172) {
+        midiNote = 50;
+        subRoleLabel = 'High Tom (50)';
+        articulation = 'high-tom';
+        pitchOffsetSemis = 3;
+      } else if (tomInfo.freqHz >= 126) {
+        midiNote = 47;
+        subRoleLabel = 'Mid Tom (47)';
+        articulation = 'mid-tom';
+        pitchOffsetSemis = 0;
+      } else {
+        midiNote = 43;
+        subRoleLabel = 'Floor Tom (43)';
+        articulation = 'floor-tom';
+        pitchOffsetSemis = -3;
+      }
+    }
+
+    // Prevent spurious overlapping duplicate detections inside 55ms (preserving distinct co-occurring drum pieces)
     const prevAny = rawHits[rawHits.length - 1];
-    if (prevAny && timeSec - prevAny.timeSec < 0.055 && prevAny.role !== 'crash') {
-      const curPercScore = Math.max(kickStrength, crackStrength, cymbalStrength, hatStrength);
+    if (
+      prevAny &&
+      timeSec > prevAny.timeSec &&
+      timeSec - prevAny.timeSec < 0.055 &&
+      prevAny.role !== 'crash' &&
+      !(role === 'tom' && prevAny.role === 'tom')
+    ) {
+      const curPercScore = Math.max(kickStrength, tomStrength, crackStrength, cymbalStrength, hatStrength);
       if (prevAny.role === role || curPercScore > prevAny.percScore * 1.15) {
         if (roleAmp > prevAny.peakAmp) {
           rawHits[rawHits.length - 1] = {
@@ -1011,6 +1148,10 @@ export function analyzeDrumStemFull(
             role,
             peakAmp: roleAmp,
             percScore: curPercScore,
+            midiNote,
+            subRoleLabel,
+            articulation,
+            pitchOffsetSemis,
           };
         }
       }
@@ -1026,13 +1167,16 @@ export function analyzeDrumStemFull(
       peakTimeSec: Number((peakIdx / sampleRate).toFixed(5)),
       role,
       peakAmp: Math.max(roleAmp, monoPeakAmp * 0.25),
-      percScore: Math.max(kickStrength, crackStrength, cymbalStrength, hatStrength),
+      percScore: Math.max(kickStrength, tomStrength, crackStrength, cymbalStrength, hatStrength),
+      midiNote,
+      subRoleLabel,
+      articulation,
+      pitchOffsetSemis,
     });
 
     // Co-occurring Downbeat Crash detection:
     // In real drum stems, Crash cymbals are most often struck SIMULTANEOUSLY with a Kick (or Snare) on beat 1!
-    // If this hit was classified as 'kick' (or 'snare') AND has a strong unmistakable continuous-wash Crash signature,
-    // emit the co-occurring 'crash' hit as well so both the Kick punch and Crash shimmer are replaced!
+    let emittedCoCrash = false;
     if (
       (role === 'kick' || role === 'snare') &&
       isCrashCandidate &&
@@ -1051,12 +1195,50 @@ export function analyzeDrumStemFull(
         }
       }
       lastCrashSec = timeSec;
+      emittedCoCrash = true;
       rawHits.push({
         timeSec,
         peakTimeSec: Number((cymPeakIdx / sampleRate).toFixed(5)),
         role: 'crash',
         peakAmp: Math.max(ySt.post, cymPeakAmp),
         percScore: cymbalStrength,
+        midiNote: 49,
+        subRoleLabel: 'Crash Cymbal 1 (49)',
+        articulation: 'crash',
+        pitchOffsetSemis: 0,
+      });
+    }
+
+    // Co-occurring Simultaneous Hi-Hat detection on Kick / Snare beats (polyphonic drum stems):
+    if (
+      !isFullMix &&
+      !emittedCoCrash &&
+      (role === 'kick' || role === 'snare') &&
+      hatStrength >= (role === 'kick' ? 0.26 : 0.42) &&
+      hSt.ratio >= (role === 'kick' ? 1.40 : 1.56) &&
+      hSt.post >= refHatEnv * 0.24 &&
+      (role === 'kick' || dHat > dCrack * 0.42)
+    ) {
+      let hatPeakIdx = sampleIdx;
+      let hatPeakAmp = 0;
+      for (let k = pSearchStart; k < pSearchEnd; k++) {
+        const ha = Math.abs(hatSig[k]);
+        if (ha > hatPeakAmp) {
+          hatPeakAmp = ha;
+          hatPeakIdx = k;
+        }
+      }
+      const isOpen = cymTailRatio >= 0.21 && hSt.post >= refHatEnv * 0.28;
+      rawHits.push({
+        timeSec,
+        peakTimeSec: Number((hatPeakIdx / sampleRate).toFixed(5)),
+        role: 'hat',
+        peakAmp: Math.max(hSt.post, hatPeakAmp),
+        percScore: hatStrength,
+        midiNote: isOpen ? 46 : 42,
+        subRoleLabel: isOpen ? 'Open Hi-Hat (46)' : 'Closed Hi-Hat (42)',
+        articulation: isOpen ? 'open' : 'closed',
+        pitchOffsetSemis: 0,
       });
     }
   }
@@ -1084,6 +1266,11 @@ export function analyzeDrumStemFull(
       peakTimeSec: h.peakTimeSec,
       role: h.role,
       velocity: vel,
+      midiNote: h.midiNote,
+      subRoleLabel: h.subRoleLabel,
+      articulation: h.articulation,
+      pitchOffsetSemis: h.pitchOffsetSemis,
+      sourceEngine: 'local-dsp',
     };
   });
 

@@ -36,7 +36,9 @@ export const DRUM_PRESET_CATALOG: PresetCatalogEntry[] = [
   { id: 'drum-crash-bright', label: 'Crash Brillante Estudio', category: 'crash', description: 'Platillo crash con ataque definido y shimmer estéreo' },
   { id: 'drum-crash-warm', label: 'Crash Acústico Cálido', category: 'crash', description: 'Bronce natural B20 con cuerpo y caída orgánica' },
   { id: 'drum-crash-ride', label: 'Crash / Ride Definido', category: 'crash', description: 'Ping cristalino + wash controlado para rock/pop' },
-  { id: 'drum-tom-deep', label: 'Tom Acústico Profundo', category: 'tom', description: 'Resonancia de parche natural' },
+  { id: 'drum-tom-deep', label: 'Tom Acústico Medio (Mid Tom)', category: 'tom', description: 'Resonancia de parche 115Hz natural equilibrada' },
+  { id: 'drum-tom-rack', label: 'Rack Tom Estudio (High Tom)', category: 'tom', description: 'Tom aéreo 165Hz con ataque de baqueta definido' },
+  { id: 'drum-tom-floor', label: 'Floor Tom Granadero (Low Tom)', category: 'tom', description: 'Tom de piso 82Hz profundo con peso de madera' },
 ];
 
 export const MELODIC_PRESET_CATALOG: PresetCatalogEntry[] = [
@@ -293,24 +295,29 @@ function buildDrumPresetArrays(
     return { rootMidi: 49, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.018) };
   }
 
-  // drum-tom-deep
-  const len = Math.floor(sr * 0.42);
+  // drum-tom-deep | drum-tom-rack | drum-tom-floor
+  const tomDur = id === 'drum-tom-floor' ? 0.52 : id === 'drum-tom-rack' ? 0.34 : 0.42;
+  const len = Math.floor(sr * tomDur);
   const L = new Float32Array(len);
   const R = new Float32Array(len);
+  const fBase = id === 'drum-tom-floor' ? 78 : id === 'drum-tom-rack' ? 148 : 108;
+  const fSweep = id === 'drum-tom-floor' ? 62 : id === 'drum-tom-rack' ? 92 : 76;
+  const tomDecay = id === 'drum-tom-floor' ? 6.8 : id === 'drum-tom-rack' ? 10.2 : 8.2;
+  const rootMidi = id === 'drum-tom-floor' ? 43 : id === 'drum-tom-rack' ? 50 : 47;
   let phase = 0;
   for (let i = 0; i < len; i++) {
     const t = i / sr;
-    const f = 92 + 78 * Math.exp(-t * 28);
+    const f = fBase + fSweep * Math.exp(-t * 28);
     phase += (2 * Math.PI * f) / sr;
-    const body = (Math.sin(phase) * 0.8 + Math.sin(phase * 1.52) * 0.2) * Math.exp(-t * 8.2);
-    const stick = rand() * Math.exp(-t * 180) * 0.28;
+    const body = (Math.sin(phase) * 0.8 + Math.sin(phase * 1.52) * 0.2) * Math.exp(-t * tomDecay);
+    const stick = (rand() * 0.65 + Math.sin(2 * Math.PI * 2250 * t) * 0.35) * Math.exp(-t * 195) * 0.32;
     const fade = i > len - 180 ? (len - i) / 180 : 1;
-    const v = Math.tanh((body + stick) * 1.1) * fade;
+    const v = Math.tanh((body + stick) * 1.12) * fade;
     L[i] = v;
     R[i] = v;
   }
   normalizeStereoInPlace(L, R, -1.0);
-  return { rootMidi: 45, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.025) };
+  return { rootMidi, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.025) };
 }
 
 /**
