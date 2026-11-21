@@ -43,19 +43,26 @@ function buildZoneFromCustomSlot(
   }
   let peakOffsetSamples: number;
   if (slot.customPeakOffsetSec !== undefined) {
-    peakOffsetSamples = Math.round(slot.customPeakOffsetSec * sr);
+    peakOffsetSamples = Math.min(Math.round(sr * 0.025), Math.round(slot.customPeakOffsetSec * sr));
   } else {
-    const lim = Math.min(left.length, Math.round(sr * 0.06));
+    const lim = Math.min(left.length, Math.round(sr * 0.04));
+    const attackLim = Math.min(lim, Math.round(sr * 0.016));
     let pk = 0;
     let mx = 0;
+    let atkPk = 0;
+    let atkMx = 0;
     for (let i = 0; i < lim; i++) {
       const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
       if (a > mx) {
         mx = a;
         pk = i;
       }
+      if (i < attackLim && a > atkMx) {
+        atkMx = a;
+        atkPk = i;
+      }
     }
-    peakOffsetSamples = pk;
+    peakOffsetSamples = atkMx >= mx * 0.42 ? atkPk : Math.min(pk, Math.round(sr * 0.025));
   }
   const loopStart = Math.round(left.length * 0.28);
   const loopEnd = Math.round(left.length * 0.82);
@@ -121,7 +128,7 @@ export function renderFullStemReplacement(params: {
   if (analysis.mode === 'drums') {
     const zoneCache = new Map<DrumPieceRole, ZoneSampleBuffer & { sampleRate: number }>();
 
-    (['kick', 'snare', 'hat', 'tom'] as DrumPieceRole[]).forEach((role) => {
+    (['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]).forEach((role) => {
       const slot = drumSlots[role];
       if (!slot || !slot.enabled) return;
       if (slot.sourceType !== 'preset' && slot.customBuffer) {
@@ -132,6 +139,12 @@ export function renderFullStemReplacement(params: {
       }
     });
 
+    // Dedicated Hi-Hat sub-bus so consecutive closed/open Hi-Hat triggers choke ringing hat tails naturally
+    const hatBusL = new Float32Array(totalLen);
+    const hatBusR = new Float32Array(totalLen);
+    const hatChokeSamples = Math.max(8, Math.round(sr * 0.011)); // 11ms natural hi-hat foot/stick choke
+    let lastHatEndOut = 0;
+
     for (let hIdx = 0; hIdx < analysis.drumHits.length; hIdx++) {
       const hit = analysis.drumHits[hIdx];
       const slot = drumSlots[hit.role];
@@ -140,27 +153,45 @@ export function renderFullStemReplacement(params: {
 
       const srRatio = zone.sampleRate / sr;
       let semiShift = slot.pitchSemis;
-      let ampScale = Math.pow(10, slot.gainDb / 20) * (0.25 + 0.75 * hit.velocity);
+      let ampScale = Math.pow(10, slot.gainDb / 20) * (0.24 + 0.76 * hit.velocity);
+      let panSkew = 0;
 
       if (mix.roundRobinHumanize) {
         const p1 = Math.sin((hIdx + 1) * 12.9898) * 43758.5453;
         const f1 = p1 - Math.floor(p1);
         const p2 = Math.sin((hIdx + 1) * 78.233) * 19341.7219;
         const f2 = p2 - Math.floor(p2);
-        semiShift += (f1 - 0.5) * 0.14; // +/- 7 cents organic drum head feel
-        ampScale *= 0.95 + f2 * 0.1; // +/- 5% micro velocity
+        const pitchSpan = hit.role === 'crash' || hit.role === 'hat' ? 0.18 : 0.14;
+        semiShift += (f1 - 0.5) * pitchSpan; // organic drum head / cymbal shimmer variation
+        ampScale *= 0.94 + f2 * 0.12; // +/- 6% micro velocity
+        if (hit.role === 'hat') {
+          panSkew = -0.07 + (f1 - 0.5) * 0.03;
+        } else if (hit.role === 'crash') {
+          panSkew = (hIdx % 2 === 0 ? 0.12 : -0.10) + (f2 - 0.5) * 0.04;
+        } else if (hit.role === 'tom') {
+          panSkew = ((hIdx % 3) - 1) * 0.09;
+        }
       }
+
+      const gainL = ampScale * (1 - Math.max(0, panSkew));
+      const gainR = ampScale * (1 + Math.min(0, panSkew));
 
       const rate = Math.pow(2, semiShift / 12) * srRatio;
       const peakStartOut = Math.round(hit.peakTimeSec * sr);
       const alignedPeakSamples = Math.round(zone.peakOffsetSamples / rate);
       const startOut = Math.max(0, peakStartOut - alignedPeakSamples);
 
-      // Apply brief transient pocket duck on original audio (skip hi-hats; gentle sub-pocket when blending onto a song mix)
-      if (mix.duckOriginalTransients && mix.originalPct > 2 && (hit.role === 'kick' || hit.role === 'snare')) {
+      // Apply brief transient pocket duck on original audio (cleans flams when blending onto dirty stems or song mixes)
+      if (
+        mix.duckOriginalTransients &&
+        mix.originalPct > 2 &&
+        (hit.role === 'kick' || hit.role === 'snare' || hit.role === 'crash' || hit.role === 'tom')
+      ) {
         const duckPre = Math.max(0, Math.round(hit.peakTimeSec * sr) - Math.round(sr * 0.005));
-        const duckLen = Math.round(sr * (hit.role === 'kick' ? 0.024 : 0.016));
-        const baseDepth = mix.originalPct >= 25 ? 0.52 : 0.80;
+        const duckLen = Math.round(
+          sr * (hit.role === 'kick' ? 0.024 : hit.role === 'crash' ? 0.028 : 0.017)
+        );
+        const baseDepth = mix.originalPct >= 25 ? 0.52 : 0.82;
         const depth = Math.min(baseDepth, baseDepth * 0.6 + baseDepth * 0.4 * hit.velocity);
         for (let k = 0; k < duckLen && duckPre + k < totalLen; k++) {
           const envShape = Math.sin((k / duckLen) * Math.PI);
@@ -174,18 +205,62 @@ export function renderFullStemReplacement(params: {
       const startsHot = Math.max(Math.abs(zone.left[0] ?? 0), Math.abs(zone.right[0] ?? 0)) > 0.015;
       const attackSamples = startsHot ? Math.max(4, Math.round(sr * 0.00015)) : 0;
 
+      // Velocity-dependent dynamic timbre filter: softer ghost hits are naturally warmer, hard hits retain full 20kHz snap
+      const useVelFilter = mix.roundRobinHumanize && hit.velocity < 0.80;
+      const velCutoffHz = 3800 + hit.velocity * 14500;
+      const velLpAlpha = useVelFilter ? (2 * Math.PI * velCutoffHz) / (sr + 2 * Math.PI * velCutoffHz) : 1.0;
+      let vLpL = 0;
+      let vLpR = 0;
+
+      const targetL = hit.role === 'hat' ? hatBusL : repL;
+      const targetR = hit.role === 'hat' ? hatBusR : repR;
+
+      // Choke previous ringing Hi-Hat tail when a new Hi-Hat strikes
+      if (hit.role === 'hat' && startOut < lastHatEndOut) {
+        const chokeEnd = Math.min(totalLen, lastHatEndOut);
+        const chokeSpan = Math.min(hatChokeSamples, chokeEnd - startOut);
+        for (let c = 0; c < chokeSpan; c++) {
+          const fade = 1 - (c + 1) / chokeSpan;
+          hatBusL[startOut + c] *= fade;
+          hatBusR[startOut + c] *= fade;
+        }
+        for (let c = startOut + chokeSpan; c < chokeEnd; c++) {
+          hatBusL[c] = 0;
+          hatBusR[c] = 0;
+        }
+      }
+
       for (let i = 0; i < renderLen; i++) {
         const srcPos = i * rate;
         const atk = attackSamples > 0 && i < attackSamples ? i / attackSamples : 1.0;
+        let sL: number;
+        let sR: number;
         if (Math.abs(rate - 1.0) < 1e-4) {
           const idx = Math.floor(srcPos);
-          repL[startOut + i] += zone.left[idx] * ampScale * atk;
-          repR[startOut + i] += zone.right[idx] * ampScale * atk;
+          sL = zone.left[idx];
+          sR = zone.right[idx];
         } else {
-          repL[startOut + i] += cubicSample(zone.left, srcPos) * ampScale * atk;
-          repR[startOut + i] += cubicSample(zone.right, srcPos) * ampScale * atk;
+          sL = cubicSample(zone.left, srcPos);
+          sR = cubicSample(zone.right, srcPos);
         }
+        if (useVelFilter) {
+          vLpL += velLpAlpha * (sL - vLpL);
+          vLpR += velLpAlpha * (sR - vLpR);
+          sL = vLpL;
+          sR = vLpR;
+        }
+        targetL[startOut + i] += sL * gainL * atk;
+        targetR[startOut + i] += sR * gainR * atk;
       }
+
+      if (hit.role === 'hat') {
+        lastHatEndOut = Math.max(lastHatEndOut, startOut + renderLen);
+      }
+    }
+
+    for (let i = 0; i < totalLen; i++) {
+      repL[i] += hatBusL[i];
+      repR[i] += hatBusR[i];
     }
   } else {
     // Monophonic or Polyphonic (Bass, Piano, Guitar, Keys, Synth)

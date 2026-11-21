@@ -10,12 +10,14 @@ import {
   analyzeDrumStemFull,
   analyzeMonophonicStemNotesFull,
   analyzePolyphonicStemNotesFull,
+  estimateBpmFromOnsets,
   inferStemModeFromName,
   quantizeNoteEventsToTempo,
 } from '../engine/FullStemAnalyzer';
 import {
   analyzeAudioBufferFirst,
   computeAudioMemorySignature,
+  detectAccurateTempoAndPhase,
   getCachedPreImportEntry,
   rebuildBeatGridFromTempo,
   registerPreImportMemoryEntry,
@@ -29,8 +31,8 @@ import {
   saveCustomReplacementSampleToIdb,
 } from '../engine/KitStorage';
 import {
+  classifyCustomSampleCategory,
   getPresetAuditionBuffer,
-  inferReplacementCategoryFromName,
   isBassPresetId,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
@@ -80,6 +82,14 @@ function createDefaultDrumSlots(): Record<DrumPieceRole, ReplacementSlotConfig> 
       sourceType: 'preset',
       presetId: 'drum-hat-crisp',
       gainDb: -2,
+      pitchSemis: 0,
+    },
+    crash: {
+      roleOrTarget: 'crash',
+      enabled: true,
+      sourceType: 'preset',
+      presetId: 'drum-crash-bright',
+      gainDb: -1,
       pitchSemis: 0,
     },
     tom: {
@@ -610,7 +620,7 @@ export function useStemReplacer() {
             : '';
         const summary =
           result.mode === 'drums'
-            ? `Detectado: ${result.bpm} BPM · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hat · ${result.counts.tom} Tom)`
+            ? `Detectado: ${result.bpm} BPM · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hi-Hat · ${result.counts.crash} Crash · ${result.counts.tom} Tom)`
             : result.bassFocusApplied
             ? `Solo Graves (${result.bpm} BPM${keyTag}): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
             : `Detectado: ${result.bpm} BPM${keyTag} · ${result.counts.notes} notas (${rangeText})`;
@@ -884,12 +894,28 @@ export function useStemReplacer() {
           const start = Math.floor(hitTime * sr);
           const isKick = e % 4 === 0 || e % 8 === 6;
           const isSnare = e % 4 === 2;
-          // Hat on every 8th
-          for (let i = 0; i < Math.floor(sr * 0.08) && start + i < len; i++) {
-            const t = i / sr;
-            const hat = rnd() * Math.exp(-t * 68) * 0.16;
-            L[start + i] += hat;
-            R[start + i] += hat;
+          const isCrash = e % 16 === 0;
+          // Hat on every 8th (except when Crash hits on bar 1 & 3 downbeat)
+          if (!isCrash) {
+            for (let i = 0; i < Math.floor(sr * 0.08) && start + i < len; i++) {
+              const t = i / sr;
+              const hat = rnd() * Math.exp(-t * 68) * 0.16;
+              L[start + i] += hat;
+              R[start + i] += hat;
+            }
+          }
+          if (isCrash) {
+            for (let i = 0; i < Math.floor(sr * 0.65) && start + i < len; i++) {
+              const t = i / sr;
+              const shimmer =
+                (Math.sin(2 * Math.PI * 3420 * t) * 0.25 +
+                  Math.sin(2 * Math.PI * 5280 * t) * 0.22 +
+                  rnd() * 0.53) *
+                Math.exp(-t * 4.2) *
+                0.34;
+              L[start + i] += shimmer;
+              R[start + i] += shimmer;
+            }
           }
           if (isKick) {
             for (let i = 0; i < Math.floor(sr * 0.22) && start + i < len; i++) {
@@ -1169,6 +1195,42 @@ export function useStemReplacer() {
     [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, bassFocusMode]
   );
 
+  // Deep drum-isolated tempo re-detection for dirty drum stems ("stems sucios")
+  const reDetectTempoFromDrums = useCallback(async () => {
+    if (!originalBuffer) return;
+    setIsAnalyzing(true);
+    setStatusMessage('Aislando transientes de Bombo y Caja (filtro anti-suciedad) para re-detectar tempo exacto...');
+    try {
+      const mono = buildMonoSliceFromBuffer(originalBuffer, 0, originalBuffer.duration);
+      const rawDrumPass = analyzeDrumStemFull(mono, originalBuffer.sampleRate, {
+        sensitivity,
+        quantizeMode: 'off',
+      });
+      const kickSnareTimes = rawDrumPass.drumHits
+        .filter((h) => h.role === 'kick' || h.role === 'snare')
+        .map((h) => h.peakTimeSec);
+      const ioiBpm = estimateBpmFromOnsets(
+        kickSnareTimes.length >= 4 ? kickSnareTimes : rawDrumPass.drumHits.map((h) => h.peakTimeSec),
+        selectedSong?.bpm ?? 120
+      );
+      const tempoRes = detectAccurateTempoAndPhase(
+        mono,
+        originalBuffer.sampleRate,
+        kickSnareTimes.length >= 4 ? kickSnareTimes : rawDrumPass.drumHits.map((h) => h.peakTimeSec),
+        [],
+        ioiBpm
+      );
+      await updateImportedTempo(tempoRes.bpm);
+      setStatusMessage(
+        `Tempo de batería re-sincronizado: ${tempoRes.bpm} BPM (Confianza ${Math.round(
+          tempoRes.bpmConfidence * 100
+        )}% · Fase ${(tempoRes.beatOffsetSec * 1000).toFixed(0)}ms).`
+      );
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [originalBuffer, sensitivity, selectedSong?.bpm, updateImportedTempo]);
+
   const updateDrumSlot = useCallback(
     (role: DrumPieceRole, patch: Partial<ReplacementSlotConfig>) => {
       setDrumSlots((prev) => ({
@@ -1311,7 +1373,7 @@ export function useStemReplacer() {
           const decoded = await ctx.decodeAudioData(raw.slice(0));
           const category: CustomSampleCategory =
             preferredTarget === 'auto'
-              ? inferReplacementCategoryFromName(file.name)
+              ? classifyCustomSampleCategory(file.name, decoded, stemMode === 'drums')
               : preferredTarget;
           const assignTarget: DrumPieceRole | 'melodic' | undefined =
             preferredTarget !== 'auto'
@@ -1420,7 +1482,7 @@ export function useStemReplacer() {
     void deleteCustomReplacementSampleFromIdb(sampleId);
     setDrumSlots((prev) => {
       const next = { ...prev };
-      (['kick', 'snare', 'hat', 'tom'] as DrumPieceRole[]).forEach((role) => {
+      (['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]).forEach((role) => {
         if (next[role].customSampleId === sampleId) {
           next[role] = {
             ...next[role],
@@ -1715,6 +1777,7 @@ export function useStemReplacer() {
     quantizeMode,
     changeQuantizeModeAndReanalyze,
     updateImportedTempo,
+    reDetectTempoFromDrums,
     sensitivity,
     setSensitivity,
     maxPolyphony,

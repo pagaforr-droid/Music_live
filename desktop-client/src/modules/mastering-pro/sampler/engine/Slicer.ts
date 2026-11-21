@@ -206,6 +206,10 @@ export function assignSlicesToPads(
         ? '#00E5FF'
         : r.classification === 'hat'
         ? '#F59E0B'
+        : r.classification === 'crash'
+        ? '#EC4899'
+        : r.classification === 'tom'
+        ? '#10B981'
         : DEFAULT_PAD_COLORS[i % DEFAULT_PAD_COLORS.length];
 
     const sliceDur = r.endSec - r.startSec;

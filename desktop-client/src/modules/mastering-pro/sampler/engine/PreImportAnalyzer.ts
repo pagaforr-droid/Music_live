@@ -98,6 +98,7 @@ export function registerPreImportMemoryEntry(
       kick: 0,
       snare: 0,
       hat: 0,
+      crash: 0,
       tom: 0,
       notes: memory.polyNoteEvents.length,
     },
@@ -196,16 +197,20 @@ function buildDualBandNoveltyEnvelope(
   const snareRms = new Float32Array(maxFrames);
   const hiRms = new Float32Array(maxFrames);
 
-  // Low-lag 3-band crossover (~2ms group delay): Kick (<135Hz), Snare Body+Crack (210..3800Hz), Hats/Air (>5200Hz)
-  const lpLowAlpha = (2 * Math.PI * 135) / (sampleRate + 2 * Math.PI * 135);
-  const lpSnareLoAlpha = (2 * Math.PI * 210) / (sampleRate + 2 * Math.PI * 210);
-  const lpSnareHiAlpha = (2 * Math.PI * 3800) / (sampleRate + 2 * Math.PI * 3800);
-  const lpMidAlpha = (2 * Math.PI * 5200) / (sampleRate + 2 * Math.PI * 5200);
-  let lpLow = 0;
+  // Steep 3-band crossover with sub-32Hz rumble rejection & 2-stage 135Hz Kick isolation (resistant to dirty stem bleed!)
+  const stride = sampleRate > 56000 ? 2 : 1;
+  const effSr = sampleRate / stride;
+  const hpSubAlpha = (2 * Math.PI * 32) / (effSr + 2 * Math.PI * 32);
+  const lpLowAlpha = (2 * Math.PI * 135) / (effSr + 2 * Math.PI * 135);
+  const lpSnareLoAlpha = (2 * Math.PI * 210) / (effSr + 2 * Math.PI * 210);
+  const lpSnareHiAlpha = (2 * Math.PI * 3800) / (effSr + 2 * Math.PI * 3800);
+  const lpMidAlpha = (2 * Math.PI * 5200) / (effSr + 2 * Math.PI * 5200);
+  let hpSub = 0;
+  let lpLow1 = 0;
+  let lpLow2 = 0;
   let lpSnareLo = 0;
   let lpSnare = 0;
   let lpMid = 0;
-  const stride = sampleRate > 56000 ? 2 : 1;
 
   for (let f = 0; f < maxFrames; f++) {
     const start = f * hop;
@@ -215,14 +220,17 @@ function buildDualBandNoveltyEnvelope(
     let sqH = 0;
     let count = 0;
     for (let i = start; i < end; i += stride) {
-      const x = mono[i];
-      lpLow += lpLowAlpha * (x - lpLow);
+      const rawX = mono[i];
+      hpSub += hpSubAlpha * (rawX - hpSub);
+      const x = rawX - hpSub; // Removes <32Hz DC/pumping rumble from dirty AI stems
+      lpLow1 += lpLowAlpha * (x - lpLow1);
+      lpLow2 += lpLowAlpha * (lpLow1 - lpLow2); // 12dB/oct rejects snare/guitar bleed from Kick band
       lpSnareLo += lpSnareLoAlpha * (x - lpSnareLo);
       lpSnare += lpSnareHiAlpha * (x - lpSnare);
       lpMid += lpMidAlpha * (x - lpMid);
       const snare = lpSnare - lpSnareLo;
       const hi = x - lpMid;
-      sqL += lpLow * lpLow;
+      sqL += lpLow2 * lpLow2;
       sqS += snare * snare;
       sqH += hi * hi;
       count++;
@@ -233,7 +241,7 @@ function buildDualBandNoveltyEnvelope(
     hiRms[f] = Math.sqrt(sqH * inv);
   }
 
-  // Linear half-wave flux delta preserves natural Kick/Snare contrast vs quiet 8th-note hats/strums
+  // Linear half-wave flux delta with sustained-bleed suppression (cancels sustained bass/guitar hum in dirty stems)
   const lowFlux = new Float32Array(maxFrames);
   const snareFlux = new Float32Array(maxFrames);
   const hiFlux = new Float32Array(maxFrames);
@@ -241,15 +249,22 @@ function buildDualBandNoveltyEnvelope(
   let prevS = snareRms[0] ?? 0;
   let prevH = hiRms[0] ?? 0;
   for (let f = 1; f < maxFrames; f++) {
-    lowFlux[f] = Math.max(0, lowRms[f] - prevL);
-    snareFlux[f] = Math.max(0, snareRms[f] - prevS);
-    hiFlux[f] = Math.max(0, hiRms[f] - prevH);
+    const dL = Math.max(0, lowRms[f] - prevL);
+    const dS = Math.max(0, snareRms[f] - prevS);
+    const dH = Math.max(0, hiRms[f] - prevH);
+    // Check if low band actually decays over +60..+120ms (kick transient vs flat bass hum bleed)
+    const tailIdx = Math.min(maxFrames - 1, f + 9);
+    const lowDecayBoost = lowRms[f] > lowRms[tailIdx] * 1.18 ? 1.12 : 0.85;
+    lowFlux[f] = dL * lowDecayBoost;
+    snareFlux[f] = dS;
+    hiFlux[f] = dH;
     prevL = lowRms[f] * 0.65 + prevL * 0.35;
     prevS = snareRms[f] * 0.65 + prevS * 0.35;
     prevH = hiRms[f] * 0.65 + prevH * 0.35;
   }
 
-  // Subtract moving local floor (±0.22s = 22 frames) and normalize by 99th percentile peak
+  // Subtract moving local bleed floor (±0.28s) and normalize via 96th-percentile + local section AGC
+  // so a single loud crash/fill in a dirty drum stem never squashes the rest of the track!
   const lowNov = new Float32Array(maxFrames);
   const snareNov = new Float32Array(maxFrames);
   const hiNov = new Float32Array(maxFrames);
@@ -257,16 +272,23 @@ function buildDualBandNoveltyEnvelope(
   const combinedNov = new Float32Array(maxFrames);
 
   const normalizeAdaptive = (src: Float32Array, dst: Float32Array) => {
-    const rad = 22;
+    const rad = 26;
     const nonZero: number[] = [];
     let maxV = 1e-6;
     for (let f = 0; f < maxFrames; f++) {
       const s = Math.max(0, f - rad);
       const e = Math.min(maxFrames - 1, f + rad);
       let sum = 0;
-      for (let k = s; k <= e; k++) sum += src[k];
-      const mean = sum / (e - s + 1);
-      const val = Math.max(0, src[f] - mean * 1.15);
+      let localPeak = 0;
+      for (let k = s; k <= e; k++) {
+        const v = src[k];
+        sum += v;
+        if (v > localPeak) localPeak = v;
+      }
+      // Exclude the center peak itself from the local mean so fast 8th-note drum hits don't self-cancel
+      const spanCnt = Math.max(1, e - s);
+      const mean = Math.max(0, (sum - localPeak) / spanCnt);
+      const val = Math.max(0, src[f] - mean * 1.08);
       dst[f] = val;
       if (val > 1e-6) {
         nonZero.push(val);
@@ -276,7 +298,7 @@ function buildDualBandNoveltyEnvelope(
     let refMax = maxV;
     if (nonZero.length >= 20) {
       nonZero.sort((a, b) => a - b);
-      refMax = Math.max(1e-6, nonZero[Math.min(nonZero.length - 1, Math.floor(nonZero.length * 0.99))]);
+      refMax = Math.max(1e-6, nonZero[Math.min(nonZero.length - 1, Math.floor(nonZero.length * 0.96))]);
     }
     const scale = refMax > 1e-6 ? 1 / refMax : 0;
     for (let f = 0; f < maxFrames; f++) {
@@ -402,12 +424,15 @@ function evalCombGridForBpm(
   let bestAltScore = 0;
 
   const sampleWeightedNear = (arr: Float32Array, fCenter: number, radFrames = 3): number => {
-    const i0 = Math.max(grooveStartFrame, Math.round(fCenter) - radFrames);
-    const i1 = Math.min(grooveEndFrame - 1, Math.round(fCenter) + radFrames);
+    const cRound = Math.round(fCenter);
+    const i0 = Math.max(grooveStartFrame, cRound - radFrames);
+    const i1 = Math.min(grooveEndFrame - 1, cRound + radFrames);
     let m = 0;
     for (let i = i0; i <= i1; i++) {
       const d = i - fCenter;
-      const wVal = arr[i] * Math.exp(-(d * d) * 0.28);
+      const d2 = d * d;
+      // Fast rational Padé approximation of exp(-0.28 * d^2) avoids millions of Math.exp calls
+      const wVal = arr[i] / (1 + 0.28 * d2 + 0.04 * d2 * d2);
       if (wVal > m) m = wVal;
     }
     return m;
@@ -689,10 +714,81 @@ export function detectAccurateTempoAndPhase(
     candidates.push({ bpm: pk.bpm, weight: 2.8 * Math.min(1.5, pk.score) });
   }
 
-  // 3. MusicTempo on exact groove window with true sample-rate timing (hop = 10ms exact!)
+  // 2B. Multi-Band Kick & Snare Inter-Onset Interval (IOI) + Backbeat Alternation Histogram (crucial for dirty drum stems!)
+  if (!isSparseHarmonic) {
+    const bodyPeaks: Array<{ tSec: number; isKick: boolean; isSnare: boolean; amp: number }> = [];
+    const minPeakGap = Math.round(0.11 * envHz);
+    let lastPkF = -minPeakGap;
+    for (let f = grooveStartFrame + 1; f < grooveEndFrame - 1; f++) {
+      const bVal = bodyNov[f];
+      if (bVal >= 0.20 && bVal >= bodyNov[f - 1] && bVal > bodyNov[f + 1] && f - lastPkF >= minPeakGap) {
+        bodyPeaks.push({
+          tSec: f / envHz,
+          isKick: nov.lowNov[f] >= nov.snareNov[f] * 0.85,
+          isSnare: nov.snareNov[f] >= nov.lowNov[f] * 0.85,
+          amp: Math.min(1.5, bVal),
+        });
+        lastPkF = f;
+      }
+    }
+    if (bodyPeaks.length >= 6) {
+      const ioiHist = new Float32Array(numBins);
+      for (let i = 0; i < bodyPeaks.length; i++) {
+        const pA = bodyPeaks[i];
+        for (let j = i + 1; j < Math.min(bodyPeaks.length, i + 10); j++) {
+          const pB = bodyPeaks[j];
+          const dt = pB.tSec - pA.tSec;
+          if (dt < 0.24 || dt > 2.2) continue;
+          // Backbeat alternation (Kick -> Snare or Snare -> Kick) strongly defines 1-beat interval!
+          const isBackbeatPair = (pA.isKick && pB.isSnare && !pA.isSnare) || (pA.isSnare && pB.isKick && !pA.isKick);
+          const isSameRolePair = (pA.isKick && pB.isKick) || (pA.isSnare && pB.isSnare);
+          for (const mult of [1, 2, 4]) {
+            const candBpm = (60 * mult) / dt;
+            if (candBpm < bpmMin || candBpm > bpmMax) continue;
+            let multW = mult === 1 ? 1.0 : mult === 2 ? 0.82 : 0.45;
+            if (mult === 1 && isBackbeatPair) multW *= 1.35;
+            if (mult === 2 && isSameRolePair) multW *= 1.25;
+            const w = ((pA.amp + pB.amp) * 0.5 * multW) / (1 + (j - i - 1) * 0.2);
+            const cBin = Math.round((candBpm - bpmMin) / bpmStep);
+            for (let d = -2; d <= 2; d++) {
+              const bIdx = cBin + d;
+              if (bIdx >= 0 && bIdx < numBins) {
+                ioiHist[bIdx] += w / (1 + d * d * 0.5);
+              }
+            }
+          }
+        }
+      }
+      let maxIoi = 1e-5;
+      for (let k = 0; k < numBins; k++) if (ioiHist[k] > maxIoi) maxIoi = ioiHist[k];
+      const ioiPeaks: Array<{ bpm: number; score: number }> = [];
+      for (let k = 2; k < numBins - 2; k++) {
+        const v = ioiHist[k] / maxIoi;
+        if (v > 0.35 && ioiHist[k] >= ioiHist[k - 1] && ioiHist[k] > ioiHist[k + 1]) {
+          const b = bpmMin + k * bpmStep;
+          const near = ioiPeaks.find((p) => Math.abs(p.bpm - b) < 3.5);
+          if (near) {
+            if (v > near.score) {
+              near.bpm = b;
+              near.score = v;
+            }
+          } else {
+            ioiPeaks.push({ bpm: b, score: v });
+          }
+        }
+      }
+      ioiPeaks.sort((a, b) => b.score - a.score);
+      for (const pk of ioiPeaks.slice(0, 3)) {
+        candidates.push({ bpm: pk.bpm, weight: 2.1 * pk.score });
+      }
+    }
+  }
+
+  // 3. MusicTempo on decimated groove window (~12kHz effective SR, <40ms execution!)
   try {
     const grooveStartSample = Math.max(0, Math.floor((grooveStartFrame / envHz) * sampleRate));
-    const grooveEndSample = Math.min(mono.length, Math.ceil((grooveEndFrame / envHz) * sampleRate));
+    const maxMtSamples = Math.min(mono.length - grooveStartSample, Math.floor(sampleRate * 24));
+    const grooveEndSample = grooveStartSample + maxMtSamples;
     const grooveSlice = mono.subarray(grooveStartSample, grooveEndSample);
     let rmsSq = 0;
     const st = Math.max(1, Math.floor(grooveSlice.length / 4096));
@@ -703,10 +799,18 @@ export function detectAccurateTempoAndPhase(
     }
     const rms = Math.sqrt(rmsSq / Math.max(1, cnt));
     if (grooveSlice.length / sampleRate >= 1.25 && rms > 0.002) {
-      const hopSamples = Math.max(1, Math.round(sampleRate * 0.01));
-      const mt = new MusicTempo(Array.from(grooveSlice), {
+      const mtDec = Math.max(1, Math.floor(sampleRate / 12000));
+      const effMtSr = sampleRate / mtDec;
+      const decLen = Math.floor(grooveSlice.length / mtDec);
+      const decArr = new Array<number>(decLen);
+      for (let i = 0; i < decLen; i++) {
+        decArr[i] = grooveSlice[i * mtDec];
+      }
+      const hopSamples = Math.max(1, Math.round(effMtSr * 0.01));
+      const mt = new MusicTempo(decArr, {
+        bufferSize: 512,
         hopSize: hopSamples,
-        timeStep: hopSamples / sampleRate,
+        timeStep: hopSamples / effMtSr,
         minBeatInterval: 0.31,
         maxBeatInterval: 1.05,
       });
@@ -1219,16 +1323,21 @@ function computeSpectralChromaFrames(
 
   const winLen = Math.min(8192, mono.length);
   const fftSize = 16384;
-  const win = buildHannWindow(winLen);
-  const re = new Float32Array(fftSize);
-  const im = new Float32Array(fftSize);
   const binHz = sampleRate / fftSize;
+  // Since computeSpectralChromaFrames only inspects 55..1150 Hz, 4x decimation when sampleRate >= 40kHz
+  // (to 4096-pt FFT at ~12kHz, Nyquist 6kHz) gives the exact same 2.93 Hz/bin resolution at 4.5x speed!
+  const dec4 = sampleRate >= 40000 && winLen >= 2048;
+  const effWinLen = dec4 ? winLen >> 2 : winLen;
+  const effFftSize = dec4 ? fftSize >> 2 : fftSize;
+  const win = buildHannWindow(effWinLen);
+  const re = new Float32Array(effFftSize);
+  const im = new Float32Array(effFftSize);
   const minBin = Math.max(2, Math.floor(55 / binHz));
-  const maxBin = Math.min(fftSize / 2 - 2, Math.ceil(1150 / binHz));
+  const maxBin = Math.min(effFftSize / 2 - 2, Math.ceil(1150 / binHz));
   const durationSec = mono.length / sampleRate;
 
-  // Cap at ~1100 FFT frames across whole track so 270s WAV completes quickly
-  const strideSec = Math.max(0.085, durationSec / 1100);
+  // Cap at ~750 FFT frames across whole track so 270s WAV completes quickly
+  const strideSec = Math.max(0.085, durationSec / 750);
   const frames: SpectralChromaFrame[] = [];
   const tonalityRatios: number[] = [];
 
@@ -1242,12 +1351,21 @@ function computeSpectralChromaFrames(
     re.fill(0);
     im.fill(0);
     let sqSum = 0;
-    for (let i = 0; i < winLen; i++) {
-      const s = mono[start + i];
-      sqSum += s * s;
-      re[i] = s * win[i];
+    if (dec4) {
+      for (let i = 0; i < effWinLen; i++) {
+        const idx = start + (i << 2);
+        const s = 0.25 * (mono[idx] + mono[idx + 1] + mono[idx + 2] + mono[idx + 3]);
+        sqSum += s * s;
+        re[i] = s * win[i];
+      }
+    } else {
+      for (let i = 0; i < effWinLen; i++) {
+        const s = mono[start + i];
+        sqSum += s * s;
+        re[i] = s * win[i];
+      }
     }
-    const frameRms = Math.sqrt(sqSum / winLen);
+    const frameRms = Math.sqrt(sqSum / effWinLen);
     if (frameRms < 0.0025) continue;
 
     fftInPlace(re, im);
@@ -2177,6 +2295,7 @@ export function analyzeImportedAudioFirst(
       kick: 0,
       snare: 0,
       hat: 0,
+      crash: 0,
       tom: 0,
       notes: harmonizedPolyNotes.length,
     },

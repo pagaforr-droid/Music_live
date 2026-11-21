@@ -15,7 +15,11 @@ import {
 } from '../engine/PreImportAnalyzer';
 import { assignSlicesToPads, sliceByBpmGrid } from '../engine/Slicer';
 import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
-import { prepareCustomReplacementSample } from '../engine/StudioSampleBank';
+import {
+  classifyCustomSampleCategory,
+  inferReplacementCategoryFromName,
+  prepareCustomReplacementSample,
+} from '../engine/StudioSampleBank';
 import { createDefaultPads } from '../engine/SampleBufferOps';
 import type { DetectedChordSegment, StemNoteEvent } from '../types/sampler.types';
 
@@ -363,6 +367,7 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
           kick: { roleOrTarget: 'kick', enabled: true, sourceType: 'preset', presetId: 'drum-kick-acoustic', gainDb: 0, pitchSemis: 0 },
           snare: { roleOrTarget: 'snare', enabled: true, sourceType: 'preset', presetId: 'drum-snare-warm', gainDb: 0, pitchSemis: 0 },
           hat: { roleOrTarget: 'hat', enabled: true, sourceType: 'preset', presetId: 'drum-hat-tight', gainDb: -2, pitchSemis: 0 },
+          crash: { roleOrTarget: 'crash', enabled: true, sourceType: 'preset', presetId: 'drum-crash-bright', gainDb: -1, pitchSemis: 0 },
           tom: { roleOrTarget: 'tom', enabled: true, sourceType: 'preset', presetId: 'drum-tom-deep', gainDb: 0, pitchSemis: 0 },
         },
         melodicSlot: { roleOrTarget: 'melodic', enabled: true, sourceType: 'preset', presetId: 'inst-piano-grand', gainDb: 0, pitchSemis: 0 },
@@ -403,5 +408,218 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
     });
     expect(res.bpm).toBe(120);
     expect(res.noteEvents.every((n) => n.midiNote % 12 === 9)).toBe(true);
+  });
+
+  it('detects tempo on dirty drum stems, differentiates Kick, Snare, Hi-Hat & Crash, and replaces with uploaded clean audio', () => {
+    const sr = 48000;
+    const targetBpm = 108;
+    const beatSec = 60 / targetBpm;
+    const eighthSec = beatSec * 0.5;
+    const bars = 4;
+    const totalEighths = bars * 8;
+    const len = Math.floor((bars * 4 * beatSec + 0.5) * sr);
+    const dirtyDrumMono = new Float32Array(len);
+
+    let seed = 0x13572468;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    // Add dirty stem bleed: continuous 24Hz sub-rumble + 65Hz sustained bass hum + 440Hz guitar bleed
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      dirtyDrumMono[i] +=
+        Math.sin(2 * Math.PI * 22 * t) * 0.08 +
+        Math.sin(2 * Math.PI * 65.4 * t) * 0.05 +
+        Math.sin(2 * Math.PI * 440 * t) * 0.025 +
+        rnd() * 0.012;
+    }
+
+    for (let e = 0; e < totalEighths; e++) {
+      const t0 = e * eighthSec;
+      const s0 = Math.floor(t0 * sr);
+      const isKick = e % 4 === 0;
+      const isSnare = e % 4 === 2;
+      const isCrash = e % 8 === 0; // Crash on downbeat of each bar
+      const isHat = !isCrash; // Closed Hi-Hat on other 8ths
+
+      if (isKick) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.22) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (50 + 95 * Math.exp(-t * 36))) / sr;
+          dirtyDrumMono[s0 + i] += Math.sin(ph) * Math.exp(-t * 14) * 0.72;
+        }
+      }
+      if (isSnare) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.19) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (195 + 70 * Math.exp(-t * 48))) / sr;
+          dirtyDrumMono[s0 + i] +=
+            (Math.sin(ph) * Math.exp(-t * 22) * 0.45 +
+              rnd() * Math.exp(-t * 18) * 0.48 +
+              Math.sin(2 * Math.PI * 2450 * t) * Math.exp(-t * 240) * 0.32) *
+            0.65;
+        }
+      }
+      if (isHat) {
+        let prev = 0;
+        for (let i = 0; i < Math.floor(sr * 0.065) && s0 + i < len; i++) {
+          const t = i / sr;
+          const n = rnd();
+          const hp = n - 0.86 * prev;
+          prev = n;
+          dirtyDrumMono[s0 + i] += hp * Math.exp(-t * 65) * 0.25;
+        }
+      }
+      if (isCrash) {
+        for (let i = 0; i < Math.floor(sr * 0.55) && s0 + i < len; i++) {
+          const t = i / sr;
+          const cym =
+            (Math.sin(2 * Math.PI * 3350 * t) * 0.24 +
+              Math.sin(2 * Math.PI * 5120 * t) * 0.22 +
+              Math.sin(2 * Math.PI * 7640 * t) * 0.18 +
+              rnd() * 0.55) *
+            Math.exp(-t * 3.8) *
+            0.38;
+          dirtyDrumMono[s0 + i] += cym;
+        }
+      }
+    }
+
+    clearPreImportMemoryCache();
+    const pre = analyzeImportedAudioFirst(dirtyDrumMono, sr, { sensitivity: 0.65 });
+    expect(Math.abs(pre.memory.bpm - targetBpm)).toBeLessThanOrEqual(1);
+
+    const drumAnalysis = analyzeDrumStemFull(dirtyDrumMono, sr, {
+      sensitivity: 0.65,
+      lockedBpm: pre.memory.bpm,
+      beatOffsetSec: pre.memory.beatOffsetSec,
+      beatTimes: pre.memory.beatTimes,
+      quantizeMode: 'soft',
+    });
+
+    expect(drumAnalysis.counts.kick).toBeGreaterThanOrEqual(6);
+    expect(drumAnalysis.counts.snare).toBeGreaterThanOrEqual(6);
+    expect(drumAnalysis.counts.hat).toBeGreaterThanOrEqual(12);
+    expect(drumAnalysis.counts.crash).toBeGreaterThanOrEqual(2);
+
+    // Verify filename & acoustic classification for clean user uploads (including "hit hat", "snake", "crash", "kick")
+    expect(inferReplacementCategoryFromName('clean_hit_hat_01.wav')).toBe('hat');
+    expect(inferReplacementCategoryFromName('studio_snake_snare.wav')).toBe('snare');
+    expect(inferReplacementCategoryFromName('cymbal_crash_bright.wav')).toBe('crash');
+    expect(inferReplacementCategoryFromName('kick_punch_clean.wav')).toBe('kick');
+
+    const makeCleanUploadBuf = (freqHz: number, durSec: number, noiseAmt: number) => {
+      const bLen = Math.floor(sr * durSec);
+      const buf = new AudioBuffer({ length: bLen, numberOfChannels: 2, sampleRate: sr });
+      const chL = buf.getChannelData(0);
+      const chR = buf.getChannelData(1);
+      for (let i = 0; i < bLen; i++) {
+        const t = i / sr;
+        const v =
+          (Math.sin(2 * Math.PI * freqHz * t) * (1 - noiseAmt) + rnd() * noiseAmt) *
+          Math.exp(-t * (1 / Math.max(0.05, durSec * 0.35)));
+        chL[i] = v;
+        chR[i] = v;
+      }
+      return prepareCustomReplacementSample(buf, { normalize: true });
+    };
+
+    const cleanKick = makeCleanUploadBuf(56, 0.28, 0.08);
+    const cleanSnare = makeCleanUploadBuf(210, 0.24, 0.45);
+    const cleanHat = makeCleanUploadBuf(7200, 0.08, 0.75);
+    const cleanCrash = makeCleanUploadBuf(4800, 0.85, 0.70);
+
+    expect(classifyCustomSampleCategory('audio_1.wav', cleanKick.trimmedBuffer, true)).toBe('kick');
+    expect(classifyCustomSampleCategory('audio_4.wav', cleanCrash.trimmedBuffer, true)).toBe('crash');
+
+    const origBuf = new AudioBuffer({ length: len, numberOfChannels: 2, sampleRate: sr });
+    origBuf.copyToChannel(dirtyDrumMono, 0);
+    origBuf.copyToChannel(dirtyDrumMono, 1);
+
+    const replaced = renderFullStemReplacement({
+      originalBuffer: origBuf,
+      analysis: drumAnalysis,
+      drumSlots: {
+        kick: {
+          roleOrTarget: 'kick',
+          enabled: true,
+          sourceType: 'file',
+          presetId: 'drum-kick-punch',
+          customBuffer: cleanKick.trimmedBuffer,
+          customPeakOffsetSec: cleanKick.peakOffsetSec,
+          normalizeCustom: true,
+          gainDb: 0,
+          pitchSemis: 0,
+        },
+        snare: {
+          roleOrTarget: 'snare',
+          enabled: true,
+          sourceType: 'file',
+          presetId: 'drum-snare-studio',
+          customBuffer: cleanSnare.trimmedBuffer,
+          customPeakOffsetSec: cleanSnare.peakOffsetSec,
+          normalizeCustom: true,
+          gainDb: 0,
+          pitchSemis: 0,
+        },
+        hat: {
+          roleOrTarget: 'hat',
+          enabled: true,
+          sourceType: 'file',
+          presetId: 'drum-hat-crisp',
+          customBuffer: cleanHat.trimmedBuffer,
+          customPeakOffsetSec: cleanHat.peakOffsetSec,
+          normalizeCustom: true,
+          gainDb: -2,
+          pitchSemis: 0,
+        },
+        crash: {
+          roleOrTarget: 'crash',
+          enabled: true,
+          sourceType: 'file',
+          presetId: 'drum-crash-bright',
+          customBuffer: cleanCrash.trimmedBuffer,
+          customPeakOffsetSec: cleanCrash.peakOffsetSec,
+          normalizeCustom: true,
+          gainDb: -1,
+          pitchSemis: 0,
+        },
+        tom: {
+          roleOrTarget: 'tom',
+          enabled: true,
+          sourceType: 'preset',
+          presetId: 'drum-tom-deep',
+          gainDb: 0,
+          pitchSemis: 0,
+        },
+      },
+      melodicSlot: {
+        roleOrTarget: 'melodic',
+        enabled: true,
+        sourceType: 'preset',
+        presetId: 'inst-piano-grand',
+        gainDb: 0,
+        pitchSemis: 0,
+      },
+      mix: {
+        replacementPct: 100,
+        originalPct: 0,
+        duckOriginalTransients: true,
+        roundRobinHumanize: true,
+        sustainScale: 1,
+        brightnessPct: 0,
+      },
+    });
+
+    expect(replaced.length).toBe(origBuf.length);
+    const outCh = replaced.getChannelData(0);
+    let maxOut = 0;
+    for (let i = 0; i < outCh.length; i += 4) maxOut = Math.max(maxOut, Math.abs(outCh[i]));
+    expect(maxOut).toBeGreaterThan(0.25);
+    expect(maxOut).toBeLessThanOrEqual(0.92);
   });
 });

@@ -59,13 +59,14 @@ interface StemReplacerPanelProps {
 
 const DRUM_ROLES: Array<{ role: DrumPieceRole; label: string; color: string }> = [
   { role: 'kick', label: 'Kick (Bombo)', color: '#FF6B00' },
-  { role: 'snare', label: 'Snare (Caja)', color: '#00E5FF' },
-  { role: 'hat', label: 'Hi-Hat / Platos', color: '#F59E0B' },
+  { role: 'snare', label: 'Snare / Snake (Caja)', color: '#00E5FF' },
+  { role: 'hat', label: 'Hi-Hat (Hit-Hat)', color: '#F59E0B' },
+  { role: 'crash', label: 'Crash (Platillo)', color: '#EC4899' },
   { role: 'tom', label: 'Tom / Perc', color: '#10B981' },
 ];
 
 const MODE_LABELS: Array<{ id: StemAnalysisMode; label: string; hint: string }> = [
-  { id: 'drums', label: 'Batería (Golpes)', hint: 'Kick · Snare · Hat · Tom' },
+  { id: 'drums', label: 'Batería (Golpes)', hint: 'Kick · Snare · Hi-Hat · Crash · Tom' },
   { id: 'monophonic', label: 'Melódico Mono', hint: 'Bajo · Lead · 1 nota a la vez' },
   { id: 'polyphonic', label: 'Polifónico (Acordes)', hint: 'Guitarra · Piano · Keys+' },
 ];
@@ -74,6 +75,7 @@ const CATEGORY_BADGES: Record<CustomSampleCategory, { label: string; color: stri
   kick: { label: 'KICK', color: '#FF6B00' },
   snare: { label: 'SNARE', color: '#00E5FF' },
   hat: { label: 'HI-HAT', color: '#F59E0B' },
+  crash: { label: 'CRASH', color: '#EC4899' },
   tom: { label: 'TOM', color: '#10B981' },
   melodic: { label: 'TONAL', color: '#A855F7' },
 };
@@ -108,7 +110,35 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
   const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | null>(null);
   const [showBeatGrid, setShowBeatGrid] = useState(true);
+  const [bpmDraft, setBpmDraft] = useState<string>('120');
+  const tapTimesRef = useRef<number[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (r.importedMemory?.bpm) {
+      setBpmDraft(String(r.importedMemory.bpm));
+    }
+  }, [r.importedMemory?.bpm]);
+
+  const handleTapTempo = () => {
+    const now = performance.now();
+    const prev = tapTimesRef.current.filter((t) => now - t < 2800);
+    const next = [...prev, now];
+    tapTimesRef.current = next;
+    if (next.length >= 3) {
+      const diffs: number[] = [];
+      for (let i = 1; i < next.length; i++) {
+        diffs.push((next[i] - next[i - 1]) / 1000);
+      }
+      diffs.sort((a, b) => a - b);
+      const medSec = diffs[Math.floor(diffs.length / 2)];
+      if (medSec >= 0.27 && medSec <= 1.5) {
+        const tappedBpm = Math.round((60 / medSec) * 10) / 10;
+        setBpmDraft(String(tappedBpm));
+        void r.updateImportedTempo(tappedBpm);
+      }
+    }
+  };
 
   useEffect(() => {
     if (r.customSamples.length > 0) {
@@ -306,6 +336,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           kick: '#FF6B00',
           snare: '#00E5FF',
           hat: '#F59E0B',
+          crash: '#EC4899',
           tom: '#10B981',
         };
         for (const hit of r.analysis.drumHits) {
@@ -317,6 +348,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             ctx.fillRect(x - 1, h - barH - 4, 2.2, barH);
           } else if (hit.role === 'snare') {
             ctx.fillRect(x - 1, midY - barH * 0.6, 2.2, barH);
+          } else if (hit.role === 'crash') {
+            ctx.fillRect(x - 1.3, 2, 2.6, barH * 0.85);
+            ctx.fillRect(x - 3.5, 2, 7, 3.5);
           } else if (hit.role === 'hat') {
             ctx.fillRect(x - 0.8, 4, 1.6, barH * 0.65);
           } else {
@@ -791,11 +825,48 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         <div className="rounded-xl bg-slate-950/95 border border-violet-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono shadow-sm">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-violet-300 font-bold mr-1">
-              Memoria Pre-Importación:{' '}
+              Tempo & Memoria:{' '}
             </span>
-            <span className="px-2 py-0.5 rounded bg-slate-900 border border-[#00E5FF]/45 text-[#00E5FF] font-bold">
-              {r.importedMemory.bpm} BPM
-            </span>{' '}
+            <div className="inline-flex items-center gap-1 bg-slate-900 border border-[#00E5FF]/50 rounded-lg px-1.5 py-0.5">
+              <input
+                type="number"
+                min={40}
+                max={220}
+                step={0.5}
+                value={bpmDraft}
+                onChange={(e) => setBpmDraft(e.target.value)}
+                onBlur={() => {
+                  const n = Number(bpmDraft);
+                  if (Number.isFinite(n) && n >= 40 && n <= 220) {
+                    void r.updateImportedTempo(n);
+                  } else {
+                    setBpmDraft(String(r.importedMemory?.bpm ?? 120));
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+                className="w-14 bg-transparent text-[#00E5FF] font-bold text-center focus:outline-none"
+                title="BPM del stem (editable manualmente)"
+              />
+              <span className="text-[10px] text-[#00E5FF] font-bold">BPM</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm - 1)}
+              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
+              title="Restar 1 BPM"
+            >
+              -1
+            </button>
+            <button
+              type="button"
+              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm + 1)}
+              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
+              title="Sumar 1 BPM"
+            >
+              +1
+            </button>
             <button
               type="button"
               onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm * 0.5)}
@@ -811,6 +882,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               title="Doble tempo (×2)"
             >
               ×2
+            </button>
+            <button
+              type="button"
+              onClick={handleTapTempo}
+              className="px-2 py-0.5 rounded bg-[#FF6B00]/15 hover:bg-[#FF6B00]/30 border border-[#FF6B00]/50 text-[#FF6B00] text-[10px] font-bold cursor-pointer"
+              title="Pulsa 3 o más veces al ritmo de la batería para fijar el tempo"
+            >
+              Tap BPM
+            </button>
+            <button
+              type="button"
+              disabled={!r.originalBuffer || r.isAnalyzing}
+              onClick={() => void r.reDetectTempoFromDrums()}
+              className="px-2 py-0.5 rounded bg-[#00E5FF]/15 hover:bg-[#00E5FF]/30 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-bold cursor-pointer disabled:opacity-40"
+              title="Aísla los golpes de Bombo y Caja eliminando suciedad/sangrado para recalcular el BPM exacto"
+            >
+              Re-Detectar Tempo Batería
             </button>{' '}
             <span className="px-2 py-0.5 rounded bg-slate-900 border border-emerald-500/45 text-emerald-300 font-bold">
               Tono:{' '}
@@ -975,7 +1063,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     S: {r.analysis.counts.snare}
                   </span>
                   <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-amber-500/50 text-amber-400">
-                    H: {r.analysis.counts.hat}
+                    HH: {r.analysis.counts.hat}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-pink-500/50 text-pink-400">
+                    CR: {r.analysis.counts.crash}
                   </span>
                   <span className="px-1.5 py-0.5 rounded bg-slate-950/90 border border-emerald-500/50 text-emerald-400">
                     T: {r.analysis.counts.tom}
@@ -1209,8 +1300,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white"
                   >
                     <option value="kick">Kick (Bombo)</option>
-                    <option value="snare">Snare (Caja)</option>
-                    <option value="hat">Hi-Hat / Platos</option>
+                    <option value="snare">Snare / Snake (Caja)</option>
+                    <option value="hat">Hi-Hat (Hit-Hat)</option>
+                    <option value="crash">Crash (Platillo)</option>
                     <option value="tom">Tom / Perc</option>
                     <option value="melodic">Instrumento Melódico / Acordes</option>
                   </select>
@@ -1414,7 +1506,49 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           )}
 
           {r.stemMode === 'drums' ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="flex flex-col gap-3">
+              {/* Quick Clean Audio Upload Strip for Detected Drum Pieces in Tempo */}
+              <div className="rounded-xl bg-slate-950/95 border border-[#00E5FF]/35 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
+                  <span className="text-white font-bold">
+                    {r.analysis
+                      ? `Detectados en ${r.analysis.bpm} BPM:`
+                      : 'Sube tu Audio Limpio para cada golpe:'}
+                  </span>
+                  <span className="text-slate-400">
+                    Sube un audio limpio por pieza (Kick, Snare, Hi-Hat, Crash) para reemplazar cada golpe con realismo:
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {DRUM_ROLES.map(({ role, label, color }) => {
+                    const count = r.analysis?.counts[role] ?? 0;
+                    const hasCustom = r.drumSlots[role].sourceType !== 'preset';
+                    return (
+                      <button
+                        key={`quick-up-${role}`}
+                        type="button"
+                        onClick={() => {
+                          uploadTargetRef.current = role;
+                          slotFileInputRef.current?.click();
+                        }}
+                        style={{ borderColor: `${color}88` }}
+                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all"
+                        title={`Subir audio limpio para reemplazar los ${count} golpes de ${label}`}
+                      >
+                        <Upload size={10} style={{ color }} />
+                        <span style={{ color }}>
+                          {hasCustom ? '✓ ' : '+ '}
+                          {role === 'hat' ? 'Hi-Hat' : role === 'snare' ? 'Snare' : role === 'crash' ? 'Crash' : role === 'kick' ? 'Kick' : 'Tom'}
+                        </span>
+                        <span className="text-slate-400">({count})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {DRUM_ROLES.map(({ role, label, color }) => {
                 const slot = r.drumSlots[role];
                 const presets = DRUM_PRESET_CATALOG.filter((p) => p.category === role);
@@ -1570,6 +1704,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   </div>
                 );
               })}
+              </div>
             </div>
           ) : (
             <div

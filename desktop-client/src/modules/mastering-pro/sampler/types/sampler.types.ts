@@ -64,7 +64,7 @@ export interface SampleRegion {
   loopEndSec?: number;
   loopCrossfadeMs: number; // 0..50
   sliceSource: SliceSource;
-  classification?: 'kick' | 'snare' | 'hat' | 'melodic';
+  classification?: 'kick' | 'snare' | 'hat' | 'crash' | 'tom' | 'melodic';
 }
 
 export interface Adsr {
@@ -191,7 +191,7 @@ export interface SongFolderItem {
 export type StemAnalysisMode = 'drums' | 'monophonic' | 'polyphonic';
 
 export type StemQuantizeMode = 'off' | 'soft' | 'grid-16' | 'grid-8';
-export type DrumPieceRole = 'kick' | 'snare' | 'hat' | 'tom';
+export type DrumPieceRole = 'kick' | 'snare' | 'hat' | 'crash' | 'tom';
 
 export type DefaultDrumPresetId =
   | 'drum-kick-punch'
@@ -202,6 +202,10 @@ export type DefaultDrumPresetId =
   | 'drum-snare-tight'
   | 'drum-hat-crisp'
   | 'drum-hat-tight'
+  | 'drum-hat-open'
+  | 'drum-crash-bright'
+  | 'drum-crash-warm'
+  | 'drum-crash-ride'
   | 'drum-tom-deep';
 
 export type DefaultMelodicPresetId =
@@ -262,6 +266,7 @@ export interface FullStemAnalysisResult {
     kick: number;
     snare: number;
     hat: number;
+    crash: number;
     tom: number;
     notes: number;
   };

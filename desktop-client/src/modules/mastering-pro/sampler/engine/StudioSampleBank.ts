@@ -32,6 +32,10 @@ export const DRUM_PRESET_CATALOG: PresetCatalogEntry[] = [
   { id: 'drum-snare-tight', label: 'Snare Seco Funk/Pop', category: 'snare', description: 'Rápido y articulado sin cola larga' },
   { id: 'drum-hat-crisp', label: 'Hi-Hat Cristal Acústico', category: 'hat', description: 'Parciales metálicos nítidos sin estridencia' },
   { id: 'drum-hat-tight', label: 'Hi-Hat Cerrado Tight', category: 'hat', description: 'Ultra corto 65ms preciso' },
+  { id: 'drum-hat-open', label: 'Hi-Hat Abierto Sizzle', category: 'hat', description: 'Wash metálico articulado con aire estéreo' },
+  { id: 'drum-crash-bright', label: 'Crash Brillante Estudio', category: 'crash', description: 'Platillo crash con ataque definido y shimmer estéreo' },
+  { id: 'drum-crash-warm', label: 'Crash Acústico Cálido', category: 'crash', description: 'Bronce natural B20 con cuerpo y caída orgánica' },
+  { id: 'drum-crash-ride', label: 'Crash / Ride Definido', category: 'crash', description: 'Ping cristalino + wash controlado para rock/pop' },
   { id: 'drum-tom-deep', label: 'Tom Acústico Profundo', category: 'tom', description: 'Resonancia de parche natural' },
 ];
 
@@ -100,16 +104,27 @@ function findPeakOffsetSample(
   maxSearchSec = 0.03
 ): number {
   const lim = Math.min(left.length, Math.max(1, Math.round(sr * maxSearchSec)));
+  const attackLim = Math.min(lim, Math.max(1, Math.round(sr * 0.016)));
   let peakIdx = 0;
   let maxA = 0;
+  let attackPeakIdx = 0;
+  let attackMaxA = 0;
   for (let i = 0; i < lim; i++) {
     const a = Math.max(Math.abs(left[i]), Math.abs(right[i]));
     if (a > maxA) {
       maxA = a;
       peakIdx = i;
     }
+    if (i < attackLim && a > attackMaxA) {
+      attackMaxA = a;
+      attackPeakIdx = i;
+    }
   }
-  return peakIdx;
+  // Prefer initial stick/beater transient attack peak (<=16ms) when strong so cymbal swells or sub-booms never shift hits early
+  if (attackMaxA >= maxA * 0.42) {
+    return attackPeakIdx;
+  }
+  return Math.min(peakIdx, Math.round(sr * 0.025));
 }
 
 function buildDrumPresetArrays(
@@ -183,25 +198,29 @@ function buildDrumPresetArrays(
   }
 
   if (id.startsWith('drum-hat')) {
-    const dur = id === 'drum-hat-tight' ? 0.075 : 0.19;
+    const dur = id === 'drum-hat-tight' ? 0.075 : id === 'drum-hat-open' ? 0.36 : 0.19;
     const len = Math.floor(sr * dur);
     const L = new Float32Array(len);
     const R = new Float32Array(len);
     // TR metallic inharmonic partial cluster + HF air
-    const ratios = [205.3, 304.6, 369.8, 522.7, 540.4, 800.2];
-    const decayRate = id === 'drum-hat-tight' ? 56 : 24;
+    const ratios = [205.3, 304.6, 369.8, 522.7, 540.4, 800.2, 1142.5];
+    const decayRate = id === 'drum-hat-tight' ? 56 : id === 'drum-hat-open' ? 9.5 : 24;
     let hp1L = 0, hp2L = 0, hp1R = 0, hp2R = 0;
-    const hpAlpha = 0.86;
+    const hpAlpha = id === 'drum-hat-open' ? 0.83 : 0.86;
     let prevInL = 0, prevInR = 0;
 
     for (let i = 0; i < len; i++) {
       const t = i / sr;
-      let metal = 0;
+      let metalL = 0;
+      let metalR = 0;
       for (let k = 0; k < ratios.length; k++) {
-        metal += Math.sin(2 * Math.PI * ratios[k] * t) > 0 ? 0.14 : -0.14;
+        const sL = Math.sin(2 * Math.PI * ratios[k] * t);
+        const sR = Math.sin(2 * Math.PI * (ratios[k] * 1.0018) * t + k * 0.7);
+        metalL += sL > 0 ? 0.13 : -0.13;
+        metalR += sR > 0 ? 0.13 : -0.13;
       }
-      const inL = (metal * 0.65 + rand() * 0.35);
-      const inR = (metal * 0.65 + rand() * 0.35);
+      const inL = metalL * 0.62 + rand() * 0.38;
+      const inR = metalR * 0.62 + rand() * 0.38;
       // 2-pole HPF for silky shimmer without low-mid ring
       hp1L = hpAlpha * (hp1L + inL - prevInL);
       prevInL = inL;
@@ -211,12 +230,67 @@ function buildDrumPresetArrays(
       hp2R = hpAlpha * (hp2R + hp1R);
 
       const env = Math.exp(-t * decayRate) * Math.min(1, i / (sr * 0.0008));
-      const fade = i > len - 96 ? (len - i) / 96 : 1;
+      const fade = i > len - 128 ? (len - i) / 128 : 1;
       L[i] = (inL - hp2L * 0.1) * 0.55 * env * fade + hp1L * 0.55 * env * fade;
       R[i] = (inR - hp2R * 0.1) * 0.55 * env * fade + hp1R * 0.55 * env * fade;
     }
     normalizeStereoInPlace(L, R, -1.5);
     return { rootMidi: 42, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.02) };
+  }
+
+  if (id.startsWith('drum-crash')) {
+    const dur = id === 'drum-crash-ride' ? 1.05 : id === 'drum-crash-warm' ? 1.25 : 1.38;
+    const len = Math.floor(sr * dur);
+    const L = new Float32Array(len);
+    const R = new Float32Array(len);
+    // Inharmonic bronze plate modal cluster + wide stereo air wash
+    const modes =
+      id === 'drum-crash-warm'
+        ? [312.4, 468.9, 682.1, 988.7, 1415.3, 2104.8, 3180.5, 4690.2, 6420.7, 8810.4]
+        : id === 'drum-crash-ride'
+        ? [388.2, 584.5, 892.0, 1344.6, 2012.3, 2890.1, 4120.6, 5840.2, 7950.8]
+        : [346.8, 521.3, 764.9, 1128.4, 1684.2, 2490.7, 3640.1, 5280.5, 7410.9, 10240.3];
+    const bodyDecay = id === 'drum-crash-ride' ? 4.4 : id === 'drum-crash-warm' ? 3.5 : 3.2;
+    const airDecay = id === 'drum-crash-ride' ? 3.6 : id === 'drum-crash-warm' ? 2.9 : 2.5;
+    let hpL = 0, hpR = 0, lpL = 0, lpR = 0;
+    const hpCut = id === 'drum-crash-warm' ? 1850 : 2300;
+    const lpCut = id === 'drum-crash-warm' ? 10500 : 13800;
+    const hpAlpha = sr / (sr + 2 * Math.PI * hpCut);
+    const lpAlpha = (2 * Math.PI * lpCut) / (sr + 2 * Math.PI * lpCut);
+    let prevRawL = 0, prevRawR = 0;
+
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      let modalL = 0;
+      let modalR = 0;
+      for (let m = 0; m < modes.length; m++) {
+        const fm = modes[m] * (1 + 0.008 * Math.exp(-t * 18));
+        const mDec = Math.exp(-t * (bodyDecay + m * 0.32));
+        const phL = 2 * Math.PI * fm * t + m * 0.61;
+        const phR = 2 * Math.PI * (fm * 1.0024) * t + m * 1.37;
+        modalL += Math.sin(phL + 0.35 * Math.sin(phL * 1.41)) * mDec * (0.14 / (1 + m * 0.15));
+        modalR += Math.sin(phR + 0.35 * Math.sin(phR * 1.41)) * mDec * (0.14 / (1 + m * 0.15));
+      }
+      // Crisp stick impact transient (0..12ms) + stereo bronze shimmer noise
+      const stickEnv = Math.exp(-t * 140);
+      const shimmerEnv = (0.35 * Math.exp(-t * 14) + 0.65 * Math.exp(-t * airDecay)) * Math.min(1, i / (sr * 0.0012));
+      const rawL = modalL * 0.72 + (rand() * 0.62 * shimmerEnv) + rand() * 0.38 * stickEnv;
+      const rawR = modalR * 0.72 + (rand() * 0.62 * shimmerEnv) + rand() * 0.38 * stickEnv;
+
+      hpL = hpAlpha * (hpL + rawL - prevRawL);
+      prevRawL = rawL;
+      hpR = hpAlpha * (hpR + rawR - prevRawR);
+      prevRawR = rawR;
+
+      lpL += lpAlpha * (hpL - lpL);
+      lpR += lpAlpha * (hpR - lpR);
+
+      const fade = i > len - Math.floor(sr * 0.06) ? (len - i) / Math.floor(sr * 0.06) : 1;
+      L[i] = Math.tanh(lpL * 1.35) * fade;
+      R[i] = Math.tanh(lpR * 1.35) * fade;
+    }
+    normalizeStereoInPlace(L, R, -1.2);
+    return { rootMidi: 49, left: L, right: R, peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.018) };
   }
 
   // drum-tom-deep
@@ -442,14 +516,90 @@ export function getPresetAuditionBuffer(
 
 /**
  * Infers which drum piece or melodic target a user-uploaded filename belongs to.
+ * Supports Spanish & English studio naming (including common variants like "hit hat", "snake", "crash", "bombo", "tarola").
  */
 export function inferReplacementCategoryFromName(name: string): CustomSampleCategory {
   const n = (name || '').toLowerCase();
-  if (/(kick|bombo|bd|sub_hit|808_kick)/.test(n)) return 'kick';
-  if (/(snare|caja|tarola|redoblante|sd|rimshot|clap)/.test(n)) return 'snare';
-  if (/(hihat|hi-hat|hi_hat|hat|hh|plato|cymbal|crash|ride|shaker)/.test(n)) return 'hat';
+  if (/(kick|bombo|bd|sub_hit|808_kick|bass_drum|bassdrum)/.test(n)) return 'kick';
+  if (/(snare|snake|caja|tarola|redoblante|sd|rimshot|clap)/.test(n)) return 'snare';
+  if (/(crash|cymbal|platillo|plato|splash|china|ride|ovh|overhead)/.test(n)) return 'crash';
+  if (/(hihat|hi-hat|hi_hat|hit-hat|hithat|hit_hat|hat|hh|charleston|contratiempo|shaker)/.test(n)) return 'hat';
   if (/(tom|perc|conga|bongo|timbal|floor)/.test(n)) return 'tom';
   return 'melodic';
+}
+
+/**
+ * Classifies an uploaded one-shot sample by combining filename keywords with acoustic
+ * time-domain band energy & decay profiling (so even generically named files like
+ * "sample_1.wav" or "limpio_2.wav" auto-route to Kick, Snare, Hi-Hat, Crash, or Tom when in Drum Mode).
+ */
+export function classifyCustomSampleCategory(
+  name: string,
+  buffer?: AudioBuffer,
+  preferDrums = false
+): CustomSampleCategory {
+  const byName = inferReplacementCategoryFromName(name);
+  if (byName !== 'melodic' || !buffer || !preferDrums) {
+    return byName;
+  }
+
+  const sr = buffer.sampleRate || 48000;
+  const ch0 = buffer.getChannelData(0);
+  const ch1 = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : ch0;
+  const len = Math.min(ch0.length, Math.round(sr * 1.5));
+  if (len < 128) return 'snare';
+
+  const lpLowAlpha = (2 * Math.PI * 145) / (sr + 2 * Math.PI * 145);
+  const lpMidAlpha = (2 * Math.PI * 450) / (sr + 2 * Math.PI * 450);
+  const lpHighAlpha = (2 * Math.PI * 4200) / (sr + 2 * Math.PI * 4200);
+  let lpLow = 0;
+  let lpMid = 0;
+  let lpHigh = 0;
+  let eLow = 0;
+  let eShell = 0;
+  let eCrack = 0;
+  let eAir = 0;
+  let earlyHi = 0;
+  let lateHi = 0;
+  const splitSample = Math.min(len, Math.round(sr * 0.14));
+
+  for (let i = 0; i < len; i++) {
+    const x = 0.5 * (ch0[i] + ch1[i]);
+    lpLow += lpLowAlpha * (x - lpLow);
+    lpMid += lpMidAlpha * (x - lpMid);
+    lpHigh += lpHighAlpha * (x - lpHigh);
+    const shell = lpMid - lpLow;
+    const crack = lpHigh - lpMid;
+    const air = x - lpHigh;
+    eLow += lpLow * lpLow;
+    eShell += shell * shell;
+    eCrack += crack * crack;
+    eAir += air * air;
+    const hiPow = crack * crack * 0.4 + air * air;
+    if (i < splitSample) earlyHi += hiPow;
+    else lateHi += hiPow;
+  }
+
+  const tot = Math.max(1e-9, eLow + eShell + eCrack + eAir);
+  const rLow = eLow / tot;
+  const rShell = eShell / tot;
+  const rCrack = eCrack / tot;
+  const rAir = eAir / tot;
+  const activeDurSec = buffer.duration;
+
+  if (rLow >= 0.46 && rLow > rCrack + rAir) {
+    return 'kick';
+  }
+  if (rAir + rCrack >= 0.55 && rLow < 0.16 && rShell < 0.22) {
+    if (activeDurSec >= 0.38 && lateHi > earlyHi * 0.22) {
+      return 'crash';
+    }
+    return 'hat';
+  }
+  if (rShell >= 0.42 && rAir < 0.15 && rCrack < 0.25) {
+    return 'tom';
+  }
+  return 'snare';
 }
 
 /**
