@@ -1,5 +1,6 @@
 export { SampleLabPanel, SampleLabModule } from './components/SampleLabPanel';
 export { StemReplacerPanel } from './components/StemReplacerPanel';
+export { MidiTimelineWorkstation } from './components/MidiTimelineWorkstation';
 export { SampleWaveformEditor } from './components/SampleWaveformEditor';
 export { SliceToolbar } from './components/SliceToolbar';
 export { PadGrid } from './components/PadGrid';

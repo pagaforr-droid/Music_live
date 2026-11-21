@@ -24,6 +24,7 @@ import {
   inferStemModeFromName,
   quantizeNoteEventsToTempo,
 } from '../engine/FullStemAnalyzer';
+import { midiNoteToName } from '../engine/PitchDetector';
 import {
   analyzeAudioBufferFirst,
   computeAudioMemorySignature,
@@ -2333,6 +2334,133 @@ export function useStemReplacer() {
     [analysis]
   );
 
+  // Interactive Melodic/Polyphonic MIDI Piano Roll Editor helpers
+  const auditionMelodicNote = useCallback(
+    (midiNote: number, velocity = 0.85) => {
+      const ctx = ensureCtx();
+      const buf =
+        melodicSlot.sourceType !== 'preset' && melodicSlot.customBuffer
+          ? melodicSlot.customBuffer
+          : getPresetAuditionBuffer(ctx, melodicSlot.presetId);
+      const rootMidi =
+        melodicSlot.sourceType !== 'preset'
+          ? melodicSlot.customRootMidi ?? 60
+          : isBassPresetId(melodicSlot.presetId)
+          ? 36
+          : 60;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const semis = midiNote - rootMidi + melodicSlot.pitchSemis;
+      src.playbackRate.value = Math.pow(2, semis / 12);
+      const g = ctx.createGain();
+      g.gain.value =
+        Math.pow(10, melodicSlot.gainDb / 20) * Math.max(0.2, Math.min(1.0, velocity));
+      src.connect(g);
+      g.connect(ctx.destination);
+      src.start();
+    },
+    [melodicSlot, ensureCtx]
+  );
+
+  const addManualMelodicNote = useCallback(
+    (midiNote: number, rawStartSec: number, durationSec = 0.35, velocity = 0.85) => {
+      if (!analysis || analysis.mode === 'drums') return null;
+      const clampedMidi = Math.max(24, Math.min(96, Math.round(midiNote)));
+      const clampedStart = Number(
+        Math.max(0, Math.min(analysis.durationSec - 0.04, rawStartSec)).toFixed(4)
+      );
+      const clampedDur = Number(
+        Math.max(0.05, Math.min(analysis.durationSec - clampedStart, durationSec)).toFixed(4)
+      );
+      const newNote = {
+        id: `mn-manual-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        startSec: clampedStart,
+        durationSec: clampedDur,
+        midiNote: clampedMidi,
+        noteName: midiNoteToName(clampedMidi),
+        velocity: Number(Math.max(0.12, Math.min(1.0, velocity)).toFixed(3)),
+        clarity: 0.95,
+      };
+      const nextNotes = [...analysis.noteEvents, newNote].sort(
+        (a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote
+      );
+      let minM = 127;
+      let maxM = 0;
+      for (const n of nextNotes) {
+        if (n.midiNote < minM) minM = n.midiNote;
+        if (n.midiNote > maxM) maxM = n.midiNote;
+      }
+      setAnalysis({
+        ...analysis,
+        noteEvents: nextNotes,
+        midiRange:
+          nextNotes.length > 0
+            ? { minMidi: minM, maxMidi: maxM, minName: midiNoteToName(minM), maxName: midiNoteToName(maxM) }
+            : analysis.midiRange,
+        counts: { ...analysis.counts, total: nextNotes.length, notes: nextNotes.length },
+      });
+      return newNote;
+    },
+    [analysis]
+  );
+
+  const updateMelodicNote = useCallback(
+    (
+      noteId: string,
+      patch: { midiNote?: number; startSec?: number; durationSec?: number; velocity?: number }
+    ) => {
+      if (!analysis || analysis.mode === 'drums') return;
+      const nextNotes = analysis.noteEvents
+        .map((n) => {
+          if (n.id !== noteId) return n;
+          const nextMidi =
+            patch.midiNote !== undefined
+              ? Math.max(24, Math.min(96, Math.round(patch.midiNote)))
+              : n.midiNote;
+          const nextStart =
+            patch.startSec !== undefined
+              ? Number(Math.max(0, Math.min(analysis.durationSec - 0.04, patch.startSec)).toFixed(4))
+              : n.startSec;
+          const nextDur =
+            patch.durationSec !== undefined
+              ? Number(Math.max(0.05, Math.min(analysis.durationSec - nextStart, patch.durationSec)).toFixed(4))
+              : Math.min(n.durationSec, Math.max(0.05, analysis.durationSec - nextStart));
+          const nextVel =
+            patch.velocity !== undefined
+              ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
+              : n.velocity;
+          return {
+            ...n,
+            midiNote: nextMidi,
+            noteName: midiNoteToName(nextMidi),
+            startSec: nextStart,
+            durationSec: nextDur,
+            velocity: nextVel,
+          };
+        })
+        .sort((a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote);
+      setAnalysis({
+        ...analysis,
+        noteEvents: nextNotes,
+        counts: { ...analysis.counts, total: nextNotes.length, notes: nextNotes.length },
+      });
+    },
+    [analysis]
+  );
+
+  const removeMelodicNote = useCallback(
+    (noteId: string) => {
+      if (!analysis || analysis.mode === 'drums') return;
+      const nextNotes = analysis.noteEvents.filter((n) => n.id !== noteId);
+      setAnalysis({
+        ...analysis,
+        noteEvents: nextNotes,
+        counts: { ...analysis.counts, total: nextNotes.length, notes: nextNotes.length },
+      });
+    },
+    [analysis]
+  );
+
   return {
     songs,
     loadingSongs,
@@ -2381,6 +2509,10 @@ export function useStemReplacer() {
     updateDrumHit,
     removeDrumHit,
     auditionDrumHit,
+    addManualMelodicNote,
+    updateMelodicNote,
+    removeMelodicNote,
+    auditionMelodicNote,
     isRendering,
     isExportingPc,
     isSavingCloud,
