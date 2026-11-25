@@ -190,8 +190,8 @@ export default function Layout() {
       <nav
         className={`${
           isSidebarOpen
-            ? 'fixed inset-y-0 left-0 z-50 flex w-64 md:relative'
-            : 'hidden md:flex md:w-20'
+            ? 'fixed inset-y-0 left-0 z-50 flex w-64 md:relative md:z-30'
+            : 'hidden md:flex md:relative md:z-30 md:w-20'
         } flex-col h-full bg-[#0d0f16] border-r border-[#1a1e28] shrink-0 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
       >
         {/* Top Window Bar Accents (Colores Enteros, Cero Glow) + Collapse Button */}
@@ -219,9 +219,11 @@ export default function Layout() {
         {/* Floating Expand/Collapse Pill when retracted (Desktop/Tablet) */}
         {!isSidebarOpen && (
           <button
+            type="button"
             onClick={() => setIsSidebarOpen(true)}
-            className="hidden md:flex absolute -right-3 top-12 w-6 h-6 bg-[#161922] text-gray-400 border border-white/15 rounded-full items-center justify-center hover:text-white hover:border-rose-500/50 hover:bg-[#1e222d] z-50 shadow-[0_4px_12px_rgba(0,0,0,0.8)] transition-all"
+            className="hidden md:flex absolute -right-3 top-12 w-6 h-6 bg-[#161922] text-gray-300 border border-white/20 rounded-full items-center justify-center hover:text-white hover:border-rose-500/60 hover:bg-[#1e222d] z-50 shadow-[0_4px_12px_rgba(0,0,0,0.8)] transition-all cursor-pointer"
             title="Expandir menú"
+            aria-label="Expandir menú"
           >
             <ChevronRight size={13} />
           </button>

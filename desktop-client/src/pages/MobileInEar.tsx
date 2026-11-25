@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSyncSlave } from '../hooks/useSyncSlave';
-import { Volume2, Power, Music, Activity, Headphones } from 'lucide-react';
+import { Volume2, Power, Music, Activity, Headphones, X, ArrowLeft } from 'lucide-react';
 import { Prompter } from '../components/Prompter';
+import { useAuth } from '../contexts/AuthContext';
+import { getFirstAllowedPathForUser } from '../services/userManagementService';
 import {
   resolveEffectivePreRoll,
   resolveEffectivePreRollBars,
@@ -11,6 +14,8 @@ import {
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
 export default function MobileInEar() {
+  const navigate = useNavigate();
+  const { userProfile } = useAuth();
   const { songData, isPlaying, playTrigger, pauseTrigger, seekTrigger, clockOffset } = useSyncSlave(FAKE_BAND_ID);
   
   const [hasInteracted, setHasInteracted] = useState(false);
@@ -25,6 +30,7 @@ export default function MobileInEar() {
   
   const cueGainRef = useRef<GainNode | null>(null);
   const fohGainRef = useRef<GainNode | null>(null);
+  const wakeLockRef = useRef<any>(null);
   
   const [currentTime, setCurrentTime] = useState(0);
   const startTimeRef = useRef(0);
@@ -32,6 +38,44 @@ export default function MobileInEar() {
   
   const [cueVolume, setCueVolume] = useState(1);
   const [bandVolume, setBandVolume] = useState(0.8);
+
+  const cleanupAudioAndWakeLock = () => {
+    try { cueSourceRef.current?.stop(); } catch {}
+    try { fohSourceRef.current?.stop(); } catch {}
+    cueSourceRef.current = null;
+    fohSourceRef.current = null;
+    cancelAnimationFrame(animationFrameRef.current);
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release?.().catch?.(() => {});
+      wakeLockRef.current = null;
+    }
+    if (audioCtx && audioCtx.state !== 'closed') {
+      audioCtx.close().catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      try { cueSourceRef.current?.stop(); } catch {}
+      try { fohSourceRef.current?.stop(); } catch {}
+      cancelAnimationFrame(animationFrameRef.current);
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release?.().catch?.(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleExit = () => {
+    cleanupAudioAndWakeLock();
+    const fallbackPath = getFirstAllowedPathForUser(userProfile);
+    if (typeof window !== 'undefined' && (window.opener || window.history.length <= 1)) {
+      try {
+        window.close();
+      } catch {}
+    }
+    navigate(fallbackPath, { replace: true });
+  };
 
   // Initialize AudioContext on first tap
   const handleConnect = async () => {
@@ -61,7 +105,7 @@ export default function MobileInEar() {
     // Mantener la pantalla encendida para que iOS/Android no duerman el AudioContext
     try {
       if ('wakeLock' in navigator) {
-        await (navigator as any).wakeLock.request('screen');
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
       }
     } catch (err) {
       console.warn('Wake Lock error:', err);
@@ -183,7 +227,18 @@ export default function MobileInEar() {
 
   if (!hasInteracted) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-[#07090e] text-white p-6">
+      <div className="relative flex flex-col items-center justify-center h-screen bg-[#07090e] text-white p-6">
+        {/* Botón Salir / Cerrar en esquina superior derecha */}
+        <button
+          type="button"
+          onClick={handleExit}
+          className="absolute top-4 right-4 sm:top-6 sm:right-6 flex items-center gap-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 px-4 py-2 text-xs font-semibold text-zinc-200 hover:text-white transition-all active:scale-95 cursor-pointer"
+          title="Salir del modo In-Ear"
+        >
+          <X size={15} />
+          <span>Salir</span>
+        </button>
+
         <div className="p-4 bg-red-600/20 border border-red-500/40 rounded-2xl mb-6 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
           <Headphones size={48} className="text-red-500" />
         </div>
@@ -196,10 +251,19 @@ export default function MobileInEar() {
         </p>
         <button 
           onClick={handleConnect}
-          className="bg-red-600 hover:bg-red-500 text-white font-black py-4 px-12 rounded-full text-lg flex items-center shadow-[0_0_40px_rgba(239,68,68,0.4)] transition-all uppercase tracking-wider"
+          className="bg-red-600 hover:bg-red-500 text-white font-black py-4 px-12 rounded-full text-lg flex items-center shadow-[0_0_40px_rgba(239,68,68,0.4)] transition-all active:scale-95 uppercase tracking-wider cursor-pointer"
         >
           <Power className="mr-3" size={20} />
           CONECTAR AL ENSAYO
+        </button>
+
+        <button
+          type="button"
+          onClick={handleExit}
+          className="mt-5 flex items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
+        >
+          <ArrowLeft size={14} />
+          <span>Volver al menú principal</span>
         </button>
       </div>
     );
@@ -209,14 +273,14 @@ export default function MobileInEar() {
     <div className="flex flex-col h-screen bg-[#07090e] text-white relative">
       
       {/* Top Header */}
-      <div className="flex items-center justify-between p-3 bg-[#0c0e14] border-b border-white/[0.08] z-20">
-        <div className="flex items-center space-x-3 w-1/3">
+      <div className="flex items-center justify-between gap-2 p-3 bg-[#0c0e14] border-b border-white/[0.08] z-20">
+        <div className="flex items-center space-x-2.5 min-w-0 flex-1">
           <div className="p-2 bg-red-500/15 border border-red-500/30 rounded-lg shrink-0">
             <Activity size={18} className="text-red-400" />
           </div>
           <div className="overflow-hidden">
             <div className="flex items-center gap-1.5">
-              <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
                 MODO PRÁCTICA
               </span>
               <h2 className="font-bold text-xs leading-tight truncate">
@@ -229,32 +293,44 @@ export default function MobileInEar() {
           </div>
         </div>
         
-        {/* Personal Mixer */}
-        <div className="flex flex-col space-y-2 w-2/3 max-w-[220px] bg-[#07090e] p-2.5 rounded-lg border border-white/[0.07]">
-          {/* CUE Volume */}
-          <div className="flex items-center space-x-2">
-            <Volume2 size={12} className="text-amber-400 shrink-0" />
-            <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">CLIC/GUÍA</span>
-            <input 
-              type="range" 
-              min="0" max="1" step="0.05"
-              value={cueVolume}
-              onChange={e => setCueVolume(parseFloat(e.target.value))}
-              className="w-full accent-amber-400 h-1"
-            />
+        {/* Personal Mixer + Exit Button */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-col space-y-2 w-40 sm:w-52 bg-[#07090e] p-2.5 rounded-lg border border-white/[0.07]">
+            {/* CUE Volume */}
+            <div className="flex items-center space-x-2">
+              <Volume2 size={12} className="text-amber-400 shrink-0" />
+              <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">CLIC/GUÍA</span>
+              <input 
+                type="range" 
+                min="0" max="1" step="0.05"
+                value={cueVolume}
+                onChange={e => setCueVolume(parseFloat(e.target.value))}
+                className="w-full accent-amber-400 h-1"
+              />
+            </div>
+            {/* FOH (Band) Volume */}
+            <div className="flex items-center space-x-2">
+              <Music size={12} className="text-red-400 shrink-0" />
+              <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">PISTAS</span>
+              <input 
+                type="range" 
+                min="0" max="1" step="0.05"
+                value={bandVolume}
+                onChange={e => setBandVolume(parseFloat(e.target.value))}
+                className="w-full accent-red-500 h-1"
+              />
+            </div>
           </div>
-          {/* FOH (Band) Volume */}
-          <div className="flex items-center space-x-2">
-            <Music size={12} className="text-red-400 shrink-0" />
-            <span className="text-[9px] font-black text-zinc-300 w-14 shrink-0">PISTAS</span>
-            <input 
-              type="range" 
-              min="0" max="1" step="0.05"
-              value={bandVolume}
-              onChange={e => setBandVolume(parseFloat(e.target.value))}
-              className="w-full accent-red-500 h-1"
-            />
-          </div>
+
+          <button
+            type="button"
+            onClick={handleExit}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-600 border border-rose-500/40 px-3 py-2.5 text-rose-300 hover:text-white transition-all active:scale-95 cursor-pointer shrink-0"
+            title="Salir del modo In-Ear"
+          >
+            <X size={16} />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Salir</span>
+          </button>
         </div>
       </div>
 
