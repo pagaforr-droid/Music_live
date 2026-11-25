@@ -11,6 +11,10 @@ import {
   subscribeToUsersUpdated,
   writeManagedAuthSessionEmail,
 } from '../services/userManagementService';
+import {
+  clearAllLocalMp3Vault,
+  renewMusicianOfflineLease,
+} from '../services/musicianLocalAudioVault';
 
 interface AuthContextType {
   session: Session | null;
@@ -107,6 +111,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (immediateLocal) {
       if (immediateLocal.status !== 'active') {
         writeManagedAuthSessionEmail(null);
+        void clearAllLocalMp3Vault();
         await supabase.auth.signOut().catch(() => {});
         setSession(null);
         setUser(null);
@@ -119,6 +124,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const resolved = await resolveOrBootstrapUserProfile(email);
     if (resolved.status !== 'active') {
       writeManagedAuthSessionEmail(null);
+      void clearAllLocalMp3Vault();
       await supabase.auth.signOut().catch(() => {});
       setSession(null);
       setUser(null);
@@ -126,6 +132,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // Piggyback zero-cost 15-day offline lease renewal whenever active user is verified
+    renewMusicianOfflineLease(resolved.email);
     setUserProfile(resolved);
     if (activeSupabaseSession) {
       setSession(activeSupabaseSession);
@@ -220,6 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (latestLocal) {
         if (latestLocal.status !== 'active') {
           writeManagedAuthSessionEmail(null);
+          void clearAllLocalMp3Vault();
           void supabase.auth.signOut().catch(() => {});
           setSession(null);
           setUser(null);
@@ -240,6 +249,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     writeManagedAuthSessionEmail(null);
+    void clearAllLocalMp3Vault();
     setSession(null);
     setUser(null);
     setUserProfile(null);

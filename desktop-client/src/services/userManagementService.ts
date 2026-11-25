@@ -1040,6 +1040,37 @@ export function getLocalUserProfileByEmail(email?: string | null): TanduUserProf
 
 export async function resolveOrBootstrapUserProfile(email: string): Promise<TanduUserProfile> {
   const norm = normalizeEmail(email);
+  const localUsers = readLocalUsersRegistry();
+  const localExisting = localUsers.find((u) => u.email === norm);
+
+  // Lightweight 1-row lookup instead of downloading the entire directory + 100 audit logs on every session boot
+  try {
+    const { data: remoteRow, error } = await supabase
+      .from('tandu_users')
+      .select('*')
+      .eq('email', norm)
+      .maybeSingle();
+
+    if (!error && remoteRow && (remoteRow as any).email) {
+      const remoteUser = normalizeUserRecord(remoteRow as Partial<TanduUserProfile>);
+      const merged: TanduUserProfile = localExisting
+        ? {
+            ...remoteUser,
+            password_hash: remoteUser.password_hash || localExisting.password_hash,
+            password_salt: remoteUser.password_salt || localExisting.password_salt,
+          }
+        : remoteUser;
+
+      const others = localUsers.filter((u) => u.email !== norm);
+      writeLocalUsersRegistry([...others, merged]);
+      return merged;
+    }
+  } catch {
+    // Offline or single-row query unsupported in test mock: fall back gracefully
+  }
+
+  if (localExisting) return localExisting;
+
   const { users } = await loadTanduUsersDirectory();
   const existing = users.find((u) => u.email === norm);
   if (existing) return existing;

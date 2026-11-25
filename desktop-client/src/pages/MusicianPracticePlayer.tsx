@@ -7,21 +7,25 @@ import {
   Headphones,
   ListMusic,
   Loader2,
+  Lock,
   Music,
   Pause,
   Play,
   RefreshCw,
   Repeat,
   Search,
+  ShieldCheck,
   SkipBack,
   SkipForward,
+  Sliders,
   Smartphone,
   Trash2,
   Volume2,
   VolumeX,
   WifiOff,
-  Sliders,
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { isAdminUser } from '../services/userManagementService';
 import {
   resolveEffectivePlaybackBounds,
   resolveEffectivePreRoll,
@@ -32,15 +36,19 @@ import {
   type PracticeCatalogSnapshot,
   type PracticeSetlistSummary,
   type PracticeSongItem,
+  checkMusicianOfflineLease,
   ensureSongMp3CachedInDevice,
   evaluateSongVaultState,
   formatBytesCompact,
+  isMobileOrTabletDevice,
   readCachedPracticeCatalog,
-  readLocalMp3Blob,
+  readDecryptedTrackArrayBuffer,
   readLocalVaultSummary,
   removeSongFromLocalVault,
+  renewMusicianOfflineLease,
   requestPersistentDeviceStorage,
   syncPracticeCatalogFromSupabase,
+  wipeAudioArrayBufferInRam,
 } from '../services/musicianLocalAudioVault';
 import './MusicianPracticePlayer.css';
 
@@ -68,7 +76,6 @@ function formatTimeDisplay(sec: number): string {
   return `${isNeg ? '-' : ''}${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-/** Deterministic decorative waveform bars per song ID so scrubber feels like tactile hardware */
 function buildDeterministicBars(seedStr: string, count = 44): number[] {
   let hash = 2166136261;
   for (let i = 0; i < seedStr.length; i++) {
@@ -87,10 +94,51 @@ function buildDeterministicBars(seedStr: string, count = 44): number[] {
   return bars;
 }
 
+/**
+ * Genera un micro-WAV de 0.25s de silencio absoluto (0.000 PCM).
+ * El elemento <audio> oculto SOLO reproduce este silencio para mantener vivos
+ * los controles de pantalla bloqueada / Bluetooth (MediaSession), de modo que
+ * cualquier extensión o grabador de DOM que intente descargar <audio src> solo obtenga silencio.
+ */
+function createSilentKeepAliveWavUrl(): string {
+  const sampleRate = 8000;
+  const numSamples = 2000; // 0.25s
+  const byteLength = 44 + numSamples * 2;
+  const buf = new ArrayBuffer(byteLength);
+  const view = new DataView(buf);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, byteLength - 8, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
 export default function MusicianPracticePlayer() {
+  const { userProfile } = useAuth();
+  const isAdmin = useMemo(() => isAdminUser(userProfile), [userProfile]);
+  const isMobileOrTablet = useMemo(() => isMobileOrTabletDevice(), []);
+  const isDeviceAuthorized = isAdmin || isMobileOrTablet;
+
   // Online / Offline awareness
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine !== false : true
+  );
+
+  // Offline 15-day lease state
+  const [leaseStatus, setLeaseStatus] = useState(() =>
+    checkMusicianOfflineLease(userProfile?.email)
   );
 
   // Catalog & Vault state
@@ -117,7 +165,7 @@ export default function MusicianPracticePlayer() {
   const [syncingCatalog, setSyncingCatalog] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Batch / single download states
+  // Batch / single sync states
   const [downloadingSongId, setDownloadingSongId] = useState<string | null>(null);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
@@ -140,7 +188,7 @@ export default function MusicianPracticePlayer() {
   const [globalTime, setGlobalTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
 
-  // Musician practice controls: Click/Voz Guía + Faders + Skip Pre-Roll + Loop
+  // Musician practice controls
   const [cueEnabled, setCueEnabled] = useState<boolean>(false);
   const [fohVolume, setFohVolume] = useState<number>(1.0);
   const [cueVolume, setCueVolume] = useState<number>(0.9);
@@ -155,9 +203,9 @@ export default function MusicianPracticePlayer() {
   const [repeatMode, setRepeatMode] = useState<'setlist' | 'one'>('setlist');
   const [loopSectionIndex, setLoopSectionIndex] = useState<number | null>(null);
 
-  // Dual Audio Engine Refs
-  const nativeAudioRef = useRef<HTMLAudioElement | null>(null);
-  const activeObjectUrlRef = useRef<string | null>(null);
+  // Volatile RAM Web Audio Engine + Silent MediaSession Keep-Alive <audio>
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const silentWavUrlRef = useRef<string | null>(null);
   const webAudioCtxRef = useRef<AudioContext | null>(null);
   const fohGainRef = useRef<GainNode | null>(null);
   const cueGainRef = useRef<GainNode | null>(null);
@@ -187,6 +235,26 @@ export default function MusicianPracticePlayer() {
   useEffect(() => {
     cueEnabledRef.current = cueEnabled;
   }, [cueEnabled]);
+
+  // Block Ctrl+S / Cmd+S / Ctrl+U anti-piracy keyboard shortcuts on this view
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && ['s', 'u', 'p'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Keep offline lease updated when active user is online (0 extra Supabase queries)
+  useEffect(() => {
+    if (userProfile?.status === 'active' && isOnline) {
+      setLeaseStatus(renewMusicianOfflineLease(userProfile.email));
+    } else {
+      setLeaseStatus(checkMusicianOfflineLease(userProfile?.email));
+    }
+  }, [isOnline, userProfile?.email, userProfile?.status]);
 
   const showNotice = useCallback((kind: 'info' | 'ok' | 'err', text: string) => {
     setStatusToast({ kind, text });
@@ -230,10 +298,14 @@ export default function MusicianPracticePlayer() {
     };
   }, []);
 
-  // Boot sequence: Local IndexedDB first (<50ms, 0 network), then lightweight metadata check
+  // Boot sequence: 1) Local IndexedDB first (<50ms, 0 network), 2) 24h throttled delta catalog sync
   useEffect(() => {
-    let mounted = true;
+    if (!isDeviceAuthorized) {
+      setInitialLoading(false);
+      return;
+    }
 
+    let mounted = true;
     (async () => {
       const [cachedCatalog] = await Promise.all([
         readCachedPracticeCatalog(),
@@ -251,7 +323,8 @@ export default function MusicianPracticePlayer() {
       });
 
       setSyncingCatalog(true);
-      const remoteSnap = await syncPracticeCatalogFromSupabase({ force: !cachedCatalog });
+      // force: false respects 24-hour local cooldown and delta prompter_data fetch
+      const remoteSnap = await syncPracticeCatalogFromSupabase({ force: false });
       if (!mounted) return;
       if (remoteSnap) {
         applyCatalogSnapshot(remoteSnap);
@@ -263,7 +336,7 @@ export default function MusicianPracticePlayer() {
     return () => {
       mounted = false;
     };
-  }, [applyCatalogSnapshot, refreshVaultIndex]);
+  }, [applyCatalogSnapshot, isDeviceAuthorized, refreshVaultIndex]);
 
   useEffect(() => {
     if (!selectedSetlistId) return;
@@ -429,7 +502,7 @@ export default function MusicianPracticePlayer() {
   }, [activeSetlistRawSongs, vaultMap]);
 
   // ============================================================================
-  // AUDIO ENGINE (Native <audio> + Sample-Accurate Web Audio Context)
+  // VOLATILE RAM WEB AUDIO ENGINE + SILENT <AUDIO> TRAP (Zero MP3 URLs in DOM)
   // ============================================================================
   const stopWebAudioSources = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -460,12 +533,28 @@ export default function MusicianPracticePlayer() {
     } catch {}
   }, []);
 
+  const startSilentMediaSessionKeepAlive = useCallback(() => {
+    const audioEl = silentAudioRef.current;
+    if (!audioEl) return;
+    if (!silentWavUrlRef.current) {
+      silentWavUrlRef.current = createSilentKeepAliveWavUrl();
+    }
+    if (audioEl.src !== silentWavUrlRef.current) {
+      audioEl.src = silentWavUrlRef.current;
+    }
+    audioEl.play().catch(() => {});
+  }, []);
+
+  const stopSilentMediaSessionKeepAlive = useCallback(() => {
+    try {
+      silentAudioRef.current?.pause();
+    } catch {}
+  }, []);
+
   const stopAllPlayback = useCallback(
     (resetToInitial = false) => {
       stopWebAudioSources();
-      if (nativeAudioRef.current) {
-        nativeAudioRef.current.pause();
-      }
+      stopSilentMediaSessionKeepAlive();
       setIsPlaying(false);
       isPlayingRef.current = false;
       releaseWakeLock();
@@ -476,20 +565,12 @@ export default function MusicianPracticePlayer() {
         const startOffset = skipPreRoll && !cueEnabledRef.current && pRoll > 0 ? pRoll : 0;
         pauseGlobalTimeRef.current = startOffset;
         setGlobalTime(startOffset);
-        if (nativeAudioRef.current) {
-          try {
-            nativeAudioRef.current.currentTime = startOffset;
-          } catch {}
-        }
       }
     },
-    [releaseWakeLock, skipPreRoll, stopWebAudioSources]
+    [releaseWakeLock, skipPreRoll, stopSilentMediaSessionKeepAlive, stopWebAudioSources]
   );
 
   useEffect(() => {
-    if (nativeAudioRef.current) {
-      nativeAudioRef.current.volume = Math.max(0, Math.min(1, fohVolume));
-    }
     if (fohGainRef.current && webAudioCtxRef.current) {
       fohGainRef.current.gain.setTargetAtTime(
         fohVolume,
@@ -533,12 +614,10 @@ export default function MusicianPracticePlayer() {
     (fohBuf: AudioBuffer, cueBuf: AudioBuffer | null, offsetSec: number) => {
       const ctx = ensureWebAudioGraph();
       stopWebAudioSources();
-      if (nativeAudioRef.current) {
-        nativeAudioRef.current.pause();
-      }
+      startSilentMediaSessionKeepAlive();
 
       const clampedOffset = Math.max(0, Math.min(offsetSec, Math.max(0, fohBuf.duration - 0.05)));
-      const startAt = ctx.currentTime + 0.02;
+      const startAt = ctx.currentTime + 0.015;
 
       const fSrc = ctx.createBufferSource();
       fSrc.buffer = fohBuf;
@@ -586,79 +665,107 @@ export default function MusicianPracticePlayer() {
 
       rafRef.current = requestAnimationFrame(tick);
     },
-    [acquireWakeLock, ensureWebAudioGraph, stopWebAudioSources]
+    [
+      acquireWakeLock,
+      ensureWebAudioGraph,
+      startSilentMediaSessionKeepAlive,
+      stopWebAudioSources,
+    ]
   );
 
-  const ensureSongReadyInVaultAndMemory = useCallback(
+  /**
+   * Descifra desde IndexedDB hacia un ArrayBuffer efímero, lo decodifica a PCM en AudioContext
+   * y BORRA INMEDIATAMENTE con ceros (`fill(0)`) los bytes MP3 descifrados en RAM.
+   * Si `needCue === false`, NO descarga el canal Click/Guía (ahorrando 50% de Storage Egress).
+   */
+  const ensureSongDecodedInVolatileRam = useCallback(
     async (
       song: PracticeSongItem,
-      needCueDecoded: boolean
+      needCue: boolean
     ): Promise<{
-      fohBlob: Blob;
-      cueBlob: Blob | null;
-      fohBuffer?: AudioBuffer;
-      cueBuffer?: AudioBuffer | null;
+      fohBuffer: AudioBuffer;
+      cueBuffer: AudioBuffer | null;
     }> => {
-      let fohBlob = await readLocalMp3Blob(song.id, 'foh');
-      let cueBlob = needCueDecoded ? await readLocalMp3Blob(song.id, 'cue') : null;
+      if (!leaseStatus.valid && !isOnline) {
+        throw new Error(
+          'Tu licencia offline de 15 días expiró. Conéctate un instante a internet para validar tu cuenta activa.'
+        );
+      }
+
+      // Si ya tenemos el AudioBuffer PCM en RAM para la canción activa, reutilizar sin tocar disco ni red
+      const cachedMem = decodedCacheRef.current;
+      if (cachedMem && cachedMem.songId === song.id && (!needCue || cachedMem.cueBuffer)) {
+        return {
+          fohBuffer: cachedMem.fohBuffer,
+          cueBuffer: cachedMem.cueBuffer,
+        };
+      }
+
+      let fohPlainArr = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+      let cuePlainArr = needCue ? await readDecryptedTrackArrayBuffer(song.id, 'cue') : null;
 
       const evalState = evaluateSongVaultState(song, vaultMap[song.id]);
-      const mustFetchFoh = !fohBlob;
-      const mustFetchCue = needCueDecoded && !cueBlob && evalState.hasCloudCue;
+      const mustSyncFoh = !fohPlainArr;
+      const mustSyncCue = needCue && !cuePlainArr && evalState.hasCloudCue;
 
-      if (mustFetchFoh || mustFetchCue) {
+      if (mustSyncFoh || mustSyncCue) {
         if (!isOnline) {
-          if (!fohBlob) {
+          if (!fohPlainArr) {
             throw new Error(
-              'Sin internet y esta pista aún no fue guardada en la memoria de tu dispositivo.'
+              'Sin internet y esta pista aún no fue sincronizada en la memoria interna de tu dispositivo.'
             );
           }
         } else {
           await ensureSongMp3CachedInDevice({
             song,
-            includeCue: true,
+            includeCue: needCue,
             onProgress: (msg) => setPrepareStatusText(msg),
           });
           await refreshVaultIndex();
-          fohBlob = await readLocalMp3Blob(song.id, 'foh');
-          if (needCueDecoded) {
-            cueBlob = await readLocalMp3Blob(song.id, 'cue');
+          if (!fohPlainArr) {
+            fohPlainArr = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+          }
+          if (needCue && !cuePlainArr) {
+            cuePlainArr = await readDecryptedTrackArrayBuffer(song.id, 'cue');
           }
         }
       }
 
-      if (!fohBlob) {
-        throw new Error('No se encontró el audio MP3 de esta canción.');
+      if (!fohPlainArr) {
+        throw new Error('No se encontró el audio cifrado de esta canción.');
       }
 
-      if (!needCueDecoded) {
-        return { fohBlob, cueBlob };
-      }
-
-      if (
-        decodedCacheRef.current &&
-        decodedCacheRef.current.songId === song.id &&
-        (decodedCacheRef.current.cueBuffer || !cueBlob)
-      ) {
-        return {
-          fohBlob,
-          cueBlob,
-          fohBuffer: decodedCacheRef.current.fohBuffer,
-          cueBuffer: decodedCacheRef.current.cueBuffer,
-        };
-      }
-
-      setPrepareStatusText('Sincronizando Pista + Click/Guía...');
+      setPrepareStatusText('Decodificando en memoria volátil segura...');
       const ctx = ensureWebAudioGraph();
-      const [fohArr, cueArr] = await Promise.all([
-        fohBlob.arrayBuffer(),
-        cueBlob ? cueBlob.arrayBuffer() : Promise.resolve(null),
-      ]);
 
-      const [fohBuffer, cueBuffer] = await Promise.all([
-        ctx.decodeAudioData(fohArr.slice(0)),
-        cueArr ? ctx.decodeAudioData(cueArr.slice(0)).catch(() => null) : Promise.resolve(null),
-      ]);
+      let fohBuffer: AudioBuffer;
+      let cueBuffer: AudioBuffer | null = cachedMem?.songId === song.id ? cachedMem.cueBuffer : null;
+
+      try {
+        if (cachedMem && cachedMem.songId === song.id && cachedMem.fohBuffer) {
+          fohBuffer = cachedMem.fohBuffer;
+        } else {
+          const fohCopy = fohPlainArr.slice(0);
+          try {
+            fohBuffer = await ctx.decodeAudioData(fohCopy);
+          } finally {
+            wipeAudioArrayBufferInRam(fohCopy);
+          }
+        }
+
+        if (needCue && cuePlainArr && !cueBuffer) {
+          const cueCopy = cuePlainArr.slice(0);
+          try {
+            cueBuffer = await ctx.decodeAudioData(cueCopy).catch(() => null);
+          } finally {
+            wipeAudioArrayBufferInRam(cueCopy);
+          }
+        }
+      } finally {
+        // Destruir inmediatamente los bytes MP3 descifrados en RAM
+        wipeAudioArrayBufferInRam(fohPlainArr);
+        wipeAudioArrayBufferInRam(cuePlainArr);
+      }
 
       decodedCacheRef.current = {
         songId: song.id,
@@ -666,13 +773,14 @@ export default function MusicianPracticePlayer() {
         cueBuffer,
       };
 
-      return { fohBlob, cueBlob, fohBuffer, cueBuffer };
+      return { fohBuffer, cueBuffer };
     },
-    [ensureWebAudioGraph, isOnline, refreshVaultIndex, vaultMap]
+    [ensureWebAudioGraph, isOnline, leaseStatus.valid, refreshVaultIndex, vaultMap]
   );
 
+  // Reset track state when selected song changes
   useEffect(() => {
-    const token = ++loadTokenRef.current;
+    ++loadTokenRef.current;
     stopAllPlayback(false);
     setLoopSectionIndex(null);
 
@@ -694,34 +802,22 @@ export default function MusicianPracticePlayer() {
 
     const metaDur = Number(currentSong?.prompter_data?.liveMixMeta?.totalDurationSec) || 0;
     if (metaDur > 0) setDuration(metaDur);
-
-    void (async () => {
-      const localFoh = await readLocalMp3Blob(currentSong.id, 'foh');
-      if (loadTokenRef.current !== token || !localFoh || !nativeAudioRef.current) return;
-
-      if (activeObjectUrlRef.current) {
-        URL.revokeObjectURL(activeObjectUrlRef.current);
-      }
-      const nextUrl = URL.createObjectURL(localFoh);
-      activeObjectUrlRef.current = nextUrl;
-      nativeAudioRef.current.src = nextUrl;
-      nativeAudioRef.current.currentTime = initialOffset;
-    })();
   }, [currentSong?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return () => {
       batchAbortRef.current?.abort();
       stopWebAudioSources();
+      stopSilentMediaSessionKeepAlive();
       releaseWakeLock();
-      if (activeObjectUrlRef.current) {
-        URL.revokeObjectURL(activeObjectUrlRef.current);
+      if (silentWavUrlRef.current) {
+        URL.revokeObjectURL(silentWavUrlRef.current);
       }
       if (webAudioCtxRef.current && webAudioCtxRef.current.state !== 'closed') {
         webAudioCtxRef.current.close().catch(() => {});
       }
     };
-  }, [releaseWakeLock, stopWebAudioSources]);
+  }, [releaseWakeLock, stopSilentMediaSessionKeepAlive, stopWebAudioSources]);
 
   const playSong = useCallback(
     async (targetSong?: PracticeSongItem, customStartOffset?: number) => {
@@ -734,7 +830,7 @@ export default function MusicianPracticePlayer() {
 
       try {
         const wantCue = cueEnabledRef.current;
-        const prepared = await ensureSongReadyInVaultAndMemory(song, wantCue);
+        const prepared = await ensureSongDecodedInVolatileRam(song, wantCue);
         if (loadTokenRef.current !== token) return;
 
         const pRoll = resolveEffectivePreRoll(song);
@@ -747,46 +843,7 @@ export default function MusicianPracticePlayer() {
                 ? pRoll
                 : 0;
 
-        if (wantCue && prepared.fohBuffer) {
-          startWebAudioAtOffset(prepared.fohBuffer, prepared.cueBuffer || null, startOffset);
-        } else if (nativeAudioRef.current) {
-          stopWebAudioSources();
-          if (activeObjectUrlRef.current) {
-            URL.revokeObjectURL(activeObjectUrlRef.current);
-          }
-          const objUrl = URL.createObjectURL(prepared.fohBlob);
-          activeObjectUrlRef.current = objUrl;
-
-          const audioEl = nativeAudioRef.current;
-          if (audioEl.src !== objUrl) {
-            audioEl.src = objUrl;
-          }
-          audioEl.volume = Math.max(0, Math.min(1, fohVolume));
-
-          await new Promise<void>((resolve) => {
-            if (audioEl.readyState >= 1) {
-              resolve();
-              return;
-            }
-            const onMeta = () => {
-              audioEl.removeEventListener('loadedmetadata', onMeta);
-              resolve();
-            };
-            audioEl.addEventListener('loadedmetadata', onMeta, { once: true });
-            window.setTimeout(resolve, 400);
-          });
-
-          if (loadTokenRef.current !== token) return;
-          if (Number.isFinite(audioEl.duration) && audioEl.duration > 0) {
-            setDuration(audioEl.duration);
-          }
-          audioEl.currentTime = Math.max(0, startOffset);
-          await audioEl.play();
-          pauseGlobalTimeRef.current = startOffset;
-          setGlobalTime(startOffset);
-          setIsPlaying(true);
-          isPlayingRef.current = true;
-        }
+        startWebAudioAtOffset(prepared.fohBuffer, prepared.cueBuffer, startOffset);
       } catch (err: any) {
         showNotice('err', err?.message || 'Error al reproducir la pista.');
       } finally {
@@ -796,33 +853,24 @@ export default function MusicianPracticePlayer() {
         }
       }
     },
-    [
-      ensureSongReadyInVaultAndMemory,
-      fohVolume,
-      showNotice,
-      skipPreRoll,
-      startWebAudioAtOffset,
-      stopWebAudioSources,
-    ]
+    [ensureSongDecodedInVolatileRam, showNotice, skipPreRoll, startWebAudioAtOffset]
   );
 
   const pauseSong = useCallback(() => {
-    if (cueEnabledRef.current && webAudioCtxRef.current && isPlayingRef.current) {
+    if (webAudioCtxRef.current && isPlayingRef.current) {
       const elapsed = Math.max(
         0,
         webAudioCtxRef.current.currentTime - webStartCtxTimeRef.current
       );
       pauseGlobalTimeRef.current = elapsed;
       setGlobalTime(elapsed);
-    } else if (nativeAudioRef.current) {
-      pauseGlobalTimeRef.current = nativeAudioRef.current.currentTime || pauseGlobalTimeRef.current;
-      nativeAudioRef.current.pause();
     }
     stopWebAudioSources();
+    stopSilentMediaSessionKeepAlive();
     releaseWakeLock();
     setIsPlaying(false);
     isPlayingRef.current = false;
-  }, [releaseWakeLock, stopWebAudioSources]);
+  }, [releaseWakeLock, stopSilentMediaSessionKeepAlive, stopWebAudioSources]);
 
   const togglePlayPause = useCallback(() => {
     if (isPlayingRef.current) {
@@ -840,19 +888,12 @@ export default function MusicianPracticePlayer() {
       setGlobalTime(clamped);
 
       if (!isPlayingRef.current) {
-        if (nativeAudioRef.current && !cueEnabledRef.current) {
-          try {
-            nativeAudioRef.current.currentTime = clamped;
-          } catch {}
-        }
         return;
       }
 
       const cachedDecoded = decodedCacheRef.current;
-      if (cueEnabledRef.current && cachedDecoded && cachedDecoded.songId === currentSongRef.current?.id) {
+      if (cachedDecoded && cachedDecoded.songId === currentSongRef.current?.id) {
         startWebAudioAtOffset(cachedDecoded.fohBuffer, cachedDecoded.cueBuffer, clamped);
-      } else if (nativeAudioRef.current) {
-        nativeAudioRef.current.currentTime = clamped;
       }
     },
     [duration, startWebAudioAtOffset]
@@ -879,13 +920,9 @@ export default function MusicianPracticePlayer() {
 
       const wasPlaying = isPlayingRef.current;
       let resumeAt = pauseGlobalTimeRef.current;
-      if (wasPlaying) {
-        if (cueEnabledRef.current && webAudioCtxRef.current) {
-          resumeAt = Math.max(0, webAudioCtxRef.current.currentTime - webStartCtxTimeRef.current);
-        } else if (nativeAudioRef.current) {
-          resumeAt = nativeAudioRef.current.currentTime || resumeAt;
-        }
-      } else if (enableCue && resumeAt <= resolveEffectivePreRoll(song) + 0.05) {
+      if (wasPlaying && webAudioCtxRef.current) {
+        resumeAt = Math.max(0, webAudioCtxRef.current.currentTime - webStartCtxTimeRef.current);
+      } else if (!wasPlaying && enableCue && resumeAt <= resolveEffectivePreRoll(song) + 0.05) {
         resumeAt = 0;
         pauseGlobalTimeRef.current = 0;
         setGlobalTime(0);
@@ -895,11 +932,25 @@ export default function MusicianPracticePlayer() {
       cueEnabledRef.current = enableCue;
 
       if (wasPlaying && song) {
+        const cachedDecoded = decodedCacheRef.current;
+        // Si ya tenemos el CUE decodificado en RAM (o si se apaga CUE), el cambio es 0.00ms instantáneo por GainNode!
+        if (!enableCue || (cachedDecoded && cachedDecoded.songId === song.id && cachedDecoded.cueBuffer)) {
+          if (
+            enableCue &&
+            !cueSourceRef.current &&
+            cachedDecoded &&
+            cachedDecoded.songId === song.id
+          ) {
+            startWebAudioAtOffset(cachedDecoded.fohBuffer, cachedDecoded.cueBuffer, resumeAt);
+          }
+          return;
+        }
+        // Primera vez que activa Click/Guía en esta canción -> descarga bajo demanda solo CUE (~1.2 MB)
         pauseSong();
         await playSong(song, resumeAt);
       }
     },
-    [pauseSong, playSong, showNotice, vaultMap]
+    [pauseSong, playSong, showNotice, startWebAudioAtOffset, vaultMap]
   );
 
   const selectAndPlaySong = useCallback(
@@ -993,64 +1044,13 @@ export default function MusicianPracticePlayer() {
   ]);
 
   useEffect(() => {
-    const audioEl = nativeAudioRef.current;
-    if (!audioEl) return;
-
-    const onTimeUpdate = () => {
-      if (cueEnabledRef.current) return;
-      const t = audioEl.currentTime || 0;
-
-      const loop = loopRangeRef.current;
-      if (loop && t >= loop.end - 0.06) {
-        audioEl.currentTime = loop.start;
-        pauseGlobalTimeRef.current = loop.start;
-        setGlobalTime(loop.start);
-        return;
-      }
-
-      const dur = Number.isFinite(audioEl.duration) ? audioEl.duration : duration;
-      const bounds = resolveEffectivePlaybackBounds(currentSongRef.current, dur);
-      if (bounds.autoAdvanceAtGlobalSec > 0 && t >= bounds.autoAdvanceAtGlobalSec) {
-        audioEl.pause();
-        handleTrackEndedRef.current();
-        return;
-      }
-
-      pauseGlobalTimeRef.current = t;
-      setGlobalTime(t);
-    };
-
-    const onLoadedMeta = () => {
-      if (Number.isFinite(audioEl.duration) && audioEl.duration > 0) {
-        setDuration(audioEl.duration);
-      }
-    };
-
-    const onEnded = () => {
-      if (!cueEnabledRef.current) {
-        handleTrackEndedRef.current();
-      }
-    };
-
-    audioEl.addEventListener('timeupdate', onTimeUpdate);
-    audioEl.addEventListener('loadedmetadata', onLoadedMeta);
-    audioEl.addEventListener('ended', onEnded);
-
-    return () => {
-      audioEl.removeEventListener('timeupdate', onTimeUpdate);
-      audioEl.removeEventListener('loadedmetadata', onLoadedMeta);
-      audioEl.removeEventListener('ended', onEnded);
-    };
-  }, [duration]);
-
-  useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !currentSong) return;
     try {
       const activeSetlistTitle =
         setlists.find((s) => s.id === selectedSetlistId)?.title || 'Repertorio En Vivo';
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentSong.title,
-        artist: 'TANDU Músicos · Memoria Local MP3',
+        artist: 'TANDU Músicos · Bóveda Cifrada',
         album: activeSetlistTitle,
       });
       navigator.mediaSession.setActionHandler('play', () => void playSong());
@@ -1061,11 +1061,11 @@ export default function MusicianPracticePlayer() {
   }, [currentSong, goNextSong, goPrevSong, pauseSong, playSong, selectedSetlistId, setlists]);
 
   // ============================================================================
-  // VAULT ACTIONS
+  // VAULT ACTIONS (Lazy CUE by default to save 50% Supabase Storage Egress)
   // ============================================================================
   const handleManualSyncCatalog = async () => {
     if (!isOnline) {
-      showNotice('info', 'Modo sin internet activo. Usando repertorio guardado en tu dispositivo.');
+      showNotice('info', 'Modo sin internet activo. Usando repertorio cifrado en tu dispositivo.');
       return;
     }
     setSyncingCatalog(true);
@@ -1084,25 +1084,26 @@ export default function MusicianPracticePlayer() {
   ) => {
     e?.stopPropagation();
     if (!isOnline) {
-      showNotice('err', 'Conéctate una vez a internet para guardar este MP3 en tu memoria.');
+      showNotice('err', 'Conéctate una vez a internet para sincronizar esta pista en tu memoria.');
       return;
     }
     if (downloadingSongId) return;
 
     setDownloadingSongId(song.id);
     try {
+      // Lazy CUE: solo descarga CUE si el músico tiene Click activo ahora mismo
       await ensureSongMp3CachedInDevice({
         song,
-        includeCue: true,
+        includeCue: cueEnabledRef.current,
         forceRefresh,
       });
       if (decodedCacheRef.current?.songId === song.id) {
         decodedCacheRef.current = null;
       }
       await refreshVaultIndex();
-      showNotice('ok', `"${song.title}" guardada en la memoria de tu dispositivo.`);
+      showNotice('ok', `"${song.title}" sincronizada en la bóveda cifrada de tu dispositivo.`);
     } catch (err: any) {
-      showNotice('err', err?.message || 'No se pudo guardar el audio.');
+      showNotice('err', err?.message || 'No se pudo sincronizar el audio.');
     } finally {
       setDownloadingSongId(null);
     }
@@ -1110,7 +1111,7 @@ export default function MusicianPracticePlayer() {
 
   const handleSaveEntireSetlistOffline = async () => {
     if (!isOnline) {
-      showNotice('err', 'Conéctate a Wi-Fi o datos para descargar las pistas pendientes.');
+      showNotice('err', 'Conéctate a Wi-Fi o datos para sincronizar las pistas pendientes.');
       return;
     }
     if (batchProgress) {
@@ -1121,7 +1122,7 @@ export default function MusicianPracticePlayer() {
 
     const targets = setlistVaultStats.pendingSongs;
     if (targets.length === 0) {
-      showNotice('ok', 'Todo el repertorio ya está guardado en la memoria de tu dispositivo.');
+      showNotice('ok', 'Todo el repertorio ya está sincronizado en la bóveda de tu dispositivo.');
       return;
     }
 
@@ -1141,7 +1142,7 @@ export default function MusicianPracticePlayer() {
         const st = evaluateSongVaultState(song, vaultMap[song.id]);
         await ensureSongMp3CachedInDevice({
           song,
-          includeCue: true,
+          includeCue: cueEnabledRef.current,
           forceRefresh: st.status === 'update_available',
           signal: abortController.signal,
         });
@@ -1150,11 +1151,11 @@ export default function MusicianPracticePlayer() {
       }
       showNotice(
         'ok',
-        `${savedOk} ${savedOk === 1 ? 'pista guardada' : 'pistas guardadas'} en tu memoria local.`
+        `${savedOk} ${savedOk === 1 ? 'pista sincronizada' : 'pistas sincronizadas'} en memoria cifrada.`
       );
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
-        showNotice('err', err?.message || 'Descarga interrumpida.');
+        showNotice('err', err?.message || 'Sincronización interrumpida.');
       }
     } finally {
       setBatchProgress(null);
@@ -1174,6 +1175,71 @@ export default function MusicianPracticePlayer() {
     await refreshVaultIndex();
     showNotice('info', `Se liberó "${song.title}" de la memoria del dispositivo.`);
   };
+
+  // ============================================================================
+  // PC / LAPTOP BLOCK SCREEN FOR NON-ADMIN USERS (Anti-Piracy Layer 1)
+  // ============================================================================
+  if (!isDeviceAuthorized) {
+    return (
+      <div
+        onContextMenu={(e) => e.preventDefault()}
+        className="mp-studio-root flex h-full w-full flex-col items-center justify-center p-6 select-none"
+      >
+        <div className="w-full max-w-lg">
+          <div className="mp-console-bezel">
+            <div className="mp-console-core p-6 sm:p-8 space-y-5">
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#e84432]" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#f2b829]" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#f5efe4]" />
+                  <span className="mp-mono ml-1 text-xs text-[#a39d93]">
+                    ~/seguridad/boveda-movil
+                  </span>
+                </div>
+                <span className="mp-gold-tag rounded-full px-3 py-0.5 text-[11px] font-bold">
+                  Protección Activa
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3.5">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#e84432] text-[#f5efe4]">
+                  <Smartphone size={28} />
+                </div>
+                <div>
+                  <span className="mp-mono text-xs font-bold text-[#f2b829]">
+                    &gt; ACCESO EXCLUSIVO MÓVIL Y TABLET
+                  </span>
+                  <h1 className="mp-display-title text-xl sm:text-2xl uppercase text-[#f5efe4] mt-1">
+                    USA TU CELULAR O TABLET
+                  </h1>
+                </div>
+              </div>
+
+              <p className="text-sm leading-relaxed text-[#f5efe4]/85">
+                Por políticas de protección contra piratería de las secuencias originales de la
+                banda, la sincronización y reproducción en memoria interna está deshabilitada en
+                computadoras de escritorio o laptops para cuentas de músico.
+              </p>
+
+              <div className="rounded-2xl bg-[#1e1e1c] border border-white/10 p-4 space-y-2 text-xs text-[#a39d93]">
+                <div className="flex items-center gap-2 text-[#f2b829] font-bold">
+                  <Lock size={14} />
+                  <span>¿Cómo ensayar con tus pistas?</span>
+                </div>
+                <p>
+                  Abre la aplicación desde tu <strong>celular (iPhone / Android)</strong> o{' '}
+                  <strong>tablet (iPad / Android)</strong> con tu usuario. Las pistas se guardarán
+                  cifradas en la memoria interna de tu equipo para escuchar todos los días sin
+                  gastar datos y sin exponer archivos descargables.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ============================================================================
   // DERIVED UI METRICS
@@ -1200,9 +1266,18 @@ export default function MusicianPracticePlayer() {
       : 'both';
 
   return (
-    <div className="mp-studio-root flex h-full w-full flex-col select-none overflow-hidden">
-      {/* Native Audio Element for Lock-Screen & Battery-Friendly Pure MP3 Mode */}
-      <audio ref={nativeAudioRef} preload="auto" playsInline className="hidden" />
+    <div
+      onContextMenu={(e) => e.preventDefault()}
+      className="mp-studio-root flex h-full w-full flex-col select-none overflow-hidden"
+    >
+      {/* Hidden <audio> ONLY plays 0.25s of synthetic 0.000 silence to sustain lock-screen MediaSession */}
+      <audio
+        ref={silentAudioRef}
+        loop
+        playsInline
+        controlsList="nodownload noplaybackrate"
+        className="hidden"
+      />
 
       {/* =====================================================================
           POSTER MASTHEAD (Vermilion Stage + Carbon Ink Pills + Solar Gold Tags)
@@ -1214,7 +1289,8 @@ export default function MusicianPracticePlayer() {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 mb-1.5">
                 <span className="mp-ink-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-tight">
-                  <span>MEMORIA</span>
+                  <Lock size={11} className="text-[#f2b829]" />
+                  <span>BÓVEDA CIFRADA</span>
                   <span className="text-[#f2b829] mp-mono">
                     {formatBytesCompact(totalBytesUsed)}
                   </span>
@@ -1222,15 +1298,15 @@ export default function MusicianPracticePlayer() {
 
                 {isPersisted && (
                   <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-[#111110]/12 px-2.5 py-0.5 text-[11px] font-bold text-[#111110]">
-                    <Smartphone size={12} strokeWidth={2.2} />
-                    <span>Guardado permanente</span>
+                    <ShieldCheck size={12} strokeWidth={2.3} />
+                    <span>AES-256 · Sin archivo extraíble</span>
                   </span>
                 )}
 
                 {!isOnline && (
                   <span className="mp-ink-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold text-[#f2b829]">
                     <WifiOff size={12} />
-                    <span>Sin internet · Modo local</span>
+                    <span>Offline ({leaseStatus.daysRemaining}d vigencia)</span>
                   </span>
                 )}
               </div>
@@ -1240,7 +1316,7 @@ export default function MusicianPracticePlayer() {
               </h1>
             </div>
 
-            {/* Right Controls: Setlist Picker + Batch Save Island CTA */}
+            {/* Right Controls: Setlist Picker + Batch Vault Sync Island CTA */}
             <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
               <div className="flex items-center gap-1.5 flex-1 sm:flex-initial min-w-[190px]">
                 <select
@@ -1270,7 +1346,7 @@ export default function MusicianPracticePlayer() {
                 </button>
               </div>
 
-              {/* Island Button-in-Button CTA for Offline Vault */}
+              {/* Island Button-in-Button CTA for Encrypted Local Vault Sync */}
               {setlistVaultStats.playableTotal > 0 && (
                 <button
                   type="button"
@@ -1281,7 +1357,7 @@ export default function MusicianPracticePlayer() {
                   {batchProgress ? (
                     <>
                       <span className="mp-mono">
-                        Guardando {batchProgress.current}/{batchProgress.total}
+                        Sincronizando {batchProgress.current}/{batchProgress.total}
                       </span>
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110]">
                         <Loader2 size={14} className="animate-spin" />
@@ -1290,7 +1366,7 @@ export default function MusicianPracticePlayer() {
                   ) : setlistVaultStats.allCached ? (
                     <>
                       <span>
-                        En tu equipo ({setlistVaultStats.cachedCount}/{setlistVaultStats.playableTotal})
+                        En Bóveda ({setlistVaultStats.cachedCount}/{setlistVaultStats.playableTotal})
                       </span>
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110]">
                         <Check size={15} strokeWidth={2.6} />
@@ -1298,7 +1374,7 @@ export default function MusicianPracticePlayer() {
                     </>
                   ) : (
                     <>
-                      <span>Guardar {setlistVaultStats.pendingSongs.length} MP3</span>
+                      <span>Sincronizar {setlistVaultStats.pendingSongs.length} en Memoria</span>
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110] transition-transform duration-200 group-hover:scale-105">
                         <CloudDownload size={15} strokeWidth={2.3} />
                       </span>
@@ -1374,7 +1450,7 @@ export default function MusicianPracticePlayer() {
       </AnimatePresence>
 
       {/* =====================================================================
-          ASYMMETRIC EDITORIAL WORKSPACE (Tablet Landscape / Desktop 12-Col, Mobile Stack)
+          ASYMMETRIC EDITORIAL WORKSPACE
       ====================================================================== */}
       <div className="mx-auto flex flex-1 w-full max-w-[1560px] min-h-0 overflow-hidden lg:grid lg:grid-cols-12">
         {/* LEFT COLUMN: Warm Alabaster Repertorio Sheet */}
@@ -1422,8 +1498,8 @@ export default function MusicianPracticePlayer() {
                 </div>
                 <p className="text-sm font-bold text-[#111110]">Sin pistas en este repertorio</p>
                 <p className="mt-1 text-xs text-[#4a4640] max-w-xs leading-relaxed">
-                  Al exportar las mezclas en Studio Prompter hacia Live Concert, aparecerán aquí en
-                  formato MP3 ligero listas para guardar en tu celular o tablet.
+                  Al exportar las mezclas en Studio Prompter hacia Live Concert, aparecerán aquí
+                  listas para sincronizar en la bóveda cifrada de tu celular o tablet.
                 </p>
               </div>
             ) : (
@@ -1470,7 +1546,7 @@ export default function MusicianPracticePlayer() {
                       )}
                     </div>
 
-                    {/* Song Title &Editorial Tag Pills */}
+                    {/* Song Title & Vault Security Tag Pills */}
                     <div className="min-w-0 flex-1">
                       <div
                         className={`mp-heading truncate text-[15px] font-bold ${
@@ -1489,9 +1565,9 @@ export default function MusicianPracticePlayer() {
                                 : 'bg-[#111110] text-[#f2b829]'
                             }`}
                           >
-                            <Check size={10} strokeWidth={3} />
+                            <Lock size={9} strokeWidth={2.8} />
                             <span>
-                              LOCAL · {formatBytesCompact(evalSt.localBytes)}
+                              EN BÓVEDA · {formatBytesCompact(evalSt.localBytes)}
                               {evalSt.hasLocalCue ? ' +CLICK' : ''}
                             </span>
                           </span>
@@ -1511,7 +1587,7 @@ export default function MusicianPracticePlayer() {
                                 : 'bg-[#e9dfd0] text-[#4a4640]'
                             }`}
                           >
-                            Toca para guardar MP3
+                            Toca para sincronizar en memoria
                           </span>
                         )}
 
@@ -1545,14 +1621,14 @@ export default function MusicianPracticePlayer() {
                       </div>
                     </div>
 
-                    {/* Vault Quick Actions (40x40+ Touch Targets) */}
+                    {/* Vault Quick Actions */}
                     <div className="flex shrink-0 items-center gap-1">
                       {evalSt.status === 'cloud_only' && (
                         <button
                           type="button"
                           onClick={(e) => void handleSaveSingleSongToDevice(song, false, e)}
                           disabled={isThisDownloading || !isOnline}
-                          title="Guardar MP3 en la memoria del dispositivo"
+                          title="Sincronizar en la bóveda cifrada del dispositivo"
                           className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors cursor-pointer disabled:opacity-40 ${
                             isSelected
                               ? 'border-white/15 bg-white/10 text-[#f2b829] hover:bg-[#f2b829] hover:text-[#111110]'
@@ -1572,7 +1648,7 @@ export default function MusicianPracticePlayer() {
                           type="button"
                           onClick={(e) => void handleSaveSingleSongToDevice(song, true, e)}
                           disabled={isThisDownloading}
-                          title="Actualizar a la nueva mezcla MP3"
+                          title="Sincronizar nueva versión de la mezcla"
                           className="flex h-9 px-2.5 items-center justify-center rounded-xl bg-[#f2b829] text-[11px] font-bold text-[#111110] cursor-pointer"
                         >
                           {isThisDownloading ? (
@@ -1587,7 +1663,7 @@ export default function MusicianPracticePlayer() {
                         <button
                           type="button"
                           onClick={(e) => void handleRemoveLocalSong(song, e)}
-                          title="Liberar espacio de esta pista"
+                          title="Liberar esta pista de la bóveda interna"
                           className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors cursor-pointer ${
                             isSelected
                               ? 'text-[#a39d93] hover:bg-[#e84432]/25 hover:text-[#f5efe4]'
@@ -1614,7 +1690,7 @@ export default function MusicianPracticePlayer() {
           {currentSong ? (
             <div className="flex flex-1 flex-col p-4 sm:p-6 gap-5 max-w-4xl w-full mx-auto pb-8">
               {/* ===============================================================
-                  DOUBLE-BEZEL OBSIDIAN CONSOLE (Inspired by ~/mi-proyecto window)
+                  DOUBLE-BEZEL OBSIDIAN CONSOLE
               ================================================================ */}
               <div className="mp-console-bezel">
                 <div className="mp-console-core p-4 sm:p-6 space-y-5">
@@ -1625,17 +1701,18 @@ export default function MusicianPracticePlayer() {
                       <span className="h-2.5 w-2.5 rounded-full bg-[#f2b829] shrink-0" />
                       <span className="h-2.5 w-2.5 rounded-full bg-[#f5efe4] shrink-0" />
                       <span className="mp-mono ml-1.5 truncate text-[11px] text-[#a39d93]">
-                        ~/memoria-local/{activeSetlistName.toLowerCase().replace(/\s+/g, '-')}
+                        ~/boveda-cifrada/{activeSetlistName.toLowerCase().replace(/\s+/g, '-')}
                       </span>
                     </div>
 
                     {currentVaultEval.hasLocalFoh ? (
-                      <span className="mp-gold-tag shrink-0 rounded-full px-3 py-0.5 text-[11px] font-bold">
-                        0 Datos · Offline
+                      <span className="mp-gold-tag shrink-0 inline-flex items-center gap-1 rounded-full px-3 py-0.5 text-[11px] font-bold">
+                        <Lock size={10} strokeWidth={2.6} />
+                        <span>AES-256 · 0 Datos</span>
                       </span>
                     ) : (
                       <span className="shrink-0 rounded-full bg-white/10 px-3 py-0.5 text-[11px] font-semibold text-[#f5efe4]">
-                        Auto-guardado MP3
+                        Sincronización Automática
                       </span>
                     )}
                   </div>
@@ -1647,8 +1724,8 @@ export default function MusicianPracticePlayer() {
                         <span>&gt;</span>
                         <span>
                           {cueEnabled
-                            ? 'MODO ENSAYO SINCRONIZADO (PISTA + GUÍA)'
-                            : 'REPRODUCCIÓN MP3 DE BOLSILLO'}
+                            ? 'RAM VOLÁTIL · PISTA + CLICK/GUÍA SINCRONIZADO'
+                            : 'RAM VOLÁTIL · SOLO MÚSICA (SIN ARCHIVO EXTRAÍBLE)'}
                         </span>
                       </div>
 
@@ -1706,7 +1783,6 @@ export default function MusicianPracticePlayer() {
                       }}
                       className="relative flex h-14 w-full cursor-pointer items-end gap-[3px] rounded-2xl bg-[#1b1b19] px-3 py-2.5 border border-white/[0.06] overflow-hidden"
                     >
-                      {/* Section Loop Highlight Overlay */}
                       {loopSectionIndex !== null &&
                         normalizedSections[loopSectionIndex] &&
                         duration > 0 && (
@@ -1749,7 +1825,7 @@ export default function MusicianPracticePlayer() {
                       {isPreparingAudio ? (
                         <span className="flex items-center gap-1.5 text-[#f2b829] font-sans font-semibold">
                           <Loader2 size={13} className="animate-spin" />
-                          <span>{prepareStatusText || 'Cargando desde memoria...'}</span>
+                          <span>{prepareStatusText || 'Descifrando en RAM...'}</span>
                         </span>
                       ) : loopSectionIndex !== null && normalizedSections[loopSectionIndex] ? (
                         <span className="text-[#f2b829] font-sans font-bold">
@@ -1757,14 +1833,14 @@ export default function MusicianPracticePlayer() {
                         </span>
                       ) : (
                         <span className="font-sans text-[11px] text-[#a39d93]">
-                          Toca la onda para adelantar o retroceder
+                          Reproducción protegida en memoria interna
                         </span>
                       )}
                       <span>{formatTimeDisplay(duration)}</span>
                     </div>
                   </div>
 
-                  {/* Primary Hardware Transport Deck (Large Touch Targets for Tablet/Phone) */}
+                  {/* Primary Hardware Transport Deck */}
                   <div className="flex items-center justify-center gap-3 sm:gap-5 py-1">
                     <button
                       type="button"
@@ -1835,11 +1911,9 @@ export default function MusicianPracticePlayer() {
 
                   {/* ===========================================================
                       GEOMETRIC TRIAD MODE SELECTOR + POCKET MIXER
-                      (Inspired by Circle / Rounded Square / Triangle in reference)
                   ============================================================ */}
                   <div className="border-t border-white/[0.08] pt-4 space-y-4">
                     <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                      {/* 1. Circle — Solo Música */}
                       <button
                         type="button"
                         onClick={() => void handleSetCueMode(false, { foh: 1.0, cue: cueVolume })}
@@ -1857,7 +1931,6 @@ export default function MusicianPracticePlayer() {
                         <span>Solo Música</span>
                       </button>
 
-                      {/* 2. Rounded Square — Música + Click/Guía */}
                       <button
                         type="button"
                         onClick={() => void handleSetCueMode(true, { foh: 0.85, cue: 0.95 })}
@@ -1875,7 +1948,6 @@ export default function MusicianPracticePlayer() {
                         <span>+ Click / Guía</span>
                       </button>
 
-                      {/* 3. Triangle — Solo Click */}
                       <button
                         type="button"
                         onClick={() => void handleSetCueMode(true, { foh: 0, cue: 1.0 })}
@@ -1968,7 +2040,7 @@ export default function MusicianPracticePlayer() {
               </div>
 
               {/* ===============================================================
-                  WARM ALABASTER EDITORIAL STUDY CARD (Inspired by [CASO REAL] card)
+                  WARM ALABASTER EDITORIAL STUDY CARD
               ================================================================ */}
               <div className="mp-cream-card p-4 sm:p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dfd4c3] pb-3.5">
@@ -1977,7 +2049,7 @@ export default function MusicianPracticePlayer() {
                       GUÍA DE ESTUDIO
                     </span>
                     <span className="text-sm font-bold text-[#111110]">
-                       Navegación por partes y armonía
+                      Navegación por partes y armonía
                     </span>
                   </div>
 
@@ -2171,7 +2243,6 @@ export default function MusicianPracticePlayer() {
       ====================================================================== */}
       {mobileTab === 'playlist' && currentSong && (
         <div className="shrink-0 lg:hidden bg-[#141413] text-[#f5efe4] border-t-2 border-[#111110] px-3.5 pt-2.5 mp-safe-bottom shadow-[0_-10px_28px_rgba(17,17,16,0.25)]">
-          {/* GPU-Accelerated Progress Strip */}
           <div className="mb-2.5 h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
             <div
               className={`h-full w-full origin-left transition-transform duration-100 ${

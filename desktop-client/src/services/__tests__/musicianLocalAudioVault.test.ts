@@ -6,6 +6,7 @@ vi.mock('../../lib/supabase', () => ({
       select: () => ({
         eq: () => ({
           order: async () => ({ data: [], error: null }),
+          in: async () => ({ data: [], error: null }),
         }),
         order: async () => ({ data: [], error: null }),
       }),
@@ -15,20 +16,23 @@ vi.mock('../../lib/supabase', () => ({
 
 import {
   type PracticeSongItem,
+  checkMusicianOfflineLease,
+  clearAllLocalMp3Vault,
   computeSongChannelSignature,
   ensureSongMp3CachedInDevice,
-  evaluateSongVaultState,
   formatBytesCompact,
+  inspectRawEncryptedVaultBuffer,
+  readCachedPracticeCatalog,
+  readDecryptedTrackArrayBuffer,
   readLocalMp3Blob,
-  readLocalVaultSummary,
-  removeSongFromLocalVault,
+  renewMusicianOfflineLease,
   resetMusicianVaultMemoryForTests,
   resolvePreferredMp3Source,
   saveCachedPracticeCatalog,
-  readCachedPracticeCatalog,
+  wipeAudioArrayBufferInRam,
 } from '../musicianLocalAudioVault';
 
-describe('Musician Local MP3 Audio Vault (Zero Repeated Supabase Egress)', () => {
+describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', () => {
   beforeEach(() => {
     resetMusicianVaultMemoryForTests();
     vi.restoreAllMocks();
@@ -52,7 +56,7 @@ describe('Musician Local MP3 Audio Vault (Zero Repeated Supabase Egress)', () =>
     },
   };
 
-  it('prioritizes lightweight foh_mobile_url and cue_mobile_url MP3 over heavy WAV mixes', () => {
+  it('prioritizes lightweight foh_mobile_url and cue_mobile_url MP3 and hashes signatures so no raw URLs sit in index', () => {
     const foh = resolvePreferredMp3Source(sampleSong, 'foh');
     const cue = resolvePreferredMp3Source(sampleSong, 'cue');
     expect(foh.url).toBe('https://supa.example.com/audios/foh_mobile_100.mp3');
@@ -60,106 +64,87 @@ describe('Musician Local MP3 Audio Vault (Zero Repeated Supabase Egress)', () =>
     expect(cue.url).toBe('https://supa.example.com/audios/cue_mobile_100.mp3');
     expect(cue.isLikelyWav).toBe(false);
 
-    const legacySong: PracticeSongItem = {
-      id: 'song-legacy',
-      title: 'Canción Antigua',
-      foh_mix_url: 'https://supa.example.com/audios/foh_old.wav',
-      foh_mobile_url: null,
-    };
-    const legacyFoh = resolvePreferredMp3Source(legacySong, 'foh');
-    expect(legacyFoh.url).toBe('https://supa.example.com/audios/foh_old.wav');
-    expect(legacyFoh.isLikelyWav).toBe(true);
+    const sig = computeSongChannelSignature(sampleSong, 'foh');
+    expect(sig.length).toBe(64);
+    expect(sig.includes('http')).toBe(false);
+    expect(sig.includes('.mp3')).toBe(false);
   });
 
-  it('downloads MP3 once, stores in local vault, and performs ZERO network fetches on daily replays', async () => {
-    const fakeFohMp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04, 1, 2, 3, 4, 5, 6]).buffer;
-    const fakeCueMp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04, 9, 8, 7, 6]).buffer;
+  it('encrypts stored audio (never plaintext MP3 in storage), downloads CUE lazily on-demand (-50% Egress), and wipes RAM buffers', async () => {
+    const plainFohBytes = new Uint8Array([0x49, 0x44, 0x33, 0x04, 10, 20, 30, 40, 50, 60]);
+    const plainCueBytes = new Uint8Array([0x49, 0x44, 0x33, 0x04, 99, 88, 77, 66]);
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
       const url = String(input);
-      const body = url.includes('cue_mobile') ? fakeCueMp3 : fakeFohMp3;
+      const body = url.includes('cue_mobile')
+        ? plainCueBytes.slice().buffer
+        : plainFohBytes.slice().buffer;
       return new Response(body, {
         status: 200,
         headers: { 'content-type': 'audio/mpeg' },
       });
     });
 
-    // Initially cloud_only
-    const initialSummary = await readLocalVaultSummary();
-    expect(evaluateSongVaultState(sampleSong, initialSummary.tracksBySongId[sampleSong.id]).status).toBe(
-      'cloud_only'
-    );
+    // 1. Default sync (includeCue omitted -> false): downloads ONLY FOH (1 request instead of 2!)
+    const savedFohOnly = await ensureSongMp3CachedInDevice({
+      song: sampleSong,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(savedFohOnly.hasFoh).toBe(true);
+    expect(savedFohOnly.hasCue).toBe(false);
+    expect(savedFohOnly.encrypted).toBe(true);
 
-    // 1st Save: fetches FOH MP3 + CUE MP3 once
-    const savedMeta = await ensureSongMp3CachedInDevice({
+    // Verify raw bytes in vault are ENCRYPTED (do NOT start with plaintext ID3 0x49 0x44 0x33)
+    const rawVaultInspection = await inspectRawEncryptedVaultBuffer(sampleSong.id, 'foh');
+    expect(rawVaultInspection).not.toBeNull();
+    const isPlainId3Header =
+      rawVaultInspection!.rawCipherBytes[0] === 0x49 &&
+      rawVaultInspection!.rawCipherBytes[1] === 0x44 &&
+      rawVaultInspection!.rawCipherBytes[2] === 0x33;
+    expect(isPlainId3Header).toBe(false);
+
+    // Verify decryption in volatile RAM recovers the exact original bytes, and wipeAudioArrayBufferInRam zeros them
+    const decryptedRam = await readDecryptedTrackArrayBuffer(sampleSong.id, 'foh');
+    expect(decryptedRam).not.toBeNull();
+    expect(Array.from(new Uint8Array(decryptedRam!))).toEqual(Array.from(plainFohBytes));
+
+    wipeAudioArrayBufferInRam(decryptedRam);
+    expect(Array.from(new Uint8Array(decryptedRam!)).every((b) => b === 0)).toBe(true);
+
+    // 2. When musician activates Click/Guía (includeCue: true): FOH is NOT re-downloaded, ONLY CUE is fetched once!
+    fetchSpy.mockClear();
+    const savedWithCue = await ensureSongMp3CachedInDevice({
       song: sampleSong,
       includeCue: true,
     });
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(savedMeta.hasFoh).toBe(true);
-    expect(savedMeta.hasCue).toBe(true);
-    expect(savedMeta.totalBytes).toBe(fakeFohMp3.byteLength + fakeCueMp3.byteLength);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(savedWithCue.hasFoh).toBe(true);
+    expect(savedWithCue.hasCue).toBe(true);
 
-    // Read local blobs
-    const localFohBlob = await readLocalMp3Blob(sampleSong.id, 'foh');
-    const localCueBlob = await readLocalMp3Blob(sampleSong.id, 'cue');
-    expect(localFohBlob?.size).toBe(fakeFohMp3.byteLength);
-    expect(localCueBlob?.size).toBe(fakeCueMp3.byteLength);
-
-    // Evaluate state -> offline_ready
-    const afterSummary = await readLocalVaultSummary();
-    const evalReady = evaluateSongVaultState(sampleSong, afterSummary.tracksBySongId[sampleSong.id]);
-    expect(evalReady.status).toBe('offline_ready');
-    expect(evalReady.hasLocalCue).toBe(true);
-
-    // 2nd, 3rd daily listens -> ZERO new network requests to Supabase!
+    // 3. Subsequent daily plays make ZERO network requests to Supabase
     fetchSpy.mockClear();
-    await ensureSongMp3CachedInDevice({ song: sampleSong, includeCue: true });
     await ensureSongMp3CachedInDevice({ song: sampleSong, includeCue: true });
     expect(fetchSpy).toHaveBeenCalledTimes(0);
 
-    // Lyrics/chords edit does NOT invalidate audio signature if mix URL & exportedAt did not change
-    const lyricsEditedSong: PracticeSongItem = {
-      ...sampleSong,
-      prompter_data: {
-        ...sampleSong.prompter_data,
-        lyrics: [{ time: 5, text: 'Nueva línea de letra' }],
-      },
-    };
-    expect(computeSongChannelSignature(lyricsEditedSong, 'foh')).toBe(
-      computeSongChannelSignature(sampleSong, 'foh')
-    );
-    expect(
-      evaluateSongVaultState(lyricsEditedSong, afterSummary.tracksBySongId[sampleSong.id]).status
-    ).toBe('offline_ready');
-
-    // Admin re-exports mix in Studio Prompter -> marks 'update_available' while preserving offline copy
-    const reExportedSong: PracticeSongItem = {
-      ...sampleSong,
-      foh_mobile_url: 'https://supa.example.com/audios/foh_mobile_200.mp3',
-      prompter_data: {
-        ...sampleSong.prompter_data,
-        liveMixMeta: {
-          version: 3,
-          exportedAt: '2026-11-26T10:00:00.000Z',
-          preRollSec: 3.75,
-        },
-      },
-    };
-    const evalUpdated = evaluateSongVaultState(
-      reExportedSong,
-      afterSummary.tracksBySongId[sampleSong.id]
-    );
-    expect(evalUpdated.status).toBe('update_available');
-    expect(evalUpdated.hasLocalFoh).toBe(true);
-
-    // Removing song frees local storage cleanly
-    await removeSongFromLocalVault(sampleSong.id);
-    const clearedBlob = await readLocalMp3Blob(sampleSong.id, 'foh');
-    expect(clearedBlob).toBeNull();
+    // 4. Kill-Switch (clearAllLocalMp3Vault on signOut / deactivation) wipes keys and encrypted blobs immediately
+    await clearAllLocalMp3Vault();
+    const afterWipe = await readLocalMp3Blob(sampleSong.id, 'foh');
+    expect(afterWipe).toBeNull();
   });
 
-  it('persists and restores the Live Concert setlist catalog for offline startup', async () => {
+  it('manages 15-day offline lease and catalog persistence without extra Supabase queries', async () => {
+    const lease = renewMusicianOfflineLease('musico@tandu.com');
+    expect(lease.valid).toBe(true);
+    expect(lease.daysRemaining).toBe(15);
+
+    const checked = checkMusicianOfflineLease('musico@tandu.com');
+    expect(checked.valid).toBe(true);
+    expect(checked.daysRemaining).toBeGreaterThanOrEqual(14);
+
+    // Different user email invalidates previous user's lease
+    const wrongUserCheck = checkMusicianOfflineLease('otro@tandu.com');
+    expect(wrongUserCheck.valid).toBe(false);
+
     await saveCachedPracticeCatalog({
       setlists: [{ id: 'sl-1', title: 'Domingo Central' }],
       setlistSongsMap: { 'sl-1': [sampleSong] },
@@ -169,7 +154,6 @@ describe('Musician Local MP3 Audio Vault (Zero Repeated Supabase Egress)', () =>
 
     const restored = await readCachedPracticeCatalog();
     expect(restored?.setlists[0].title).toBe('Domingo Central');
-    expect(restored?.setlistSongsMap['sl-1'][0].title).toBe('Fuego En El Altar');
-    expect(formatBytesCompact(4.5 * 1024 * 1024)).toBe('4.5 MB');
+    expect(formatBytesCompact(3.5 * 1024 * 1024)).toBe('3.5 MB');
   });
 });

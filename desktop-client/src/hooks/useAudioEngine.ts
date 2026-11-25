@@ -1038,17 +1038,25 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       if (cueError) throw cueError;
       const cueUrl = supabase.storage.from('audios').getPublicUrl(cuePath).data.publicUrl;
 
-      // MP3 Uploads (Versión Ligera Móvil)
-      onProgress('Codificando MP3 FOH Ligero (Modo Ensayo)...');
-      const fohMp3Blob = await audioBufferToMp3Blob(fohResult.buffer, 192);
+      // MP3 Uploads (Versión Ligera Móvil Optimizada: 128 kbps Estéreo FOH / 64 kbps Mono CUE + CDN Cache 1 año)
+      onProgress('Codificando MP3 FOH Ligero (128 kbps)...');
+      const fohMp3Blob = await audioBufferToMp3Blob(fohResult.buffer, 128, false);
       const fohMp3Path = `${bandId}/${songId}/mixes/foh_mobile_${Date.now()}.mp3`;
-      await supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, { contentType: 'audio/mpeg', upsert: true });
+      await supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, {
+        contentType: 'audio/mpeg',
+        cacheControl: '31536000',
+        upsert: true,
+      });
       const fohMobileUrl = supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl;
 
-      onProgress('Codificando MP3 CUE Ligero (Modo Ensayo)...');
-      const cueMp3Blob = await audioBufferToMp3Blob(cueResult.buffer, 192);
+      onProgress('Codificando MP3 CUE Ligero (64 kbps Mono)...');
+      const cueMp3Blob = await audioBufferToMp3Blob(cueResult.buffer, 64, true);
       const cueMp3Path = `${bandId}/${songId}/mixes/cue_mobile_${Date.now()}.mp3`;
-      await supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, { contentType: 'audio/mpeg', upsert: true });
+      await supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, {
+        contentType: 'audio/mpeg',
+        cacheControl: '31536000',
+        upsert: true,
+      });
       const cueMobileUrl = supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl;
 
       onProgress('Guardando URLs y metadatos exactos de Pre-Roll...');
@@ -1700,15 +1708,20 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
   };
 };
 
-export const audioBufferToMp3Blob = async (renderedBuffer: AudioBuffer, bitrate: number = 192): Promise<Blob> => {
+export const audioBufferToMp3Blob = async (
+    renderedBuffer: AudioBuffer,
+    bitrate: number = 192,
+    forceMono: boolean = false
+): Promise<Blob> => {
     const lamejs = await loadLameJs();
 
-    const channels = renderedBuffer.numberOfChannels;
+    const sourceChannels = renderedBuffer.numberOfChannels;
+    const targetChannels = forceMono ? 1 : sourceChannels;
     const sampleRateMp3 = renderedBuffer.sampleRate;
-    const encoder = new lamejs.Mp3Encoder(channels, sampleRateMp3, bitrate);
+    const encoder = new lamejs.Mp3Encoder(targetChannels, sampleRateMp3, bitrate);
     
     const left = renderedBuffer.getChannelData(0);
-    const right = channels > 1 ? renderedBuffer.getChannelData(1) : left;
+    const right = sourceChannels > 1 ? renderedBuffer.getChannelData(1) : left;
 
     const sampleBlockSize = 1152;
     const mp3Data: Int8Array[] = [];
@@ -1720,17 +1733,41 @@ export const audioBufferToMp3Blob = async (renderedBuffer: AudioBuffer, bitrate:
         }
     };
 
+    const floatStereoToMono16BitPCM = (
+        inL: Float32Array,
+        inR: Float32Array,
+        output: Int16Array,
+        offset: number,
+        length: number
+    ) => {
+        for (let i = 0; i < length; i++) {
+            const mixed = (inL[offset + i] + inR[offset + i]) * 0.5;
+            const s = Math.max(-1, Math.min(1, mixed));
+            output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+    };
+
     let sampleOffset = 0;
     while (sampleOffset < left.length) {
         const length = Math.min(sampleBlockSize, left.length - sampleOffset);
-        
-        const leftChunk16 = new Int16Array(length);
-        const rightChunk16 = new Int16Array(length);
-        
-        floatTo16BitPCM(left, leftChunk16, sampleOffset, length);
-        floatTo16BitPCM(right, rightChunk16, sampleOffset, length);
-        
-        const mp3buf = encoder.encodeBuffer(leftChunk16, rightChunk16);
+
+        let mp3buf: Int8Array;
+        if (targetChannels === 1) {
+            const monoChunk16 = new Int16Array(length);
+            if (sourceChannels > 1) {
+                floatStereoToMono16BitPCM(left, right, monoChunk16, sampleOffset, length);
+            } else {
+                floatTo16BitPCM(left, monoChunk16, sampleOffset, length);
+            }
+            mp3buf = encoder.encodeBuffer(monoChunk16);
+        } else {
+            const leftChunk16 = new Int16Array(length);
+            const rightChunk16 = new Int16Array(length);
+            floatTo16BitPCM(left, leftChunk16, sampleOffset, length);
+            floatTo16BitPCM(right, rightChunk16, sampleOffset, length);
+            mp3buf = encoder.encodeBuffer(leftChunk16, rightChunk16);
+        }
+
         if (mp3buf.length > 0) {
             mp3Data.push(mp3buf);
         }
