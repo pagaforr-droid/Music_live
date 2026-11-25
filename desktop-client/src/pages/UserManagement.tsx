@@ -301,6 +301,10 @@ export default function UserManagement() {
     }
 
     const exists = inspectorDraft.allowed_modules.includes(moduleId);
+    if (moduleId === 'practice' && exists && inspectorDraft.role !== 'super_admin') {
+      notify('err', 'Práctica MP3 Local permanece activo como módulo de inicio para usuarios no administradores.');
+      return;
+    }
     const nextModules = exists
       ? inspectorDraft.allowed_modules.filter((m) => m !== moduleId)
       : [...inspectorDraft.allowed_modules, moduleId];
@@ -385,6 +389,10 @@ export default function UserManagement() {
   const handleCreateToggleModule = (moduleId: AppModuleId) => {
     setCreateForm((prev) => {
       const exists = prev.allowed_modules.includes(moduleId);
+      if (moduleId === 'practice' && exists && prev.role !== 'super_admin') {
+        notify('err', 'Práctica MP3 Local permanece activo como inicio predeterminado para usuarios no administradores.');
+        return prev;
+      }
       const next = exists
         ? prev.allowed_modules.filter((m) => m !== moduleId)
         : [...prev.allowed_modules, moduleId];

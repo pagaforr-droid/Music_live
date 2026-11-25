@@ -189,8 +189,9 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
     id: 'studio_producer',
     label: 'Productor de Estudio',
     badgeColor: '#3b82f6',
-    description: 'Acceso completo a Stem Studio, Mastering Pro, Sample Lab, Prompter y Escenario.',
+    description: 'Acceso completo a Práctica MP3 Local, Stem Studio, Mastering Pro, Sample Lab, Prompter y Escenario.',
     defaultModules: [
+      'practice',
       'studio',
       'mastering',
       'sample_lab',
@@ -199,15 +200,14 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
       'concert',
       'setlists',
       'soundcheck',
-      'practice',
     ],
   },
   live_engineer: {
     id: 'live_engineer',
     label: 'Ingeniero En Vivo (FOH)',
     badgeColor: '#10b981',
-    description: 'Operación de concierto en directo, Soundcheck I/O, Setlists, Stems e In-Ear.',
-    defaultModules: ['concert', 'setlists', 'soundcheck', 'practice', 'studio', 'editor', 'mobile_inear'],
+    description: 'Operación de Práctica MP3 Local, concierto en directo, Soundcheck I/O, Setlists, Stems e In-Ear.',
+    defaultModules: ['practice', 'concert', 'setlists', 'soundcheck', 'studio', 'editor', 'mobile_inear'],
   },
   stage_musician: {
     id: 'stage_musician',
@@ -221,14 +221,14 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
     id: 'content_editor',
     label: 'Editor Web & Diseño',
     badgeColor: '#f97316',
-    description: 'Administración exclusiva del portal web CMS, catálogo multimedia y diseño.',
-    defaultModules: ['nacion_cms', 'design', 'lyrics'],
+    description: 'Administración del portal web CMS, catálogo multimedia, diseño y Práctica MP3 Local.',
+    defaultModules: ['practice', 'nacion_cms', 'design', 'lyrics'],
   },
   custom: {
     id: 'custom',
     label: 'Acceso Personalizado',
     badgeColor: '#8b5cf6',
-    description: 'Selección quirúrgica de módulos específicos asignados manualmente.',
+    description: 'Selección quirúrgica de módulos específicos con Práctica MP3 Local como inicio predeterminado.',
     defaultModules: ['practice', 'concert', 'setlists'],
   },
 };
@@ -515,6 +515,13 @@ export function isSystemOwnerEmail(email?: string | null): boolean {
   return SYSTEM_OWNER_EMAILS.some((owner) => owner.toLowerCase() === norm);
 }
 
+export function isAdminUser(profile: TanduUserProfile | null | undefined): boolean {
+  if (!profile) return false;
+  return Boolean(
+    profile.is_system_owner || isSystemOwnerEmail(profile.email) || profile.role === 'super_admin'
+  );
+}
+
 export function sanitizeAllowedModules(
   modules: unknown,
   role?: UserRoleId,
@@ -531,7 +538,8 @@ export function sanitizeAllowedModules(
     const fallbackRole = role && USER_ROLE_PRESETS[role] ? role : 'stage_musician';
     return [...USER_ROLE_PRESETS[fallbackRole].defaultModules];
   }
-  if (role === 'stage_musician' && !unique.includes('practice')) {
+  // Every non-admin user always has Práctica MP3 Local enabled as their default landing module
+  if (!unique.includes('practice')) {
     return ['practice', ...unique];
   }
   return unique;
@@ -543,7 +551,11 @@ export function canUserAccessModule(
 ): boolean {
   if (!profile) return false;
   if (profile.status !== 'active') return false;
-  if (profile.is_system_owner || isSystemOwnerEmail(profile.email) || profile.role === 'super_admin') {
+  if (isAdminUser(profile)) {
+    return true;
+  }
+  // Guarantee every active non-admin user can always access their default landing page (/practice)
+  if (moduleId === 'practice') {
     return true;
   }
   return profile.allowed_modules.includes(moduleId);
@@ -561,17 +573,11 @@ export function resolveModuleByPathname(pathname: string): AppModuleDefinition |
 
 export function getFirstAllowedPathForUser(profile: TanduUserProfile | null | undefined): string {
   if (!profile) return '/login';
-  if (profile.is_system_owner || isSystemOwnerEmail(profile.email) || profile.role === 'super_admin') {
+  if (isAdminUser(profile)) {
     return '/studio';
   }
-  if (profile.role === 'stage_musician' && canUserAccessModule(profile, 'practice')) {
-    return '/practice';
-  }
-  for (const modId of profile.allowed_modules) {
-    const found = APP_MODULES.find((m) => m.id === modId);
-    if (found) return found.primaryPath;
-  }
-  return '/concert';
+  // Every non-admin user defaults to Práctica MP3 Local (/practice) on app load
+  return '/practice';
 }
 
 // ============================================================================

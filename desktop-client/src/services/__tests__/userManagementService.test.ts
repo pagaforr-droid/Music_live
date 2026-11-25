@@ -142,7 +142,9 @@ describe('User Management & Granular Module Access Control', () => {
     });
 
     expect(canUserAccessModule(producer, 'sample_lab')).toBe(true);
-    expect(getFirstAllowedPathForUser(producer)).toBe('/mastering');
+    expect(canUserAccessModule(producer, 'practice')).toBe(true);
+    // Any non-admin user defaults to Práctica MP3 Local (/practice) on load
+    expect(getFirstAllowedPathForUser(producer)).toBe('/practice');
 
     // Dar de baja
     const deactivated = await setTanduUserStatus({
@@ -155,6 +157,7 @@ describe('User Management & Granular Module Access Control', () => {
     expect(deactivated.deactivation_reason).toBe('Fin de proyecto de mezcla');
     expect(canUserAccessModule(deactivated, 'sample_lab')).toBe(false);
     expect(canUserAccessModule(deactivated, 'studio')).toBe(false);
+    expect(canUserAccessModule(deactivated, 'practice')).toBe(false);
 
     // Reactivar (Dar de Alta nuevamente)
     const reactivated = await setTanduUserStatus({
@@ -165,6 +168,7 @@ describe('User Management & Granular Module Access Control', () => {
     expect(reactivated.status).toBe('active');
     expect(reactivated.deactivation_reason).toBeNull();
     expect(canUserAccessModule(reactivated, 'sample_lab')).toBe(true);
+    expect(canUserAccessModule(reactivated, 'practice')).toBe(true);
   });
 
   it('updates password and granular module permissions accurately and logs audit trail', async () => {
@@ -176,7 +180,19 @@ describe('User Management & Granular Module Access Control', () => {
       allowed_modules: ['nacion_cms', 'design'],
     });
 
-    expect(getFirstAllowedPathForUser(editor)).toBe('/nacion-cms');
+    // Non-admin editor also lands on Práctica MP3 Local (/practice) by default
+    expect(canUserAccessModule(editor, 'practice')).toBe(true);
+    expect(getFirstAllowedPathForUser(editor)).toBe('/practice');
+
+    // Super admin created via User Management lands on Stem Studio (/studio)
+    const secondaryAdmin = await createTanduUser({
+      email: 'co-admin@tandu.com',
+      full_name: 'Carlos Admin',
+      password: 'AdminPass#2026',
+      role: 'super_admin',
+      allowed_modules: ALL_MODULE_IDS,
+    });
+    expect(getFirstAllowedPathForUser(secondaryAdmin)).toBe('/studio');
 
     // Grant access to sample_lab and lyrics as well
     const updatedModulesUser = await updateTanduUser(editor.id, {
