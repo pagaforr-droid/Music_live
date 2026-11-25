@@ -6,10 +6,14 @@ vi.mock('../../lib/supabase', () => ({
       select: () => ({
         order: async () => ({ data: [], error: null }),
       }),
-      upsert: async () => ({ data: null, error: null }),
+      upsert: () => ({
+        select: async () => ({ data: [], error: null }),
+      }),
       insert: async () => ({ data: null, error: null }),
       update: () => ({
-        eq: async () => ({ data: null, error: null }),
+        eq: () => ({
+          select: async () => ({ data: [], error: null }),
+        }),
       }),
       delete: () => ({
         eq: async () => ({ data: null, error: null }),
@@ -61,6 +65,9 @@ describe('User Management & Granular Module Access Control', () => {
       expect(canUserAccessModule(owner, modId)).toBe(true);
     }
 
+    // Administrator automatically lands on Stem Studio (/studio) after app finishes loading
+    expect(getFirstAllowedPathForUser(owner)).toBe('/studio');
+
     await expect(
       setTanduUserStatus({
         userId: owner!.id,
@@ -73,6 +80,15 @@ describe('User Management & Granular Module Access Control', () => {
         userId: owner!.id,
       })
     ).rejects.toThrow(/No se puede eliminar la cuenta maestra/i);
+
+    // Changing owner password works even if UI passes a stale UUID when targetEmail matches
+    const updatedOwner = await changeTanduUserPassword({
+      userId: 'stale-or-remote-uuid-different-from-local',
+      targetEmail: 'admin@tandu.com',
+      newPassword: '123456',
+    });
+    expect(verifyUserPassword('123456', updatedOwner)).toBe(true);
+    expect(updatedOwner.must_change_password).toBe(false);
   });
 
   it('registers a new user (Dar de Alta) with role preset, verifies password hash and module permissions', async () => {
@@ -92,14 +108,28 @@ describe('User Management & Granular Module Access Control', () => {
     expect(verifyUserPassword('StagePassword#2026', newUser)).toBe(true);
     expect(verifyUserPassword('WrongPassword', newUser)).toBe(false);
 
-    // Stage musician has access to concert, setlists, editor, lyrics, mobile_inear
+    // Stage musician has default access to practice (MP3 local), concert, setlists, editor, lyrics, mobile_inear
+    expect(canUserAccessModule(newUser, 'practice')).toBe(true);
     expect(canUserAccessModule(newUser, 'concert')).toBe(true);
     expect(canUserAccessModule(newUser, 'setlists')).toBe(true);
     expect(canUserAccessModule(newUser, 'mobile_inear')).toBe(true);
+    // Musician automatically lands on Practice MP3 (/practice) after app finishes loading
+    expect(getFirstAllowedPathForUser(newUser)).toBe('/practice');
     // Does NOT have access to mastering, sample_lab, or users_admin
     expect(canUserAccessModule(newUser, 'mastering')).toBe(false);
     expect(canUserAccessModule(newUser, 'sample_lab')).toBe(false);
     expect(canUserAccessModule(newUser, 'users_admin')).toBe(false);
+
+    // Legacy stage_musician created before 'practice' module existed auto-receives 'practice' access
+    const legacyMusician = await createTanduUser({
+      email: 'bajista@tandu.com',
+      full_name: 'Mateo Bajo',
+      password: 'StagePassword#2026',
+      role: 'stage_musician',
+      allowed_modules: ['concert', 'setlists'],
+    });
+    expect(canUserAccessModule(legacyMusician, 'practice')).toBe(true);
+    expect(getFirstAllowedPathForUser(legacyMusician)).toBe('/practice');
   });
 
   it('deactivates (Dar de Baja), suspends, and reactivates users while enforcing immediate access revocation', async () => {
@@ -187,6 +217,8 @@ describe('User Management & Granular Module Access Control', () => {
     const strength = evaluatePasswordStrength(generated);
     expect(strength.score).toBeGreaterThanOrEqual(3);
 
+    expect(resolveModuleByPathname('/practice')?.id).toBe('practice');
+    expect(resolveModuleByPathname('/concert')?.id).toBe('concert');
     expect(resolveModuleByPathname('/sample-lab')?.id).toBe('sample_lab');
     expect(resolveModuleByPathname('/admin/users')?.id).toBe('users_admin');
     expect(resolveModuleByPathname('/nacion-cms')?.id).toBe('nacion_cms');

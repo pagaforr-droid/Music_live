@@ -55,13 +55,23 @@ export const APP_MODULE_CATEGORIES: Record<
 
 export const APP_MODULES: AppModuleDefinition[] = [
   {
+    id: 'practice',
+    label: 'Práctica MP3 Local',
+    shortLabel: 'Práctica MP3',
+    description:
+      'Escucha diaria de pistas de Live Concert en MP3 guardadas en la memoria local del celular o tablet sin consumir recursos de nube.',
+    category: 'escenario',
+    primaryPath: '/practice',
+    matchPaths: ['/practice'],
+  },
+  {
     id: 'concert',
     label: 'Live Concert',
     shortLabel: 'Live Concert',
     description: 'Motor principal de concierto en vivo, secuencias, metrónomo y teleprompter.',
     category: 'escenario',
-    primaryPath: '/',
-    matchPaths: ['/', '/concert'],
+    primaryPath: '/concert',
+    matchPaths: ['/concert'],
   },
   {
     id: 'setlists',
@@ -181,14 +191,15 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
     badgeColor: '#3b82f6',
     description: 'Acceso completo a Stem Studio, Mastering Pro, Sample Lab, Prompter y Escenario.',
     defaultModules: [
-      'concert',
-      'setlists',
-      'soundcheck',
       'studio',
       'mastering',
       'sample_lab',
       'editor',
       'lyrics',
+      'concert',
+      'setlists',
+      'soundcheck',
+      'practice',
     ],
   },
   live_engineer: {
@@ -196,14 +207,15 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
     label: 'Ingeniero En Vivo (FOH)',
     badgeColor: '#10b981',
     description: 'Operación de concierto en directo, Soundcheck I/O, Setlists, Stems e In-Ear.',
-    defaultModules: ['concert', 'setlists', 'soundcheck', 'studio', 'editor', 'mobile_inear'],
+    defaultModules: ['concert', 'setlists', 'soundcheck', 'practice', 'studio', 'editor', 'mobile_inear'],
   },
   stage_musician: {
     id: 'stage_musician',
     label: 'Músico de Escenario',
     badgeColor: '#f59e0b',
-    description: 'Acceso a Live Concert, Setlists, Studio Prompter, Lyric Studio y Monitoreo In-Ear.',
-    defaultModules: ['concert', 'setlists', 'editor', 'lyrics', 'mobile_inear'],
+    description:
+      'Acceso predeterminado a Práctica MP3 Local (Offline), Live Concert, Setlists, Studio Prompter, Lyric Studio y Monitoreo In-Ear.',
+    defaultModules: ['practice', 'concert', 'setlists', 'editor', 'lyrics', 'mobile_inear'],
   },
   content_editor: {
     id: 'content_editor',
@@ -217,7 +229,7 @@ export const USER_ROLE_PRESETS: Record<UserRoleId, UserRolePreset> = {
     label: 'Acceso Personalizado',
     badgeColor: '#8b5cf6',
     description: 'Selección quirúrgica de módulos específicos asignados manualmente.',
-    defaultModules: ['concert', 'setlists'],
+    defaultModules: ['practice', 'concert', 'setlists'],
   },
 };
 
@@ -231,7 +243,7 @@ CREATE TABLE IF NOT EXISTS public.tandu_users (
     CHECK (role IN ('super_admin', 'studio_producer', 'live_engineer', 'stage_musician', 'content_editor', 'custom')),
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active', 'inactive', 'suspended')),
-  allowed_modules JSONB NOT NULL DEFAULT '["concert","setlists"]'::jsonb,
+  allowed_modules JSONB NOT NULL DEFAULT '["practice","concert","setlists"]'::jsonb,
   password_hash TEXT DEFAULT '',
   password_salt TEXT DEFAULT '',
   password_updated_at TIMESTAMPTZ DEFAULT now(),
@@ -519,6 +531,9 @@ export function sanitizeAllowedModules(
     const fallbackRole = role && USER_ROLE_PRESETS[role] ? role : 'stage_musician';
     return [...USER_ROLE_PRESETS[fallbackRole].defaultModules];
   }
+  if (role === 'stage_musician' && !unique.includes('practice')) {
+    return ['practice', ...unique];
+  }
   return unique;
 }
 
@@ -547,13 +562,16 @@ export function resolveModuleByPathname(pathname: string): AppModuleDefinition |
 export function getFirstAllowedPathForUser(profile: TanduUserProfile | null | undefined): string {
   if (!profile) return '/login';
   if (profile.is_system_owner || isSystemOwnerEmail(profile.email) || profile.role === 'super_admin') {
-    return '/';
+    return '/studio';
+  }
+  if (profile.role === 'stage_musician' && canUserAccessModule(profile, 'practice')) {
+    return '/practice';
   }
   for (const modId of profile.allowed_modules) {
     const found = APP_MODULES.find((m) => m.id === modId);
     if (found) return found.primaryPath;
   }
-  return '/';
+  return '/concert';
 }
 
 // ============================================================================
@@ -568,8 +586,7 @@ export function clearMemoryUsersStore(): void {
 }
 
 function createDefaultOwnerProfile(): TanduUserProfile {
-  const { hash, salt } = hashPasswordWithSalt('123456', 'tandu_owner_salt');
-  const now = new Date().toISOString();
+  const seedEpoch = '2026-01-01T00:00:00.000Z';
   return {
     id: '00000000-0000-4000-8000-000000000001',
     email: 'admin@tandu.com',
@@ -578,14 +595,14 @@ function createDefaultOwnerProfile(): TanduUserProfile {
     role: 'super_admin',
     status: 'active',
     allowed_modules: [...ALL_MODULE_IDS],
-    password_hash: hash,
-    password_salt: salt,
-    password_updated_at: now,
+    password_hash: '',
+    password_salt: '',
+    password_updated_at: seedEpoch,
     must_change_password: false,
     notes: 'Cuenta maestra del sistema con acceso total e inmutable.',
-    created_at: now,
-    updated_at: now,
-    last_login_at: now,
+    created_at: seedEpoch,
+    updated_at: seedEpoch,
+    last_login_at: null,
     deactivated_at: null,
     deactivation_reason: null,
     created_by: 'system',
@@ -621,6 +638,9 @@ function normalizeUserRecord(raw: Partial<TanduUserProfile>): TanduUserProfile {
       : 'active';
   const now = new Date().toISOString();
 
+  const rawSalt = raw.password_salt === 'tandu_owner_salt' ? '' : raw.password_salt || '';
+  const rawHash = raw.password_salt === 'tandu_owner_salt' ? '' : raw.password_hash || '';
+
   return {
     id: raw.id || generateUuid(),
     email,
@@ -629,8 +649,8 @@ function normalizeUserRecord(raw: Partial<TanduUserProfile>): TanduUserProfile {
     role,
     status,
     allowed_modules: sanitizeAllowedModules(raw.allowed_modules, role, email),
-    password_hash: raw.password_hash || '',
-    password_salt: raw.password_salt || '',
+    password_hash: rawHash,
+    password_salt: rawSalt,
     password_updated_at: raw.password_updated_at || raw.updated_at || now,
     must_change_password: isOwner ? false : Boolean(raw.must_change_password),
     notes: raw.notes || '',
@@ -823,6 +843,60 @@ async function registerInSupabaseAuthIsolated(email: string, password: string, f
   }
 }
 
+async function syncUserRecordToSupabase(user: TanduUserProfile): Promise<TanduUserProfile> {
+  try {
+    const { id: _omitId, ...fieldsWithoutId } = user;
+    const { data: updatedRows, error: updateErr } = await supabase
+      .from('tandu_users')
+      .update(fieldsWithoutId)
+      .eq('email', user.email)
+      .select('*');
+
+    if (!updateErr && Array.isArray(updatedRows) && updatedRows.length > 0) {
+      return normalizeUserRecord({
+        ...user,
+        ...(updatedRows[0] as Partial<TanduUserProfile>),
+        password_hash: user.password_hash,
+        password_salt: user.password_salt,
+      });
+    }
+
+    const { data: upsertedRows, error: upsertErr } = await supabase
+      .from('tandu_users')
+      .upsert(user, { onConflict: 'email' })
+      .select('*');
+
+    if (!upsertErr && Array.isArray(upsertedRows) && upsertedRows.length > 0) {
+      return normalizeUserRecord({
+        ...user,
+        ...(upsertedRows[0] as Partial<TanduUserProfile>),
+        password_hash: user.password_hash,
+        password_salt: user.password_salt,
+      });
+    }
+  } catch {
+    // Offline or missing table fallback
+  }
+  return user;
+}
+
+function findUserIndexByIdOrEmail(
+  users: TanduUserProfile[],
+  userId?: string | null,
+  email?: string | null
+): number {
+  const normEmail = email ? normalizeEmail(email) : '';
+  if (userId) {
+    const byId = users.findIndex((u) => u.id === userId);
+    if (byId !== -1) return byId;
+  }
+  if (normEmail) {
+    const byEmail = users.findIndex((u) => u.email === normEmail);
+    if (byEmail !== -1) return byEmail;
+  }
+  return -1;
+}
+
 async function recordAuditLog(params: {
   action: UserAuditActionType;
   targetUser: Pick<TanduUserProfile, 'id' | 'email' | 'full_name'>;
@@ -885,10 +959,25 @@ export async function loadTanduUsersDirectory(): Promise<{
           const remoteTime = Date.parse(remoteUser.updated_at || '') || 0;
           const localTime = Date.parse(localExisting.updated_at || '') || 0;
           const newer = remoteTime >= localTime ? remoteUser : localExisting;
+
+          const remotePwdTime = Date.parse(remoteUser.password_updated_at || '') || 0;
+          const localPwdTime = Date.parse(localExisting.password_updated_at || '') || 0;
+          const useRemotePwd =
+            Boolean(remoteUser.password_hash && remoteUser.password_salt) &&
+            (!localExisting.password_hash || remotePwdTime >= localPwdTime);
+
           localMap.set(remoteUser.email, {
             ...newer,
-            password_hash: newer.password_hash || remoteUser.password_hash || localExisting.password_hash,
-            password_salt: newer.password_salt || remoteUser.password_salt || localExisting.password_salt,
+            id: remoteUser.id || newer.id,
+            password_hash: useRemotePwd
+              ? remoteUser.password_hash
+              : localExisting.password_hash || remoteUser.password_hash,
+            password_salt: useRemotePwd
+              ? remoteUser.password_salt
+              : localExisting.password_salt || remoteUser.password_salt,
+            password_updated_at: useRemotePwd
+              ? remoteUser.password_updated_at
+              : localExisting.password_updated_at || remoteUser.password_updated_at,
           });
         }
       }
@@ -1047,10 +1136,10 @@ export async function createTanduUser(input: CreateTanduUserInput): Promise<Tand
 
 export async function updateTanduUser(
   userId: string,
-  input: UpdateTanduUserInput
+  input: UpdateTanduUserInput & { targetEmail?: string }
 ): Promise<TanduUserProfile> {
   const currentUsers = readLocalUsersRegistry();
-  const index = currentUsers.findIndex((u) => u.id === userId);
+  const index = findUserIndexByIdOrEmail(currentUsers, userId, input.targetEmail);
   if (index === -1) {
     throw new Error('No se encontró el usuario solicitado.');
   }
@@ -1071,7 +1160,7 @@ export async function updateTanduUser(
   );
   const now = new Date().toISOString();
 
-  const updated = normalizeUserRecord({
+  let updated = normalizeUserRecord({
     ...existing,
     full_name: input.full_name !== undefined ? input.full_name.trim() || existing.full_name : existing.full_name,
     title: input.title !== undefined ? input.title.trim() : existing.title,
@@ -1100,11 +1189,9 @@ export async function updateTanduUser(
   nextUsers[index] = updated;
   writeLocalUsersRegistry(nextUsers);
 
-  try {
-    await supabase.from('tandu_users').upsert(updated, { onConflict: 'email' });
-  } catch {
-    // saved locally
-  }
+  updated = await syncUserRecordToSupabase(updated);
+  nextUsers[index] = updated;
+  writeLocalUsersRegistry(nextUsers);
 
   let action: UserAuditActionType = 'USER_UPDATED';
   let summary = `Perfil actualizado (${USER_ROLE_PRESETS[updated.role].label}).`;
@@ -1141,11 +1228,13 @@ export async function updateTanduUser(
 
 export async function setTanduUserStatus(params: {
   userId: string;
+  targetEmail?: string;
   status: UserAccountStatus;
   reason?: string;
   actorEmail?: string;
 }): Promise<TanduUserProfile> {
   return updateTanduUser(params.userId, {
+    targetEmail: params.targetEmail,
     status: params.status,
     deactivation_reason: params.reason ?? null,
     actorEmail: params.actorEmail,
@@ -1154,6 +1243,7 @@ export async function setTanduUserStatus(params: {
 
 export async function changeTanduUserPassword(params: {
   userId: string;
+  targetEmail?: string;
   newPassword: string;
   mustChangeOnNextLogin?: boolean;
   actorEmail?: string;
@@ -1164,21 +1254,23 @@ export async function changeTanduUserPassword(params: {
   }
 
   const currentUsers = readLocalUsersRegistry();
-  const index = currentUsers.findIndex((u) => u.id === params.userId);
+  const index = findUserIndexByIdOrEmail(currentUsers, params.userId, params.targetEmail);
   if (index === -1) {
-    throw new Error('No se encontró el usuario.');
+    throw new Error('No se encontró el usuario en el directorio.');
   }
 
   const existing = currentUsers[index];
+  const isOwner = existing.is_system_owner || isSystemOwnerEmail(existing.email);
   const { hash, salt } = hashPasswordWithSalt(params.newPassword);
   const now = new Date().toISOString();
 
-  const updated: TanduUserProfile = {
+  let updated: TanduUserProfile = {
     ...existing,
     password_hash: hash,
     password_salt: salt,
     password_updated_at: now,
-    must_change_password: params.isSelfChange ? false : Boolean(params.mustChangeOnNextLogin),
+    must_change_password:
+      isOwner || params.isSelfChange ? false : Boolean(params.mustChangeOnNextLogin),
     updated_at: now,
   };
 
@@ -1186,21 +1278,26 @@ export async function changeTanduUserPassword(params: {
   nextUsers[index] = updated;
   writeLocalUsersRegistry(nextUsers);
 
-  try {
-    await supabase.from('tandu_users').upsert(updated, { onConflict: 'email' });
-  } catch {
-    // saved locally
-  }
+  updated = await syncUserRecordToSupabase(updated);
+  nextUsers[index] = updated;
+  writeLocalUsersRegistry(nextUsers);
 
-  // If the currently signed-in Supabase user is updating their own password, also update Supabase Auth directly
+  // Non-blocking, timeout-guarded sync with Supabase Auth if updating the currently signed-in account.
+  // Avoids GoTrue navigator.locks deadlock and ignores HTTP 422 "same password" responses.
   try {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeEmail = normalizeEmail(sessionData.session?.user?.email || '');
-    if (activeEmail && activeEmail === existing.email) {
-      await supabase.auth.updateUser({ password: params.newPassword });
-    }
+    const syncAuthPromise = (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const activeEmail = normalizeEmail(sessionData.session?.user?.email || '');
+      if (activeEmail && activeEmail === existing.email) {
+        await supabase.auth.updateUser({ password: params.newPassword });
+      }
+    })();
+    await Promise.race([
+      syncAuthPromise,
+      new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+    ]);
   } catch {
-    // non-blocking
+    // Non-blocking: password_hash in tandu_users is authoritative
   }
 
   await recordAuditLog({
@@ -1209,7 +1306,7 @@ export async function changeTanduUserPassword(params: {
     actorEmail: params.actorEmail || existing.email,
     summary: params.isSelfChange
       ? 'El usuario actualizó su propia contraseña.'
-      : `Contraseña restablecida por administrador${updated.must_change_password ? ' (cambio requerido al ingresar)' : ''}.`,
+      : `Contraseña actualizada por administrador${updated.must_change_password ? ' (cambio requerido al ingresar)' : ''}.`,
   });
 
   dispatchUsersUpdatedEvent();
@@ -1218,10 +1315,12 @@ export async function changeTanduUserPassword(params: {
 
 export async function deleteTanduUser(params: {
   userId: string;
+  targetEmail?: string;
   actorEmail?: string;
 }): Promise<void> {
   const currentUsers = readLocalUsersRegistry();
-  const target = currentUsers.find((u) => u.id === params.userId);
+  const idx = findUserIndexByIdOrEmail(currentUsers, params.userId, params.targetEmail);
+  const target = idx !== -1 ? currentUsers[idx] : undefined;
   if (!target) {
     throw new Error('El usuario no existe.');
   }
@@ -1232,7 +1331,7 @@ export async function deleteTanduUser(params: {
     throw new Error('No puedes eliminar tu propia cuenta con sesión activa.');
   }
 
-  const remaining = currentUsers.filter((u) => u.id !== params.userId);
+  const remaining = currentUsers.filter((u) => u.email !== target.email && u.id !== target.id);
   writeLocalUsersRegistry(remaining);
 
   try {

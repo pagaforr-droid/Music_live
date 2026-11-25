@@ -70,12 +70,16 @@ export default function Login() {
         }
       }
 
-      const hasManagedHash = Boolean(managedUser?.password_hash && managedUser?.password_salt);
+      const hasManagedHash = Boolean(
+        managedUser?.password_hash &&
+          managedUser?.password_salt &&
+          managedUser.password_salt !== 'tandu_owner_salt'
+      );
       const matchesManagedHash =
         managedUser && hasManagedHash ? verifyUserPassword(password, managedUser) : false;
 
-      // If this is a managed non-owner user with an explicit password set by Admin, enforce it strictly
-      if (managedUser && hasManagedHash && !isSystemOwnerEmail(normalizedEmail) && !matchesManagedHash) {
+      // Whenever an explicit password has been set in User Management (including for admin@tandu.com), enforce it strictly
+      if (managedUser && hasManagedHash && !matchesManagedHash) {
         triggerShakeError('Credenciales inválidas. Verifica tu correo y contraseña.');
         setLoading(false);
         return;

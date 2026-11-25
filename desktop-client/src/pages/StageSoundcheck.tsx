@@ -1186,7 +1186,7 @@ export default function StageSoundcheck() {
             type="button"
             onClick={() => {
               stopTestSignal();
-              navigate('/');
+              navigate('/concert');
             }}
             className="px-4 py-2 rounded-xl bg-zinc-950 hover:bg-black text-white text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-sm transition-all"
           >

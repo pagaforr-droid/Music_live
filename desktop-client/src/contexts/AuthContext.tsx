@@ -189,20 +189,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, supaSession) => {
-      if (supaSession?.user?.email) {
-        writeManagedAuthSessionEmail(supaSession.user.email);
-        void syncProfileForEmail(supaSession.user.email, supaSession);
-      } else {
-        const managedEmail = readManagedAuthSessionEmail();
-        if (!managedEmail) {
-          setSession(null);
-          setUser(null);
-          setUserProfile(null);
+      // Defer async Supabase queries outside GoTrue's internal navigator.locks callback to prevent deadlocks
+      setTimeout(() => {
+        if (supaSession?.user?.email) {
+          writeManagedAuthSessionEmail(supaSession.user.email);
+          void syncProfileForEmail(supaSession.user.email, supaSession);
         } else {
-          void syncProfileForEmail(managedEmail, null);
+          const managedEmail = readManagedAuthSessionEmail();
+          if (!managedEmail) {
+            setSession(null);
+            setUser(null);
+            setUserProfile(null);
+          } else {
+            void syncProfileForEmail(managedEmail, null);
+          }
         }
-      }
-      setAuthReady(true);
+        setAuthReady(true);
+      }, 0);
     });
 
     return () => subscription.unsubscribe();

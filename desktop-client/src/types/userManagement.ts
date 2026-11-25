@@ -1,4 +1,5 @@
 export type AppModuleId =
+  | 'practice'
   | 'concert'
   | 'setlists'
   | 'soundcheck'

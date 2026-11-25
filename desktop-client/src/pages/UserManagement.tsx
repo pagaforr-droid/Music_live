@@ -173,6 +173,10 @@ export default function UserManagement() {
   });
   const [showResetPwd, setShowResetPwd] = useState(true);
   const [savingPassword, setSavingPassword] = useState(false);
+  const [pwdModalFeedback, setPwdModalFeedback] = useState<{
+    kind: 'ok' | 'err';
+    text: string;
+  } | null>(null);
   const [copiedCredentials, setCopiedCredentials] = useState(false);
 
   // Modal 3: Deactivate / Suspend (Dar de Baja)
@@ -326,6 +330,7 @@ export default function UserManagement() {
     setSavingInspector(true);
     try {
       const updated = await updateTanduUser(selectedUser.id, {
+        targetEmail: selectedUser.email,
         full_name: inspectorDraft.full_name,
         title: inspectorDraft.title,
         role: inspectorDraft.role,
@@ -335,7 +340,7 @@ export default function UserManagement() {
         notes: inspectorDraft.notes,
         actorEmail: activeAdminProfile?.email,
       });
-      await refreshUserProfile();
+      void refreshUserProfile();
       notify(
         'ok',
         `Cambios aplicados para ${updated.full_name} (${updated.allowed_modules.length} módulos activos).`
@@ -417,6 +422,7 @@ export default function UserManagement() {
     try {
       const updated = await setTanduUserStatus({
         userId: user.id,
+        targetEmail: user.email,
         status: 'active',
         actorEmail: activeAdminProfile?.email,
       });
@@ -433,6 +439,7 @@ export default function UserManagement() {
     try {
       const updated = await setTanduUserStatus({
         userId: statusModalTarget.user.id,
+        targetEmail: statusModalTarget.user.email,
         status: statusModalTarget.targetStatus,
         reason: deactivationReason.trim() || undefined,
         actorEmail: activeAdminProfile?.email,
@@ -464,18 +471,25 @@ export default function UserManagement() {
       mustChangeOnNextLogin: false,
     });
     setShowResetPwd(true);
+    setPwdModalFeedback(null);
     setCopiedCredentials(false);
   };
 
   const handleSaveUserPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!passwordTargetUser) return;
-    if (pwdForm.newPassword.length < 6) {
-      notify('err', 'La contraseña debe tener al menos 6 caracteres.');
+    if (!passwordTargetUser || savingPassword) return;
+    setPwdModalFeedback(null);
+
+    if (!pwdForm.newPassword || pwdForm.newPassword.length < 6) {
+      const msg = 'La contraseña debe tener al menos 6 caracteres.';
+      setPwdModalFeedback({ kind: 'err', text: msg });
+      notify('err', msg);
       return;
     }
     if (pwdForm.newPassword !== pwdForm.confirmPassword) {
-      notify('err', 'Las contraseñas ingresadas no coinciden.');
+      const msg = 'Las contraseñas ingresadas no coinciden.';
+      setPwdModalFeedback({ kind: 'err', text: msg });
+      notify('err', msg);
       return;
     }
 
@@ -483,15 +497,26 @@ export default function UserManagement() {
     try {
       const updated = await changeTanduUserPassword({
         userId: passwordTargetUser.id,
+        targetEmail: passwordTargetUser.email,
         newPassword: pwdForm.newPassword,
         mustChangeOnNextLogin: pwdForm.mustChangeOnNextLogin,
         actorEmail: activeAdminProfile?.email,
       });
-      await refreshUserProfile();
-      setPasswordTargetUser(null);
-      notify('ok', `Contraseña actualizada para "${updated.full_name}".`);
+      setUsers((prev) =>
+        prev.map((u) => (u.email === updated.email || u.id === updated.id ? updated : u))
+      );
+      void refreshUserProfile();
+      const okMsg = `Contraseña actualizada correctamente para "${updated.full_name}".`;
+      setPwdModalFeedback({ kind: 'ok', text: okMsg });
+      notify('ok', okMsg);
+      window.setTimeout(() => {
+        setPasswordTargetUser(null);
+        setPwdModalFeedback(null);
+      }, 650);
     } catch (err: any) {
-      notify('err', err?.message || 'Error al actualizar la contraseña.');
+      const errMsg = err?.message || 'Error al actualizar la contraseña.';
+      setPwdModalFeedback({ kind: 'err', text: errMsg });
+      notify('err', errMsg);
     } finally {
       setSavingPassword(false);
     }
@@ -530,6 +555,7 @@ export default function UserManagement() {
       const deletedName = deleteTargetUser.full_name;
       await deleteTanduUser({
         userId: deleteTargetUser.id,
+        targetEmail: deleteTargetUser.email,
         actorEmail: activeAdminProfile?.email,
       });
       setDeleteTargetUser(null);
@@ -579,7 +605,7 @@ export default function UserManagement() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -12, scale: 0.96 }}
             transition={SPRING_TRANSITION}
-            className={`fixed right-6 top-5 z-50 flex items-center gap-3 rounded-xl border px-4 py-3 text-xs font-medium shadow-2xl ${
+            className={`fixed right-6 top-5 z-[100] flex items-center gap-3 rounded-xl border px-4 py-3 text-xs font-medium shadow-2xl ${
               toast.kind === 'ok'
                 ? 'border-emerald-500/40 bg-[#0f1f1a] text-emerald-300'
                 : 'border-rose-500/40 bg-[#221117] text-rose-300'
@@ -1652,7 +1678,10 @@ export default function UserManagement() {
                     type={showResetPwd ? 'text' : 'password'}
                     required
                     value={pwdForm.newPassword}
-                    onChange={(e) => setPwdForm({ ...pwdForm, newPassword: e.target.value })}
+                    onChange={(e) => {
+                      setPwdForm({ ...pwdForm, newPassword: e.target.value });
+                      if (pwdModalFeedback) setPwdModalFeedback(null);
+                    }}
                     className="w-full rounded-xl border border-zinc-800 bg-[#0b0d13] px-3.5 py-2.5 pr-10 font-mono text-xs text-white focus:border-amber-500 focus:outline-none"
                   />
                   <button
@@ -1694,10 +1723,30 @@ export default function UserManagement() {
                   type={showResetPwd ? 'text' : 'password'}
                   required
                   value={pwdForm.confirmPassword}
-                  onChange={(e) => setPwdForm({ ...pwdForm, confirmPassword: e.target.value })}
+                  onChange={(e) => {
+                    setPwdForm({ ...pwdForm, confirmPassword: e.target.value });
+                    if (pwdModalFeedback) setPwdModalFeedback(null);
+                  }}
                   className="w-full rounded-xl border border-zinc-800 bg-[#0b0d13] px-3.5 py-2.5 font-mono text-xs text-white focus:border-amber-500 focus:outline-none"
                 />
               </div>
+
+              {pwdModalFeedback && (
+                <div
+                  className={`flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
+                    pwdModalFeedback.kind === 'ok'
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                      : 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+                  }`}
+                >
+                  {pwdModalFeedback.kind === 'ok' ? (
+                    <CheckCircle2 size={15} className="shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertTriangle size={15} className="shrink-0 text-rose-400" />
+                  )}
+                  <span>{pwdModalFeedback.text}</span>
+                </div>
+              )}
 
               {!passwordTargetUser.is_system_owner && (
                 <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">

@@ -25,6 +25,8 @@ import {
   Sparkles,
   Check,
   X,
+  Menu,
+  Smartphone,
 } from 'lucide-react';
 import { TanduMusicosLogo } from './TanduMusicosLogo';
 import {
@@ -57,6 +59,13 @@ export default function Layout() {
     }
   }, [isForcedPasswordChange]);
 
+  // Auto-close mobile drawer after tapping any module link on phones
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setIsSidebarOpen(false);
+    }
+  }, [location.pathname]);
+
   if (isProjectorWindow) {
     return (
       <div className="h-screen w-screen bg-black text-white overflow-hidden">
@@ -83,6 +92,7 @@ export default function Layout() {
     try {
       await changeTanduUserPassword({
         userId: userProfile.id,
+        targetEmail: userProfile.email,
         newPassword,
         isSelfChange: true,
         actorEmail: userProfile.email,
@@ -113,7 +123,10 @@ export default function Layout() {
   const pwdStrength = evaluatePasswordStrength(newPassword);
 
   const hasEscenarioGroup =
-    canAccessModule('concert') || canAccessModule('setlists') || canAccessModule('soundcheck');
+    canAccessModule('practice') ||
+    canAccessModule('concert') ||
+    canAccessModule('setlists') ||
+    canAccessModule('soundcheck');
   const hasEstudioGroup =
     canAccessModule('studio') ||
     canAccessModule('mastering') ||
@@ -137,12 +150,49 @@ export default function Layout() {
     }`;
 
   return (
-    <div className="flex h-screen bg-[#0b0d13] text-white overflow-hidden selection:bg-[#e11d48]/30 selection:text-white">
-      {/* Sidebar Musiko.io - Colores Enteros Sólidos */}
+    <div className="flex flex-col md:flex-row h-screen bg-[#0b0d13] text-white overflow-hidden selection:bg-[#e11d48]/30 selection:text-white">
+      {/* Compact Top Bar for Mobile Phones (< md) */}
+      <div className="flex md:hidden items-center justify-between px-3.5 py-2.5 bg-[#0d0f16] border-b border-[#1a1e28] shrink-0 z-30">
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(true)}
+          className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#151924] border border-[#232938] text-zinc-200 active:scale-95 transition-transform"
+          aria-label="Abrir menú de módulos"
+        >
+          <Menu size={18} />
+        </button>
+
+        <div className="flex items-center gap-2">
+          <TanduMusicosLogo animateEntrance={false} className="w-7 h-7" />
+          <span className="text-xs font-bold tracking-wider text-zinc-100">TANDU</span>
+          <span className="text-[10px] font-semibold tracking-widest text-rose-400">MUSICOS</span>
+        </div>
+
+        <button
+          type="button"
+          onClick={signOut}
+          className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#1a1115] border border-[#e11d48]/30 text-[#f43f5e]"
+          title="Cerrar Sesión"
+        >
+          <LogOut size={15} />
+        </button>
+      </div>
+
+      {/* Mobile Drawer Backdrop */}
+      {isSidebarOpen && (
+        <div
+          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/65 backdrop-blur-[1px] md:hidden"
+        />
+      )}
+
+      {/* Sidebar Musiko.io - Colores Enteros Sólidos (Drawer en celular, Rail fijo en tablet/PC) */}
       <nav
         className={`${
-          isSidebarOpen ? 'w-64' : 'w-20'
-        } flex flex-col h-full bg-[#0d0f16] border-r border-[#1a1e28] relative z-20 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+          isSidebarOpen
+            ? 'fixed inset-y-0 left-0 z-50 flex w-64 md:relative'
+            : 'hidden md:flex md:w-20'
+        } flex-col h-full bg-[#0d0f16] border-r border-[#1a1e28] shrink-0 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
       >
         {/* Top Window Bar Accents (Colores Enteros, Cero Glow) + Collapse Button */}
         <div
@@ -166,11 +216,11 @@ export default function Layout() {
           )}
         </div>
 
-        {/* Floating Expand/Collapse Pill when retracted */}
+        {/* Floating Expand/Collapse Pill when retracted (Desktop/Tablet) */}
         {!isSidebarOpen && (
           <button
             onClick={() => setIsSidebarOpen(true)}
-            className="absolute -right-3 top-12 w-6 h-6 bg-[#161922] text-gray-400 border border-white/15 rounded-full flex items-center justify-center hover:text-white hover:border-rose-500/50 hover:bg-[#1e222d] z-50 shadow-[0_4px_12px_rgba(0,0,0,0.8)] transition-all"
+            className="hidden md:flex absolute -right-3 top-12 w-6 h-6 bg-[#161922] text-gray-400 border border-white/15 rounded-full items-center justify-center hover:text-white hover:border-rose-500/50 hover:bg-[#1e222d] z-50 shadow-[0_4px_12px_rgba(0,0,0,0.8)] transition-all"
             title="Expandir menú"
           >
             <ChevronRight size={13} />
@@ -204,16 +254,43 @@ export default function Layout() {
 
         {/* Navigation Menu Groups (Filtered by User Module Permissions) */}
         <div className="flex-1 py-4 px-3 space-y-5 overflow-y-auto custom-scrollbar">
-          {/* Group 1: Escenario en Vivo */}
+          {/* Group 1: Escenario en Vivo & Práctica Local */}
           {hasEscenarioGroup && (
             <div className="space-y-1.5">
               {isSidebarOpen && (
                 <div className="px-3 pb-1 text-[9.5px] font-medium uppercase tracking-[0.2em] text-zinc-500">
-                  Escenario
+                  Escenario & Práctica
                 </div>
               )}
+              {canAccessModule('practice') && (
+                <NavLink
+                  to="/practice"
+                  className={({ isActive }) => navLinkClass(isActive)}
+                  title="Práctica MP3 Local (Memoria del Dispositivo)"
+                >
+                  {({ isActive }) => (
+                    <>
+                      <Smartphone
+                        size={19}
+                        className={`shrink-0 transition-colors ${
+                          isActive ? 'text-emerald-400' : 'text-emerald-400/80 group-hover:text-emerald-300'
+                        }`}
+                      />
+                      {isSidebarOpen && (
+                        <span className="text-[13px] tracking-tight whitespace-nowrap">
+                          Práctica MP3 Local
+                        </span>
+                      )}
+                      {isActive && (
+                        <span className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-emerald-400 rounded-l-full" />
+                      )}
+                    </>
+                  )}
+                </NavLink>
+              )}
+
               {canAccessModule('concert') && (
-                <NavLink to="/" end className={({ isActive }) => navLinkClass(isActive)} title="Live Concert">
+                <NavLink to="/concert" className={({ isActive }) => navLinkClass(isActive)} title="Live Concert">
                   {({ isActive }) => (
                     <>
                       <MonitorPlay
@@ -613,7 +690,7 @@ export default function Layout() {
       </nav>
 
       {/* Main Content Area - Entorno de Trabajo */}
-      <main className="flex-1 h-full relative overflow-hidden bg-white">
+      <main className="flex-1 min-h-0 h-full relative overflow-hidden bg-white">
         <Outlet />
       </main>
 

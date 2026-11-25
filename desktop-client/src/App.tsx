@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ShieldAlert, ArrowRight, Lock } from 'lucide-react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
@@ -17,6 +17,7 @@ const LivePrompter = lazy(() => import('./pages/LivePrompter'));
 const StemStudio = lazy(() => import('./pages/StemStudio'));
 const SetlistBuilder = lazy(() => import('./pages/SetlistBuilder'));
 const LiveConcert = lazy(() => import('./pages/LiveConcert'));
+const MusicianPracticePlayer = lazy(() => import('./pages/MusicianPracticePlayer'));
 const StageSoundcheck = lazy(() => import('./pages/StageSoundcheck'));
 const MobileInEar = lazy(() => import('./pages/MobileInEar'));
 const MusicHub = lazy(() => import('./pages/MusicHub'));
@@ -51,13 +52,33 @@ const RouteSuspenseFallback = () => (
 // Protected Route Wrapper
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { session, userProfile, authReady } = useAuth();
-  if (!authReady) {
+  if (!authReady || (session && !userProfile)) {
     return <RouteSuspenseFallback />;
   }
   if (!session || (userProfile && userProfile.status !== 'active')) {
     return <Navigate to="/login" replace />;
   }
   return <>{children}</>;
+};
+
+// Automatic Post-Load Dispatcher:
+// - Administrator -> /studio (Stem Studio)
+// - Musicians     -> /practice (Práctica MP3 Local Offline)
+// - External HDMI Projector (?projector=1) -> /concert?projector=1
+const DefaultRoleRedirect = () => {
+  const { userProfile, authReady } = useAuth();
+  const location = useLocation();
+
+  if (!authReady || !userProfile) {
+    return <RouteSuspenseFallback />;
+  }
+
+  if (new URLSearchParams(location.search).get('projector') === '1') {
+    return <Navigate to={`/concert${location.search}`} replace />;
+  }
+
+  const targetPath = getFirstAllowedPathForUser(userProfile);
+  return <Navigate to={targetPath === '/' ? '/studio' : targetPath} replace />;
 };
 
 // Module Permission Guard Wrapper
@@ -83,7 +104,7 @@ const ModuleGuard = ({
 
   const fallbackPath = getFirstAllowedPathForUser(userProfile);
 
-  // When landing on "/" without "concert" access, redirect seamlessly to user's primary allowed module
+  // When landing without access, redirect seamlessly to user's primary allowed module
   if (redirectHomeIfDenied && fallbackPath && fallbackPath !== '/') {
     return <Navigate to={fallbackPath} replace />;
   }
@@ -139,10 +160,10 @@ const ModuleGuard = ({
 // Auth Route Wrapper (redirect to primary allowed module if already logged in)
 const AuthRoute = ({ children }: { children: React.ReactNode }) => {
   const { session, userProfile, authReady } = useAuth();
-  if (!authReady) {
+  if (!authReady || (session && !userProfile)) {
     return <RouteSuspenseFallback />;
   }
-  if (session && (!userProfile || userProfile.status === 'active')) {
+  if (session && userProfile && userProfile.status === 'active') {
     const targetPath = getFirstAllowedPathForUser(userProfile);
     return <Navigate to={targetPath} replace />;
   }
@@ -169,11 +190,12 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         >
+          <Route path="/" element={<DefaultRoleRedirect />} />
           <Route
-            path="/"
+            path="/practice"
             element={
-              <ModuleGuard moduleId="concert" redirectHomeIfDenied>
-                <LiveConcert />
+              <ModuleGuard moduleId="practice">
+                <MusicianPracticePlayer />
               </ModuleGuard>
             }
           />
