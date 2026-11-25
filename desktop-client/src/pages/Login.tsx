@@ -1,19 +1,35 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { LogIn, Loader2, Lock, Mail, Sparkles } from 'lucide-react';
+import { LogIn, Loader2, Lock, Mail, Sparkles, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SplashScreen, FlipText, OneLoader, TanduMusicosLogo } from '../components/SplashScreen';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  isSystemOwnerEmail,
+  loadTanduUsersDirectory,
+  normalizeEmail,
+  recordUserLoginSuccess,
+  verifyUserPassword,
+} from '../services/userManagementService';
 
 // Shared Emil Kowalski spring physics config
 const springTransition: any = { type: 'spring', stiffness: 300, damping: 25 };
 
 export default function Login() {
+  const { authenticateManagedSession } = useAuth();
   const [email, setEmail] = useState('admin@tandu.com');
   const [password, setPassword] = useState('123456');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
   const [replayingIntro, setReplayingIntro] = useState(false);
+
+  const triggerShakeError = (msg: string) => {
+    setError(msg);
+    setShake(true);
+    setTimeout(() => setShake(false), 500);
+  };
 
   const triggerReplayIntro = () => {
     if (typeof window !== 'undefined') {
@@ -30,38 +46,92 @@ export default function Login() {
     setLoading(true);
     setError(null);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const normalizedEmail = normalizeEmail(email);
 
-    if (signInError) {
-      if (signInError.message.includes('Invalid login credentials')) {
+    try {
+      // 1. Check user status & managed password in TANDU Users Directory
+      const { users } = await loadTanduUsersDirectory();
+      const managedUser = users.find((u) => u.email === normalizedEmail);
+
+      if (managedUser) {
+        if (managedUser.status === 'inactive') {
+          triggerShakeError(
+            'Acceso denegado: Esta cuenta de usuario ha sido dada de baja por el administrador.'
+          );
+          setLoading(false);
+          return;
+        }
+        if (managedUser.status === 'suspended') {
+          triggerShakeError(
+            'Acceso denegado: Esta cuenta se encuentra suspendida temporalmente.'
+          );
+          setLoading(false);
+          return;
+        }
+      }
+
+      const hasManagedHash = Boolean(managedUser?.password_hash && managedUser?.password_salt);
+      const matchesManagedHash =
+        managedUser && hasManagedHash ? verifyUserPassword(password, managedUser) : false;
+
+      // If this is a managed non-owner user with an explicit password set by Admin, enforce it strictly
+      if (managedUser && hasManagedHash && !isSystemOwnerEmail(normalizedEmail) && !matchesManagedHash) {
+        triggerShakeError('Credenciales inválidas. Verifica tu correo y contraseña.');
+        setLoading(false);
+        return;
+      }
+
+      // 2. Attempt native Supabase Auth sign-in
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+
+      if (!signInError) {
+        await recordUserLoginSuccess(normalizedEmail);
+        setLoading(false);
+        return;
+      }
+
+      // 3. If native Supabase Auth failed (e.g., admin created user or reset password in User Admin),
+      //    verify against managed password hash
+      if (managedUser && matchesManagedHash) {
+        const updatedProfile = await recordUserLoginSuccess(normalizedEmail);
+        authenticateManagedSession(updatedProfile);
+        setLoading(false);
+        return;
+      }
+
+      // 4. Preserve auto-bootstrap ONLY for the system owner account (admin@tandu.com)
+      if (
+        isSystemOwnerEmail(normalizedEmail) &&
+        signInError.message.includes('Invalid login credentials')
+      ) {
         const { error: signUpError } = await supabase.auth.signUp({
-          email,
+          email: normalizedEmail,
           password,
         });
 
-        if (signUpError) {
-          setError('Error: ' + signUpError.message);
-          setShake(true);
-          setTimeout(() => setShake(false), 500);
-        } else {
+        if (!signUpError) {
           const { error: retryError } = await supabase.auth.signInWithPassword({
-            email,
+            email: normalizedEmail,
             password,
           });
-          if (retryError) {
-            setError(retryError.message);
-            setShake(true);
-            setTimeout(() => setShake(false), 500);
+          if (!retryError) {
+            await recordUserLoginSuccess(normalizedEmail);
+            setLoading(false);
+            return;
           }
         }
-      } else {
-        setError(signInError.message);
-        setShake(true);
-        setTimeout(() => setShake(false), 500);
       }
+
+      triggerShakeError(
+        signInError.message.includes('Invalid login credentials')
+          ? 'Credenciales incorrectas o usuario no autorizado.'
+          : signInError.message
+      );
+    } catch (err: any) {
+      triggerShakeError(err?.message || 'Error al verificar credenciales de acceso.');
     }
 
     setLoading(false);
@@ -155,7 +225,7 @@ export default function Login() {
           </h1>
         </div>
         <p className="text-slate-400 text-sm md:text-base tracking-wide font-light">
-          Ingrese sus credenciales para acceder al estudio en vivo
+          Ingrese sus credenciales autorizadas para acceder al estudio en vivo
         </p>
       </motion.div>
 
@@ -176,7 +246,7 @@ export default function Login() {
             <div className="flex items-center gap-2.5">
               <div className="w-2 h-2 rounded-full bg-[#ef4444] shadow-[0_0_8px_#ef4444]" />
               <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
-                Acceso Seguro
+                Acceso Seguro · Control de Roles
               </span>
             </div>
             <button
@@ -204,7 +274,7 @@ export default function Login() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#ef4444]/60 focus:bg-white/[0.06] transition-all duration-200"
-                  placeholder="admin@tandu.com"
+                  placeholder="usuario@tandu.com"
                   required
                 />
               </div>
@@ -220,13 +290,21 @@ export default function Login() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"
                 />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-4 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#ef4444]/60 focus:bg-white/[0.06] transition-all duration-200"
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-2xl pl-11 pr-11 py-3.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#ef4444]/60 focus:bg-white/[0.06] transition-all duration-200"
                   placeholder="••••••"
                   required
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors p-1"
+                  title={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
               </div>
             </div>
 
@@ -254,7 +332,7 @@ export default function Login() {
               {loading ? (
                 <>
                   <Loader2 size={18} className="animate-spin text-white" />
-                  <span className="tracking-wide text-sm">Autenticando...</span>
+                  <span className="tracking-wide text-sm">Verificando Permisos...</span>
                 </>
               ) : (
                 <>
@@ -267,7 +345,7 @@ export default function Login() {
         </motion.div>
 
         <p className="text-center text-slate-500 text-xs mt-6 px-4 font-light">
-          Cuenta de pruebas preconfigurada. Si no existe, se creará automáticamente.
+          Acceso administrado por el módulo de Seguridad y Usuarios TANDU.
         </p>
       </motion.div>
 
