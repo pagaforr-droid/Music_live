@@ -59,12 +59,17 @@ export default function Layout() {
     }
   }, [isForcedPasswordChange]);
 
-  // Auto-close mobile drawer after tapping any module link on phones
+  // Open sidebar automatically when returning from standalone views (e.g. MobileInEar),
+  // otherwise auto-close mobile drawer after tapping any module link on phones
   useEffect(() => {
+    if ((location.state as { openSidebar?: boolean } | null)?.openSidebar) {
+      setIsSidebarOpen(true);
+      return;
+    }
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
       setIsSidebarOpen(false);
     }
-  }, [location.pathname]);
+  }, [location.pathname, location.state]);
 
   if (isProjectorWindow) {
     return (

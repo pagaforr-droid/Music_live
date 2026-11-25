@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSyncSlave } from '../hooks/useSyncSlave';
-import { Volume2, Power, Music, Activity, Headphones, X, ArrowLeft } from 'lucide-react';
+import { Volume2, Power, Music, Activity, Headphones, ArrowLeft, LogOut } from 'lucide-react';
 import { Prompter } from '../components/Prompter';
 import { useAuth } from '../contexts/AuthContext';
-import { getFirstAllowedPathForUser } from '../services/userManagementService';
+import { APP_MODULES, getFirstAllowedPathForUser } from '../services/userManagementService';
 import {
   resolveEffectivePreRoll,
   resolveEffectivePreRollBars,
@@ -15,7 +15,7 @@ const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
 export default function MobileInEar() {
   const navigate = useNavigate();
-  const { userProfile } = useAuth();
+  const { userProfile, signOut } = useAuth();
   const { songData, isPlaying, playTrigger, pauseTrigger, seekTrigger, clockOffset } = useSyncSlave(FAKE_BAND_ID);
   
   const [hasInteracted, setHasInteracted] = useState(false);
@@ -66,15 +66,33 @@ export default function MobileInEar() {
     };
   }, []);
 
-  const handleExit = () => {
-    cleanupAudioAndWakeLock();
-    const fallbackPath = getFirstAllowedPathForUser(userProfile);
-    if (typeof window !== 'undefined' && (window.opener || window.history.length <= 1)) {
-      try {
-        window.close();
-      } catch {}
+  const resolveMainMenuPath = (): string => {
+    const preferred = getFirstAllowedPathForUser(userProfile);
+    if (preferred && preferred !== '/mobile' && preferred !== '/login') {
+      return preferred;
     }
-    navigate(fallbackPath, { replace: true });
+    if (userProfile) {
+      for (const modId of userProfile.allowed_modules) {
+        if (modId === 'mobile_inear') continue;
+        const found = APP_MODULES.find((m) => m.id === modId);
+        if (found && found.primaryPath !== '/mobile') {
+          return found.primaryPath;
+        }
+      }
+    }
+    // Always land inside <Layout /> so the sidebar & "Cerrar Sesión" are accessible
+    return '/practice';
+  };
+
+  const handleGoToMainMenu = () => {
+    cleanupAudioAndWakeLock();
+    navigate(resolveMainMenuPath(), { replace: true, state: { openSidebar: true } });
+  };
+
+  const handleSignOut = async () => {
+    cleanupAudioAndWakeLock();
+    await signOut();
+    navigate('/login', { replace: true });
   };
 
   // Initialize AudioContext on first tap
@@ -228,16 +246,28 @@ export default function MobileInEar() {
   if (!hasInteracted) {
     return (
       <div className="relative flex flex-col items-center justify-center h-screen bg-[#07090e] text-white p-6">
-        {/* Botón Salir / Cerrar en esquina superior derecha */}
-        <button
-          type="button"
-          onClick={handleExit}
-          className="absolute top-4 right-4 sm:top-6 sm:right-6 flex items-center gap-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 px-4 py-2 text-xs font-semibold text-zinc-200 hover:text-white transition-all active:scale-95 cursor-pointer"
-          title="Salir del modo In-Ear"
-        >
-          <X size={15} />
-          <span>Salir</span>
-        </button>
+        {/* Barra superior de salida rápida: Menú Principal y Cerrar Sesión */}
+        <div className="absolute top-4 inset-x-4 sm:top-6 sm:inset-x-6 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={handleGoToMainMenu}
+            className="flex items-center gap-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 px-4 py-2 text-xs font-semibold text-zinc-200 hover:text-white transition-all active:scale-95 cursor-pointer"
+            title="Ir al menú principal"
+          >
+            <ArrowLeft size={15} />
+            <span>Menú Principal</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="flex items-center gap-2 rounded-full bg-rose-500/15 hover:bg-rose-600 border border-rose-500/40 px-4 py-2 text-xs font-semibold text-rose-300 hover:text-white transition-all active:scale-95 cursor-pointer"
+            title="Cerrar Sesión"
+          >
+            <LogOut size={14} />
+            <span>Cerrar Sesión</span>
+          </button>
+        </div>
 
         <div className="p-4 bg-red-600/20 border border-red-500/40 rounded-2xl mb-6 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
           <Headphones size={48} className="text-red-500" />
@@ -259,8 +289,8 @@ export default function MobileInEar() {
 
         <button
           type="button"
-          onClick={handleExit}
-          className="mt-5 flex items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
+          onClick={handleGoToMainMenu}
+          className="mt-5 flex items-center gap-2 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 px-5 py-2.5 text-xs font-semibold text-zinc-200 hover:text-white transition-all active:scale-95 cursor-pointer"
         >
           <ArrowLeft size={14} />
           <span>Volver al menú principal</span>
@@ -293,9 +323,9 @@ export default function MobileInEar() {
           </div>
         </div>
         
-        {/* Personal Mixer + Exit Button */}
+        {/* Personal Mixer + Navigation / Logout */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="flex flex-col space-y-2 w-40 sm:w-52 bg-[#07090e] p-2.5 rounded-lg border border-white/[0.07]">
+          <div className="flex flex-col space-y-2 w-36 sm:w-52 bg-[#07090e] p-2.5 rounded-lg border border-white/[0.07]">
             {/* CUE Volume */}
             <div className="flex items-center space-x-2">
               <Volume2 size={12} className="text-amber-400 shrink-0" />
@@ -324,11 +354,21 @@ export default function MobileInEar() {
 
           <button
             type="button"
-            onClick={handleExit}
-            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-600 border border-rose-500/40 px-3 py-2.5 text-rose-300 hover:text-white transition-all active:scale-95 cursor-pointer shrink-0"
-            title="Salir del modo In-Ear"
+            onClick={handleGoToMainMenu}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 rounded-xl bg-white/[0.07] hover:bg-white/[0.15] border border-white/15 px-2.5 sm:px-3 py-2.5 text-zinc-200 hover:text-white transition-all active:scale-95 cursor-pointer shrink-0"
+            title="Volver al menú principal"
           >
-            <X size={16} />
+            <ArrowLeft size={15} />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Menú</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-600 border border-rose-500/40 px-2.5 sm:px-3 py-2.5 text-rose-300 hover:text-white transition-all active:scale-95 cursor-pointer shrink-0"
+            title="Cerrar Sesión"
+          >
+            <LogOut size={15} />
             <span className="text-[10px] font-bold uppercase tracking-wider">Salir</span>
           </button>
         </div>
