@@ -1,0 +1,216 @@
+/* MusicianPracticePlayer — Editorial Vermilion, Obsidian Console & Warm Alabaster System */
+
+.mp-studio-root {
+  /* Palette extracted directly from reference artwork */
+  --mp-vermilion: #e84432;
+  --mp-vermilion-deep: #c93322;
+  --mp-terracotta: #a63629;
+  --mp-tangerine: #f47b2a;
+  --mp-gold: #f2b829;
+  --mp-gold-soft: rgba(242, 184, 41, 0.16);
+  --mp-cream: #f5efe4;
+  --mp-cream-elevated: #fbf8f2;
+  --mp-cream-muted: #e9dfd0;
+  --mp-cream-border: #d8ccb8;
+  --mp-console: #141413;
+  --mp-console-raised: #1e1e1c;
+  --mp-console-border: #2c2b28;
+  --mp-ink: #111110;
+  --mp-ink-muted: #4a4640;
+  --mp-bone-text: #f5efe4;
+  --mp-bone-dim: #a39d93;
+
+  /* Premium Non-Generic Typography Stack (Loaded in index.html) */
+  --mp-font-display: 'Archivo Black', 'Unbounded', sans-serif;
+  --mp-font-sans: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+  --mp-font-mono: 'Space Mono', 'Geist Mono', monospace;
+
+  /* Physics-inspired curves */
+  --mp-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --mp-ease-quart: cubic-bezier(0.22, 1, 0.36, 1);
+
+  font-family: var(--mp-font-sans);
+  background-color: var(--mp-cream);
+  color: var(--mp-ink);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mp-display-title {
+  font-family: var(--mp-font-display);
+  letter-spacing: -0.035em;
+  line-height: 0.96;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+.mp-heading {
+  font-family: var(--mp-font-sans);
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+.mp-mono {
+  font-family: var(--mp-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* Poster Masthead Surface */
+.mp-vermilion-stage {
+  background-color: var(--mp-vermilion);
+  background-image: radial-gradient(
+    circle at 88% 12%,
+    rgba(244, 123, 42, 0.42) 0%,
+    rgba(232, 68, 50, 0) 52%
+  );
+  color: var(--mp-ink);
+}
+
+/* Double-Bezel Obsidian Hardware Console (~/mi-proyecto inspired) */
+.mp-console-bezel {
+  background-color: rgba(17, 17, 16, 0.2);
+  padding: 6px;
+  border-radius: 26px;
+  box-shadow: 0 20px 44px -14px rgba(17, 17, 16, 0.36);
+}
+
+.mp-console-core {
+  background-color: var(--mp-console);
+  color: var(--mp-bone-text);
+  border: 1px solid var(--mp-console-border);
+  border-radius: 20px;
+  box-shadow: inset 0 1px 0 rgba(245, 239, 228, 0.08);
+}
+
+/* Editorial Alabaster Sheet (CASO REAL card inspired) */
+.mp-cream-card {
+  background-color: var(--mp-cream-elevated);
+  color: var(--mp-ink);
+  border: 1.5px solid var(--mp-cream-border);
+  border-radius: 20px;
+}
+
+.mp-ink-badge {
+  background-color: var(--mp-ink);
+  color: var(--mp-cream);
+}
+
+.mp-gold-tag {
+  background-color: var(--mp-gold);
+  color: var(--mp-ink);
+}
+
+/* Tactile Mobile & Tablet Hardware Range Faders (44px Touch Comfort) */
+.mp-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 32px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mp-fader:focus {
+  outline: none;
+}
+
+.mp-fader::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: #2a2926;
+  border: 1px solid rgba(245, 239, 228, 0.08);
+}
+
+.mp-fader-music::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border-radius: 9999px;
+  background: var(--mp-cream);
+  border: 3px solid var(--mp-vermilion);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  transition: transform 160ms var(--mp-ease-out);
+}
+
+.mp-fader-cue::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border-radius: 9999px;
+  background: var(--mp-gold);
+  border: 3px solid var(--mp-ink);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  transition: transform 160ms var(--mp-ease-out);
+}
+
+.mp-fader:active::-webkit-slider-thumb {
+  transform: scale(1.14);
+}
+
+.mp-fader::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: #2a2926;
+}
+
+.mp-fader-music::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--mp-cream);
+  border: 3px solid var(--mp-vermilion);
+}
+
+.mp-fader-cue::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--mp-gold);
+  border: 3px solid var(--mp-ink);
+}
+
+/* Custom Scrollbar for Warm Alabaster & Console Surfaces */
+.mp-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.mp-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mp-scroll::-webkit-scrollbar-thumb {
+  background: rgba(17, 17, 16, 0.18);
+  border-radius: 9999px;
+}
+
+.mp-scroll-dark::-webkit-scrollbar-thumb {
+  background: rgba(245, 239, 228, 0.16);
+  border-radius: 9999px;
+}
+
+/* Instant Accessible Focus Rings */
+.mp-studio-root button:focus-visible,
+.mp-studio-root select:focus-visible,
+.mp-studio-root input:focus-visible {
+  outline: 2px solid var(--mp-gold);
+  outline-offset: 2px;
+}
+
+/* Safe-area padding for modern phones & tablets */
+.mp-safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-studio-root *,
+  .mp-studio-root *::before,
+  .mp-studio-root *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

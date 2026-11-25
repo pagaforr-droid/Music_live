@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Check,
   CloudDownload,
@@ -15,11 +16,11 @@ import {
   SkipBack,
   SkipForward,
   Smartphone,
-  Sparkles,
   Trash2,
   Volume2,
   VolumeX,
   WifiOff,
+  Sliders,
 } from 'lucide-react';
 import {
   resolveEffectivePlaybackBounds,
@@ -41,10 +42,14 @@ import {
   requestPersistentDeviceStorage,
   syncPracticeCatalogFromSupabase,
 } from '../services/musicianLocalAudioVault';
+import './MusicianPracticePlayer.css';
 
 const ALL_SONGS_FILTER_ID = '__all_live_songs__';
 const ACTIVE_PRACTICE_SETLIST_KEY = 'tandu_practice_active_setlist_v1';
 const PRACTICE_SKIP_PREROLL_KEY = 'tandu_practice_skip_preroll_v1';
+
+const SPRING_SNAPPY = { type: 'spring' as const, stiffness: 420, damping: 32, mass: 0.8 };
+const SPRING_GENTLE = { type: 'spring' as const, stiffness: 300, damping: 28 };
 
 interface NormalizedSection {
   index: number;
@@ -61,6 +66,25 @@ function formatTimeDisplay(sec: number): string {
   const mins = Math.floor(abs / 60);
   const secs = Math.floor(abs % 60);
   return `${isNeg ? '-' : ''}${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+/** Deterministic decorative waveform bars per song ID so scrubber feels like tactile hardware */
+function buildDeterministicBars(seedStr: string, count = 44): number[] {
+  let hash = 2166136261;
+  for (let i = 0; i < seedStr.length; i++) {
+    hash ^= seedStr.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const bars: number[] = [];
+  for (let i = 0; i < count; i++) {
+    hash ^= i + 0x9e3779b9;
+    hash = Math.imul(hash, 2246822507);
+    const norm = ((hash >>> 0) % 100) / 100;
+    const envelope = Math.sin((Math.PI * (i + 2)) / (count + 3));
+    const height = Math.round(24 + norm * 56 * (0.45 + 0.55 * envelope));
+    bars.push(Math.max(20, Math.min(96, height)));
+  }
+  return bars;
 }
 
 export default function MusicianPracticePlayer() {
@@ -104,7 +128,7 @@ export default function MusicianPracticePlayer() {
     null
   );
 
-  // Mobile layout view switcher ('playlist' | 'player')
+  // Mobile/Tablet Portrait layout switcher ('playlist' | 'player')
   const [mobileTab, setMobileTab] = useState<'playlist' | 'player'>('playlist');
   const [studyPanelTab, setStudyPanelTab] = useState<'sections' | 'chords_lyrics'>('sections');
 
@@ -131,9 +155,7 @@ export default function MusicianPracticePlayer() {
   const [repeatMode, setRepeatMode] = useState<'setlist' | 'one'>('setlist');
   const [loopSectionIndex, setLoopSectionIndex] = useState<number | null>(null);
 
-  // Refs for dual engine:
-  // 1) Native <audio> for lock-screen / low-battery pure MP3 playback when Click/Guía is OFF
-  // 2) Sample-accurate Web Audio Context when Click/Guía is ON (0ms drift + independent iOS faders)
+  // Dual Audio Engine Refs
   const nativeAudioRef = useRef<HTMLAudioElement | null>(null);
   const activeObjectUrlRef = useRef<string | null>(null);
   const webAudioCtxRef = useRef<AudioContext | null>(null);
@@ -173,7 +195,6 @@ export default function MusicianPracticePlayer() {
     }, kind === 'err' ? 5000 : 3200);
   }, []);
 
-  // Apply catalog snapshot cleanly
   const applyCatalogSnapshot = useCallback((snap: PracticeCatalogSnapshot | null) => {
     if (!snap) return;
     setSetlists(snap.setlists || []);
@@ -198,7 +219,6 @@ export default function MusicianPracticePlayer() {
     return summary;
   }, []);
 
-  // Online / Offline listeners
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -210,7 +230,7 @@ export default function MusicianPracticePlayer() {
     };
   }, []);
 
-  // Boot sequence: 1) Read local IndexedDB immediately (<50ms, 0 network), 2) Request persistent storage, 3) Lightweight metadata sync
+  // Boot sequence: Local IndexedDB first (<50ms, 0 network), then lightweight metadata check
   useEffect(() => {
     let mounted = true;
 
@@ -245,35 +265,18 @@ export default function MusicianPracticePlayer() {
     };
   }, [applyCatalogSnapshot, refreshVaultIndex]);
 
-  // Persist selected setlist choice
   useEffect(() => {
     if (!selectedSetlistId) return;
     try {
       localStorage.setItem(ACTIVE_PRACTICE_SETLIST_KEY, selectedSetlistId);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [selectedSetlistId]);
 
   useEffect(() => {
     try {
       localStorage.setItem(PRACTICE_SKIP_PREROLL_KEY, skipPreRoll ? '1' : '0');
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [skipPreRoll]);
-
-  // Active song list based on selected Live Concert setlist or All Live Songs
-  const activePlaylist = useMemo<PracticeSongItem[]>(() => {
-    const base =
-      selectedSetlistId === ALL_SONGS_FILTER_ID || !selectedSetlistId
-        ? allLiveSongs
-        : setlistSongsMap[selectedSetlistId] || [];
-
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((s) => (s.title || '').toLowerCase().includes(q));
-  }, [allLiveSongs, searchQuery, selectedSetlistId, setlistSongsMap]);
 
   const activeSetlistRawSongs = useMemo<PracticeSongItem[]>(() => {
     if (selectedSetlistId === ALL_SONGS_FILTER_ID || !selectedSetlistId) {
@@ -282,7 +285,12 @@ export default function MusicianPracticePlayer() {
     return setlistSongsMap[selectedSetlistId] || [];
   }, [allLiveSongs, selectedSetlistId, setlistSongsMap]);
 
-  // Auto-select first song once catalog loads (preferring an already-cached local song if offline)
+  const activePlaylist = useMemo<PracticeSongItem[]>(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return activeSetlistRawSongs;
+    return activeSetlistRawSongs.filter((s) => (s.title || '').toLowerCase().includes(q));
+  }, [activeSetlistRawSongs, searchQuery]);
+
   useEffect(() => {
     if (currentSongId && activeSetlistRawSongs.some((s) => s.id === currentSongId)) return;
     if (activeSetlistRawSongs.length === 0) {
@@ -315,7 +323,11 @@ export default function MusicianPracticePlayer() {
   const preRollSec = useMemo(() => resolveEffectivePreRoll(currentSong), [currentSong]);
   const visualTime = globalTime - preRollSec;
 
-  // Sections normalized to global audio timeline
+  const waveformBars = useMemo(
+    () => buildDeterministicBars(currentSong?.id || 'tandu-default', 46),
+    [currentSong?.id]
+  );
+
   const normalizedSections = useMemo<NormalizedSection[]>(() => {
     const rawSections = Array.isArray(currentSong?.prompter_data?.sections)
       ? currentSong!.prompter_data.sections
@@ -364,7 +376,6 @@ export default function MusicianPracticePlayer() {
     return -1;
   }, [globalTime, normalizedSections]);
 
-  // Chords & Lyrics for Study Panel
   const chordsList = useMemo(() => {
     const raw = Array.isArray(currentSong?.prompter_data?.chords)
       ? currentSong!.prompter_data.chords
@@ -400,7 +411,6 @@ export default function MusicianPracticePlayer() {
     return -1;
   }, [currentLyricTime, lyricsList]);
 
-  // Vault stats for active setlist
   const setlistVaultStats = useMemo(() => {
     const playableSongs = activeSetlistRawSongs.filter(
       (s) => evaluateSongVaultState(s, vaultMap[s.id]).status !== 'no_mix'
@@ -419,7 +429,7 @@ export default function MusicianPracticePlayer() {
   }, [activeSetlistRawSongs, vaultMap]);
 
   // ============================================================================
-  // AUDIO ENGINE HELPERS (Native <audio> + Sample-Accurate Web Audio)
+  // AUDIO ENGINE (Native <audio> + Sample-Accurate Web Audio Context)
   // ============================================================================
   const stopWebAudioSources = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -447,9 +457,7 @@ export default function MusicianPracticePlayer() {
       if ('wakeLock' in navigator && !wakeLockRef.current) {
         wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
       }
-    } catch {
-      // Optional on unsupported browsers
-    }
+    } catch {}
   }, []);
 
   const stopAllPlayback = useCallback(
@@ -478,7 +486,6 @@ export default function MusicianPracticePlayer() {
     [releaseWakeLock, skipPreRoll, stopWebAudioSources]
   );
 
-  // Sync volumes in real time
   useEffect(() => {
     if (nativeAudioRef.current) {
       nativeAudioRef.current.volume = Math.max(0, Math.min(1, fohVolume));
@@ -561,7 +568,6 @@ export default function MusicianPracticePlayer() {
         if (!isPlayingRef.current || !webAudioCtxRef.current) return;
         const elapsed = Math.max(0, webAudioCtxRef.current.currentTime - webStartCtxTimeRef.current);
 
-        // Section Loop check
         const loop = loopRangeRef.current;
         if (loop && elapsed >= loop.end - 0.04) {
           startWebAudioAtOffset(fohBuf, cueBuf, loop.start);
@@ -583,7 +589,6 @@ export default function MusicianPracticePlayer() {
     [acquireWakeLock, ensureWebAudioGraph, stopWebAudioSources]
   );
 
-  // Prepare local MP3 blobs (downloading once to IndexedDB if needed)
   const ensureSongReadyInVaultAndMemory = useCallback(
     async (
       song: PracticeSongItem,
@@ -630,7 +635,6 @@ export default function MusicianPracticePlayer() {
         return { fohBlob, cueBlob };
       }
 
-      // Check decoded cache for instant Click ON/OFF switching on the same song
       if (
         decodedCacheRef.current &&
         decodedCacheRef.current.songId === song.id &&
@@ -644,7 +648,7 @@ export default function MusicianPracticePlayer() {
         };
       }
 
-      setPrepareStatusText('Sincronizando Pista + Click/Voz Guía en memoria...');
+      setPrepareStatusText('Sincronizando Pista + Click/Guía...');
       const ctx = ensureWebAudioGraph();
       const [fohArr, cueArr] = await Promise.all([
         fohBlob.arrayBuffer(),
@@ -667,7 +671,6 @@ export default function MusicianPracticePlayer() {
     [ensureWebAudioGraph, isOnline, refreshVaultIndex, vaultMap]
   );
 
-  // Load native <audio> ObjectURL when song changes if already cached locally (0 network!)
   useEffect(() => {
     const token = ++loadTokenRef.current;
     stopAllPlayback(false);
@@ -692,7 +695,6 @@ export default function MusicianPracticePlayer() {
     const metaDur = Number(currentSong?.prompter_data?.liveMixMeta?.totalDurationSec) || 0;
     if (metaDur > 0) setDuration(metaDur);
 
-    // Pre-attach local blob URL if already in device memory (0 bytes from Supabase)
     void (async () => {
       const localFoh = await readLocalMp3Blob(currentSong.id, 'foh');
       if (loadTokenRef.current !== token || !localFoh || !nativeAudioRef.current) return;
@@ -707,7 +709,6 @@ export default function MusicianPracticePlayer() {
     })();
   }, [currentSong?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       batchAbortRef.current?.abort();
@@ -722,7 +723,6 @@ export default function MusicianPracticePlayer() {
     };
   }, [releaseWakeLock, stopWebAudioSources]);
 
-  // Play / Pause master handler
   const playSong = useCallback(
     async (targetSong?: PracticeSongItem, customStartOffset?: number) => {
       const song = targetSong || currentSongRef.current;
@@ -858,7 +858,6 @@ export default function MusicianPracticePlayer() {
     [duration, startWebAudioAtOffset]
   );
 
-  // Seamless toggle of Click / Voz Guía even mid-playback
   const handleSetCueMode = useCallback(
     async (enableCue: boolean, presetVolumes?: { foh: number; cue: number }) => {
       if (presetVolumes) {
@@ -887,7 +886,6 @@ export default function MusicianPracticePlayer() {
           resumeAt = nativeAudioRef.current.currentTime || resumeAt;
         }
       } else if (enableCue && resumeAt <= resolveEffectivePreRoll(song) + 0.05) {
-        // When stopped at start and turning ON Click/Guía, rewind to 0 so count-in ("1, 2, 3, 4") plays!
         resumeAt = 0;
         pauseGlobalTimeRef.current = 0;
         setGlobalTime(0);
@@ -904,7 +902,6 @@ export default function MusicianPracticePlayer() {
     [pauseSong, playSong, showNotice, vaultMap]
   );
 
-  // Track selection & Next / Prev handlers
   const selectAndPlaySong = useCallback(
     async (song: PracticeSongItem, autoPlay = true) => {
       const sameSong = currentSongRef.current?.id === song.id;
@@ -953,8 +950,7 @@ export default function MusicianPracticePlayer() {
     }
     if (activeSetlistRawSongs.length === 0) return;
     const idx = activeSetlistRawSongs.findIndex((s) => s.id === currentSongRef.current?.id);
-    const prevIdx =
-      idx > 0 ? idx - 1 : Math.max(0, activeSetlistRawSongs.length - 1);
+    const prevIdx = idx > 0 ? idx - 1 : Math.max(0, activeSetlistRawSongs.length - 1);
     const prevSong = activeSetlistRawSongs[prevIdx];
     if (prevSong) {
       void selectAndPlaySong(prevSong, isPlayingRef.current);
@@ -976,7 +972,6 @@ export default function MusicianPracticePlayer() {
       const idx = activeSetlistRawSongs.findIndex((s) => s.id === song?.id);
       if (idx >= 0 && idx < activeSetlistRawSongs.length - 1) {
         const nextSong = activeSetlistRawSongs[idx + 1];
-        // When offline, skip any uncached track gracefully
         if (!isOnline && !vaultMap[nextSong.id]?.hasFoh) {
           stopAllPlayback(true);
           return;
@@ -986,9 +981,17 @@ export default function MusicianPracticePlayer() {
         stopAllPlayback(true);
       }
     };
-  }, [activeSetlistRawSongs, isOnline, playSong, repeatMode, selectAndPlaySong, skipPreRoll, stopAllPlayback, vaultMap]);
+  }, [
+    activeSetlistRawSongs,
+    isOnline,
+    playSong,
+    repeatMode,
+    selectAndPlaySong,
+    skipPreRoll,
+    stopAllPlayback,
+    vaultMap,
+  ]);
 
-  // Native <audio> timeupdate & Media Session API (for lock-screen controls on mobile/tablet)
   useEffect(() => {
     const audioEl = nativeAudioRef.current;
     if (!audioEl) return;
@@ -1047,31 +1050,29 @@ export default function MusicianPracticePlayer() {
         setlists.find((s) => s.id === selectedSetlistId)?.title || 'Repertorio En Vivo';
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentSong.title,
-        artist: 'TANDU Músicos · Práctica Local MP3',
+        artist: 'TANDU Músicos · Memoria Local MP3',
         album: activeSetlistTitle,
       });
       navigator.mediaSession.setActionHandler('play', () => void playSong());
       navigator.mediaSession.setActionHandler('pause', () => pauseSong());
       navigator.mediaSession.setActionHandler('previoustrack', () => goPrevSong());
       navigator.mediaSession.setActionHandler('nexttrack', () => goNextSong(true));
-    } catch {
-      // Optional in restricted webviews
-    }
+    } catch {}
   }, [currentSong, goNextSong, goPrevSong, pauseSong, playSong, selectedSetlistId, setlists]);
 
   // ============================================================================
-  // VAULT ACTIONS: SINGLE SAVE, BATCH SAVE SETLIST, REFRESH CATALOG, DELETE LOCAL
+  // VAULT ACTIONS
   // ============================================================================
   const handleManualSyncCatalog = async () => {
     if (!isOnline) {
-      showNotice('info', 'Estás sin internet. Mostrando tu repertorio guardado en el dispositivo.');
+      showNotice('info', 'Modo sin internet activo. Usando repertorio guardado en tu dispositivo.');
       return;
     }
     setSyncingCatalog(true);
     const snap = await syncPracticeCatalogFromSupabase({ force: true });
     if (snap) {
       applyCatalogSnapshot(snap);
-      showNotice('ok', 'Lista de canciones sincronizada.');
+      showNotice('ok', 'Repertorio sincronizado con Live Concert.');
     }
     setSyncingCatalog(false);
   };
@@ -1083,7 +1084,7 @@ export default function MusicianPracticePlayer() {
   ) => {
     e?.stopPropagation();
     if (!isOnline) {
-      showNotice('err', 'Conéctate a internet una vez para guardar este MP3 en tu dispositivo.');
+      showNotice('err', 'Conéctate una vez a internet para guardar este MP3 en tu memoria.');
       return;
     }
     if (downloadingSongId) return;
@@ -1109,7 +1110,7 @@ export default function MusicianPracticePlayer() {
 
   const handleSaveEntireSetlistOffline = async () => {
     if (!isOnline) {
-      showNotice('err', 'Necesitas conexión Wi-Fi o datos para descargar las pistas faltantes.');
+      showNotice('err', 'Conéctate a Wi-Fi o datos para descargar las pistas pendientes.');
       return;
     }
     if (batchProgress) {
@@ -1120,7 +1121,7 @@ export default function MusicianPracticePlayer() {
 
     const targets = setlistVaultStats.pendingSongs;
     if (targets.length === 0) {
-      showNotice('ok', 'Todas las pistas de este repertorio ya están guardadas en tu memoria local.');
+      showNotice('ok', 'Todo el repertorio ya está guardado en la memoria de tu dispositivo.');
       return;
     }
 
@@ -1149,7 +1150,7 @@ export default function MusicianPracticePlayer() {
       }
       showNotice(
         'ok',
-        `${savedOk} ${savedOk === 1 ? 'pista guardada' : 'pistas guardadas'} en memoria local. Ya puedes escuchar sin internet.`
+        `${savedOk} ${savedOk === 1 ? 'pista guardada' : 'pistas guardadas'} en tu memoria local.`
       );
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
@@ -1175,7 +1176,7 @@ export default function MusicianPracticePlayer() {
   };
 
   // ============================================================================
-  // RENDER
+  // DERIVED UI METRICS
   // ============================================================================
   const currentVaultEval = evaluateSongVaultState(
     currentSong,
@@ -1186,200 +1187,243 @@ export default function MusicianPracticePlayer() {
     : null;
   const currentKey = currentSong?.prompter_data?.key || null;
   const currentTimeSig = currentSong?.prompter_data?.timeSignature || '4/4';
-  const progressPct =
-    duration > 0 ? Math.max(0, Math.min(100, (globalTime / duration) * 100)) : 0;
+  const progressRatio = duration > 0 ? Math.max(0, Math.min(1, globalTime / duration)) : 0;
+  const activeSetlistName =
+    selectedSetlistId === ALL_SONGS_FILTER_ID
+      ? 'Catálogo Completo'
+      : setlists.find((s) => s.id === selectedSetlistId)?.title || 'Setlist En Vivo';
+
+  const activeModeKey: 'music' | 'both' | 'click' = !cueEnabled
+    ? 'music'
+    : fohVolume <= 0.05
+      ? 'click'
+      : 'both';
 
   return (
-    <div className="flex h-full w-full flex-col bg-[#090b10] text-zinc-100 select-none overflow-hidden">
-      {/* Hidden Native Audio Element for Battery-Friendly & Lock-Screen Pure MP3 Playback */}
+    <div className="mp-studio-root flex h-full w-full flex-col select-none overflow-hidden">
+      {/* Native Audio Element for Lock-Screen & Battery-Friendly Pure MP3 Mode */}
       <audio ref={nativeAudioRef} preload="auto" playsInline className="hidden" />
 
-      {/* Top Header Bar */}
-      <header className="shrink-0 border-b border-white/[0.07] bg-[#0d1017] px-4 py-3 sm:px-6">
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-              <Headphones size={20} />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="truncate text-sm font-bold tracking-tight text-white sm:text-base">
-                  Práctica Diaria · Pistas MP3
-                </h1>
-                <span className="hidden sm:inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-mono font-semibold text-emerald-300">
-                  <Smartphone size={11} />
-                  <span>MEMORIA LOCAL{isPersisted ? ' PROTEGIDA' : ''}</span>
+      {/* =====================================================================
+          POSTER MASTHEAD (Vermilion Stage + Carbon Ink Pills + Solar Gold Tags)
+      ====================================================================== */}
+      <header className="mp-vermilion-stage shrink-0 border-b-2 border-[#111110]/15 px-4 pt-3.5 pb-3 sm:px-6 sm:pt-4 sm:pb-4">
+        <div className="mx-auto max-w-[1560px]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            {/* Title Lockup */}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                <span className="mp-ink-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-tight">
+                  <span>MEMORIA</span>
+                  <span className="text-[#f2b829] mp-mono">
+                    {formatBytesCompact(totalBytesUsed)}
+                  </span>
                 </span>
-              </div>
-              <p className="truncate text-[11px] text-zinc-400">
-                Repertorio de Live Concert guardado en tu celular o tablet ·{' '}
-                <span className="font-mono font-medium text-emerald-400">
-                  {formatBytesCompact(totalBytesUsed)} en dispositivo
-                </span>
-              </p>
-            </div>
-          </div>
 
-          {/* Right Controls: Offline indicator, Setlist Selector & Batch Offline Save */}
-          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
-            {!isOnline && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-amber-300">
-                <WifiOff size={13} />
-                <span>Modo Sin Internet</span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 flex-1 sm:flex-initial">
-              <select
-                value={selectedSetlistId}
-                onChange={(e) => setSelectedSetlistId(e.target.value)}
-                aria-label="Seleccionar Setlist de Live Concert"
-                className="flex-1 sm:w-52 rounded-xl border border-white/10 bg-[#131722] px-3 py-2 text-xs font-semibold text-zinc-100 focus:border-[#e11d48] focus:outline-none"
-              >
-                {setlists.map((sl) => (
-                  <option key={sl.id} value={sl.id}>
-                    Setlist: {sl.title}
-                  </option>
-                ))}
-                <option value={ALL_SONGS_FILTER_ID}>
-                  Todas las Pistas ({allLiveSongs.length})
-                </option>
-              </select>
-
-              <button
-                type="button"
-                onClick={handleManualSyncCatalog}
-                disabled={syncingCatalog}
-                title="Actualizar lista de canciones desde Live Concert"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-[#131722] text-zinc-300 hover:border-white/20 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw size={14} className={syncingCatalog ? 'animate-spin text-[#e11d48]' : ''} />
-              </button>
-            </div>
-
-            {setlistVaultStats.playableTotal > 0 && (
-              <button
-                type="button"
-                onClick={handleSaveEntireSetlistOffline}
-                disabled={!isOnline && !batchProgress}
-                className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all cursor-pointer ${
-                  batchProgress
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                    : setlistVaultStats.allCached
-                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20'
-                      : 'bg-[#e11d48] text-white hover:bg-[#be123c]'
-                } disabled:opacity-40`}
-              >
-                {batchProgress ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    <span className="font-mono tabular-nums">
-                      Guardando {batchProgress.current}/{batchProgress.total}...
-                    </span>
-                  </>
-                ) : setlistVaultStats.allCached ? (
-                  <>
-                    <Check size={14} />
-                    <span>
-                      Listo Offline ({setlistVaultStats.cachedCount}/{setlistVaultStats.playableTotal})
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <CloudDownload size={14} />
-                    <span>
-                      Guardar Setlist ({setlistVaultStats.pendingSongs.length} MP3)
-                    </span>
-                  </>
+                {isPersisted && (
+                  <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-[#111110]/12 px-2.5 py-0.5 text-[11px] font-bold text-[#111110]">
+                    <Smartphone size={12} strokeWidth={2.2} />
+                    <span>Guardado permanente</span>
+                  </span>
                 )}
-              </button>
-            )}
-          </div>
-        </div>
 
-        {/* Mobile View Switcher Tabs (< lg) */}
-        <div className="mt-3 flex lg:hidden rounded-xl bg-[#131722] p-1 border border-white/[0.06]">
-          <button
-            type="button"
-            onClick={() => setMobileTab('playlist')}
-            className={`flex-1 flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-all cursor-pointer ${
-              mobileTab === 'playlist'
-                ? 'bg-[#e11d48] text-white'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <ListMusic size={14} />
-            <span>Canciones ({activePlaylist.length})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileTab('player')}
-            className={`flex-1 flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-all cursor-pointer ${
-              mobileTab === 'player'
-                ? 'bg-[#e11d48] text-white'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Sparkles size={14} />
-            <span>Estudio · Click & Guía</span>
-          </button>
+                {!isOnline && (
+                  <span className="mp-ink-badge inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold text-[#f2b829]">
+                    <WifiOff size={12} />
+                    <span>Sin internet · Modo local</span>
+                  </span>
+                )}
+              </div>
+
+              <h1 className="mp-display-title text-2xl sm:text-3xl md:text-[34px] uppercase text-[#111110] truncate">
+                ESTUDIO DE PRÁCTICA
+              </h1>
+            </div>
+
+            {/* Right Controls: Setlist Picker + Batch Save Island CTA */}
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-1.5 flex-1 sm:flex-initial min-w-[190px]">
+                <select
+                  value={selectedSetlistId}
+                  onChange={(e) => setSelectedSetlistId(e.target.value)}
+                  aria-label="Seleccionar repertorio de Live Concert"
+                  className="w-full sm:w-56 h-11 rounded-full bg-[#f5efe4] border-2 border-[#111110] px-4 text-xs font-bold text-[#111110] shadow-[0_3px_0_#111110] cursor-pointer"
+                >
+                  {setlists.map((sl) => (
+                    <option key={sl.id} value={sl.id}>
+                      Show: {sl.title}
+                    </option>
+                  ))}
+                  <option value={ALL_SONGS_FILTER_ID}>
+                    Todas las pistas ({allLiveSongs.length})
+                  </option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={handleManualSyncCatalog}
+                  disabled={syncingCatalog}
+                  title="Sincronizar repertorio con Live Concert"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f5efe4] border-2 border-[#111110] text-[#111110] shadow-[0_3px_0_#111110] active:translate-y-[2px] active:shadow-none transition-transform cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw size={15} strokeWidth={2.2} className={syncingCatalog ? 'animate-spin' : ''} />
+                </button>
+              </div>
+
+              {/* Island Button-in-Button CTA for Offline Vault */}
+              {setlistVaultStats.playableTotal > 0 && (
+                <button
+                  type="button"
+                  onClick={handleSaveEntireSetlistOffline}
+                  disabled={!isOnline && !batchProgress}
+                  className="group flex h-11 items-center gap-2.5 rounded-full bg-[#111110] pl-4 pr-1.5 text-xs font-bold text-[#f5efe4] shadow-[0_4px_12px_rgba(17,17,16,0.28)] active:scale-[0.98] transition-transform cursor-pointer disabled:opacity-45"
+                >
+                  {batchProgress ? (
+                    <>
+                      <span className="mp-mono">
+                        Guardando {batchProgress.current}/{batchProgress.total}
+                      </span>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110]">
+                        <Loader2 size={14} className="animate-spin" />
+                      </span>
+                    </>
+                  ) : setlistVaultStats.allCached ? (
+                    <>
+                      <span>
+                        En tu equipo ({setlistVaultStats.cachedCount}/{setlistVaultStats.playableTotal})
+                      </span>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110]">
+                        <Check size={15} strokeWidth={2.6} />
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Guardar {setlistVaultStats.pendingSongs.length} MP3</span>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f2b829] text-[#111110] transition-transform duration-200 group-hover:scale-105">
+                        <CloudDownload size={15} strokeWidth={2.3} />
+                      </span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Mobile & Tablet Portrait Segmented Switcher (< lg) */}
+          <div className="mt-3 flex lg:hidden rounded-full bg-[#111110]/15 p-1">
+            <button
+              type="button"
+              onClick={() => setMobileTab('playlist')}
+              className={`relative flex-1 flex items-center justify-center gap-2 rounded-full py-2.5 text-xs font-bold transition-colors cursor-pointer ${
+                mobileTab === 'playlist' ? 'text-[#f5efe4]' : 'text-[#111110]/85'
+              }`}
+            >
+              {mobileTab === 'playlist' && (
+                <motion.span
+                  layoutId="mpMobileTabPill"
+                  transition={SPRING_SNAPPY}
+                  className="absolute inset-0 rounded-full bg-[#111110]"
+                />
+              )}
+              <span className="relative z-10 flex items-center gap-1.5">
+                <ListMusic size={15} />
+                <span>Repertorio ({activePlaylist.length})</span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMobileTab('player')}
+              className={`relative flex-1 flex items-center justify-center gap-2 rounded-full py-2.5 text-xs font-bold transition-colors cursor-pointer ${
+                mobileTab === 'player' ? 'text-[#f5efe4]' : 'text-[#111110]/85'
+              }`}
+            >
+              {mobileTab === 'player' && (
+                <motion.span
+                  layoutId="mpMobileTabPill"
+                  transition={SPRING_SNAPPY}
+                  className="absolute inset-0 rounded-full bg-[#111110]"
+                />
+              )}
+              <span className="relative z-10 flex items-center gap-1.5">
+                <Sliders size={15} />
+                <span>Consola · Click & Guía</span>
+              </span>
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Subtle Toast Banner */}
-      {statusToast && (
-        <div
-          className={`shrink-0 px-4 py-2 text-center text-xs font-medium border-b ${
-            statusToast.kind === 'err'
-              ? 'bg-rose-500/15 text-rose-200 border-rose-500/30'
-              : statusToast.kind === 'ok'
-                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30'
-                : 'bg-sky-500/15 text-sky-200 border-sky-500/30'
-          }`}
-        >
-          {statusToast.text}
-        </div>
-      )}
+      {/* Contextual Notice Strip */}
+      <AnimatePresence>
+        {statusToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={SPRING_GENTLE}
+            className={`shrink-0 px-4 py-2 text-center text-xs font-bold border-b ${
+              statusToast.kind === 'err'
+                ? 'bg-[#111110] text-[#e84432] border-[#e84432]/40'
+                : 'bg-[#111110] text-[#f2b829] border-[#f2b829]/30'
+            }`}
+          >
+            {statusToast.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Main Split Workspace */}
-      <div className="mx-auto flex flex-1 w-full max-w-[1600px] min-h-0 overflow-hidden lg:grid lg:grid-cols-12">
-        {/* LEFT PANEL: Live Concert Repertorio & Offline Vault Status */}
+      {/* =====================================================================
+          ASYMMETRIC EDITORIAL WORKSPACE (Tablet Landscape / Desktop 12-Col, Mobile Stack)
+      ====================================================================== */}
+      <div className="mx-auto flex flex-1 w-full max-w-[1560px] min-h-0 overflow-hidden lg:grid lg:grid-cols-12">
+        {/* LEFT COLUMN: Warm Alabaster Repertorio Sheet */}
         <section
           className={`${
             mobileTab === 'playlist' ? 'flex' : 'hidden'
-          } lg:flex lg:col-span-5 xl:col-span-4 flex-col w-full min-h-0 border-r border-white/[0.07] bg-[#0b0e15]`}
+          } lg:flex lg:col-span-5 xl:col-span-4 flex-col w-full min-h-0 border-r border-[#d8ccb8] bg-[#f5efe4]`}
         >
-          {/* Search Input */}
-          <div className="shrink-0 p-3.5 border-b border-white/[0.06]">
+          {/* Search Bar */}
+          <div className="shrink-0 px-4 pt-4 pb-3 border-b border-[#dfd4c3]">
+            <label htmlFor="mp-song-search" className="sr-only">
+              Buscar canción del repertorio
+            </label>
             <div className="relative">
               <Search
-                size={14}
-                className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500"
+                size={15}
+                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#4a4640]"
               />
               <input
+                id="mp-song-search"
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar canción del repertorio..."
-                className="w-full rounded-xl border border-white/[0.08] bg-[#121621] py-2.5 pl-9 pr-3 text-xs text-white placeholder-zinc-500 focus:border-[#e11d48] focus:outline-none"
+                placeholder="Buscar pista en el repertorio..."
+                className="w-full h-11 rounded-full border-1.5 border-[#cfc2ae] bg-[#fbf8f2] pl-10 pr-4 text-xs font-semibold text-[#111110] placeholder-[#787166] focus:border-[#111110]"
               />
             </div>
           </div>
 
-          {/* Track List */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scrollbar">
+          {/* Tracklist */}
+          <div className="mp-scroll flex-1 overflow-y-auto px-3.5 py-3 space-y-2">
             {initialLoading ? (
-              <div className="flex flex-col items-center justify-center py-16 text-zinc-500 gap-2.5">
-                <Loader2 size={22} className="animate-spin text-[#e11d48]" />
-                <span className="text-xs">Cargando repertorio...</span>
+              <div className="space-y-2.5 py-2">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <div
+                    key={n}
+                    className="h-16 rounded-2xl bg-[#ebe2d3] animate-pulse border border-[#dfd4c3]"
+                  />
+                ))}
               </div>
             ) : activePlaylist.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 px-6 text-center text-zinc-500">
-                <Disc3 size={36} className="mb-3 opacity-40" />
-                <p className="text-sm font-semibold text-zinc-300">No hay pistas disponibles</p>
-                <p className="mt-1 text-xs text-zinc-500">
-                  Cuando el administrador exporte las mezclas en Studio Prompter / Live Concert,
-                  aparecerán aquí automáticamente en formato MP3 ligero.
+              <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#e9dfd0] text-[#111110] mb-3">
+                  <Disc3 size={26} />
+                </div>
+                <p className="text-sm font-bold text-[#111110]">Sin pistas en este repertorio</p>
+                <p className="mt-1 text-xs text-[#4a4640] max-w-xs leading-relaxed">
+                  Al exportar las mezclas en Studio Prompter hacia Live Concert, aparecerán aquí en
+                  formato MP3 ligero listas para guardar en tu celular o tablet.
                 </p>
               </div>
             ) : (
@@ -1394,78 +1438,114 @@ export default function MusicianPracticePlayer() {
                 const isThisDownloading = downloadingSongId === song.id;
 
                 return (
-                  <div
+                  <motion.div
                     key={song.id}
+                    whileTap={evalSt.status !== 'no_mix' ? { scale: 0.99 } : undefined}
                     onClick={() => {
                       if (evalSt.status === 'no_mix') return;
                       void selectAndPlaySong(song, true);
                     }}
-                    className={`group flex items-center justify-between gap-3 rounded-xl px-3 py-3 transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] border ${
+                    className={`group flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3 transition-colors border-2 ${
                       evalSt.status === 'no_mix'
-                        ? 'opacity-50 cursor-not-allowed border-transparent bg-white/[0.01]'
+                        ? 'opacity-45 cursor-not-allowed border-transparent bg-[#ece4d7]'
                         : isSelected
-                          ? 'cursor-pointer border-[#e11d48]/70 bg-[#1a1218]'
-                          : 'cursor-pointer border-white/[0.04] bg-[#10141e] hover:border-white/15 hover:bg-[#151a27]'
+                          ? 'cursor-pointer border-[#111110] bg-[#141413] text-[#f5efe4] shadow-[0_8px_20px_rgba(17,17,16,0.16)]'
+                          : 'cursor-pointer border-[#dfd4c3] bg-[#fbf8f2] text-[#111110] hover:border-[#111110]/50'
                     }`}
                   >
-                    {/* Track Index / Play Indicator */}
+                    {/* Index / Play Pill */}
                     <div
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold tabular-nums ${
+                      className={`mp-mono flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-bold ${
                         isSelected
-                          ? 'bg-[#e11d48] text-white'
-                          : 'bg-[#181d2b] text-zinc-400 group-hover:text-white'
-                      }`}
+                          ? 'bg-[#e84432] text-[#f5efe4]'
+                          : 'bg-[#e9dfd0] text-[#111110] group-hover:bg-[#111110] group-hover:text-[#f5efe4]'
+                      } transition-colors`}
                     >
                       {isSelected && isPlaying ? (
-                        <Pause size={15} />
+                        <Pause size={17} />
                       ) : isSelected ? (
-                        <Play size={15} className="ml-0.5" />
+                        <Play size={17} className="ml-0.5" />
                       ) : (
                         String((song.position ?? idx) + 1).padStart(2, '0')
                       )}
                     </div>
 
-                    {/* Title & Metadata Badges */}
+                    {/* Song Title &Editorial Tag Pills */}
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px] font-semibold text-zinc-100">
+                      <div
+                        className={`mp-heading truncate text-[15px] font-bold ${
+                          isSelected ? 'text-[#f5efe4]' : 'text-[#111110]'
+                        }`}
+                      >
                         {song.title}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10.5px]">
                         {evalSt.status === 'offline_ready' && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 py-0.5 font-semibold text-emerald-300 border border-emerald-500/25">
-                            <Check size={10} />
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-bold ${
+                              isSelected
+                                ? 'bg-[#f2b829] text-[#111110]'
+                                : 'bg-[#111110] text-[#f2b829]'
+                            }`}
+                          >
+                            <Check size={10} strokeWidth={3} />
                             <span>
-                              En Memoria ({formatBytesCompact(evalSt.localBytes)})
-                              {evalSt.hasLocalCue ? ' · +Click' : ''}
+                              LOCAL · {formatBytesCompact(evalSt.localBytes)}
+                              {evalSt.hasLocalCue ? ' +CLICK' : ''}
                             </span>
                           </span>
                         )}
+
                         {evalSt.status === 'update_available' && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 font-semibold text-amber-300 border border-amber-500/30">
-                            <span>En Memoria · Nueva mezcla disponible</span>
+                          <span className="inline-flex items-center rounded-md bg-[#f47b2a] px-2 py-0.5 font-bold text-[#111110]">
+                            NUEVO MIX DISPONIBLE
                           </span>
                         )}
+
                         {evalSt.status === 'cloud_only' && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-zinc-800 px-1.5 py-0.5 font-medium text-zinc-400">
-                            <span>Toca para guardar MP3</span>
+                          <span
+                            className={`inline-flex items-center rounded-md px-2 py-0.5 font-semibold ${
+                              isSelected
+                                ? 'bg-white/10 text-[#a39d93]'
+                                : 'bg-[#e9dfd0] text-[#4a4640]'
+                            }`}
+                          >
+                            Toca para guardar MP3
                           </span>
                         )}
+
                         {evalSt.status === 'no_mix' && (
-                          <span className="inline-flex items-center rounded-md bg-zinc-900 px-1.5 py-0.5 text-zinc-500">
-                            Pendiente exportar Mix
+                          <span className="inline-flex items-center rounded-md bg-[#dfd4c3] px-2 py-0.5 font-semibold text-[#4a4640]">
+                            Sin mezcla exportada
                           </span>
                         )}
 
                         {bpmVal && (
-                          <span className="font-mono text-zinc-400 tabular-nums">{bpmVal} BPM</span>
+                          <span
+                            className={`mp-mono font-bold ${
+                              isSelected ? 'text-[#f5efe4]/80' : 'text-[#4a4640]'
+                            }`}
+                          >
+                            {bpmVal} BPM
+                          </span>
                         )}
+
                         {keyVal && (
-                          <span className="font-mono font-semibold text-rose-300">{keyVal}</span>
+                          <span
+                            className={`mp-mono rounded px-1.5 py-0.5 font-bold ${
+                              isSelected
+                                ? 'bg-[#e84432]/25 text-[#f2b829]'
+                                : 'bg-[#e84432]/12 text-[#a63629]'
+                            }`}
+                          >
+                            {keyVal}
+                          </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Right Vault Action Button */}
+                    {/* Vault Quick Actions (40x40+ Touch Targets) */}
                     <div className="flex shrink-0 items-center gap-1">
                       {evalSt.status === 'cloud_only' && (
                         <button
@@ -1473,12 +1553,16 @@ export default function MusicianPracticePlayer() {
                           onClick={(e) => void handleSaveSingleSongToDevice(song, false, e)}
                           disabled={isThisDownloading || !isOnline}
                           title="Guardar MP3 en la memoria del dispositivo"
-                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#181d2b] text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors cursor-pointer disabled:opacity-40"
+                          className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors cursor-pointer disabled:opacity-40 ${
+                            isSelected
+                              ? 'border-white/15 bg-white/10 text-[#f2b829] hover:bg-[#f2b829] hover:text-[#111110]'
+                              : 'border-[#cfc2ae] bg-[#f5efe4] text-[#111110] hover:bg-[#111110] hover:text-[#f2b829]'
+                          }`}
                         >
                           {isThisDownloading ? (
-                            <Loader2 size={14} className="animate-spin text-emerald-400" />
+                            <Loader2 size={15} className="animate-spin" />
                           ) : (
-                            <CloudDownload size={14} />
+                            <CloudDownload size={16} />
                           )}
                         </button>
                       )}
@@ -1488,11 +1572,11 @@ export default function MusicianPracticePlayer() {
                           type="button"
                           onClick={(e) => void handleSaveSingleSongToDevice(song, true, e)}
                           disabled={isThisDownloading}
-                          title="Actualizar a la última mezcla MP3"
-                          className="flex h-8 px-2 items-center justify-center rounded-lg border border-amber-500/40 bg-amber-500/15 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/25 cursor-pointer"
+                          title="Actualizar a la nueva mezcla MP3"
+                          className="flex h-9 px-2.5 items-center justify-center rounded-xl bg-[#f2b829] text-[11px] font-bold text-[#111110] cursor-pointer"
                         >
                           {isThisDownloading ? (
-                            <Loader2 size={13} className="animate-spin" />
+                            <Loader2 size={14} className="animate-spin" />
                           ) : (
                             'Actualizar'
                           )}
@@ -1503,373 +1587,441 @@ export default function MusicianPracticePlayer() {
                         <button
                           type="button"
                           onClick={(e) => void handleRemoveLocalSong(song, e)}
-                          title="Liberar esta pista de la memoria local"
-                          className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-rose-500/15 hover:text-rose-400 transition-colors cursor-pointer"
+                          title="Liberar espacio de esta pista"
+                          className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'text-[#a39d93] hover:bg-[#e84432]/25 hover:text-[#f5efe4]'
+                              : 'text-[#787166] hover:bg-[#e84432]/15 hover:text-[#c93322]'
+                          }`}
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={15} />
                         </button>
                       )}
                     </div>
-                  </div>
+                  </motion.div>
                 );
               })
             )}
           </div>
         </section>
 
-        {/* RIGHT PANEL: Musician Practice Deck (Click/Guía Mixer + Sections Loop + Chords/Lyrics) */}
+        {/* RIGHT COLUMN: Obsidian Hardware Console + Warm Alabaster Study Sheet */}
         <section
           className={`${
             mobileTab === 'player' ? 'flex' : 'hidden'
-          } lg:flex lg:col-span-7 xl:col-span-8 flex-col w-full min-h-0 bg-[#090b10] overflow-y-auto custom-scrollbar`}
+          } lg:flex lg:col-span-7 xl:col-span-8 flex-col w-full min-h-0 bg-[#f5efe4] overflow-y-auto mp-scroll`}
         >
           {currentSong ? (
-            <div className="flex flex-1 flex-col p-4 sm:p-6 gap-6 max-w-4xl w-full mx-auto">
-              {/* Song Header & Storage Status */}
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.07] pb-5">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2 mb-2">
+            <div className="flex flex-1 flex-col p-4 sm:p-6 gap-5 max-w-4xl w-full mx-auto pb-8">
+              {/* ===============================================================
+                  DOUBLE-BEZEL OBSIDIAN CONSOLE (Inspired by ~/mi-proyecto window)
+              ================================================================ */}
+              <div className="mp-console-bezel">
+                <div className="mp-console-core p-4 sm:p-6 space-y-5">
+                  {/* Console Window Header Bar */}
+                  <div className="flex items-center justify-between gap-3 border-b border-white/[0.08] pb-3.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="h-2.5 w-2.5 rounded-full bg-[#e84432] shrink-0" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-[#f2b829] shrink-0" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-[#f5efe4] shrink-0" />
+                      <span className="mp-mono ml-1.5 truncate text-[11px] text-[#a39d93]">
+                        ~/memoria-local/{activeSetlistName.toLowerCase().replace(/\s+/g, '-')}
+                      </span>
+                    </div>
+
                     {currentVaultEval.hasLocalFoh ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300">
-                        <Smartphone size={12} />
-                        <span>Reproduciendo desde tu Memoria Local · 0 Datos</span>
+                      <span className="mp-gold-tag shrink-0 rounded-full px-3 py-0.5 text-[11px] font-bold">
+                        0 Datos · Offline
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-800 border border-white/10 px-2.5 py-0.5 text-[11px] font-medium text-zinc-300">
-                        <CloudDownload size={12} />
-                        <span>Se guardará en tu dispositivo automáticamente al reproducir</span>
+                      <span className="shrink-0 rounded-full bg-white/10 px-3 py-0.5 text-[11px] font-semibold text-[#f5efe4]">
+                        Auto-guardado MP3
                       </span>
                     )}
                   </div>
 
-                  <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
-                    {currentSong.title}
-                  </h2>
+                  {/* Active Track Title + Musical Telemetry */}
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-xs font-bold text-[#f2b829] mp-mono mb-1">
+                        <span>&gt;</span>
+                        <span>
+                          {cueEnabled
+                            ? 'MODO ENSAYO SINCRONIZADO (PISTA + GUÍA)'
+                            : 'REPRODUCCIÓN MP3 DE BOLSILLO'}
+                        </span>
+                      </div>
 
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                    {currentBpm && (
-                      <span className="rounded-lg bg-[#141824] border border-white/[0.07] px-2.5 py-1 font-mono font-semibold text-zinc-200 tabular-nums">
-                        {currentBpm} BPM
-                      </span>
-                    )}
-                    <span className="rounded-lg bg-[#141824] border border-white/[0.07] px-2.5 py-1 font-mono text-zinc-300">
-                      Compás {currentTimeSig}
-                    </span>
-                    {currentKey && (
-                      <span className="rounded-lg bg-rose-500/10 border border-rose-500/30 px-2.5 py-1 font-mono font-bold text-rose-300">
-                        Tono: {currentKey}
-                      </span>
+                      <h2 className="mp-heading text-2xl sm:text-3xl font-bold text-[#f5efe4] break-words">
+                        {currentSong.title}
+                      </h2>
+
+                      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+                        {currentBpm && (
+                          <span className="mp-mono rounded-lg bg-[#1e1e1c] border border-white/10 px-2.5 py-1 font-bold text-[#f5efe4]">
+                            {currentBpm} BPM
+                          </span>
+                        )}
+                        <span className="mp-mono rounded-lg bg-[#1e1e1c] border border-white/10 px-2.5 py-1 text-[#a39d93]">
+                          {currentTimeSig}
+                        </span>
+                        {currentKey && (
+                          <span className="mp-mono rounded-lg bg-[#e84432] px-2.5 py-1 font-bold text-[#f5efe4]">
+                            Tono {currentKey}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Skip Pre-Roll Button */}
+                    {preRollSec > 0.1 && (
+                      <button
+                        type="button"
+                        onClick={() => setSkipPreRoll((v) => !v)}
+                        className={`h-10 rounded-full px-3.5 text-xs font-bold transition-colors cursor-pointer border ${
+                          !skipPreRoll || cueEnabled
+                            ? 'border-[#f2b829] bg-[#f2b829]/15 text-[#f2b829]'
+                            : 'border-white/15 bg-[#1e1e1c] text-[#a39d93] hover:text-[#f5efe4]'
+                        }`}
+                      >
+                        {!skipPreRoll || cueEnabled ? 'Conteo 1-2-3-4: ON' : 'Saltar silencio inicial'}
+                      </button>
                     )}
                   </div>
-                </div>
 
-                {/* Pre-Roll Toggle */}
-                {preRollSec > 0.1 && (
-                  <button
-                    type="button"
-                    onClick={() => setSkipPreRoll((v) => !v)}
-                    className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-                      !skipPreRoll || cueEnabled
-                        ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
-                        : 'border-white/10 bg-[#131722] text-zinc-400 hover:text-white'
-                    }`}
-                    title="Define si al escuchar sin Click se salta el silencio de conteo inicial"
-                  >
-                    {!skipPreRoll || cueEnabled
-                      ? 'Conteo Inicial: Incluido'
-                      : 'Saltar Silencio Inicial'}
-                  </button>
-                )}
-              </div>
+                  {/* Tactile Waveform Scrubber */}
+                  <div className="space-y-2 pt-1">
+                    <div
+                      role="slider"
+                      tabIndex={0}
+                      aria-label="Posición de reproducción"
+                      aria-valuemin={0}
+                      aria-valuemax={Math.round(duration)}
+                      aria-valuenow={Math.round(globalTime)}
+                      onClick={(e) => {
+                        if (duration <= 0) return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        seekToGlobal(ratio * duration);
+                      }}
+                      className="relative flex h-14 w-full cursor-pointer items-end gap-[3px] rounded-2xl bg-[#1b1b19] px-3 py-2.5 border border-white/[0.06] overflow-hidden"
+                    >
+                      {/* Section Loop Highlight Overlay */}
+                      {loopSectionIndex !== null &&
+                        normalizedSections[loopSectionIndex] &&
+                        duration > 0 && (
+                          <div
+                            className="pointer-events-none absolute inset-y-0 bg-[#f2b829]/20 border-x-2 border-[#f2b829]"
+                            style={{
+                              left: `${(normalizedSections[loopSectionIndex].globalStart / duration) * 100}%`,
+                              width: `${Math.max(
+                                1.5,
+                                ((normalizedSections[loopSectionIndex].globalEnd -
+                                  normalizedSections[loopSectionIndex].globalStart) /
+                                  duration) *
+                                  100
+                              )}%`,
+                            }}
+                          />
+                        )}
 
-              {/* Timeline Scrubber + Transport Controls */}
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <div
-                    onClick={(e) => {
-                      if (duration <= 0) return;
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                      seekToGlobal(ratio * duration);
-                    }}
-                    className="group relative h-3 w-full cursor-pointer rounded-full bg-[#161b28] overflow-hidden"
-                  >
-                    {/* Loop highlight range */}
-                    {loopSectionIndex !== null &&
-                      normalizedSections[loopSectionIndex] &&
-                      duration > 0 && (
-                        <div
-                          className="absolute inset-y-0 bg-amber-400/25 border-x border-amber-400"
+                      {waveformBars.map((barHeight, idx) => {
+                        const barRatio = (idx + 0.5) / waveformBars.length;
+                        const played = barRatio <= progressRatio;
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex-1 rounded-full transition-colors duration-100 ${
+                              played
+                                ? cueEnabled
+                                  ? 'bg-[#f2b829]'
+                                  : 'bg-[#e84432]'
+                                : 'bg-[#f5efe4]/18'
+                            }`}
+                            style={{ height: `${barHeight}%` }}
+                          />
+                        );
+                      })}
+                    </div>
+
+                    <div className="mp-mono flex items-center justify-between text-xs text-[#a39d93]">
+                      <span className="text-[#f5efe4] font-bold">{formatTimeDisplay(globalTime)}</span>
+                      {isPreparingAudio ? (
+                        <span className="flex items-center gap-1.5 text-[#f2b829] font-sans font-semibold">
+                          <Loader2 size={13} className="animate-spin" />
+                          <span>{prepareStatusText || 'Cargando desde memoria...'}</span>
+                        </span>
+                      ) : loopSectionIndex !== null && normalizedSections[loopSectionIndex] ? (
+                        <span className="text-[#f2b829] font-sans font-bold">
+                          Repetir sección: {normalizedSections[loopSectionIndex].label}
+                        </span>
+                      ) : (
+                        <span className="font-sans text-[11px] text-[#a39d93]">
+                          Toca la onda para adelantar o retroceder
+                        </span>
+                      )}
+                      <span>{formatTimeDisplay(duration)}</span>
+                    </div>
+                  </div>
+
+                  {/* Primary Hardware Transport Deck (Large Touch Targets for Tablet/Phone) */}
+                  <div className="flex items-center justify-center gap-3 sm:gap-5 py-1">
+                    <button
+                      type="button"
+                      onClick={() => setRepeatMode((m) => (m === 'setlist' ? 'one' : 'setlist'))}
+                      title={
+                        repeatMode === 'one'
+                          ? 'Repetir esta pista continuamente'
+                          : 'Avanzar por el repertorio'
+                      }
+                      className={`flex h-12 w-12 items-center justify-center rounded-2xl border transition-colors cursor-pointer ${
+                        repeatMode === 'one'
+                          ? 'border-[#f2b829] bg-[#f2b829] text-[#111110]'
+                          : 'border-white/10 bg-[#1e1e1c] text-[#a39d93] hover:text-[#f5efe4]'
+                      }`}
+                    >
+                      <Repeat size={18} />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={goPrevSong}
+                      className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[#1e1e1c] text-[#f5efe4] hover:bg-[#282825] active:scale-95 transition-transform cursor-pointer"
+                      title="Inicio / Pista anterior"
+                    >
+                      <SkipBack size={22} />
+                    </button>
+
+                    <motion.button
+                      whileTap={{ scale: 0.94 }}
+                      transition={SPRING_SNAPPY}
+                      type="button"
+                      onClick={togglePlayPause}
+                      disabled={isPreparingAudio || currentVaultEval.status === 'no_mix'}
+                      className="flex h-[72px] w-[72px] items-center justify-center rounded-full bg-[#e84432] text-[#f5efe4] border-2 border-[#f5efe4]/20 shadow-[0_10px_28px_rgba(232,68,50,0.45)] hover:bg-[#f04f3d] cursor-pointer disabled:opacity-40"
+                      title={isPlaying ? 'Pausar' : 'Reproducir'}
+                    >
+                      {isPreparingAudio ? (
+                        <Loader2 size={30} className="animate-spin" />
+                      ) : isPlaying ? (
+                        <Pause size={32} />
+                      ) : (
+                        <Play size={32} className="ml-1" />
+                      )}
+                    </motion.button>
+
+                    <button
+                      type="button"
+                      onClick={() => goNextSong(true)}
+                      className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[#1e1e1c] text-[#f5efe4] hover:bg-[#282825] active:scale-95 transition-transform cursor-pointer"
+                      title="Siguiente pista"
+                    >
+                      <SkipForward size={22} />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setLoopSectionIndex(null)}
+                      disabled={loopSectionIndex === null}
+                      className={`flex h-12 px-3.5 items-center justify-center rounded-2xl border text-xs font-bold transition-colors cursor-pointer ${
+                        loopSectionIndex !== null
+                          ? 'border-[#f2b829] bg-[#f2b829]/20 text-[#f2b829]'
+                          : 'border-white/5 bg-[#1e1e1c]/50 text-[#57534d] cursor-default'
+                      }`}
+                    >
+                      Loop Off
+                    </button>
+                  </div>
+
+                  {/* ===========================================================
+                      GEOMETRIC TRIAD MODE SELECTOR + POCKET MIXER
+                      (Inspired by Circle / Rounded Square / Triangle in reference)
+                  ============================================================ */}
+                  <div className="border-t border-white/[0.08] pt-4 space-y-4">
+                    <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                      {/* 1. Circle — Solo Música */}
+                      <button
+                        type="button"
+                        onClick={() => void handleSetCueMode(false, { foh: 1.0, cue: cueVolume })}
+                        className={`flex flex-col sm:flex-row items-center justify-center gap-2 rounded-2xl border px-3 py-3 text-xs font-bold transition-all cursor-pointer ${
+                          activeModeKey === 'music'
+                            ? 'border-[#f5efe4] bg-[#f5efe4] text-[#111110]'
+                            : 'border-white/10 bg-[#1e1e1c] text-[#a39d93] hover:text-[#f5efe4]'
+                        }`}
+                      >
+                        <span
+                          className={`h-3.5 w-3.5 rounded-full shrink-0 ${
+                            activeModeKey === 'music' ? 'bg-[#e84432]' : 'bg-[#f5efe4]'
+                          }`}
+                        />
+                        <span>Solo Música</span>
+                      </button>
+
+                      {/* 2. Rounded Square — Música + Click/Guía */}
+                      <button
+                        type="button"
+                        onClick={() => void handleSetCueMode(true, { foh: 0.85, cue: 0.95 })}
+                        className={`flex flex-col sm:flex-row items-center justify-center gap-2 rounded-2xl border px-3 py-3 text-xs font-bold transition-all cursor-pointer ${
+                          activeModeKey === 'both'
+                            ? 'border-[#f2b829] bg-[#f2b829] text-[#111110]'
+                            : 'border-white/10 bg-[#1e1e1c] text-[#a39d93] hover:text-[#f2b829]'
+                        }`}
+                      >
+                        <span
+                          className={`h-3.5 w-3.5 rounded-[4px] shrink-0 ${
+                            activeModeKey === 'both' ? 'bg-[#111110]' : 'bg-[#a63629]'
+                          }`}
+                        />
+                        <span>+ Click / Guía</span>
+                      </button>
+
+                      {/* 3. Triangle — Solo Click */}
+                      <button
+                        type="button"
+                        onClick={() => void handleSetCueMode(true, { foh: 0, cue: 1.0 })}
+                        className={`flex flex-col sm:flex-row items-center justify-center gap-2 rounded-2xl border px-3 py-3 text-xs font-bold transition-all cursor-pointer ${
+                          activeModeKey === 'click'
+                            ? 'border-[#f47b2a] bg-[#f47b2a] text-[#111110]'
+                            : 'border-white/10 bg-[#1e1e1c] text-[#a39d93] hover:text-[#f47b2a]'
+                        }`}
+                      >
+                        <span
+                          className="inline-block shrink-0"
                           style={{
-                            left: `${(normalizedSections[loopSectionIndex].globalStart / duration) * 100}%`,
-                            width: `${Math.max(
-                              1,
-                              ((normalizedSections[loopSectionIndex].globalEnd -
-                                normalizedSections[loopSectionIndex].globalStart) /
-                                duration) *
-                                100
-                            )}%`,
+                            width: 0,
+                            height: 0,
+                            borderLeft: '7px solid transparent',
+                            borderRight: '7px solid transparent',
+                            borderBottom:
+                              activeModeKey === 'click'
+                                ? '12px solid #111110'
+                                : '12px solid #f47b2a',
                           }}
                         />
-                      )}
-                    <div
-                      className="h-full rounded-full bg-[#e11d48] transition-[width] duration-75"
-                      style={{ width: `${progressPct}%` }}
-                    />
-                  </div>
+                        <span>Solo Click</span>
+                      </button>
+                    </div>
 
-                  <div className="flex items-center justify-between font-mono text-[11px] text-zinc-400 tabular-nums">
-                    <span>{formatTimeDisplay(globalTime)}</span>
-                    {isPreparingAudio ? (
-                      <span className="flex items-center gap-1.5 text-amber-300 font-sans text-xs font-medium">
-                        <Loader2 size={12} className="animate-spin" />
-                        <span>{prepareStatusText || 'Preparando audio local...'}</span>
-                      </span>
-                    ) : loopSectionIndex !== null && normalizedSections[loopSectionIndex] ? (
-                      <span className="text-amber-300 font-sans text-xs font-semibold">
-                        Bucle activo: {normalizedSections[loopSectionIndex].label}
-                      </span>
-                    ) : (
-                      <span className="text-zinc-500 font-sans text-xs">
-                        {cueEnabled ? 'Modo Ensayo: Pista + Click/Guía' : 'Modo Escucha: Pista MP3'}
-                      </span>
-                    )}
-                    <span>{formatTimeDisplay(duration)}</span>
-                  </div>
-                </div>
+                    {/* Independent Hardware Faders */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="flex items-center gap-3 rounded-2xl bg-[#1b1b19] px-4 py-2.5 border border-white/[0.06]">
+                        <Music size={16} className="text-[#e84432] shrink-0" />
+                        <span className="text-xs font-bold text-[#f5efe4] w-20 shrink-0">
+                          Música
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.02"
+                          aria-label="Volumen de pista musical"
+                          value={fohVolume}
+                          onChange={(e) => setFohVolume(parseFloat(e.target.value))}
+                          className="mp-fader mp-fader-music"
+                        />
+                        <span className="mp-mono w-10 text-right text-xs font-bold text-[#f5efe4]">
+                          {Math.round(fohVolume * 100)}%
+                        </span>
+                      </div>
 
-                {/* Main Tactile Transport Buttons */}
-                <div className="flex items-center justify-center gap-4 sm:gap-6 py-1">
-                  <button
-                    type="button"
-                    onClick={() => setRepeatMode((m) => (m === 'setlist' ? 'one' : 'setlist'))}
-                    title={
-                      repeatMode === 'one'
-                        ? 'Repetir esta canción indefinidamente'
-                        : 'Continuar con el Setlist'
-                    }
-                    className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors cursor-pointer ${
-                      repeatMode === 'one'
-                        ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
-                        : 'border-white/10 bg-[#131722] text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    <Repeat size={16} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={goPrevSong}
-                    className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[#131722] text-zinc-200 hover:bg-[#1a2030] active:scale-95 transition-all cursor-pointer"
-                    title="Inicio / Canción anterior"
-                  >
-                    <SkipBack size={20} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={togglePlayPause}
-                    disabled={isPreparingAudio || currentVaultEval.status === 'no_mix'}
-                    className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#e11d48] text-white shadow-lg shadow-[#e11d48]/25 hover:bg-[#be123c] active:scale-95 transition-all cursor-pointer disabled:opacity-40"
-                    title={isPlaying ? 'Pausar' : 'Reproducir'}
-                  >
-                    {isPreparingAudio ? (
-                      <Loader2 size={26} className="animate-spin" />
-                    ) : isPlaying ? (
-                      <Pause size={28} />
-                    ) : (
-                      <Play size={28} className="ml-1" />
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => goNextSong(true)}
-                    className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[#131722] text-zinc-200 hover:bg-[#1a2030] active:scale-95 transition-all cursor-pointer"
-                    title="Siguiente canción"
-                  >
-                    <SkipForward size={20} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setLoopSectionIndex(null)}
-                    disabled={loopSectionIndex === null}
-                    title="Quitar bucle de sección"
-                    className={`flex h-10 px-3 items-center justify-center rounded-xl border text-xs font-semibold transition-colors cursor-pointer ${
-                      loopSectionIndex !== null
-                        ? 'border-amber-500/50 bg-amber-500/20 text-amber-300'
-                        : 'border-white/5 bg-[#131722]/50 text-zinc-600 cursor-default'
-                    }`}
-                  >
-                    Loop Off
-                  </button>
-                </div>
-              </div>
-
-              {/* Pocket Mixer: Pista Musical + Click / Voz Guía MP3 */}
-              <div className="rounded-2xl border border-white/[0.08] bg-[#10141e] p-4 sm:p-5 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-200">
-                      Mezcla de Práctica Personal
-                    </h3>
-                    <p className="text-[11px] text-zinc-400">
-                      Escucha solo la música o activa el Click y la Voz Guía reales de Live Concert
-                    </p>
-                  </div>
-
-                  {/* Quick Mode Presets */}
-                  <div className="flex items-center gap-1.5 rounded-xl bg-[#090b10] p-1 border border-white/[0.06]">
-                    <button
-                      type="button"
-                      onClick={() => void handleSetCueMode(false, { foh: 1.0, cue: cueVolume })}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-                        !cueEnabled
-                          ? 'bg-[#e11d48] text-white'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      Solo Música
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleSetCueMode(true, { foh: 0.85, cue: 0.95 })}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-                        cueEnabled && fohVolume > 0.05
-                          ? 'bg-amber-500 text-zinc-950 font-bold'
-                          : 'text-zinc-400 hover:text-amber-300'
-                      }`}
-                    >
-                      + Click / Voz Guía
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleSetCueMode(true, { foh: 0, cue: 1.0 })}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-                        cueEnabled && fohVolume <= 0.05
-                          ? 'bg-amber-500 text-zinc-950 font-bold'
-                          : 'text-zinc-400 hover:text-amber-300'
-                      }`}
-                    >
-                      Solo Click
-                    </button>
-                  </div>
-                </div>
-
-                {/* Volume Sliders */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-                  {/* FOH Music Slider */}
-                  <div className="flex items-center gap-3 rounded-xl bg-[#0b0e15] px-3.5 py-2.5 border border-white/[0.05]">
-                    <Music size={15} className="text-rose-400 shrink-0" />
-                    <span className="text-xs font-semibold text-zinc-300 w-24 shrink-0">
-                      Pista Musical
-                    </span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.02"
-                      value={fohVolume}
-                      onChange={(e) => setFohVolume(parseFloat(e.target.value))}
-                      className="w-full accent-[#e11d48] h-1.5 cursor-pointer"
-                    />
-                    <span className="w-9 text-right font-mono text-[11px] text-zinc-400 tabular-nums">
-                      {Math.round(fohVolume * 100)}%
-                    </span>
-                  </div>
-
-                  {/* CUE Click / Guide Slider */}
-                  <div
-                    className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 border transition-colors ${
-                      cueEnabled
-                        ? 'bg-amber-500/[0.07] border-amber-500/30'
-                        : 'bg-[#0b0e15] border-white/[0.05] opacity-65'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => void handleSetCueMode(!cueEnabled)}
-                      className="shrink-0 text-amber-400 hover:text-amber-300 cursor-pointer"
-                      title={cueEnabled ? 'Desactivar Click/Guía' : 'Activar Click/Guía'}
-                    >
-                      {cueEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
-                    </button>
-                    <span className="text-xs font-semibold text-zinc-300 w-24 shrink-0">
-                      Click & Guía
-                    </span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.02"
-                      value={cueVolume}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setCueVolume(val);
-                        if (!cueEnabled && val > 0.05) {
-                          void handleSetCueMode(true, { foh: fohVolume, cue: val });
-                        }
-                      }}
-                      className="w-full accent-amber-400 h-1.5 cursor-pointer"
-                    />
-                    <span className="w-9 text-right font-mono text-[11px] text-amber-300 tabular-nums">
-                      {cueEnabled ? `${Math.round(cueVolume * 100)}%` : 'OFF'}
-                    </span>
+                      <div
+                        className={`flex items-center gap-3 rounded-2xl px-4 py-2.5 border transition-colors ${
+                          cueEnabled
+                            ? 'bg-[#f2b829]/10 border-[#f2b829]/45'
+                            : 'bg-[#1b1b19] border-white/[0.06] opacity-75'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void handleSetCueMode(!cueEnabled)}
+                          className="shrink-0 text-[#f2b829] cursor-pointer"
+                          title={cueEnabled ? 'Apagar Click/Guía' : 'Encender Click/Guía'}
+                        >
+                          {cueEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
+                        </button>
+                        <span className="text-xs font-bold text-[#f5efe4] w-20 shrink-0">
+                          Click/Guía
+                        </span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.02"
+                          aria-label="Volumen de Click y Voz Guía"
+                          value={cueVolume}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            setCueVolume(val);
+                            if (!cueEnabled && val > 0.05) {
+                              void handleSetCueMode(true, { foh: fohVolume, cue: val });
+                            }
+                          }}
+                          className="mp-fader mp-fader-cue"
+                        />
+                        <span className="mp-mono w-10 text-right text-xs font-bold text-[#f2b829]">
+                          {cueEnabled ? `${Math.round(cueVolume * 100)}%` : 'OFF'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Study Aids: Section Jump / Loop + Chords & Lyrics */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-white/[0.07] pb-2">
+              {/* ===============================================================
+                  WARM ALABASTER EDITORIAL STUDY CARD (Inspired by [CASO REAL] card)
+              ================================================================ */}
+              <div className="mp-cream-card p-4 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#dfd4c3] pb-3.5">
                   <div className="flex items-center gap-2">
+                    <span className="mp-ink-badge rounded-md px-2.5 py-1 text-xs font-bold text-[#f2b829]">
+                      GUÍA DE ESTUDIO
+                    </span>
+                    <span className="text-sm font-bold text-[#111110]">
+                       Navegación por partes y armonía
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 rounded-full bg-[#e9dfd0] p-1">
                     <button
                       type="button"
                       onClick={() => setStudyPanelTab('sections')}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
                         studyPanelTab === 'sections'
-                          ? 'bg-white/10 text-white'
-                          : 'text-zinc-400 hover:text-white'
+                          ? 'bg-[#111110] text-[#f5efe4]'
+                          : 'text-[#4a4640] hover:text-[#111110]'
                       }`}
                     >
-                      Estructura & Secciones ({normalizedSections.length})
+                      Secciones ({normalizedSections.length})
                     </button>
                     <button
                       type="button"
                       onClick={() => setStudyPanelTab('chords_lyrics')}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
                         studyPanelTab === 'chords_lyrics'
-                          ? 'bg-white/10 text-white'
-                          : 'text-zinc-400 hover:text-white'
+                          ? 'bg-[#111110] text-[#f5efe4]'
+                          : 'text-[#4a4640] hover:text-[#111110]'
                       }`}
                     >
-                      Acordes & Letra
+                      Acordes y Letra
                     </button>
                   </div>
-
-                  {studyPanelTab === 'sections' && normalizedSections.length > 0 && (
-                    <span className="text-[11px] text-zinc-500 hidden sm:inline">
-                      1 toque = saltar · icono ↻ = repetir sección en bucle
-                    </span>
-                  )}
                 </div>
 
                 {studyPanelTab === 'sections' ? (
                   normalizedSections.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
                       {normalizedSections.map((sec) => {
                         const isActiveSec = activeSectionIndex === sec.index;
                         const isLoopingSec = loopSectionIndex === sec.index;
                         return (
                           <div
                             key={`${sec.index}-${sec.label}`}
-                            className={`flex items-center justify-between rounded-xl border px-3 py-2.5 transition-all ${
+                            className={`flex items-center justify-between rounded-2xl border-2 px-3.5 py-3 transition-colors ${
                               isLoopingSec
-                                ? 'border-amber-400 bg-amber-500/15 text-amber-200'
+                                ? 'border-[#111110] bg-[#f2b829] text-[#111110]'
                                 : isActiveSec
-                                  ? 'border-[#e11d48] bg-[#e11d48]/15 text-white'
-                                  : 'border-white/[0.07] bg-[#10141e] text-zinc-300 hover:border-white/20'
+                                  ? 'border-[#e84432] bg-[#e84432] text-[#f5efe4]'
+                                  : 'border-[#dfd4c3] bg-[#f5efe4] text-[#111110] hover:border-[#111110]'
                             }`}
                           >
                             <button
@@ -1883,10 +2035,19 @@ export default function MusicianPracticePlayer() {
                               className="min-w-0 flex-1 text-left cursor-pointer"
                             >
                               <div className="truncate text-xs font-bold">{sec.label}</div>
-                              <div className="font-mono text-[10px] text-zinc-400 tabular-nums">
+                              <div
+                                className={`mp-mono text-[11px] font-bold ${
+                                  isLoopingSec
+                                    ? 'text-[#111110]/80'
+                                    : isActiveSec
+                                      ? 'text-[#f5efe4]/85'
+                                      : 'text-[#4a4640]'
+                                }`}
+                              >
                                 {formatTimeDisplay(sec.globalStart)}
                               </div>
                             </button>
+
                             <button
                               type="button"
                               onClick={() => {
@@ -1898,46 +2059,49 @@ export default function MusicianPracticePlayer() {
                               }}
                               title={
                                 isLoopingSec
-                                  ? 'Desactivar bucle de esta sección'
+                                  ? 'Quitar repetición de sección'
                                   : `Repetir "${sec.label}" en bucle`
                               }
-                              className={`ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors cursor-pointer ${
+                              className={`ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-colors cursor-pointer ${
                                 isLoopingSec
-                                  ? 'bg-amber-400 text-zinc-950'
-                                  : 'bg-white/[0.05] text-zinc-400 hover:text-white'
+                                  ? 'bg-[#111110] text-[#f2b829]'
+                                  : isActiveSec
+                                    ? 'bg-[#111110]/25 text-[#f5efe4]'
+                                    : 'bg-[#e9dfd0] text-[#111110] hover:bg-[#111110] hover:text-[#f5efe4]'
                               }`}
                             >
-                              <Repeat size={13} />
+                              <Repeat size={14} />
                             </button>
                           </div>
                         );
                       })}
                     </div>
                   ) : (
-                    <p className="py-6 text-center text-xs text-zinc-500">
-                      Esta canción no tiene marcadores de sección definidos en Studio Prompter.
+                    <p className="py-6 text-center text-xs font-medium text-[#4a4640]">
+                      Esta pista aún no tiene marcadores de sección definidos en Studio Prompter.
                     </p>
                   )
                 ) : (
                   <div className="space-y-4">
-                    {/* Live Active Chord Strip */}
                     {chordsList.length > 0 && (
-                      <div className="rounded-xl border border-white/[0.07] bg-[#10141e] p-3.5">
-                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                          Progresión de Acordes (Toca para ir al compás)
+                      <div className="space-y-2">
+                        <div className="text-xs font-bold text-[#4a4640]">
+                          Acordes del tema (toca cualquiera para saltar a ese compás)
                         </div>
-                        <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto custom-scrollbar">
+                        <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto mp-scroll pr-1">
                           {chordsList.map((ch: any, idx: number) => {
                             const isCurrentChord = idx === activeChordIndex;
                             return (
                               <button
                                 key={`${idx}-${ch.chord}-${ch.time}`}
                                 type="button"
-                                onClick={() => seekToGlobal(preRollSec + Math.max(0, Number(ch.time) || 0))}
-                                className={`rounded-lg px-2.5 py-1 font-mono text-xs font-bold transition-colors cursor-pointer ${
+                                onClick={() =>
+                                  seekToGlobal(preRollSec + Math.max(0, Number(ch.time) || 0))
+                                }
+                                className={`mp-mono rounded-xl px-3 py-1.5 text-xs font-bold border transition-colors cursor-pointer ${
                                   isCurrentChord
-                                    ? 'bg-[#e11d48] text-white scale-105'
-                                    : 'bg-[#171c2b] text-zinc-300 hover:bg-[#20273b]'
+                                    ? 'border-[#111110] bg-[#e84432] text-[#f5efe4]'
+                                    : 'border-[#d8ccb8] bg-[#f5efe4] text-[#111110] hover:border-[#111110]'
                                 }`}
                               >
                                 {ch.chord}
@@ -1948,9 +2112,8 @@ export default function MusicianPracticePlayer() {
                       </div>
                     )}
 
-                    {/* Synchronized Lyrics */}
                     {lyricsList.length > 0 ? (
-                      <div className="rounded-xl border border-white/[0.07] bg-[#10141e] p-4 max-h-64 overflow-y-auto space-y-2 custom-scrollbar">
+                      <div className="rounded-2xl bg-[#f5efe4] border border-[#dfd4c3] p-4 max-h-64 overflow-y-auto space-y-1.5 mp-scroll">
                         {lyricsList.map((line: any, idx: number) => {
                           const isCurrentLine = idx === activeLyricIndex;
                           return (
@@ -1966,10 +2129,10 @@ export default function MusicianPracticePlayer() {
                                 );
                                 seekToGlobal(targetGlobal);
                               }}
-                              className={`block w-full text-left rounded-lg px-3 py-1.5 text-sm transition-colors cursor-pointer ${
+                              className={`block w-full text-left rounded-xl px-3.5 py-2 text-sm transition-colors cursor-pointer ${
                                 isCurrentLine
-                                  ? 'bg-white/[0.08] font-bold text-white'
-                                  : 'text-zinc-400 hover:text-zinc-200'
+                                  ? 'bg-[#141413] font-bold text-[#f2b829]'
+                                  : 'font-medium text-[#4a4640] hover:text-[#111110]'
                               }`}
                             >
                               {line.text}
@@ -1979,8 +2142,8 @@ export default function MusicianPracticePlayer() {
                       </div>
                     ) : (
                       chordsList.length === 0 && (
-                        <p className="py-6 text-center text-xs text-zinc-500">
-                          No hay acordes ni letras registradas aún para esta pista.
+                        <p className="py-6 text-center text-xs font-medium text-[#4a4640]">
+                          No hay acordes ni letras sincronizadas para esta canción todavía.
                         </p>
                       )
                     )}
@@ -1989,11 +2152,13 @@ export default function MusicianPracticePlayer() {
               </div>
             </div>
           ) : (
-            <div className="flex flex-1 items-center justify-center p-8 text-center text-zinc-500">
+            <div className="flex flex-1 items-center justify-center p-8 text-center">
               <div>
-                <Headphones size={42} className="mx-auto mb-3 opacity-35" />
-                <p className="text-sm font-semibold text-zinc-300">
-                  Selecciona una canción del repertorio para comenzar tu práctica
+                <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-[#e9dfd0] text-[#111110]">
+                  <Headphones size={26} />
+                </div>
+                <p className="text-sm font-bold text-[#111110]">
+                  Selecciona una canción del repertorio para abrir la consola
                 </p>
               </div>
             </div>
@@ -2001,39 +2166,43 @@ export default function MusicianPracticePlayer() {
         </section>
       </div>
 
-      {/* Persistent Compact Mini-Player Bar on Mobile when browsing Playlist tab */}
+      {/* =====================================================================
+          FLOATING OBSIDIAN MINI-CONSOLE DOCK ON MOBILE/TABLET PORTRAIT (< lg)
+      ====================================================================== */}
       {mobileTab === 'playlist' && currentSong && (
-        <div className="shrink-0 lg:hidden border-t border-white/10 bg-[#111520] px-3.5 py-2.5">
-          <div className="mb-2 h-1 w-full rounded-full bg-zinc-800 overflow-hidden">
+        <div className="shrink-0 lg:hidden bg-[#141413] text-[#f5efe4] border-t-2 border-[#111110] px-3.5 pt-2.5 mp-safe-bottom shadow-[0_-10px_28px_rgba(17,17,16,0.25)]">
+          {/* GPU-Accelerated Progress Strip */}
+          <div className="mb-2.5 h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
             <div
-              className="h-full bg-[#e11d48] transition-[width] duration-100"
-              style={{ width: `${progressPct}%` }}
+              className={`h-full w-full origin-left transition-transform duration-100 ${
+                cueEnabled ? 'bg-[#f2b829]' : 'bg-[#e84432]'
+              }`}
+              style={{ transform: `scaleX(${progressRatio})` }}
             />
           </div>
+
           <div className="flex items-center justify-between gap-2.5">
             <button
               type="button"
               onClick={() => setMobileTab('player')}
               className="min-w-0 flex-1 text-left cursor-pointer"
             >
-              <div className="truncate text-xs font-bold text-white">{currentSong.title}</div>
-              <div className="flex items-center gap-2 text-[10px] text-zinc-400">
-                <span className="font-mono tabular-nums">
+              <div className="truncate text-sm font-bold text-[#f5efe4]">{currentSong.title}</div>
+              <div className="mp-mono flex items-center gap-2 text-[11px] text-[#a39d93]">
+                <span>
                   {formatTimeDisplay(globalTime)} / {formatTimeDisplay(duration)}
                 </span>
-                {cueEnabled && (
-                  <span className="text-amber-300 font-semibold">· +Click/Guía</span>
-                )}
+                {cueEnabled && <span className="font-bold text-[#f2b829]">+CLICK</span>}
               </div>
             </button>
 
             <button
               type="button"
               onClick={() => void handleSetCueMode(!cueEnabled)}
-              className={`rounded-lg px-2.5 py-1.5 text-[10px] font-bold border transition-colors cursor-pointer ${
+              className={`h-10 rounded-full px-3.5 text-[11px] font-bold transition-colors cursor-pointer ${
                 cueEnabled
-                  ? 'border-amber-400 bg-amber-500 text-zinc-950'
-                  : 'border-white/15 bg-[#181e2d] text-zinc-300'
+                  ? 'bg-[#f2b829] text-[#111110]'
+                  : 'border border-white/20 bg-[#1e1e1c] text-[#f5efe4]'
               }`}
             >
               {cueEnabled ? 'CLICK ON' : '+ CLICK'}
@@ -2043,23 +2212,23 @@ export default function MusicianPracticePlayer() {
               type="button"
               onClick={togglePlayPause}
               disabled={isPreparingAudio}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#e11d48] text-white cursor-pointer"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#e84432] text-[#f5efe4] active:scale-95 transition-transform cursor-pointer"
             >
               {isPreparingAudio ? (
-                <Loader2 size={17} className="animate-spin" />
+                <Loader2 size={18} className="animate-spin" />
               ) : isPlaying ? (
-                <Pause size={18} />
+                <Pause size={19} />
               ) : (
-                <Play size={18} className="ml-0.5" />
+                <Play size={19} className="ml-0.5" />
               )}
             </button>
 
             <button
               type="button"
               onClick={() => goNextSong(true)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#181e2d] text-zinc-200 cursor-pointer"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#1e1e1c] text-[#f5efe4] active:scale-95 transition-transform cursor-pointer"
             >
-              <SkipForward size={16} />
+              <SkipForward size={17} />
             </button>
           </div>
         </div>
