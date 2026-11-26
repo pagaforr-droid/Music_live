@@ -48,6 +48,7 @@ import {
   pruneStaleSlavePeers,
   reconcilePresenceWithRegistry,
   removeSlavePeerFromBye,
+  stripHeavySongPayloadForRealtime,
   upsertSlavePeerFromRpc,
 } from '../../hooks/useSyncMaster';
 
@@ -540,5 +541,80 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     const decryptedMp3 = await readDecryptedTrackArrayBuffer(mobileBrokenSong.id, 'foh');
     expect(decryptedMp3).not.toBeNull();
     expect(decryptedMp3!.byteLength).toBeGreaterThan(200);
+  });
+
+  it('compacts multi-phone PLAY payloads by >95% and aligns PC + iPhone + Android acoustic DAC output to 0.000ms', () => {
+    const heavySong = {
+      id: 'song-sync-pro',
+      title: 'Mi Corazón Tuyo Será',
+      foh_mobile_url: 'https://supa.example.com/foh.mp3',
+      cue_mobile_url: 'https://supa.example.com/cue.mp3',
+      prompter_data: {
+        bpm: 103,
+        timeSignature: '4/4',
+        firstBeatOffset: 0.12,
+        sectionsUpdatedAt: '2026-11-26T10:00:00Z',
+        liveMixMeta: { preRollSec: 2.33, version: 3 },
+        sections: [{ id: 's1', name: 'INTRO', time: 0, cueEnabled: true }],
+        beatTimes: Array.from({ length: 1200 }, (_, i) => i * 0.58),
+        chords: Array.from({ length: 600 }, (_, i) => ({ time: i * 1.16, chord: 'G' })),
+        lyrics: Array.from({ length: 200 }, (_, i) => ({ time: i * 2, text: `Línea ${i}` })),
+        waveformPeaks: Array.from({ length: 2000 }, () => 0.5),
+      },
+    };
+
+    const rawBytes = JSON.stringify(heavySong).length;
+    const compact = stripHeavySongPayloadForRealtime(heavySong);
+    const compactBytes = JSON.stringify(compact).length;
+
+    expect(compactBytes).toBeLessThan(rawBytes * 0.05);
+    expect(compact.prompter_data.bpm).toBe(103);
+    expect(compact.prompter_data.sections).toHaveLength(1);
+    expect(compact.prompter_data.beatTimes).toBeUndefined();
+    expect(compact.prompter_data.chords).toBeUndefined();
+
+    // Acoustic phase lock across PC (24ms DAC), iPhone (18ms DAC) and Android (58ms DAC)
+    // Master schedules sound to exit PC speakers at Master T = 20_404ms (T_sched 20_380 + 24ms PC DAC)
+    const masterAudibleStartAtMs = 20_404;
+
+    // Phone 1 (iPhone, clockOffset = +50ms, clientNow = 19_950 -> masterNow = 20_000, DAC = 18ms)
+    const iphoneSched = computePhaseLockedSlaveStart({
+      startAtMs: masterAudibleStartAtMs,
+      baseOffsetSec: 0,
+      clientNowMs: 19_950,
+      clockOffsetMs: 50,
+      audioCtxCurrentTimeSec: 100.0,
+      slaveOutputLatencyMs: 18,
+    });
+    // iPhone begins WebAudio render at masterNow + 386ms = 20_386ms -> +18ms DAC = 20_404ms audible!
+    const iphoneAudibleMasterMs = 20_000 + (iphoneSched.whenContextSec - 100.0) * 1000 + 18;
+    expect(iphoneAudibleMasterMs).toBeCloseTo(masterAudibleStartAtMs, 3);
+
+    // Phone 2 (Android, clockOffset = -30ms, clientNow = 20_030 -> masterNow = 20_000, DAC = 58ms)
+    const androidSched = computePhaseLockedSlaveStart({
+      startAtMs: masterAudibleStartAtMs,
+      baseOffsetSec: 0,
+      clientNowMs: 20_030,
+      clockOffsetMs: -30,
+      audioCtxCurrentTimeSec: 200.0,
+      slaveOutputLatencyMs: 58,
+    });
+    // Android begins WebAudio render at masterNow + 346ms = 20_346ms -> +58ms DAC = 20_404ms audible!
+    const androidAudibleMasterMs = 20_000 + (androidSched.whenContextSec - 200.0) * 1000 + 58;
+    expect(androidAudibleMasterMs).toBeCloseTo(masterAudibleStartAtMs, 3);
+
+    // Verify drift check 3 seconds later (at Master T = 23_404ms -> expected audible pos = 3.000s)
+    // Android render cursor is at 3.058s (because it started 58ms early), audible is 3.000s -> 0ms drift!
+    const androidDrift = computeSlaveDriftCorrection({
+      masterStartAtMs: masterAudibleStartAtMs,
+      masterBaseOffsetSec: 0,
+      clientNowMs: 23_434,
+      clockOffsetMs: -30,
+      slaveCurrentGlobalSec: 3.058,
+      slaveOutputLatencyMs: 58,
+      driftThresholdSec: 0.018,
+    });
+    expect(androidDrift.driftMs).toBe(0);
+    expect(androidDrift.needsResync).toBe(false);
   });
 });

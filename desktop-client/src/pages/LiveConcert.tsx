@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
 import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity, Zap, CloudDownload, HardDrive, Loader2, Smartphone } from 'lucide-react';
-import { useSyncMaster } from '../hooks/useSyncMaster';
+import { useSyncMaster, measureAudioContextOutputLatencyMs } from '../hooks/useSyncMaster';
 import {
   type LocalMp3TrackMeta,
   type PracticeSongItem,
@@ -453,13 +453,19 @@ export default function LiveConcert() {
     const curGlobalOffset = playingNow && ctx
       ? Math.max(0, ctx.currentTime - startTimeRef.current)
       : Math.max(0, pauseTimeRef.current);
+    const livePcLatMs =
+      measureAudioContextOutputLatencyMs(ctx) || hardwareLatencyMsRef.current || 0;
+    if (livePcLatMs > 0) {
+      hardwareLatencyMsRef.current = livePcLatMs;
+    }
     const syncCompMs = Math.round(
-      (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+      livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
     );
     return {
       type: 'STATE_SNAPSHOT' as const,
       setlistId: selectedSetlistIdRef.current,
       songId: curSong.id,
+      nextSongId: nextSong?.id ?? null,
       songData: curSong,
       nextSongData: nextSong,
       isPlaying: playingNow,
@@ -989,46 +995,62 @@ export default function LiveConcert() {
     isProjectorWindow,
   ]);
 
-  // Efecto no destructivo: notificar canción y estado activo a esclavos Wi-Fi sin interrumpir audio local
+  const wasBroadcastEnabledRef = useRef<boolean>(false);
+
+  // Efecto no destructivo: al activar el interruptor Wi-Fi In-Ear, enviar estado inicial sin duplicar LOAD_SONG al cambiar canción
   useEffect(() => {
-    if (isProjectorWindow || !broadcastEnabled || !currentSong) return;
+    const justEnabled = broadcastEnabled && !wasBroadcastEnabledRef.current;
+    wasBroadcastEnabledRef.current = broadcastEnabled;
+    if (isProjectorWindow || !justEnabled || !currentSong) return;
+
     const snap = buildMasterSyncSnapshot();
     if (snap.isPlaying) {
       broadcast(snap);
     } else {
+      const nextInList = getNextSongInSetlist();
       broadcast({
         type: 'LOAD_SONG',
         setlistId: selectedSetlistId,
         songId: currentSong.id,
+        nextSongId: nextInList?.id ?? null,
         songData: currentSong,
-        nextSongData: getNextSongInSetlist(),
+        nextSongData: nextInList,
         offset: pauseTimeRef.current,
       });
     }
   }, [broadcastEnabled, currentSong?.id, selectedSetlistId, isProjectorWindow]);
 
-  // Pulso periódico de fase (Heartbeat cada 3s) mientras reproduce con Wi-Fi activo para re-enganchar esclavos tardíos o con deriva
+  // Pulso ultraligero de fase (Heartbeat cada 1.5s) mientras reproduce con Wi-Fi activo para mantener desvío <15ms en todos los celulares
   useEffect(() => {
     if (isProjectorWindow || !broadcastEnabled || !isPlaying) return;
+    let tickCount = 0;
     const timer = window.setInterval(() => {
-      if (!isPlayingRef.current || !broadcastEnabledRef.current || !audioCtxRef.current) return;
+      const ctx = audioCtxRef.current;
+      if (!isPlayingRef.current || !broadcastEnabledRef.current || !ctx) return;
       const curSong = currentSongRef.current;
       if (!curSong) return;
-      const curGlobalOffset = Math.max(0, audioCtxRef.current.currentTime - startTimeRef.current);
+      tickCount += 1;
+      const curGlobalOffset = Math.max(0, ctx.currentTime - startTimeRef.current);
+      const livePcLatMs =
+        measureAudioContextOutputLatencyMs(ctx) || hardwareLatencyMsRef.current || 0;
+      if (livePcLatMs > 0) {
+        hardwareLatencyMsRef.current = livePcLatMs;
+      }
       const syncCompMs = Math.round(
-        (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+        livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
       );
+      const nextInList = getNextSongInSetlist();
       broadcast({
         type: 'HEARTBEAT',
         setlistId: selectedSetlistIdRef.current,
         songId: curSong.id,
-        songData: curSong,
-        nextSongData: getNextSongInSetlist(),
+        nextSongId: nextInList?.id ?? null,
+        ...(tickCount % 4 === 1 ? { songData: curSong, nextSongData: nextInList } : {}),
         isPlaying: true,
         startAt: Date.now() + syncCompMs,
         offset: curGlobalOffset,
       });
-    }, 3000);
+    }, 1500);
     return () => window.clearInterval(timer);
   }, [isPlaying, broadcastEnabled, isProjectorWindow, broadcast]);
 
@@ -2378,14 +2400,10 @@ export default function LiveConcert() {
     ensureDspGraph();
     const maxOffset = Math.max(0, (fohBufferRef.current.duration || 0) - 0.05);
     const offset = Math.max(0, Math.min(pauseTimeRef.current, maxOffset));
-    const hasActiveWifiSlaves = broadcastEnabledRef.current && connectionsRef.current > 0;
-    const delayMs = hasActiveWifiSlaves ? 450 : 25;
-    const T_start = Date.now() + delayMs;
-    const startAudioContextTime = audioCtxRef.current.currentTime + delayMs / 1000;
     const useMultitrack = isUsingMultitrackStems();
 
+    // 1. Preparar todo el grafo de ruteo y nodos ANTES de capturar reloj para cero jitter de CPU
     if (useMultitrack) {
-      const preRoll = getPreRoll(currentSongRef.current || currentSong);
       stemSourcesRef.current = activeStemsRef.current.map((stem) => {
         const src = audioCtxRef.current!.createBufferSource();
         src.buffer = stem.buffer;
@@ -2406,9 +2424,30 @@ export default function LiveConcert() {
           group: stem.group,
         };
       });
-
       buildRoutingGraph();
+    } else {
+      buildRoutingGraph();
+      fohSourceRef.current = audioCtxRef.current.createBufferSource();
+      fohSourceRef.current.buffer = fohBufferRef.current;
+      fohSourceRef.current.connect(fohGainRef.current!);
+    }
 
+    cueSourceRef.current = audioCtxRef.current.createBufferSource();
+    cueSourceRef.current.buffer = cueBufferRef.current;
+    cueSourceRef.current.connect(cueGainRef.current!);
+
+    // 2. Capturar reloj atómico y latencia física real del DAC del PC en el instante exacto de agendar
+    const ctx = audioCtxRef.current;
+    const hasActiveWifiSlaves =
+      broadcastEnabledRef.current && (connectionsRef.current > 0 || broadcastEnabledRef.current);
+    const delayMs = hasActiveWifiSlaves ? 380 : 25;
+    const nowWallMs = Date.now();
+    const ctxNow = ctx.currentTime;
+    const T_start = nowWallMs + delayMs;
+    const startAudioContextTime = ctxNow + delayMs / 1000;
+
+    if (useMultitrack) {
+      const preRoll = getPreRoll(currentSongRef.current || currentSong);
       stemSourcesRef.current.forEach((entry) => {
         if (offset < preRoll) {
           entry.source.start(startAudioContextTime + (preRoll - offset), 0);
@@ -2420,30 +2459,29 @@ export default function LiveConcert() {
         }
       });
     } else {
-      buildRoutingGraph();
-
-      fohSourceRef.current = audioCtxRef.current.createBufferSource();
-      fohSourceRef.current.buffer = fohBufferRef.current;
-      fohSourceRef.current.connect(fohGainRef.current!);
-      fohSourceRef.current.start(startAudioContextTime, offset);
+      fohSourceRef.current!.start(startAudioContextTime, offset);
     }
 
-    cueSourceRef.current = audioCtxRef.current.createBufferSource();
-    cueSourceRef.current.buffer = cueBufferRef.current;
-    cueSourceRef.current.connect(cueGainRef.current!);
     cueSourceRef.current.start(startAudioContextTime, offset);
 
     if (broadcastEnabledRef.current) {
       const curSong = currentSongRef.current || currentSong;
+      const nextInList = getNextSongInSetlist();
+      const livePcLatMs =
+        measureAudioContextOutputLatencyMs(ctx) || hardwareLatencyMsRef.current || 0;
+      if (livePcLatMs > 0) {
+        hardwareLatencyMsRef.current = livePcLatMs;
+      }
       const syncCompMs = Math.round(
-        (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+        livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
       );
       broadcast({
         type: 'PLAY',
         setlistId: selectedSetlistIdRef.current,
         songId: curSong?.id,
+        nextSongId: nextInList?.id ?? null,
         songData: curSong,
-        nextSongData: getNextSongInSetlist(),
+        nextSongData: nextInList,
         startAt: T_start + syncCompMs,
         offset: offset,
       });

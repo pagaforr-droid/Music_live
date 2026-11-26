@@ -25,6 +25,16 @@ function getOrCreateStableSlaveClientId(): string {
   }
 }
 
+function getIncomingSongVersionKey(song: any): string {
+  if (!song?.id) return '';
+  const pd = song.prompter_data || {};
+  return `${song.id}|${song.foh_mobile_url || ''}|${song.foh_mix_url || ''}|${
+    song.cue_mobile_url || ''
+  }|${song.cue_mix_url || ''}|${pd.sectionsUpdatedAt || ''}|${
+    pd.liveMixMeta?.version ?? ''
+  }`;
+}
+
 export interface UseSyncSlaveOptions {
   /**
    * Cuando es `false`, el dispositivo NO se suscribe ni anuncia presencia en el canal del Master.
@@ -47,8 +57,10 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   const connectedAtRef = useRef<number>(Date.now());
   const ntpSamplesRef = useRef<NtpPingSample[]>([]);
   const isSubscribedRef = useRef<boolean>(false);
+  const seenCommandIdsRef = useRef<Set<string>>(new Set());
+  const currentSongIdRef = useRef<string | null>(null);
+  const isPlayingInternalRef = useRef<boolean>(false);
 
-  // Metadatos vivos en ref para que los RPC de anuncio/latido siempre lleven el estado más reciente
   const slaveMetaRef = useRef<{
     deviceLabel?: string;
     setlistId: string | null;
@@ -70,12 +82,14 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   >('disconnected');
   const [masterSetlistId, setMasterSetlistId] = useState<string | null>(null);
   const [currentSongId, setCurrentSongId] = useState<string | null>(null);
+  const [nextSongId, setNextSongId] = useState<string | null>(null);
   const [songData, setSongData] = useState<any>(null);
   const [nextSongData, setNextSongData] = useState<any>(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Transport control signals triggered by Master
   const [playTrigger, setPlayTrigger] = useState<{
+    commandId?: string;
     startAt: number;
     offset: number;
     ts: number;
@@ -95,6 +109,22 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   } | null>(null);
   const [clockOffset, setClockOffset] = useState<number>(0);
   const [rttMs, setRttMs] = useState<number>(0);
+
+  const updateActiveSongSafe = useCallback((incomingSongId?: string, incomingSongData?: any) => {
+    if (incomingSongId) {
+      currentSongIdRef.current = incomingSongId;
+      setCurrentSongId((prev) => (prev !== incomingSongId ? incomingSongId : prev));
+    }
+    if (incomingSongData && incomingSongData.id) {
+      currentSongIdRef.current = incomingSongData.id;
+      setSongData((prev: any) => {
+        if (!prev) return incomingSongData;
+        return getIncomingSongVersionKey(prev) === getIncomingSongVersionKey(incomingSongData)
+          ? prev
+          : incomingSongData;
+      });
+    }
+  }, []);
 
   const buildSlaveRpcPayload = useCallback((extra?: Record<string, any>) => {
     const meta = slaveMetaRef.current;
@@ -128,7 +158,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     [buildSlaveRpcPayload]
   );
 
-  const sendNtpBurst = useCallback((ch: RealtimeChannel, count = 5) => {
+  const sendNtpBurst = useCallback((ch: RealtimeChannel, count = 8) => {
     const clientId = clientIdRef.current;
     for (let i = 0; i < count; i++) {
       globalThis.setTimeout(() => {
@@ -143,7 +173,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
             seq: i,
           },
         });
-      }, i * 110);
+      }, i * 65);
     }
   }, []);
 
@@ -161,6 +191,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   useEffect(() => {
     if (!bandId || !enabled) {
       isSubscribedRef.current = false;
+      isPlayingInternalRef.current = false;
       setConnectionStatus('disconnected');
       setIsPlaying(false);
       return;
@@ -176,6 +207,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     const clientId = clientIdRef.current;
     connectedAtRef.current = Date.now();
     ntpSamplesRef.current = [];
+    seenCommandIdsRef.current.clear();
     setConnectionStatus('connecting');
 
     const sendByeImmediately = () => {
@@ -205,7 +237,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       }
       if (activeChannel && channelRef.current === activeChannel && isSubscribedRef.current) {
         emitSlaveRpc(activeChannel, 'rpc_slave_announce', { needsSnapshot: true });
-        sendNtpBurst(activeChannel, 2);
+        sendNtpBurst(activeChannel, 4);
       }
     };
 
@@ -238,13 +270,11 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       activeChannel = channel;
       channelRef.current = channel;
 
-      // Responder a la velocidad de un rayo (<30ms) cuando el Master dispara un escaneo/Roll-Call RPC
       channel.on('broadcast', { event: 'rpc_discover_slaves' }, ({ payload }) => {
         if (cancelled || channelRef.current !== channel) return;
         emitSlaveRpc(channel, 'rpc_slave_announce', {
           replyToRequestId: payload?.requestId,
         });
-        // Ping NTP rápido de 1 muestra para mantener rttMs y reloj actualizados
         void channel.send({
           type: 'broadcast',
           event: 'sync_request',
@@ -257,111 +287,147 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
         if (!msg) return;
         if (msg.targetClientId && msg.targetClientId !== clientId) return;
 
+        // Deduplicar el segundo pulso idempotente (+85ms) del Master para ejecutar cada orden exactamente 1 vez
+        if (msg.commandId && msg.type !== 'HEARTBEAT') {
+          if (seenCommandIdsRef.current.has(msg.commandId)) {
+            return;
+          }
+          seenCommandIdsRef.current.add(msg.commandId);
+          if (seenCommandIdsRef.current.size > 64) {
+            const oldest = seenCommandIdsRef.current.values().next().value;
+            if (oldest) seenCommandIdsRef.current.delete(oldest);
+          }
+        }
+
         if (msg.setlistId !== undefined && msg.setlistId !== null) {
-          setMasterSetlistId(msg.setlistId);
+          setMasterSetlistId((prev) => (prev !== msg.setlistId ? msg.setlistId! : prev));
+        }
+        if (msg.nextSongId !== undefined) {
+          setNextSongId((prev) => (prev !== (msg.nextSongId ?? null) ? msg.nextSongId ?? null : prev));
         }
         if (msg.nextSongData !== undefined) {
-          setNextSongData(msg.nextSongData);
+          setNextSongData((prev: any) => {
+            if (!msg.nextSongData) return null;
+            if (
+              prev &&
+              getIncomingSongVersionKey(prev) === getIncomingSongVersionKey(msg.nextSongData)
+            ) {
+              return prev;
+            }
+            return msg.nextSongData;
+          });
         }
+
+        const nowTs = Date.now();
 
         switch (msg.type) {
           case 'PREFETCH_SONG':
+            if (msg.songId) {
+              setNextSongId((prev) => (prev !== msg.songId ? msg.songId! : prev));
+            }
             if (msg.nextSongData || msg.songData) {
-              setNextSongData(msg.nextSongData || msg.songData);
+              const cand = msg.nextSongData || msg.songData;
+              setNextSongData((prev: any) =>
+                prev && getIncomingSongVersionKey(prev) === getIncomingSongVersionKey(cand)
+                  ? prev
+                  : cand
+              );
             }
             break;
 
-          case 'LOAD_SONG':
-            if (msg.songId) {
-              setCurrentSongId(msg.songId);
-              setSongData(msg.songData);
+          case 'LOAD_SONG': {
+            const songChanged = Boolean(msg.songId && msg.songId !== currentSongIdRef.current);
+            updateActiveSongSafe(msg.songId, msg.songData);
+            if (songChanged || isPlayingInternalRef.current) {
+              isPlayingInternalRef.current = false;
               setIsPlaying(false);
-              setPauseTrigger({ ts: Date.now() });
+              setPauseTrigger({ ts: nowTs });
+            }
+            if (typeof msg.offset === 'number') {
+              setSeekTrigger({ offset: msg.offset, ts: nowTs });
             }
             break;
+          }
 
           case 'STATE_SNAPSHOT':
-            if (msg.songId && msg.songData) {
-              setCurrentSongId(msg.songId);
-              setSongData(msg.songData);
-            }
+            updateActiveSongSafe(msg.songId, msg.songData);
             if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
+              isPlayingInternalRef.current = true;
               setIsPlaying(true);
               setPlayTrigger({
+                commandId: msg.commandId,
                 startAt: msg.startAt,
                 offset: msg.offset,
                 songId: msg.songId,
-                ts: Date.now(),
+                ts: nowTs,
               });
             } else {
+              isPlayingInternalRef.current = false;
               setIsPlaying(false);
               if (typeof msg.offset === 'number') {
-                setSeekTrigger({ offset: msg.offset, ts: Date.now() });
+                setSeekTrigger({ offset: msg.offset, ts: nowTs });
               }
             }
             break;
 
           case 'PLAY':
-            if (msg.songId && msg.songData) {
-              setCurrentSongId(msg.songId);
-              setSongData(msg.songData);
-            }
+            updateActiveSongSafe(msg.songId, msg.songData);
             if (msg.startAt !== undefined && msg.offset !== undefined) {
+              isPlayingInternalRef.current = true;
+              setIsPlaying(true);
               setPlayTrigger({
+                commandId: msg.commandId,
                 startAt: msg.startAt,
                 offset: msg.offset,
                 songId: msg.songId,
-                ts: Date.now(),
+                ts: nowTs,
               });
-              setIsPlaying(true);
             }
             break;
 
           case 'HEARTBEAT':
-            if (msg.songId && msg.songData) {
-              setCurrentSongId((prev) => (prev !== msg.songId ? msg.songId! : prev));
-              setSongData((prev: any) =>
-                !prev || prev.id !== msg.songId ? msg.songData : prev
-              );
-            }
+            updateActiveSongSafe(msg.songId, msg.songData);
             if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
+              isPlayingInternalRef.current = true;
               setIsPlaying(true);
               setHeartbeatTrigger({
                 startAt: msg.startAt,
                 offset: msg.offset,
                 songId: msg.songId,
-                ts: Date.now(),
+                ts: nowTs,
               });
             }
             break;
 
           case 'PAUSE':
-            setPauseTrigger({ ts: Date.now() });
+            isPlayingInternalRef.current = false;
             setIsPlaying(false);
+            setPauseTrigger({ ts: nowTs });
             if (typeof msg.offset === 'number') {
-              setSeekTrigger({ offset: msg.offset, ts: Date.now() });
+              setSeekTrigger({ offset: msg.offset, ts: nowTs });
             }
             break;
 
           case 'STOP':
-            setPauseTrigger({ ts: Date.now() });
+            isPlayingInternalRef.current = false;
             setIsPlaying(false);
+            setPauseTrigger({ ts: nowTs });
             setSeekTrigger({
               offset: typeof msg.offset === 'number' ? msg.offset : 0,
-              ts: Date.now(),
+              ts: nowTs,
               isStop: true,
             });
             break;
 
           case 'SEEK':
             if (msg.offset !== undefined) {
-              setSeekTrigger({ offset: msg.offset, ts: Date.now() });
+              setSeekTrigger({ offset: msg.offset, ts: nowTs });
             }
             break;
         }
       });
 
-      // NTP Synchronization (Slave Side) con filtrado multi-muestra de jitter Wi-Fi
+      // NTP Synchronization (Slave Side) con ventana de 12 muestras y filtro de cuartil mínimo
       channel.on('broadcast', { event: 'sync_response' }, ({ payload }) => {
         if (!payload || payload.clientId !== clientId) return;
         const t2 = Date.now();
@@ -370,7 +436,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
           t1: Number(payload.t1),
           t2,
         };
-        const updatedSamples = [...ntpSamplesRef.current.slice(-7), sample];
+        const updatedSamples = [...ntpSamplesRef.current.slice(-11), sample];
         ntpSamplesRef.current = updatedSamples;
 
         const filtered = computeFilteredNtpClockOffset(updatedSamples);
@@ -393,17 +459,16 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
           // 1. Anuncio RPC instantáneo al Master (<30ms) + solicitud de snapshot
           emitSlaveRpc(channel, 'rpc_slave_announce', { needsSnapshot: true });
 
-          // 2. Ráfaga inicial de 5 muestras NTP para calibrar reloj con precisión <10ms
-          sendNtpBurst(channel, 5);
+          // 2. Ráfaga inicial de 8 muestras NTP (cada 65ms = 0.5s) para calibrar reloj con precisión <3ms
+          sendNtpBurst(channel, 8);
 
-          // 3. Solicitar estado actual (canción, setlist y posición) al Master inmediatamente
+          // 3. Solicitar estado actual al Master inmediatamente
           void channel.send({
             type: 'broadcast',
             event: 'request_state',
             payload: buildSlaveRpcPayload({ t0: Date.now() }),
           });
 
-          // Reintentos cortos con rttMs ya calibrado
           timeouts.push(
             globalThis.setTimeout(() => {
               if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
@@ -421,10 +486,10 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
                   payload: buildSlaveRpcPayload({ t0: Date.now() }),
                 });
               }
-            }, 750)
+            }, 700)
           );
 
-          // 4. Latido RPC ultrarrápido cada 1.8s para que Live Concert detecte conexiones/caídas al instante
+          // 4. Latido RPC ultrarrápido cada 1.8s
           if (fastHeartbeatId !== null) globalThis.clearInterval(fastHeartbeatId);
           fastHeartbeatId = globalThis.setInterval(() => {
             if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
@@ -432,13 +497,13 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
             }
           }, SLAVE_HEARTBEAT_INTERVAL_MS);
 
-          // 5. Re-calibración periódica cada 20s con mini-ráfaga de 3 muestras NTP
+          // 5. Re-calibración periódica de reloj NTP cada 10s para anular deriva térmica de osciladores móviles
           if (ntpIntervalId !== null) globalThis.clearInterval(ntpIntervalId);
           ntpIntervalId = globalThis.setInterval(() => {
             if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
               sendNtpBurst(channel, 3);
             }
-          }, 20000);
+          }, 10000);
         } else if (
           status === 'CLOSED' ||
           status === 'CHANNEL_ERROR' ||
@@ -463,7 +528,6 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleResumeOrOnline);
       }
-      // Enviar RPC de despedida instantánea ANTES de cerrar el canal
       sendByeImmediately();
       isSubscribedRef.current = false;
       if (activeChannel) {
@@ -473,9 +537,8 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
         void supabase.removeChannel(activeChannel);
       }
     };
-  }, [bandId, enabled, buildSlaveRpcPayload, emitSlaveRpc, sendNtpBurst]);
+  }, [bandId, enabled, buildSlaveRpcPayload, emitSlaveRpc, sendNtpBurst, updateActiveSongSafe]);
 
-  // Actualizar metadatos (presencia + RPC inmediato) cuando cambia canción lista en RAM o etiqueta
   useEffect(() => {
     const ch = channelRef.current;
     if (!ch || !enabled || !isSubscribedRef.current) return;
@@ -487,6 +550,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     connectionStatus,
     masterSetlistId,
     currentSongId,
+    nextSongId,
     songData,
     nextSongData,
     isPlaying,

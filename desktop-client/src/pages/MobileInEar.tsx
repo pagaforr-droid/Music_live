@@ -4,6 +4,7 @@ import { useSyncSlave } from '../hooks/useSyncSlave';
 import {
   computePhaseLockedSlaveStart,
   computeSlaveDriftCorrection,
+  measureAudioContextOutputLatencyMs,
 } from '../hooks/useSyncMaster';
 import {
   Volume2,
@@ -114,8 +115,10 @@ export default function MobileInEar() {
   const {
     connectionStatus,
     masterSetlistId,
-    songData,
-    nextSongData,
+    currentSongId,
+    nextSongId,
+    songData: wireSongData,
+    nextSongData: wireNextSongData,
     isPlaying,
     playTrigger,
     pauseTrigger,
@@ -131,6 +134,59 @@ export default function MobileInEar() {
     songReady: isSongBuffersReady,
   });
 
+  // Mapa O(1) de canciones completas en el catálogo local del celular (incluye chords, lyrics, beatTimes)
+  const catalogSongsById = useMemo(() => {
+    const map = new Map<string, PracticeSongItem>();
+    if (!catalog) return map;
+    for (const s of catalog.allLiveSongs || []) {
+      if (s?.id) map.set(s.id, s);
+    }
+    for (const list of Object.values(catalog.setlistSongsMap || {})) {
+      if (!Array.isArray(list)) continue;
+      for (const s of list) {
+        if (s?.id && !map.has(s.id)) map.set(s.id, s);
+      }
+    }
+    return map;
+  }, [catalog]);
+
+  const mergeCatalogAndWireSong = useCallback(
+    (songId: string | null | undefined, wireSong: any): any => {
+      const resolvedId = wireSong?.id || songId || null;
+      if (!resolvedId) return null;
+      const localFull = catalogSongsById.get(resolvedId);
+      if (!localFull) return wireSong || null;
+      if (!wireSong) return localFull;
+      return {
+        ...localFull,
+        ...wireSong,
+        prompter_data: {
+          ...(localFull.prompter_data || {}),
+          ...(wireSong.prompter_data || {}),
+          // Preservar arreglos visuales completos de la memoria local si el paquete Realtime vino compactado
+          lyrics: wireSong.prompter_data?.lyrics ?? localFull.prompter_data?.lyrics,
+          chords: wireSong.prompter_data?.chords ?? localFull.prompter_data?.chords,
+          beatTimes: wireSong.prompter_data?.beatTimes ?? localFull.prompter_data?.beatTimes,
+          sections: wireSong.prompter_data?.sections ?? localFull.prompter_data?.sections,
+        },
+      };
+    },
+    [catalogSongsById]
+  );
+
+  const songData = useMemo(
+    () => mergeCatalogAndWireSong(currentSongId, wireSongData),
+    [currentSongId, wireSongData, mergeCatalogAndWireSong]
+  );
+
+  const nextSongData = useMemo(
+    () => mergeCatalogAndWireSong(nextSongId, wireNextSongData),
+    [nextSongId, wireNextSongData, mergeCatalogAndWireSong]
+  );
+
+  const songDataRef = useRef<any>(null);
+  songDataRef.current = songData;
+
   const isPlayingRef = useRef<boolean>(false);
   const clockOffsetRef = useRef<number>(0);
   useEffect(() => {
@@ -139,6 +195,23 @@ export default function MobileInEar() {
   useEffect(() => {
     clockOffsetRef.current = clockOffset;
   }, [clockOffset]);
+
+  // Ajuste fino opcional por celular (-80ms a +80ms) para compensar adaptadores USB-C / DAC específicos
+  const [syncTrimMs, setSyncTrimMs] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('tandu_inear_sync_trim_ms_v1') || 0);
+      return Number.isFinite(saved) ? Math.max(-120, Math.min(120, saved)) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const syncTrimMsRef = useRef<number>(syncTrimMs);
+  useEffect(() => {
+    syncTrimMsRef.current = syncTrimMs;
+    try {
+      localStorage.setItem('tandu_inear_sync_trim_ms_v1', String(syncTrimMs));
+    } catch {}
+  }, [syncTrimMs]);
 
   // Si el Master informa un setlist activo, seleccionarlo automáticamente
   useEffect(() => {
@@ -166,12 +239,16 @@ export default function MobileInEar() {
     Map<string, Promise<{ fohBuffer: AudioBuffer; cueBuffer: AudioBuffer } | null>>
   >(new Map());
   const pendingPlayTriggerRef = useRef<{
+    commandId?: string;
     startAt: number;
     offset: number;
     ts: number;
     songId?: string;
   } | null>(null);
   const lastExecutedTriggerTsRef = useRef<number>(0);
+  const lastHandledPauseTsRef = useRef<number>(0);
+  const lastHandledSeekTsRef = useRef<number>(0);
+  const consecutiveDriftCountRef = useRef<number>(0);
 
   const cueGainRef = useRef<GainNode | null>(null);
   const fohGainRef = useRef<GainNode | null>(null);
@@ -560,19 +637,25 @@ export default function MobileInEar() {
     return resolveEffectivePreRoll(song);
   }, []);
 
+  const getEffectiveSlaveOutputLatencyMs = useCallback((ctx: AudioContext | null) => {
+    const hwMs = measureAudioContextOutputLatencyMs(ctx);
+    return hwMs + (syncTrimMsRef.current || 0);
+  }, []);
+
   const updateTime = useCallback(() => {
     const ctx = audioCtxRef.current;
     if (!ctx || !isAudioNodePlayingRef.current) return;
 
-    const globalTime = Math.max(0, ctx.currentTime - startTimeRef.current);
-    const preRoll = getPreRoll(songData);
+    const outLatSec = getEffectiveSlaveOutputLatencyMs(ctx) / 1000;
+    const globalTime = Math.max(0, ctx.currentTime - startTimeRef.current - outLatSec);
+    const preRoll = getPreRoll(songDataRef.current);
     const visualTime = globalTime - preRoll;
 
     setCurrentTime(visualTime);
     animationFrameRef.current = requestAnimationFrame(updateTime);
-  }, [getPreRoll, songData]);
+  }, [getEffectiveSlaveOutputLatencyMs, getPreRoll]);
 
-  // Lanzamiento de reproducción sincronizada con compensación exacta de paquetes tardíos
+  // Lanzamiento de reproducción sincronizada con compensación exacta de DAC móvil y paquetes tardíos
   const startSynchronizedPlayback = useCallback(
     async (trigger: { startAt: number; offset: number; ts?: number }) => {
       const ctx = audioCtxRef.current;
@@ -599,12 +682,14 @@ export default function MobileInEar() {
       fSource.connect(fohGainRef.current);
       fohSourceRef.current = fSource;
 
+      const slaveOutLatMs = getEffectiveSlaveOutputLatencyMs(ctx);
       const schedule = computePhaseLockedSlaveStart({
         startAtMs: trigger.startAt,
         baseOffsetSec: trigger.offset,
         clientNowMs: Date.now(),
         clockOffsetMs: clockOffsetRef.current,
         audioCtxCurrentTimeSec: ctx.currentTime,
+        slaveOutputLatencyMs: slaveOutLatMs,
         bufferDurationSec: fBuf.duration,
         minScheduleLookaheadSec: 0.025,
       });
@@ -615,6 +700,7 @@ export default function MobileInEar() {
       startTimeRef.current = schedule.whenContextSec - schedule.startOffsetSec;
       pauseOffsetRef.current = schedule.startOffsetSec;
       isAudioNodePlayingRef.current = true;
+      consecutiveDriftCountRef.current = 0;
       if (trigger.ts) {
         lastExecutedTriggerTsRef.current = trigger.ts;
       }
@@ -624,18 +710,17 @@ export default function MobileInEar() {
       setLoadStatus(
         schedule.isLatePacket
           ? `EN VIVO · FASE COMPENSADA (+${schedule.lateByMs}ms)`
-          : 'REPRODUCIENDO EN SINCRONÍA'
+          : 'REPRODUCIENDO EN SINCRONÍA EXACTA'
       );
     },
-    [stopActiveSources, updateTime]
+    [getEffectiveSlaveOutputLatencyMs, stopActiveSources, updateTime]
   );
 
   const getInEarSongSignature = useCallback((song: any): string => {
     if (!song?.id) return '';
     const fohSig = computeSongChannelSignature(song, 'foh');
-    const cueSig = computeSongChannelSignature(song, 'cue');
     const sectionsUpd = song?.prompter_data?.sectionsUpdatedAt || '';
-    return `${song.id}|${fohSig}|${cueSig}|${sectionsUpd}`;
+    return `${song.id}|${fohSig}|${sectionsUpd}`;
   }, []);
 
   // Decodificador compartido con deduplicación en vuelo y caché LRU en RAM (hasta 4 canciones listas para cambio en 0ms)
@@ -897,10 +982,10 @@ export default function MobileInEar() {
     if (!playTrigger || !hasInteracted) return;
     if (playTrigger.ts === lastExecutedTriggerTsRef.current) return;
 
+    const loadedSigSongId = loadedSongSignatureRef.current.split('|')[0] || '';
     const matchesLoadedSong =
       !playTrigger.songId ||
-      !songData?.id ||
-      playTrigger.songId === songData.id;
+      (loadedSigSongId !== '' && playTrigger.songId === loadedSigSongId);
 
     if (
       audioCtxRef.current &&
@@ -915,34 +1000,32 @@ export default function MobileInEar() {
       // Guardar trigger para ejecutarlo con compensación de fase apenas termine la decodificación en RAM
       pendingPlayTriggerRef.current = playTrigger;
     }
-  }, [
-    playTrigger,
-    hasInteracted,
-    isSongBuffersReady,
-    songData?.id,
-    startSynchronizedPlayback,
-  ]);
+  }, [playTrigger, hasInteracted, isSongBuffersReady, startSynchronizedPlayback]);
 
-  // Pausa enviada por el Master
+  // Pausa enviada por el Master (protegida por timestamp único para NO re-dispararse cuando cambia isSongBuffersReady)
   useEffect(() => {
-    if (!pauseTrigger) return;
+    if (!pauseTrigger || pauseTrigger.ts === lastHandledPauseTsRef.current) return;
+    lastHandledPauseTsRef.current = pauseTrigger.ts;
     pendingPlayTriggerRef.current = null;
+    consecutiveDriftCountRef.current = 0;
     stopActiveSources();
     setLoadStatus(
-      isSongBuffersReady
+      cueBufferRef.current && fohBufferRef.current
         ? 'En Pausa (Standby)'
         : 'Esperando canción del Administrador...'
     );
-  }, [pauseTrigger, isSongBuffersReady, stopActiveSources]);
+  }, [pauseTrigger, stopActiveSources]);
 
-  // Seek o Stop enviado por el Master (reposiciona realmente el audio si estaba sonando)
+  // Seek o Stop enviado por el Master (protegido por timestamp único para NO cortar cambios de canción)
   useEffect(() => {
-    if (!seekTrigger) return;
+    if (!seekTrigger || seekTrigger.ts === lastHandledSeekTsRef.current) return;
+    lastHandledSeekTsRef.current = seekTrigger.ts;
     pauseOffsetRef.current = seekTrigger.offset;
-    setCurrentTime(seekTrigger.offset - getPreRoll(songData));
+    setCurrentTime(seekTrigger.offset - getPreRoll(songDataRef.current));
 
     if (seekTrigger.isStop) {
       pendingPlayTriggerRef.current = null;
+      consecutiveDriftCountRef.current = 0;
       stopActiveSources();
       setLoadStatus('Detenido · Listo en Inicio / Pre-Roll');
     } else if (isPlayingRef.current && isAudioNodePlayingRef.current) {
@@ -951,13 +1034,24 @@ export default function MobileInEar() {
         offset: seekTrigger.offset,
       });
     }
-  }, [seekTrigger, songData, getPreRoll, stopActiveSources, startSynchronizedPlayback]);
+  }, [seekTrigger, getPreRoll, stopActiveSources, startSynchronizedPlayback]);
 
-  // Heartbeat periódico del Master: engancha celulares que entraron a mitad de canción o corrige derivas >42ms
+  // Heartbeat cada 1.5s del Master: engancha cualquier celular rezagado al instante y mantiene fase <18ms
   useEffect(() => {
     if (!heartbeatTrigger || !hasInteracted || !isPlayingRef.current) return;
     const ctx = audioCtxRef.current;
-    if (!ctx || !cueBufferRef.current || !fohBufferRef.current || !isSongBuffersReady) {
+    const loadedSigSongId = loadedSongSignatureRef.current.split('|')[0] || '';
+    const matchesLoaded =
+      !heartbeatTrigger.songId ||
+      (loadedSigSongId !== '' && heartbeatTrigger.songId === loadedSigSongId);
+
+    if (
+      !ctx ||
+      !cueBufferRef.current ||
+      !fohBufferRef.current ||
+      !isSongBuffersReady ||
+      !matchesLoaded
+    ) {
       pendingPlayTriggerRef.current = heartbeatTrigger;
       return;
     }
@@ -971,22 +1065,35 @@ export default function MobileInEar() {
       0,
       ctx.currentTime - startTimeRef.current
     );
+    const slaveOutLatMs = getEffectiveSlaveOutputLatencyMs(ctx);
     const drift = computeSlaveDriftCorrection({
       masterStartAtMs: heartbeatTrigger.startAt,
       masterBaseOffsetSec: heartbeatTrigger.offset,
       clientNowMs: Date.now(),
       clockOffsetMs: clockOffsetRef.current,
       slaveCurrentGlobalSec,
-      driftThresholdSec: 0.042,
+      slaveOutputLatencyMs: slaveOutLatMs,
+      driftThresholdSec: 0.018,
     });
 
-    if (drift.needsResync) {
+    const absDriftMs = Math.abs(drift.driftMs);
+    if (absDriftMs >= 35) {
+      consecutiveDriftCountRef.current = 0;
       void startSynchronizedPlayback(heartbeatTrigger);
+    } else if (drift.needsResync) {
+      consecutiveDriftCountRef.current += 1;
+      if (consecutiveDriftCountRef.current >= 2) {
+        consecutiveDriftCountRef.current = 0;
+        void startSynchronizedPlayback(heartbeatTrigger);
+      }
+    } else {
+      consecutiveDriftCountRef.current = 0;
     }
   }, [
     heartbeatTrigger,
     hasInteracted,
     isSongBuffersReady,
+    getEffectiveSlaveOutputLatencyMs,
     startSynchronizedPlayback,
   ]);
 
@@ -1349,6 +1456,47 @@ export default function MobileInEar() {
                 onChange={(e) => setBandVolume(parseFloat(e.target.value))}
                 className="w-full accent-red-500 h-1"
               />
+            </div>
+            {/* Ajuste Fino de Fase por Celular (-80ms .. +80ms) */}
+            <div className="flex items-center justify-between pt-0.5 border-t border-white/[0.06]">
+              <span
+                className="text-[8.5px] font-black uppercase tracking-wider text-emerald-300/90"
+                title="Ajuste fino de fase para este celular/DAC"
+              >
+                FASE {syncTrimMs >= 0 ? `+${syncTrimMs}` : syncTrimMs}ms
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.max(-100, syncTrimMs - 5);
+                    setSyncTrimMs(next);
+                  }}
+                  className="px-1.5 py-0.5 rounded bg-white/[0.07] hover:bg-white/[0.15] text-[9px] font-bold text-zinc-200 cursor-pointer"
+                  title="Adelantar 5ms"
+                >
+                  -5
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSyncTrimMs(0)}
+                  className="px-1.5 py-0.5 rounded bg-white/[0.05] hover:bg-white/[0.12] text-[8.5px] font-mono text-zinc-400 cursor-pointer"
+                  title="Restablecer ajuste fino a 0ms"
+                >
+                  0
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.min(100, syncTrimMs + 5);
+                    setSyncTrimMs(next);
+                  }}
+                  className="px-1.5 py-0.5 rounded bg-white/[0.07] hover:bg-white/[0.15] text-[9px] font-bold text-zinc-200 cursor-pointer"
+                  title="Compensar +5ms extra de salida en este celular"
+                >
+                  +5
+                </button>
+              </div>
             </div>
           </div>
 

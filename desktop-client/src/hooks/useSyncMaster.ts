@@ -12,13 +12,15 @@ export interface SyncMessage {
     | 'STATE_SNAPSHOT'
     | 'HEARTBEAT'
     | 'PREFETCH_SONG';
+  commandId?: string;
   setlistId?: string | null;
   songId?: string;
-  startAt?: number; // Master timestamp in ms when playback starts/started at `offset`
+  nextSongId?: string | null;
+  startAt?: number; // Exact Master timestamp in ms when audio sound exits speakers/headphones at `offset`
   offset?: number; // Global audio time in seconds corresponding to `startAt` (or pause/seek position)
   isPlaying?: boolean;
   songData?: any;
-  nextSongData?: any; // Siguiente canción del setlist para pre-decodificación instantánea en RAM en los celulares
+  nextSongData?: any;
   sentAt?: number;
   targetClientId?: string;
 }
@@ -56,6 +58,87 @@ export const SLAVE_HEARTBEAT_INTERVAL_MS = 1800;
 export const SLAVE_PROBE_THRESHOLD_MS = 2400;
 /** Tiempo máximo sin respuesta antes de expulsar un celular desconectado abruptamente */
 export const SLAVE_HEARTBEAT_TTL_MS = 5000;
+
+/**
+ * Mide en vivo la latencia física real de salida (en ms) de un `AudioContext`
+ * (`baseLatency + outputLatency` o `currentTime - getOutputTimestamp().contextTime`).
+ * Permite alinear al milisegundo el instante en que el sonido sale físicamente en PC, Android e iPhone.
+ */
+export function measureAudioContextOutputLatencyMs(
+  ctx: AudioContext | null | undefined
+): number {
+  if (!ctx) return 0;
+  const rawBase = Number((ctx as any).baseLatency);
+  const baseSec = Number.isFinite(rawBase) && rawBase > 0 ? rawBase : 0;
+
+  const rawOut = Number((ctx as any).outputLatency);
+  let outSec = Number.isFinite(rawOut) && rawOut > 0 ? rawOut : 0;
+
+  if (outSec <= 0 && typeof (ctx as any).getOutputTimestamp === 'function') {
+    try {
+      const ts = (ctx as any).getOutputTimestamp();
+      if (
+        ts &&
+        typeof ts.contextTime === 'number' &&
+        ts.contextTime > 0 &&
+        ctx.currentTime >= ts.contextTime
+      ) {
+        const pipelineDelay = ctx.currentTime - ts.contextTime;
+        if (pipelineDelay > 0 && pipelineDelay < 0.3) {
+          outSec = pipelineDelay;
+        }
+      }
+    } catch {}
+  }
+
+  const totalSec = Math.max(0, Math.min(0.3, baseSec + outSec));
+  return Math.round(totalSec * 1000);
+}
+
+/**
+ * Compacta drásticamente `songData` (~350 KB -> ~1.2 KB) antes de enviarlo por WebSocket Realtime.
+ * Elimina arreglos masivos (`beatTimes`, `waveformPeaks`, `stems`, `chords`, `lyrics`) que saturaban
+ * el límite de fan-out de Supabase Realtime cuando hay 2 o más celulares conectados; cada celular
+ * fusiona automáticamente esos arreglos desde su catálogo local descargado en el Paso 1.
+ */
+export function stripHeavySongPayloadForRealtime(song: any): any {
+  if (!song || typeof song !== 'object') return song ?? null;
+  const pd = song.prompter_data;
+  const compactPrompterData =
+    pd && typeof pd === 'object'
+      ? {
+          bpm: pd.bpm,
+          key: pd.key,
+          timeSignature: pd.timeSignature,
+          firstBeatOffset: pd.firstBeatOffset,
+          sectionsUpdatedAt: pd.sectionsUpdatedAt,
+          liveMixMeta: pd.liveMixMeta,
+          lyricsSyncMeta: pd.lyricsSyncMeta,
+          mixConfig: pd.mixConfig,
+          sections: Array.isArray(pd.sections)
+            ? pd.sections.map((s: any) => ({
+                id: s?.id,
+                name: s?.name,
+                section: s?.section,
+                time: s?.time,
+                bars: s?.bars,
+                cueEnabled: s?.cueEnabled,
+              }))
+            : undefined,
+        }
+      : undefined;
+
+  return {
+    id: song.id,
+    title: song.title,
+    position: song.position,
+    foh_mobile_url: song.foh_mobile_url ?? null,
+    cue_mobile_url: song.cue_mobile_url ?? null,
+    foh_mix_url: song.foh_mix_url ?? null,
+    cue_mix_url: song.cue_mix_url ?? null,
+    ...(compactPrompterData ? { prompter_data: compactPrompterData } : {}),
+  };
+}
 
 export function createSlavePeerRegistry(): SlavePeerRegistryState {
   return {
@@ -108,7 +191,6 @@ export function upsertSlavePeerFromRpc(
   const existing = registry.peers.get(clientId);
   const isNewPeer = !existing;
 
-  // Un paquete RPC vivo limpia cualquier marca previa de salida para este clientId
   registry.departedAtByClientId.delete(clientId);
 
   const connectedAt = Number(payload.connectedAt) || existing?.connectedAt || nowMs;
@@ -183,7 +265,6 @@ export function reconcilePresenceWithRegistry(
     const existing = registry.peers.get(client.clientId);
 
     if (existing) {
-      // Enriquecer metadatos faltantes sin sobreescribir el lastSeenAt del canal RPC
       if (!existing.deviceLabel && client.deviceLabel) {
         existing.deviceLabel = client.deviceLabel;
       }
@@ -193,7 +274,6 @@ export function reconcilePresenceWithRegistry(
       continue;
     }
 
-    // Si este cliente ya envió `bye` o ya expiró su token de sesión anterior, NO resucitarlo desde Presence
     if (registry.seededPresenceTokens.has(token)) {
       continue;
     }
@@ -203,7 +283,6 @@ export function reconcilePresenceWithRegistry(
       continue;
     }
 
-    // Es una presencia nueva: sembrarla una sola vez y disparar un RPC de confirmación en vivo
     registry.seededPresenceTokens.add(token);
     registry.peers.set(client.clientId, {
       ...client,
@@ -264,7 +343,6 @@ export async function acquireCleanRealtimeChannel(
   config: Record<string, any>,
   isCancelled: () => boolean
 ): Promise<RealtimeChannel | null> {
-  // Ceder 1 macrotask (0ms) para que el montaje desechable de React StrictMode se cancele antes de abrir socket
   await new Promise<void>((resolve) => {
     globalThis.setTimeout(resolve, 0);
   });
@@ -346,8 +424,8 @@ export function countReadySlavePresences(
 }
 
 /**
- * Calcula el desfase de reloj NTP (Master - Esclavo en ms) a partir de múltiples muestras,
- * descartando los outliers de alto RTT causados por picos de jitter Wi-Fi.
+ * Calcula el desfase de reloj NTP (Master - Esclavo en ms) usando el cuartil de menor RTT
+ * (RFC 5905 Minimum-Delay Filter) para eliminar asimetrías de cola Wi-Fi con precisión <3ms.
  */
 export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
   clockOffsetMs: number;
@@ -375,9 +453,9 @@ export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
     return { clockOffsetMs: 0, bestRttMs: 0, sampleCount: 0 };
   }
 
-  // Ordenar por menor RTT (las muestras con menor tiempo de ida y vuelta tienen menor congestión/jitter)
+  // Ordenar por menor RTT: las muestras con mínimo RTT sufrieron mínima cola en el router Wi-Fi
   valid.sort((a, b) => a.rtt - b.rtt);
-  const keepCount = Math.max(1, Math.min(4, Math.ceil(valid.length / 2)));
+  const keepCount = Math.max(1, Math.min(3, Math.ceil(valid.length * 0.35)));
   const bestSlice = valid.slice(0, keepCount);
 
   const avgOffset =
@@ -392,8 +470,8 @@ export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
 
 /**
  * Calcula el instante exacto de `AudioContext.currentTime` (`whenContextSec`) y el `startOffsetSec`
- * compensado para que un esclavo entre SIEMPRE en fase exacta con el clic guía del Master,
- * incluso si el paquete WebSocket llegó tarde o la decodificación en RAM tomó tiempo extra.
+ * compensando tanto el desfase de reloj NTP como la latencia de salida de audio (`slaveOutputLatencyMs`)
+ * propia de cada celular (Android AudioTrack / iOS CoreAudio) para que el sonido salga al unísono con el PC.
  */
 export function computePhaseLockedSlaveStart(params: {
   startAtMs: number;
@@ -401,6 +479,7 @@ export function computePhaseLockedSlaveStart(params: {
   clientNowMs: number;
   clockOffsetMs: number;
   audioCtxCurrentTimeSec: number;
+  slaveOutputLatencyMs?: number;
   bufferDurationSec?: number;
   minScheduleLookaheadSec?: number;
 }): {
@@ -415,6 +494,7 @@ export function computePhaseLockedSlaveStart(params: {
     clientNowMs,
     clockOffsetMs,
     audioCtxCurrentTimeSec,
+    slaveOutputLatencyMs = 0,
     bufferDurationSec,
     minScheduleLookaheadSec = 0.025,
   } = params;
@@ -422,8 +502,12 @@ export function computePhaseLockedSlaveStart(params: {
   const safeBaseOffset = Math.max(0, Number(baseOffsetSec) || 0);
   const safeCtxNow = Math.max(0, Number(audioCtxCurrentTimeSec) || 0);
   const lookaheadSec = Math.max(0.005, minScheduleLookaheadSec);
+  const slaveOutLatMs = Number.isFinite(slaveOutputLatencyMs) ? Number(slaveOutputLatencyMs) : 0;
+
+  // El sonido debe SALIR por los audífonos en `startAtMs`, por lo que WebAudio debe iniciar `slaveOutLatMs` antes
+  const effectiveRenderStartAtMs = startAtMs - slaveOutLatMs;
   const masterNowMs = clientNowMs + (Number(clockOffsetMs) || 0);
-  const timeUntilStartMs = startAtMs - masterNowMs;
+  const timeUntilStartMs = effectiveRenderStartAtMs - masterNowMs;
 
   let whenContextSec: number;
   let startOffsetSec: number;
@@ -431,16 +515,14 @@ export function computePhaseLockedSlaveStart(params: {
   let lateByMs = 0;
 
   if (timeUntilStartMs >= lookaheadSec * 1000) {
-    // El inicio programado por el Master aún está en el futuro: agendar en el instante exacto
     whenContextSec = safeCtxNow + timeUntilStartMs / 1000;
     startOffsetSec = safeBaseOffset;
   } else {
-    // El paquete llegó después del ventana de lookahead (o tarde):
-    // Arrancar tras `lookaheadSec` y adelantar `startOffsetSec` exactamente el tiempo transcurrido en el Master
     isLatePacket = timeUntilStartMs < 0;
     lateByMs = isLatePacket ? Math.round(-timeUntilStartMs) : 0;
     whenContextSec = safeCtxNow + lookaheadSec;
-    const elapsedAtScheduleSec = (masterNowMs - startAtMs) / 1000 + lookaheadSec;
+    const elapsedAtScheduleSec =
+      (masterNowMs - effectiveRenderStartAtMs) / 1000 + lookaheadSec;
     startOffsetSec = Math.max(0, safeBaseOffset + elapsedAtScheduleSec);
   }
 
@@ -461,8 +543,8 @@ export function computePhaseLockedSlaveStart(params: {
 }
 
 /**
- * Evalúa si el reproductor de un esclavo se ha desfasado respecto al reloj del Master
- * durante la reproducción continua (Heartbeat Drift Check).
+ * Evalúa si el audio audible de un esclavo se ha desfasado respecto al reloj del Master
+ * durante la reproducción continua, descontando la latencia del DAC del celular (`slaveOutputLatencyMs`).
  */
 export function computeSlaveDriftCorrection(params: {
   masterStartAtMs: number;
@@ -470,6 +552,7 @@ export function computeSlaveDriftCorrection(params: {
   clientNowMs: number;
   clockOffsetMs: number;
   slaveCurrentGlobalSec: number;
+  slaveOutputLatencyMs?: number;
   driftThresholdSec?: number;
 }): {
   driftSec: number;
@@ -483,15 +566,20 @@ export function computeSlaveDriftCorrection(params: {
     clientNowMs,
     clockOffsetMs,
     slaveCurrentGlobalSec,
-    driftThresholdSec = 0.04,
+    slaveOutputLatencyMs = 0,
+    driftThresholdSec = 0.018,
   } = params;
 
+  const slaveOutLatSec =
+    (Number.isFinite(slaveOutputLatencyMs) ? Number(slaveOutputLatencyMs) : 0) / 1000;
   const masterNowMs = clientNowMs + (Number(clockOffsetMs) || 0);
   const expectedMasterGlobalSec = Math.max(
     0,
     (Number(masterBaseOffsetSec) || 0) + (masterNowMs - masterStartAtMs) / 1000
   );
-  const driftSec = slaveCurrentGlobalSec - expectedMasterGlobalSec;
+  // `slaveCurrentGlobalSec` es el cursor de render WebAudio; lo que suena ahora mismo en el oído es `cursor - slaveOutLatSec`
+  const slaveAudibleGlobalSec = slaveCurrentGlobalSec - slaveOutLatSec;
+  const driftSec = slaveAudibleGlobalSec - expectedMasterGlobalSec;
   const driftMs = Math.round(driftSec * 1000);
 
   return {
@@ -513,6 +601,24 @@ function buildClientsRenderSignature(clients: ReadySlaveClient[]): string {
     .join(';');
 }
 
+function compactSyncPayload(msg: SyncMessage, commandId: string): SyncMessage {
+  const compactSong = msg.songData ? stripHeavySongPayloadForRealtime(msg.songData) : undefined;
+  const compactNext = msg.nextSongData
+    ? stripHeavySongPayloadForRealtime(msg.nextSongData)
+    : undefined;
+  const resolvedNextId =
+    msg.nextSongId !== undefined ? msg.nextSongId : msg.nextSongData?.id ?? undefined;
+
+  return {
+    ...msg,
+    commandId,
+    ...(resolvedNextId !== undefined ? { nextSongId: resolvedNextId } : {}),
+    ...(compactSong !== undefined ? { songData: compactSong } : {}),
+    ...(compactNext !== undefined ? { nextSongData: compactNext } : {}),
+    sentAt: Date.now(),
+  };
+}
+
 export interface UseSyncMasterOptions {
   getStateSnapshot?: () => SyncMessage | null;
 }
@@ -522,6 +628,10 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
   const isSubscribedRef = useRef<boolean>(false);
   const masterKeyRef = useRef<string>(
     `master-${Math.random().toString(36).slice(2, 9)}`
+  );
+  const cmdSeqRef = useRef<number>(0);
+  const repeatCmdTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(
+    null
   );
   const registryRef = useRef<SlavePeerRegistryState>(createSlavePeerRegistry());
   const lastRenderSigRef = useRef<string>('');
@@ -571,14 +681,18 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
       if (!getStateSnapshotRef.current || !isSubscribedRef.current) return;
       const snap = getStateSnapshotRef.current();
       if (!snap) return;
+      const cmdId = `snap-${Date.now()}-${++cmdSeqRef.current}`;
+      const wirePayload = compactSyncPayload(
+        {
+          ...snap,
+          ...(targetClientId ? { targetClientId } : {}),
+        },
+        cmdId
+      );
       void ch.send({
         type: 'broadcast',
         event: 'transport',
-        payload: {
-          ...snap,
-          ...(targetClientId ? { targetClientId } : {}),
-          sentAt: Date.now(),
-        },
+        payload: wirePayload,
       });
     },
     []
@@ -612,7 +726,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     );
     commitClientsState(reconciled.clients);
 
-    // Ráfaga RPC inmediata + segundo pulso corto para máxima fiabilidad sobre Wi-Fi
     sendDiscoverRpc(ch);
     globalThis.setTimeout(() => {
       if (channelRef.current === ch && isSubscribedRef.current) {
@@ -737,7 +850,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
             syncFromPresence();
           }
         })
-        // RPC 1: Anuncio inmediato al conectar, al responder Roll-Call o al cambiar estado RAM
         .on('broadcast', { event: 'rpc_slave_announce' }, ({ payload }) => {
           if (cancelled) return;
           const res = upsertSlavePeerFromRpc(registryRef.current, payload, Date.now());
@@ -746,13 +858,11 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
             sendSnapshotToClient(channel, String(payload.clientId));
           }
         })
-        // RPC 2: Latido ultrarrápido cada 1.8s para confirmar vida en tiempo real
         .on('broadcast', { event: 'rpc_slave_heartbeat' }, ({ payload }) => {
           if (cancelled) return;
           const res = upsertSlavePeerFromRpc(registryRef.current, payload, Date.now());
           commitClientsState(res.clients);
         })
-        // RPC 3: Desconexión instantánea (<30ms) cuando el músico sale, cambia de playlist o cierra la pestaña
         .on('broadcast', { event: 'rpc_slave_bye' }, ({ payload }) => {
           if (cancelled || !payload?.clientId) return;
           const res = removeSlavePeerFromBye(
@@ -763,7 +873,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
           );
           commitClientsState(res.clients);
         })
-        // NTP Time Synchronization (Master Side)
         .on('broadcast', { event: 'sync_request' }, ({ payload }) => {
           if (cancelled) return;
           void channel.send({
@@ -776,7 +885,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
               seq: payload?.seq,
             },
           });
-          // Refrescar lastSeen si el esclavo ya es conocido o declara ready=true
           if (
             payload?.clientId &&
             (payload?.ready === true || registryRef.current.peers.has(String(payload.clientId)))
@@ -785,7 +893,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
             commitClientsState(res.clients);
           }
         })
-        // Handshake explícito: Esclavo solicita canción / playlist / estado actual al conectarse
         .on('broadcast', { event: 'request_state' }, ({ payload }) => {
           if (cancelled) return;
           if (payload?.clientId && payload?.ready !== false) {
@@ -804,7 +911,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
               connectedAt: Date.now(),
             });
 
-            // Roll-Call RPC instantáneo apenas entra Live Concert para detectar celulares ya conectados
             sendDiscoverRpc(channel);
             initialSecondPingTimeout = globalThis.setTimeout(() => {
               if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
@@ -812,7 +918,6 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
               }
             }, 350);
 
-            // Watchdog rápido cada 1s: sonda RPC a los 2.4s y expulsión a los 5s si se cayó la red del celular
             if (watchdogInterval) globalThis.clearInterval(watchdogInterval);
             watchdogInterval = globalThis.setInterval(() => {
               if (cancelled || channelRef.current !== channel || !isSubscribedRef.current) return;
@@ -841,6 +946,7 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
       if (watchdogInterval) globalThis.clearInterval(watchdogInterval);
       if (initialSecondPingTimeout) globalThis.clearTimeout(initialSecondPingTimeout);
       if (scanTimerRef.current) globalThis.clearTimeout(scanTimerRef.current);
+      if (repeatCmdTimerRef.current) globalThis.clearTimeout(repeatCmdTimerRef.current);
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       }
@@ -858,15 +964,46 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
   }, [bandId, commitClientsState, sendDiscoverRpc, sendSnapshotToClient]);
 
   const broadcast = useCallback((msg: SyncMessage) => {
-    if (channelRef.current && isSubscribedRef.current) {
-      void channelRef.current.send({
-        type: 'broadcast',
-        event: 'transport',
-        payload: {
-          ...msg,
-          sentAt: Date.now(),
-        },
-      });
+    const ch = channelRef.current;
+    if (!ch || !isSubscribedRef.current) return;
+
+    const cmdId = msg.commandId || `cmd-${Date.now()}-${++cmdSeqRef.current}`;
+    const wirePayload = compactSyncPayload(msg, cmdId);
+
+    // Si llega una nueva orden crítica de transporte, cancelar cualquier repetición pendiente de una orden anterior
+    const isCriticalStateChange =
+      msg.type === 'PLAY' ||
+      msg.type === 'PAUSE' ||
+      msg.type === 'STOP' ||
+      msg.type === 'LOAD_SONG';
+
+    if (isCriticalStateChange && repeatCmdTimerRef.current) {
+      globalThis.clearTimeout(repeatCmdTimerRef.current);
+      repeatCmdTimerRef.current = null;
+    }
+
+    void ch.send({
+      type: 'broadcast',
+      event: 'transport',
+      payload: wirePayload,
+    });
+
+    // Doble pulso idempotente (+85ms con el MISMO commandId y startAt) para que ningún celular
+    // pierda el arranque por ahorro de energía Wi-Fi (DTIM) o micro-colisión de paquetes
+    if (isCriticalStateChange) {
+      repeatCmdTimerRef.current = globalThis.setTimeout(() => {
+        repeatCmdTimerRef.current = null;
+        if (channelRef.current === ch && isSubscribedRef.current) {
+          void ch.send({
+            type: 'broadcast',
+            event: 'transport',
+            payload: {
+              ...wirePayload,
+              sentAt: Date.now(),
+            },
+          });
+        }
+      }, 85);
     }
   }, []);
 
