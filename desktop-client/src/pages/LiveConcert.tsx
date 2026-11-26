@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
-import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity, Zap, CloudDownload, HardDrive, Loader2 } from 'lucide-react';
+import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity, Zap, CloudDownload, HardDrive, Loader2, Smartphone } from 'lucide-react';
 import { useSyncMaster } from '../hooks/useSyncMaster';
 import {
   type LocalMp3TrackMeta,
@@ -468,10 +468,30 @@ export default function LiveConcert() {
     };
   };
 
-  const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID, {
+  const {
+    broadcast,
+    connections,
+    readyClients,
+    scanDevices,
+    isScanning,
+    channelStatus: inEarChannelStatus,
+  } = useSyncMaster(isProjectorWindow ? '' : FAKE_BAND_ID, {
     getStateSnapshot: buildMasterSyncSnapshot,
   });
   useEffect(() => { connectionsRef.current = connections; }, [connections]);
+
+  const [isInEarRadarOpen, setIsInEarRadarOpen] = useState(false);
+  const inEarRadarRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isInEarRadarOpen) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (inEarRadarRef.current && !inEarRadarRef.current.contains(event.target as Node)) {
+        setIsInEarRadarOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isInEarRadarOpen]);
 
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [localSliderTime, setLocalSliderTime] = useState(0);
@@ -3193,22 +3213,186 @@ export default function LiveConcert() {
               )}
           </button>
 
-          {/* In-Ear Sync Beacon */}
-          <button
-            type="button"
-            onClick={() => setBroadcastEnabled(!broadcastEnabled)}
-            className={`p-2 rounded-xl transition-all flex items-center gap-1.5 ${
-              broadcastEnabled
-                ? 'bg-blue-50 text-blue-700 border border-blue-300'
-                : 'bg-zinc-100 text-zinc-600 hover:text-zinc-900 border border-zinc-200'
-            }`}
-            title={`Transmitir In-Ear WiFi a celulares para ensayos (${connections} conectados)`}
-          >
-            <Wifi size={14} />
-            {broadcastEnabled && connections > 0 && (
-              <span className="text-[10px] font-mono font-medium tabular-nums">{connections}</span>
+          {/* In-Ear Sync Beacon + Buscador Rápido RPC */}
+          <div ref={inEarRadarRef} className="relative flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                (document.activeElement as HTMLElement)?.blur();
+                const next = !broadcastEnabled;
+                setBroadcastEnabled(next);
+                if (next) {
+                  scanDevices();
+                }
+              }}
+              className={`px-2.5 py-2 rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider cursor-pointer border ${
+                broadcastEnabled
+                  ? 'bg-blue-600 text-white border-blue-700 shadow-sm hover:bg-blue-700'
+                  : connections > 0
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                  : 'bg-zinc-100 text-zinc-700 hover:text-zinc-950 border-zinc-200 hover:bg-zinc-200'
+              }`}
+              title={`Transmitir In-Ear WiFi a celulares para ensayos (${connections} ${connections === 1 ? 'conectado' : 'conectados'})`}
+            >
+              <Wifi size={13} />
+              <span>IN-EAR</span>
+              <span
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-mono font-bold tabular-nums ${
+                  broadcastEnabled
+                    ? connections > 0
+                      ? 'bg-emerald-400/25 text-emerald-100 border border-emerald-300/40'
+                      : 'bg-white/20 text-white'
+                    : connections > 0
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-zinc-200 text-zinc-700'
+                }`}
+              >
+                {connections > 0 && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                      broadcastEnabled ? 'bg-emerald-300' : 'bg-white'
+                    }`}
+                  />
+                )}
+                {connections}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                (document.activeElement as HTMLElement)?.blur();
+                scanDevices();
+                setIsInEarRadarOpen((prev) => !prev);
+              }}
+              className={`p-2 rounded-xl transition-all flex items-center justify-center cursor-pointer border ${
+                isInEarRadarOpen
+                  ? 'bg-zinc-900 text-white border-zinc-900'
+                  : 'bg-zinc-100 text-zinc-700 hover:text-zinc-950 border-zinc-200 hover:bg-zinc-200'
+              }`}
+              title="Buscar dispositivos In-Ear conectados al instante (RPC) y ver detalle"
+            >
+              <RefreshCw size={13} className={isScanning ? 'animate-spin text-blue-600' : ''} />
+            </button>
+
+            {isInEarRadarOpen && (
+              <div className="absolute left-0 xl:left-auto xl:right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white border border-[#B9D0EE] rounded-2xl shadow-2xl p-3.5 z-50 text-zinc-900">
+                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-zinc-200">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <Smartphone size={14} className="text-blue-600 shrink-0" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-zinc-900 truncate">
+                        Celulares In-Ear ({connections})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-semibold">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          inEarChannelStatus === 'connected'
+                            ? 'bg-emerald-500'
+                            : inEarChannelStatus === 'connecting'
+                            ? 'bg-amber-400 animate-pulse'
+                            : 'bg-rose-500'
+                        }`}
+                      />
+                      <span className="text-zinc-500">
+                        {inEarChannelStatus === 'connected'
+                          ? 'Radar RPC Activo (<50ms)'
+                          : inEarChannelStatus === 'connecting'
+                          ? 'Conectando canal Realtime...'
+                          : 'Canal desconectado'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      (document.activeElement as HTMLElement)?.blur();
+                      scanDevices();
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1 cursor-pointer shrink-0 transition-all"
+                    title="Lanzar búsqueda rápida RPC a todos los celulares"
+                  >
+                    <RefreshCw size={11} className={isScanning ? 'animate-spin' : ''} />
+                    <span>{isScanning ? 'Buscando...' : 'Buscar RPC'}</span>
+                  </button>
+                </div>
+
+                {/* Estado de transmisión */}
+                <div className="flex items-center justify-between gap-2 py-2 border-b border-zinc-100">
+                  <span className="text-[10.5px] font-semibold text-zinc-600">
+                    Transmisión Sync Wi-Fi:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      (document.activeElement as HTMLElement)?.blur();
+                      const next = !broadcastEnabled;
+                      setBroadcastEnabled(next);
+                      if (next) scanDevices();
+                    }}
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider cursor-pointer transition-all border ${
+                      broadcastEnabled
+                        ? 'bg-blue-600 text-white border-blue-700'
+                        : 'bg-zinc-100 text-zinc-700 border-zinc-300 hover:bg-zinc-200'
+                    }`}
+                  >
+                    {broadcastEnabled ? 'ACTIVA (ON)' : 'EN PAUSA (OFF)'}
+                  </button>
+                </div>
+
+                {/* Lista viva de celulares conectados */}
+                <div className="mt-2.5 max-h-52 overflow-y-auto space-y-1.5">
+                  {readyClients.length === 0 ? (
+                    <div className="rounded-xl bg-zinc-50 border border-dashed border-zinc-200 p-3 text-center">
+                      <p className="text-[11px] font-semibold text-zinc-600">
+                        Sin celulares conectados en este momento
+                      </p>
+                      <p className="text-[10px] text-zinc-400 mt-1 leading-relaxed">
+                        En el celular, abre <strong>In-Ear Monitor</strong> y pulsa{' '}
+                        <strong>&ldquo;2. Conectar y Sincronizar&rdquo;</strong>. Aparecerá al instante.
+                      </p>
+                    </div>
+                  ) : (
+                    readyClients.map((client) => (
+                      <div
+                        key={client.clientId}
+                        className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200/80"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-zinc-900 truncate">
+                              {client.deviceLabel || 'Músico In-Ear'}
+                            </p>
+                            <p className="text-[9.5px] font-semibold text-zinc-500 flex items-center gap-1.5">
+                              <span
+                                className={
+                                  client.songReady
+                                    ? 'text-emerald-700 font-bold'
+                                    : 'text-amber-700 font-semibold'
+                                }
+                              >
+                                {client.songReady ? '✓ Listo en RAM' : 'Esperando tema'}
+                              </span>
+                              {typeof client.rttMs === 'number' && client.rttMs > 0 && (
+                                <span className="font-mono text-[9px] px-1.5 py-0 rounded bg-white border border-zinc-200 text-zinc-700">
+                                  {client.rttMs} ms
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-600 text-white shrink-0">
+                          ONLINE
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             )}
-          </button>
+          </div>
         </div>
       </header>
 

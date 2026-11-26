@@ -36,10 +36,17 @@ import {
   wipeAudioArrayBufferInRam,
 } from '../musicianLocalAudioVault';
 import {
+  SLAVE_HEARTBEAT_TTL_MS,
+  SLAVE_PROBE_THRESHOLD_MS,
   computeFilteredNtpClockOffset,
   computePhaseLockedSlaveStart,
   computeSlaveDriftCorrection,
   countReadySlavePresences,
+  createSlavePeerRegistry,
+  pruneStaleSlavePeers,
+  reconcilePresenceWithRegistry,
+  removeSlavePeerFromBye,
+  upsertSlavePeerFromRpc,
 } from '../../hooks/useSyncMaster';
 
 describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', () => {
@@ -345,5 +352,104 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     });
     expect(drifted.needsResync).toBe(true);
     expect(drifted.driftMs).toBe(-120);
+  });
+
+  it('tracks instant RPC connect, instant rpc_slave_bye disconnect, ignores stale Phoenix Presence ghosts, and evicts dropped phones in <=5s', () => {
+    const registry = createSlavePeerRegistry();
+
+    // 1. Instant RPC connect (<30ms) from phone announce
+    const joinRes = upsertSlavePeerFromRpc(
+      registry,
+      {
+        clientId: 'slave-phone-1',
+        ready: true,
+        deviceLabel: 'Guitarra In-Ear',
+        setlistId: 'sl-1',
+        songReady: false,
+        rttMs: 22,
+        connectedAt: 1000,
+      },
+      1020
+    );
+    expect(joinRes.isNewPeer).toBe(true);
+    expect(joinRes.clients).toHaveLength(1);
+    expect(joinRes.clients[0].deviceLabel).toBe('Guitarra In-Ear');
+    expect(joinRes.clients[0].rttMs).toBe(22);
+
+    // 2. Heartbeat updates songReady=true without duplicating peer
+    const hbRes = upsertSlavePeerFromRpc(
+      registry,
+      {
+        clientId: 'slave-phone-1',
+        ready: true,
+        songReady: true,
+        rttMs: 16,
+        connectedAt: 1000,
+      },
+      2800
+    );
+    expect(hbRes.isNewPeer).toBe(false);
+    expect(hbRes.clients).toHaveLength(1);
+    expect(hbRes.clients[0].songReady).toBe(true);
+    expect(hbRes.clients[0].rttMs).toBe(16);
+
+    // 3. Instant graceful disconnect via rpc_slave_bye
+    const byeRes = removeSlavePeerFromBye(registry, 'slave-phone-1', 1000, 3100);
+    expect(byeRes.removed).toBe(true);
+    expect(byeRes.clients).toHaveLength(0);
+
+    // 4. Stale Phoenix Presence still holding old connectedAt=1000 MUST NOT resurrect the departed phone
+    const stalePresence = reconcilePresenceWithRegistry(
+      registry,
+      {
+        'slave-phone-1': [
+          {
+            isMaster: false,
+            ready: true,
+            clientId: 'slave-phone-1',
+            deviceLabel: 'Guitarra In-Ear',
+            connectedAt: 1000,
+          },
+        ],
+      },
+      3400
+    );
+    expect(stalePresence.clients).toHaveLength(0);
+
+    // 5. Same phone reconnects with new session (connectedAt=4000) -> immediately online again
+    const rejoinRes = upsertSlavePeerFromRpc(
+      registry,
+      {
+        clientId: 'slave-phone-1',
+        ready: true,
+        deviceLabel: 'Guitarra In-Ear',
+        songReady: true,
+        rttMs: 19,
+        connectedAt: 4000,
+      },
+      4010
+    );
+    expect(rejoinRes.isNewPeer).toBe(true);
+    expect(rejoinRes.clients).toHaveLength(1);
+
+    // 6. Abrupt Wi-Fi drop: at +2.4s triggers silent RPC probe; at >5s evicts peer automatically
+    const probeCheck = pruneStaleSlavePeers(
+      registry,
+      4010 + SLAVE_PROBE_THRESHOLD_MS,
+      SLAVE_HEARTBEAT_TTL_MS,
+      SLAVE_PROBE_THRESHOLD_MS
+    );
+    expect(probeCheck.needsProbe).toBe(true);
+    expect(probeCheck.evictedIds).toHaveLength(0);
+    expect(probeCheck.clients).toHaveLength(1);
+
+    const evictCheck = pruneStaleSlavePeers(
+      registry,
+      4010 + SLAVE_HEARTBEAT_TTL_MS + 100,
+      SLAVE_HEARTBEAT_TTL_MS,
+      SLAVE_PROBE_THRESHOLD_MS
+    );
+    expect(evictCheck.evictedIds).toEqual(['slave-phone-1']);
+    expect(evictCheck.clients).toHaveLength(0);
   });
 });
