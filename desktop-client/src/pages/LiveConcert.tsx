@@ -300,11 +300,44 @@ export default function LiveConcert() {
   useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
 
   // Network Sync (Para In-Ears de Práctica por Wi-Fi)
-  const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID);
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
   const broadcastEnabledRef = useRef<boolean>(false);
   const connectionsRef = useRef<number>(0);
+  const selectedSetlistIdRef = useRef<string | null>(selectedSetlistId);
   useEffect(() => { broadcastEnabledRef.current = broadcastEnabled; }, [broadcastEnabled]);
+  useEffect(() => { selectedSetlistIdRef.current = selectedSetlistId; }, [selectedSetlistId]);
+
+  const buildMasterSyncSnapshot = () => {
+    const curSong = currentSongRef.current || currentSong;
+    if (!curSong) {
+      return {
+        type: 'STATE_SNAPSHOT' as const,
+        setlistId: selectedSetlistIdRef.current,
+        isPlaying: false,
+      };
+    }
+    const ctx = audioCtxRef.current;
+    const playingNow = Boolean(broadcastEnabledRef.current && isPlayingRef.current && ctx);
+    const curGlobalOffset = playingNow && ctx
+      ? Math.max(0, ctx.currentTime - startTimeRef.current)
+      : Math.max(0, pauseTimeRef.current);
+    const syncCompMs = Math.round(
+      (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+    );
+    return {
+      type: 'STATE_SNAPSHOT' as const,
+      setlistId: selectedSetlistIdRef.current,
+      songId: curSong.id,
+      songData: curSong,
+      isPlaying: playingNow,
+      startAt: Date.now() + syncCompMs,
+      offset: curGlobalOffset,
+    };
+  };
+
+  const { broadcast, connections } = useSyncMaster(FAKE_BAND_ID, {
+    getStateSnapshot: buildMasterSyncSnapshot,
+  });
   useEffect(() => { connectionsRef.current = connections; }, [connections]);
 
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
@@ -758,11 +791,46 @@ export default function LiveConcert() {
     isProjectorWindow,
   ]);
 
-  // Efecto no destructivo: notificar canción activa a esclavos Wi-Fi sin interrumpir audio local
+  // Efecto no destructivo: notificar canción y estado activo a esclavos Wi-Fi sin interrumpir audio local
   useEffect(() => {
     if (isProjectorWindow || !broadcastEnabled || !currentSong) return;
-    broadcast({ type: 'LOAD_SONG', songId: currentSong.id, songData: currentSong });
-  }, [broadcastEnabled, currentSong?.id, isProjectorWindow]);
+    const snap = buildMasterSyncSnapshot();
+    if (snap.isPlaying) {
+      broadcast(snap);
+    } else {
+      broadcast({
+        type: 'LOAD_SONG',
+        setlistId: selectedSetlistId,
+        songId: currentSong.id,
+        songData: currentSong,
+        offset: pauseTimeRef.current,
+      });
+    }
+  }, [broadcastEnabled, currentSong?.id, selectedSetlistId, isProjectorWindow]);
+
+  // Pulso periódico de fase (Heartbeat cada 3s) mientras reproduce con Wi-Fi activo para re-enganchar esclavos tardíos o con deriva
+  useEffect(() => {
+    if (isProjectorWindow || !broadcastEnabled || !isPlaying) return;
+    const timer = window.setInterval(() => {
+      if (!isPlayingRef.current || !broadcastEnabledRef.current || !audioCtxRef.current) return;
+      const curSong = currentSongRef.current;
+      if (!curSong) return;
+      const curGlobalOffset = Math.max(0, audioCtxRef.current.currentTime - startTimeRef.current);
+      const syncCompMs = Math.round(
+        (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
+      );
+      broadcast({
+        type: 'HEARTBEAT',
+        setlistId: selectedSetlistIdRef.current,
+        songId: curSong.id,
+        songData: curSong,
+        isPlaying: true,
+        startAt: Date.now() + syncCompMs,
+        offset: curGlobalOffset,
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [isPlaying, broadcastEnabled, isProjectorWindow, broadcast]);
 
   // Sincronizar DSP (EQ 18 Bandas, HPF, Limiter, Cue Tone) en vivo con cero clics
   useEffect(() => {
@@ -1298,7 +1366,13 @@ export default function LiveConcert() {
         if (loadRequestIdRef.current !== reqId) return;
       }
       if (broadcastEnabledRef.current) {
-        broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
+        broadcast({
+          type: 'LOAD_SONG',
+          setlistId: selectedSetlistIdRef.current,
+          songId: song.id,
+          songData: song,
+          offset: initGlobal,
+        });
       }
       if (shouldAutoPlay) {
         setTimeout(() => {
@@ -1410,7 +1484,13 @@ export default function LiveConcert() {
       setLoadStatus('');
       
       if (broadcastEnabledRef.current) {
-        broadcast({ type: 'LOAD_SONG', songId: song.id, songData: song });
+        broadcast({
+          type: 'LOAD_SONG',
+          setlistId: selectedSetlistIdRef.current,
+          songId: song.id,
+          songData: song,
+          offset: initGlobal,
+        });
       }
 
       if (shouldAutoPlay) {
@@ -1776,7 +1856,7 @@ export default function LiveConcert() {
     const maxOffset = Math.max(0, (fohBufferRef.current.duration || 0) - 0.05);
     const offset = Math.max(0, Math.min(pauseTimeRef.current, maxOffset));
     const hasActiveWifiSlaves = broadcastEnabledRef.current && connectionsRef.current > 0;
-    const delayMs = hasActiveWifiSlaves ? 250 : 25;
+    const delayMs = hasActiveWifiSlaves ? 450 : 25;
     const T_start = Date.now() + delayMs;
     const startAudioContextTime = audioCtxRef.current.currentTime + delayMs / 1000;
     const useMultitrack = isUsingMultitrackStems();
@@ -1831,10 +1911,18 @@ export default function LiveConcert() {
     cueSourceRef.current.start(startAudioContextTime, offset);
 
     if (broadcastEnabledRef.current) {
+      const curSong = currentSongRef.current || currentSong;
       const syncCompMs = Math.round(
         (hardwareLatencyMsRef.current || 0) + (multiChannelPatchRef.current.syncOffsetMs || 0)
       );
-      broadcast({ type: 'PLAY', startAt: T_start + syncCompMs, offset: offset });
+      broadcast({
+        type: 'PLAY',
+        setlistId: selectedSetlistIdRef.current,
+        songId: curSong?.id,
+        songData: curSong,
+        startAt: T_start + syncCompMs,
+        offset: offset,
+      });
     }
 
     startTimeRef.current = startAudioContextTime - offset;
@@ -1870,7 +1958,12 @@ export default function LiveConcert() {
     cancelAnimationFrame(animationFrameRef.current);
 
     if (broadcastEnabledRef.current) {
-      broadcast({ type: 'PAUSE' });
+      broadcast({
+        type: 'PAUSE',
+        setlistId: selectedSetlistIdRef.current,
+        songId: curSong?.id,
+        offset: clampedPauseGlobal,
+      });
     }
 
     if (!silent) {
@@ -1980,6 +2073,14 @@ export default function LiveConcert() {
     pauseTimeRef.current = initGlobal;
     setCurrentTime(initVisual);
     setAudioTime(initGlobal);
+    if (broadcastEnabledRef.current) {
+      broadcast({
+        type: 'STOP',
+        setlistId: selectedSetlistIdRef.current,
+        songId: curSong?.id,
+        offset: initGlobal,
+      });
+    }
     triggerStageOsd(
       'stop',
       'SHOW DETENIDO',

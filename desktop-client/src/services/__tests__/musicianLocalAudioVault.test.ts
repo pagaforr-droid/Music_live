@@ -19,18 +19,27 @@ import {
   checkMusicianOfflineLease,
   clearAllLocalMp3Vault,
   computeSongChannelSignature,
+  downloadInEarPlaylistToLocalVault,
   ensureSongMp3CachedInDevice,
+  evaluateInEarPlaylistReadiness,
   formatBytesCompact,
   inspectRawEncryptedVaultBuffer,
   readCachedPracticeCatalog,
   readDecryptedTrackArrayBuffer,
   readLocalMp3Blob,
+  readLocalVaultSummary,
   renewMusicianOfflineLease,
   resetMusicianVaultMemoryForTests,
   resolvePreferredMp3Source,
   saveCachedPracticeCatalog,
   wipeAudioArrayBufferInRam,
 } from '../musicianLocalAudioVault';
+import {
+  computeFilteredNtpClockOffset,
+  computePhaseLockedSlaveStart,
+  computeSlaveDriftCorrection,
+  countReadySlavePresences,
+} from '../../hooks/useSyncMaster';
 
 describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', () => {
   beforeEach(() => {
@@ -155,5 +164,155 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     const restored = await readCachedPracticeCatalog();
     expect(restored?.setlists[0].title).toBe('Domingo Central');
     expect(formatBytesCompact(3.5 * 1024 * 1024)).toBe('3.5 MB');
+  });
+
+  it('evaluates and batch-downloads In-Ear Monitor playlist in MP3 (FOH + CUE) once, with 0 network requests on subsequent sessions', async () => {
+    const song2: PracticeSongItem = {
+      id: 'song-002',
+      title: 'Ruge El León',
+      foh_mobile_url: 'https://supa.example.com/audios/foh_mobile_200.mp3',
+      cue_mobile_url: 'https://supa.example.com/audios/cue_mobile_200.mp3',
+      prompter_data: {
+        bpm: 140,
+        liveMixMeta: { version: 3, exportedAt: '2026-11-25T15:10:00.000Z', preRollSec: 3.42 },
+      },
+    };
+    const playlist = [sampleSong, song2];
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(new Uint8Array([0x49, 0x44, 0x33, 0x04, 1, 2, 3, 4]).buffer, {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      });
+    });
+
+    // If song-001 only has FOH cached (from /practice without CUE), In-Ear readiness still requires CUE
+    await ensureSongMp3CachedInDevice({ song: sampleSong, includeCue: false });
+    const summaryBefore = await readLocalVaultSummary();
+    const readinessPartial = evaluateInEarPlaylistReadiness(playlist, summaryBefore.tracksBySongId);
+    expect(readinessPartial.isFullyCached).toBe(false);
+    expect(readinessPartial.readySongs.length).toBe(0);
+    expect(readinessPartial.pendingSongs.length).toBe(2);
+
+    // Step 1 Button: Download full playlist for In-Ear Monitor (fetches missing CUE for song-001 + FOH & CUE for song-002 = 3 fetches)
+    fetchSpy.mockClear();
+    const firstBatch = await downloadInEarPlaylistToLocalVault({ songs: playlist });
+    expect(firstBatch.downloadedCount).toBe(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    const readinessAfter = evaluateInEarPlaylistReadiness(playlist, firstBatch.summary.tracksBySongId);
+    expect(readinessAfter.isFullyCached).toBe(true);
+    expect(readinessAfter.readySongs.length).toBe(2);
+    expect(readinessAfter.pendingSongs.length).toBe(0);
+
+    // Next rehearsal session: 100% served from local vault (0 network requests to Supabase!)
+    fetchSpy.mockClear();
+    const secondBatch = await downloadInEarPlaylistToLocalVault({
+      songs: playlist,
+      tracksBySongId: firstBatch.summary.tracksBySongId,
+    });
+    expect(secondBatch.downloadedCount).toBe(0);
+    expect(secondBatch.skippedCachedCount).toBe(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('counts ONLY ready slave presences (eliminating false connected devices) and filters NTP Wi-Fi jitter spikes', () => {
+    const mockPresenceState = {
+      master: [{ isMaster: true }],
+      'slave-unready-1': [{ isMaster: false, ready: false, clientId: 'slave-unready-1' }],
+      'slave-legacy': [{ isMaster: false }],
+      'slave-ready-a': [
+        { isMaster: false, ready: true, clientId: 'slave-ready-a', deviceLabel: 'Batería', songReady: true },
+        // Duplicate presence entry on reconnect should not double count
+        { isMaster: false, ready: true, clientId: 'slave-ready-a', deviceLabel: 'Batería', songReady: true },
+      ],
+      'slave-ready-b': [
+        { isMaster: false, ready: true, clientId: 'slave-ready-b', deviceLabel: 'Bajo', songReady: false },
+      ],
+    };
+
+    const presenceSummary = countReadySlavePresences(mockPresenceState);
+    expect(presenceSummary.readyCount).toBe(2);
+    expect(presenceSummary.totalSlaves).toBe(4);
+    expect(presenceSummary.readyClients.map((c) => c.deviceLabel)).toEqual(['Batería', 'Bajo']);
+
+    // NTP multi-sample burst filter: true clock offset is +150ms, with two huge asymmetric Wi-Fi jitter spikes
+    const ntpResult = computeFilteredNtpClockOffset([
+      { t0: 1000, t1: 1162, t2: 1024 }, // RTT = 24ms, offset = 1162 + 12 - 1024 = +150ms
+      { t0: 1120, t1: 1283, t2: 1146 }, // RTT = 26ms, offset = 1283 + 13 - 1146 = +150ms
+      { t0: 1240, t1: 1690, t2: 1740 }, // Wi-Fi spike! RTT = 500ms, corrupted offset = +200ms (discarded!)
+      { t0: 1360, t1: 1524, t2: 1388 }, // RTT = 28ms, offset = 1524 + 14 - 1388 = +150ms
+      { t0: 1480, t1: 2100, t2: 2080 }, // Wi-Fi spike! RTT = 600ms, corrupted offset = +320ms (discarded!)
+    ]);
+    expect(ntpResult.bestRttMs).toBe(24);
+    expect(ntpResult.clockOffsetMs).toBeCloseTo(150, 1);
+  });
+
+  it('compensates late PLAY packets so late phones enter in exact rhythmic phase with the Click Guide', () => {
+    // Case A: PLAY packet arrives ON TIME (startAtMs is 300ms in the future)
+    const onTime = computePhaseLockedSlaveStart({
+      startAtMs: 10_300,
+      baseOffsetSec: 2.0,
+      clientNowMs: 9_900,
+      clockOffsetMs: 100, // masterNowMs = 10_000 -> 300ms until start
+      audioCtxCurrentTimeSec: 50.0,
+      bufferDurationSec: 180.0,
+      minScheduleLookaheadSec: 0.025,
+    });
+    expect(onTime.isLatePacket).toBe(false);
+    expect(onTime.lateByMs).toBe(0);
+    expect(onTime.whenContextSec).toBeCloseTo(50.3, 4);
+    expect(onTime.startOffsetSec).toBeCloseTo(2.0, 4);
+
+    // Case B: PLAY packet arrives 180ms LATE (e.g. Wi-Fi jitter or IndexedDB decode finished after startAtMs)
+    // Master started at 10_000 at offset 2.0s; Master is now at 10_180 (audio pos = 2.180s).
+    // Slave schedules at ctxNow + 0.025s (when Master will be at 10_205 -> audio pos = 2.205s!).
+    const late = computePhaseLockedSlaveStart({
+      startAtMs: 10_000,
+      baseOffsetSec: 2.0,
+      clientNowMs: 10_080,
+      clockOffsetMs: 100, // masterNowMs = 10_180 -> 180ms late!
+      audioCtxCurrentTimeSec: 50.0,
+      bufferDurationSec: 180.0,
+      minScheduleLookaheadSec: 0.025,
+    });
+    expect(late.isLatePacket).toBe(true);
+    expect(late.lateByMs).toBe(180);
+    expect(late.whenContextSec).toBeCloseTo(50.025, 4);
+    expect(late.startOffsetSec).toBeCloseTo(2.205, 4);
+
+    // Case C: Continuity at the lookahead boundary (timeUntilStartMs === 25ms)
+    const boundary = computePhaseLockedSlaveStart({
+      startAtMs: 10_025,
+      baseOffsetSec: 4.0,
+      clientNowMs: 9_900,
+      clockOffsetMs: 100, // masterNowMs = 10_000 -> 25ms until start
+      audioCtxCurrentTimeSec: 10.0,
+      minScheduleLookaheadSec: 0.025,
+    });
+    expect(boundary.whenContextSec).toBeCloseTo(10.025, 4);
+    expect(boundary.startOffsetSec).toBeCloseTo(4.0, 4);
+
+    // Case D: Heartbeat drift check ignores tiny <42ms jitter and triggers resync when drifted >42ms
+    const tightSync = computeSlaveDriftCorrection({
+      masterStartAtMs: 20_000,
+      masterBaseOffsetSec: 10.0,
+      clientNowMs: 22_900,
+      clockOffsetMs: 100, // masterNow = 23_000 -> expectedMasterGlobalSec = 13.0s
+      slaveCurrentGlobalSec: 13.012, // +12ms
+      driftThresholdSec: 0.042,
+    });
+    expect(tightSync.needsResync).toBe(false);
+
+    const drifted = computeSlaveDriftCorrection({
+      masterStartAtMs: 20_000,
+      masterBaseOffsetSec: 10.0,
+      clientNowMs: 22_900,
+      clockOffsetMs: 100, // expectedMasterGlobalSec = 13.0s
+      slaveCurrentGlobalSec: 12.88, // -120ms off the click!
+      driftThresholdSec: 0.042,
+    });
+    expect(drifted.needsResync).toBe(true);
+    expect(drifted.driftMs).toBe(-120);
   });
 });

@@ -1196,6 +1196,130 @@ export async function ensureSongMp3CachedInDevice(params: {
   return currentMeta;
 }
 
+export interface InEarPlaylistReadiness {
+  totalSongs: number;
+  exportableSongs: PracticeSongItem[];
+  readySongs: PracticeSongItem[];
+  pendingSongs: PracticeSongItem[];
+  noMixSongs: PracticeSongItem[];
+  isFullyCached: boolean;
+  totalCachedBytes: number;
+}
+
+/**
+ * Evalúa el estado de caché local en MP3 (Pistas FOH + Clic/Guía CUE) de una Playlist completa
+ * para el módulo In-Ear Monitor.
+ */
+export function evaluateInEarPlaylistReadiness(
+  songs: PracticeSongItem[],
+  tracksBySongId: Record<string, LocalMp3TrackMeta>
+): InEarPlaylistReadiness {
+  const safeSongs = Array.isArray(songs) ? songs : [];
+  const exportableSongs: PracticeSongItem[] = [];
+  const readySongs: PracticeSongItem[] = [];
+  const pendingSongs: PracticeSongItem[] = [];
+  const noMixSongs: PracticeSongItem[] = [];
+  let totalCachedBytes = 0;
+
+  for (const song of safeSongs) {
+    if (!song?.id) continue;
+    const meta = tracksBySongId?.[song.id];
+    const ev = evaluateSongVaultState(song, meta);
+    if (ev.status === 'no_mix') {
+      noMixSongs.push(song);
+      continue;
+    }
+    exportableSongs.push(song);
+    totalCachedBytes += ev.localBytes;
+    if (ev.status === 'offline_ready' && !ev.cueNeedsDownload) {
+      readySongs.push(song);
+    } else {
+      pendingSongs.push(song);
+    }
+  }
+
+  return {
+    totalSongs: safeSongs.length,
+    exportableSongs,
+    readySongs,
+    pendingSongs,
+    noMixSongs,
+    isFullyCached: exportableSongs.length > 0 && pendingSongs.length === 0,
+    totalCachedBytes,
+  };
+}
+
+/**
+ * Descarga y guarda en la bóveda local cifrada (IndexedDB) todas las canciones pendientes
+ * de una Playlist en formato MP3 ligero (incluyendo FOH + Clic/Guía CUE).
+ * Las canciones ya guardadas en sesiones anteriores se reutilizan sin volver a descargar de Supabase.
+ */
+export async function downloadInEarPlaylistToLocalVault(params: {
+  songs: PracticeSongItem[];
+  tracksBySongId?: Record<string, LocalMp3TrackMeta>;
+  signal?: AbortSignal;
+  onSongProgress?: (info: {
+    currentIndex: number;
+    totalToDownload: number;
+    songTitle: string;
+    detail: string;
+  }) => void;
+}): Promise<{
+  downloadedCount: number;
+  skippedCachedCount: number;
+  summary: LocalVaultSummary;
+}> {
+  const { songs, signal, onSongProgress } = params;
+  const initialSummary = params.tracksBySongId
+    ? { tracksBySongId: params.tracksBySongId }
+    : await readLocalVaultSummary();
+
+  const readiness = evaluateInEarPlaylistReadiness(
+    songs,
+    initialSummary.tracksBySongId
+  );
+  const toDownload = readiness.pendingSongs;
+  const skippedCachedCount = readiness.readySongs.length;
+  let downloadedCount = 0;
+
+  for (let i = 0; i < toDownload.length; i++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    const song = toDownload[i];
+    onSongProgress?.({
+      currentIndex: i + 1,
+      totalToDownload: toDownload.length,
+      songTitle: song.title,
+      detail: `Descargando ${i + 1}/${toDownload.length}: "${song.title}"...`,
+    });
+
+    await ensureSongMp3CachedInDevice({
+      song,
+      includeCue: true,
+      signal,
+      onProgress: (msg) => {
+        if (msg) {
+          onSongProgress?.({
+            currentIndex: i + 1,
+            totalToDownload: toDownload.length,
+            songTitle: song.title,
+            detail: `(${i + 1}/${toDownload.length}) ${msg}`,
+          });
+        }
+      },
+    });
+    downloadedCount += 1;
+  }
+
+  const finalSummary = await readLocalVaultSummary();
+  return {
+    downloadedCount,
+    skippedCachedCount,
+    summary: finalSummary,
+  };
+}
+
 export async function removeSongFromLocalVault(songId: string): Promise<void> {
   memoryIndexMap.delete(songId);
   memoryBlobMap.delete(`${songId}:foh`);
