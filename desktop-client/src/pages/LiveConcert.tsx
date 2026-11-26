@@ -2770,10 +2770,10 @@ export default function LiveConcert() {
         <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#e11d48] z-50 shadow-[0_0_12px_#e11d48] animate-pulse" />
       )}
 
-      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO (Entorno Blanco, Letras Negras) */}
-      <header className="h-[90px] px-6 py-2.5 flex items-center justify-between shrink-0 z-20 gap-4 bg-white border-b border-zinc-200">
+      {/* HEADER / CONSOLA MAESTRA DE ESCENARIO (Azul Claro Suave + Auto-Wrap Responsivo) */}
+      <header className="min-h-[82px] px-4 py-2.5 flex flex-wrap items-center justify-between shrink-0 z-20 gap-2.5 bg-gradient-to-b from-[#D7E6FA] to-[#E5EFFB] border-b border-[#B9D0EE] shadow-[0_2px_10px_rgba(30,64,124,0.08)]">
         {/* ISLA 1: Identidad del Show, Setlist, Modo & Armado de Concierto */}
-        <div className="apple-glass-island p-1.5 rounded-full flex items-center gap-2 shrink-0">
+        <div className="apple-glass-island p-1.5 rounded-2xl flex flex-wrap items-center gap-1.5 bg-white/95 border border-[#C6DAF3] shadow-xs max-w-full">
           {/* Live Stage Badge Sólido */}
           <div className="ruby-pill-accent text-white font-semibold px-3.5 py-1.5 rounded-full uppercase tracking-[0.14em] text-[10.5px] flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
@@ -2859,8 +2859,8 @@ export default function LiveConcert() {
         </div>
 
         {/* ISLA 2: Reloj Digital, Título & Scrubber de Escenario */}
-        <div className="apple-glass-island px-5 py-2 rounded-2xl flex flex-col items-center flex-1 max-w-[560px]">
-          <div className="w-full flex items-center justify-between mb-1.5 px-0.5">
+        <div className="apple-glass-island px-4 py-2 rounded-2xl flex flex-col items-center flex-1 min-w-[280px] max-w-[560px] bg-white/95 border border-[#C6DAF3] shadow-xs">
+          <div className="w-full flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-1.5 px-0.5">
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-[13.5px] font-bold text-zinc-900 truncate max-w-[210px] tracking-tight">
                 {currentSong ? currentSong.title : 'Sin canción activa'}
@@ -2944,14 +2944,14 @@ export default function LiveConcert() {
         </div>
 
         {/* ISLA 3: Rack de Audio, Faders Táctiles Duales, EQ 18 Bandas y Ruteo Multicanal */}
-        <div className="apple-glass-island px-4 py-2 rounded-2xl flex items-center gap-3 shrink-0">
+        <div className="apple-glass-island px-3.5 py-2 rounded-2xl flex flex-wrap items-center gap-x-3 gap-y-2 bg-white/95 border border-[#C6DAF3] shadow-xs max-w-full">
           {/* Fader Público FOH (R) + Mini Medidor VU */}
-          <div className="flex flex-col w-24">
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-[9px] text-[#e11d48] font-bold uppercase tracking-wider flex items-center gap-1">
+          <div className="flex flex-col min-w-[108px] w-28">
+            <div className="flex justify-between items-center gap-1.5 mb-1">
+              <span className="text-[9px] text-[#e11d48] font-bold uppercase tracking-wider flex items-center gap-1 whitespace-nowrap">
                 <Volume2 size={11} /> PÚBLICO (R)
               </span>
-              <span className="text-[10.5px] font-mono font-medium text-zinc-900 tabular-nums">{Math.round(fohVolume * 100)}%</span>
+              <span className="text-[10.5px] font-mono font-medium text-zinc-900 tabular-nums shrink-0">{Math.round(fohVolume * 100)}%</span>
             </div>
             <input
               type="range" min="0" max="1.3" step="0.01"
@@ -2972,13 +2972,13 @@ export default function LiveConcert() {
             </div>
           </div>
 
-          <div className="w-px h-7 bg-zinc-200" />
+          <div className="hidden sm:block w-px h-7 bg-slate-200" />
 
           {/* Fader Músicos CUE (L) + Mini Medidor VU */}
-          <div className="flex flex-col w-24">
-            <div className="flex justify-between items-center mb-1">
+          <div className="flex flex-col min-w-[128px] w-32">
+            <div className="flex justify-between items-center gap-1.5 mb-1">
               <span
-                className="text-[9px] text-[#b45309] font-bold uppercase tracking-wider flex items-center gap-1"
+                className="text-[9px] text-[#b45309] font-bold uppercase tracking-wider flex items-center gap-1 whitespace-nowrap"
                 title={
                   liveCueSource === 'ram'
                     ? 'Click y Voz Guía sintetizados en RAM desde las secciones actualizadas'
@@ -2995,7 +2995,7 @@ export default function LiveConcert() {
               <button
                 type="button"
                 onClick={() => setMuteCueEmergency(v => !v)}
-                className={`text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-all tabular-nums ${
+                className={`text-[9.5px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-all tabular-nums shrink-0 ${
                   muteCueEmergency
                     ? 'bg-[#e11d48] text-white font-bold'
                     : 'bg-zinc-100 text-zinc-800 hover:bg-zinc-200 border border-zinc-200'
@@ -3041,7 +3041,7 @@ export default function LiveConcert() {
             </button>
           )}
 
-          <div className="w-px h-7 bg-zinc-200" />
+          <div className="hidden sm:block w-px h-7 bg-slate-200" />
 
           {/* Selector de Ruteo Físico */}
           <div className="flex flex-col">
@@ -3632,14 +3632,14 @@ export default function LiveConcert() {
         {/* ÁREA PRINCIPAL DE PROYECCIÓN Y MONITOREO EN VIVO */}
         <div className="flex-1 bg-white flex flex-col relative overflow-hidden">
           {/* Barra Superior del Escenario: Salto Rápido de Secciones + Selector de Vista + Proyector HDMI */}
-          <div className="h-14 bg-white border-b border-zinc-200 px-6 flex items-center justify-between gap-4 z-30 shrink-0">
-            {/* Botonera de Salto Rápido a Secciones */}
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mr-1 shrink-0">
+          <div className="min-h-[52px] bg-[#EAF2FC] border-b border-[#C4D7F0] px-4 py-2 flex flex-wrap items-center justify-between gap-2.5 z-30 shrink-0">
+            {/* Botonera de Salto Rápido a Secciones (Auto-Wrap en múltiples líneas si es necesario) */}
+            <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1 shrink-0">
                 Secciones:
               </span>
               {songSections.length === 0 ? (
-                <span className="text-[11px] text-zinc-500 italic">Sin marcadores configurados</span>
+                <span className="text-[11px] text-slate-500 italic">Sin marcadores configurados</span>
               ) : (
                 songSections.map((sec: any, sIdx: number) => {
                   const nextSec = songSections[sIdx + 1];
@@ -3656,7 +3656,7 @@ export default function LiveConcert() {
                       className={`px-3 py-1 rounded-full text-[10.5px] uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
                         isSecActive
                           ? `${secStyle.bg} text-white font-bold shadow-xs ring-2 ring-black`
-                          : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border border-zinc-200 font-semibold'
+                          : 'bg-white/90 hover:bg-white text-slate-800 border border-[#C6DAF3] font-semibold shadow-2xs'
                       }`}
                       title={`Saltar a ${sec.name || sec.section}`}
                     >
@@ -3677,7 +3677,7 @@ export default function LiveConcert() {
             </div>
 
             {/* Apple Segmented View Mode Control + External Projector */}
-            <div className="flex items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="apple-segmented-control flex items-center">
                 <button
                   onClick={() => setViewMode('dual')}
