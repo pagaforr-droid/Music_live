@@ -83,7 +83,18 @@ export function measureAudioContextOutputLatencyMs(
         ts.contextTime > 0 &&
         ctx.currentTime >= ts.contextTime
       ) {
-        const pipelineDelay = ctx.currentTime - ts.contextTime;
+        const perfNow =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : 0;
+        const elapsedSinceTsSec =
+          typeof ts.performanceTime === 'number' &&
+          ts.performanceTime > 0 &&
+          perfNow >= ts.performanceTime
+            ? Math.min(0.1, (perfNow - ts.performanceTime) / 1000)
+            : 0;
+        const audibleContextTime = ts.contextTime + elapsedSinceTsSec;
+        const pipelineDelay = ctx.currentTime - audibleContextTime;
         if (pipelineDelay > 0 && pipelineDelay < 0.3) {
           outSec = pipelineDelay;
         }
@@ -93,6 +104,50 @@ export function measureAudioContextOutputLatencyMs(
 
   const totalSec = Math.max(0, Math.min(0.3, baseSec + outSec));
   return Math.round(totalSec * 1000);
+}
+
+/**
+ * Estima la latencia acústica física real de salida (en ms) de un dispositivo esclavo móvil
+ * (Android AudioTrack / AudioFlinger HAL o iOS CoreAudio).
+ * En Android Chrome, `AudioContext.outputLatency` suele reportar 0 (solo expone `baseLatency` ~10-20ms)
+ * aunque el mixer del sistema operativo Android (`AudioFlinger` + HAL) añade ~68ms adicionales
+ * antes de que la onda sonora salga físicamente por los audífonos o el parlante.
+ */
+export function estimateSlaveAcousticOutputLatencyMs(
+  ctx: AudioContext | null | undefined,
+  userAgent?: string
+): number {
+  const measuredMs = measureAudioContextOutputLatencyMs(ctx);
+  const ua =
+    typeof userAgent === 'string'
+      ? userAgent
+      : typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string'
+      ? navigator.userAgent
+      : '';
+
+  const isAndroid = /Android/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+  const rawOut = Number((ctx as any)?.outputLatency);
+  const hasExplicitOsOutputLatency = Number.isFinite(rawOut) && rawOut >= 0.035;
+
+  if (isAndroid) {
+    if (hasExplicitOsOutputLatency) {
+      return Math.max(75, measuredMs);
+    }
+    const baseMs = Math.max(12, measuredMs);
+    return Math.min(220, baseMs + 68);
+  }
+
+  if (isIOS) {
+    if (hasExplicitOsOutputLatency) {
+      return Math.max(24, measuredMs);
+    }
+    const baseMs = Math.max(8, measuredMs);
+    return Math.min(120, baseMs + 18);
+  }
+
+  return measuredMs;
 }
 
 /**
@@ -453,9 +508,9 @@ export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
     return { clockOffsetMs: 0, bestRttMs: 0, sampleCount: 0 };
   }
 
-  // Ordenar por menor RTT: las muestras con mínimo RTT sufrieron mínima cola en el router Wi-Fi
+  // Ordenar por menor RTT: las muestras con mínimo RTT (especialmente LAN WebRTC <10ms) sufrieron mínima cola Wi-Fi
   valid.sort((a, b) => a.rtt - b.rtt);
-  const keepCount = Math.max(1, Math.min(3, Math.ceil(valid.length * 0.35)));
+  const keepCount = Math.max(1, Math.min(4, Math.ceil(valid.length * 0.25)));
   const bestSlice = valid.slice(0, keepCount);
 
   const avgOffset =
@@ -465,6 +520,89 @@ export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
     clockOffsetMs: Math.round(avgOffset * 100) / 100,
     bestRttMs: Math.round(bestSlice[0].rtt),
     sampleCount: valid.length,
+  };
+}
+
+export interface SlavePllServoResult {
+  mode: 'locked' | 'pll_rate' | 'hard_seek';
+  targetPlaybackRate: number;
+  driftMs: number;
+  driftSec: number;
+  expectedMasterGlobalSec: number;
+}
+
+/**
+ * Controlador Phase-Locked Loop (PLL) para sincronización continua en celulares sin cortes de audio:
+ * - |drift| <= 6ms: Fase bloqueada (`playbackRate = 1.0`).
+ * - 6ms < |drift| <= 160ms: Micro-ajuste proporcional suave de `playbackRate` (0.955 .. 1.045)
+ *   que corrige cualquier desfase progresivamente sin detener ni recrear los nodos WebAudio (cero clicks/cortes).
+ * - |drift| > 160ms: Resincronización dura (`hard_seek`) solo para saltos grandes o recuperaciones tras suspensión.
+ */
+export function computeSlavePllServoAdjustment(params: {
+  masterStartAtMs: number;
+  masterBaseOffsetSec: number;
+  clientNowMs: number;
+  clockOffsetMs: number;
+  slaveCurrentGlobalSec: number;
+  slaveOutputLatencyMs?: number;
+  deadbandMs?: number;
+  hardSeekThresholdMs?: number;
+}): SlavePllServoResult {
+  const {
+    masterStartAtMs,
+    masterBaseOffsetSec,
+    clientNowMs,
+    clockOffsetMs,
+    slaveCurrentGlobalSec,
+    slaveOutputLatencyMs = 0,
+    deadbandMs = 6,
+    hardSeekThresholdMs = 160,
+  } = params;
+
+  const base = computeSlaveDriftCorrection({
+    masterStartAtMs,
+    masterBaseOffsetSec,
+    clientNowMs,
+    clockOffsetMs,
+    slaveCurrentGlobalSec,
+    slaveOutputLatencyMs,
+    driftThresholdSec: deadbandMs / 1000,
+  });
+
+  const absDriftMs = Math.abs(base.driftMs);
+
+  if (absDriftMs <= deadbandMs) {
+    return {
+      mode: 'locked',
+      targetPlaybackRate: 1.0,
+      driftMs: base.driftMs,
+      driftSec: base.driftSec,
+      expectedMasterGlobalSec: base.expectedMasterGlobalSec,
+    };
+  }
+
+  if (absDriftMs > hardSeekThresholdMs) {
+    return {
+      mode: 'hard_seek',
+      targetPlaybackRate: 1.0,
+      driftMs: base.driftMs,
+      driftSec: base.driftSec,
+      expectedMasterGlobalSec: base.expectedMasterGlobalSec,
+    };
+  }
+
+  // Si driftSec < 0 (celular ATRASADO respecto al PC), rate > 1.0 acelera suavemente para empatar la fase.
+  // Si driftSec > 0 (celular ADELANTADO respecto al PC), rate < 1.0 frena suavemente.
+  const proportionalPull = -base.driftSec * 0.65;
+  const clampedPull = Math.max(-0.045, Math.min(0.045, proportionalPull));
+  const targetPlaybackRate = Math.round((1.0 + clampedPull) * 10000) / 10000;
+
+  return {
+    mode: 'pll_rate',
+    targetPlaybackRate,
+    driftMs: base.driftMs,
+    driftSec: base.driftSec,
+    expectedMasterGlobalSec: base.expectedMasterGlobalSec,
   };
 }
 
@@ -630,12 +768,13 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     `master-${Math.random().toString(36).slice(2, 9)}`
   );
   const cmdSeqRef = useRef<number>(0);
-  const repeatCmdTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(
-    null
-  );
+  const repeatCmdTimersRef = useRef<ReturnType<typeof globalThis.setTimeout>[]>([]);
   const registryRef = useRef<SlavePeerRegistryState>(createSlavePeerRegistry());
   const lastRenderSigRef = useRef<string>('');
   const scanTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const rtcPeersRef = useRef<
+    Map<string, { pc: RTCPeerConnection; dc: RTCDataChannel | null }>
+  >(new Map());
 
   const [channelStatus, setChannelStatus] = useState<
     'disconnected' | 'connecting' | 'connected'
@@ -653,6 +792,47 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     getStateSnapshotRef.current = options?.getStateSnapshot;
   }, [options?.getStateSnapshot]);
 
+  const closeRtcPeer = useCallback((clientId: string) => {
+    const existing = rtcPeersRef.current.get(clientId);
+    if (!existing) return;
+    rtcPeersRef.current.delete(clientId);
+    try {
+      existing.dc?.close();
+    } catch {}
+    try {
+      existing.pc.close();
+    } catch {}
+  }, []);
+
+  const closeAllRtcPeers = useCallback(() => {
+    for (const cid of Array.from(rtcPeersRef.current.keys())) {
+      closeRtcPeer(cid);
+    }
+  }, [closeRtcPeer]);
+
+  const sendViaLanDataChannels = useCallback(
+    (envelope: { event: string; payload: any }, targetClientId?: string) => {
+      const serialized = JSON.stringify(envelope);
+      if (targetClientId) {
+        const peer = rtcPeersRef.current.get(targetClientId);
+        if (peer?.dc && peer.dc.readyState === 'open') {
+          try {
+            peer.dc.send(serialized);
+          } catch {}
+        }
+        return;
+      }
+      for (const peer of rtcPeersRef.current.values()) {
+        if (peer.dc && peer.dc.readyState === 'open') {
+          try {
+            peer.dc.send(serialized);
+          } catch {}
+        }
+      }
+    },
+    []
+  );
+
   const commitClientsState = useCallback((clients: ReadySlaveClient[]) => {
     const sig = buildClientsRenderSignature(clients);
     if (sig !== lastRenderSigRef.current) {
@@ -665,16 +845,21 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
   const sendDiscoverRpc = useCallback((ch?: RealtimeChannel | null) => {
     const target = ch || channelRef.current;
     if (!target || !isSubscribedRef.current) return false;
+    const discoverPayload = {
+      requestId: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      masterTs: Date.now(),
+    };
+    sendViaLanDataChannels({
+      event: 'rpc_discover_slaves',
+      payload: discoverPayload,
+    });
     void target.send({
       type: 'broadcast',
       event: 'rpc_discover_slaves',
-      payload: {
-        requestId: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        masterTs: Date.now(),
-      },
+      payload: discoverPayload,
     });
     return true;
-  }, []);
+  }, [sendViaLanDataChannels]);
 
   const sendSnapshotToClient = useCallback(
     (ch: RealtimeChannel, targetClientId?: string) => {
@@ -689,13 +874,17 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
         },
         cmdId
       );
+      sendViaLanDataChannels(
+        { event: 'transport', payload: wirePayload },
+        targetClientId
+      );
       void ch.send({
         type: 'broadcast',
         event: 'transport',
         payload: wirePayload,
       });
     },
-    []
+    [sendViaLanDataChannels]
   );
 
   /**
@@ -865,9 +1054,11 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
         })
         .on('broadcast', { event: 'rpc_slave_bye' }, ({ payload }) => {
           if (cancelled || !payload?.clientId) return;
+          const cid = String(payload.clientId);
+          closeRtcPeer(cid);
           const res = removeSlavePeerFromBye(
             registryRef.current,
-            String(payload.clientId),
+            cid,
             Number(payload.connectedAt) || undefined,
             Date.now()
           );
@@ -875,15 +1066,22 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
         })
         .on('broadcast', { event: 'sync_request' }, ({ payload }) => {
           if (cancelled) return;
+          const replyPayload = {
+            t0: payload?.t0,
+            t1: Date.now(),
+            clientId: payload?.clientId,
+            seq: payload?.seq,
+          };
+          if (payload?.clientId) {
+            sendViaLanDataChannels(
+              { event: 'sync_response', payload: replyPayload },
+              String(payload.clientId)
+            );
+          }
           void channel.send({
             type: 'broadcast',
             event: 'sync_response',
-            payload: {
-              t0: payload?.t0,
-              t1: Date.now(),
-              clientId: payload?.clientId,
-              seq: payload?.seq,
-            },
+            payload: replyPayload,
           });
           if (
             payload?.clientId &&
@@ -900,6 +1098,108 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
             commitClientsState(res.clients);
           }
           sendSnapshotToClient(channel, payload?.clientId ? String(payload.clientId) : undefined);
+        })
+        .on('broadcast', { event: 'webrtc_signal' }, async ({ payload }) => {
+          if (
+            cancelled ||
+            !payload ||
+            payload.target !== 'master' ||
+            !payload.fromClientId ||
+            typeof RTCPeerConnection !== 'function'
+          ) {
+            return;
+          }
+          const fromClientId = String(payload.fromClientId);
+          try {
+            if (payload.type === 'offer' && payload.sdp) {
+              closeRtcPeer(fromClientId);
+              const pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+              });
+              const peerRecord: { pc: RTCPeerConnection; dc: RTCDataChannel | null } = {
+                pc,
+                dc: null,
+              };
+              rtcPeersRef.current.set(fromClientId, peerRecord);
+
+              pc.onicecandidate = (ev) => {
+                if (!ev.candidate || cancelled || channelRef.current !== channel) return;
+                void channel.send({
+                  type: 'broadcast',
+                  event: 'webrtc_signal',
+                  payload: {
+                    target: 'slave',
+                    targetClientId: fromClientId,
+                    type: 'ice',
+                    candidate: ev.candidate.toJSON
+                      ? ev.candidate.toJSON()
+                      : ev.candidate,
+                  },
+                });
+              };
+
+              pc.ondatachannel = (ev) => {
+                const dc = ev.channel;
+                peerRecord.dc = dc;
+                dc.onmessage = (msgEv) => {
+                  if (cancelled) return;
+                  try {
+                    const env = JSON.parse(String(msgEv.data || '{}'));
+                    const p = env?.payload;
+                    if (env?.event === 'sync_request' && p) {
+                      const reply = {
+                        t0: p.t0,
+                        t1: Date.now(),
+                        clientId: p.clientId || fromClientId,
+                        seq: p.seq,
+                        viaLan: true,
+                      };
+                      if (dc.readyState === 'open') {
+                        dc.send(JSON.stringify({ event: 'sync_response', payload: reply }));
+                      }
+                      const res = upsertSlavePeerFromRpc(
+                        registryRef.current,
+                        { ...p, clientId: p.clientId || fromClientId, ready: true },
+                        Date.now()
+                      );
+                      commitClientsState(res.clients);
+                    } else if (
+                      (env?.event === 'rpc_slave_heartbeat' ||
+                        env?.event === 'rpc_slave_announce') &&
+                      p
+                    ) {
+                      const res = upsertSlavePeerFromRpc(registryRef.current, p, Date.now());
+                      commitClientsState(res.clients);
+                      if (env.event === 'rpc_slave_announce' && p.needsSnapshot) {
+                        sendSnapshotToClient(channel, fromClientId);
+                      }
+                    } else if (env?.event === 'request_state') {
+                      sendSnapshotToClient(channel, fromClientId);
+                    }
+                  } catch {}
+                };
+              };
+
+              await pc.setRemoteDescription(payload.sdp);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              void channel.send({
+                type: 'broadcast',
+                event: 'webrtc_signal',
+                payload: {
+                  target: 'slave',
+                  targetClientId: fromClientId,
+                  type: 'answer',
+                  sdp: pc.localDescription,
+                },
+              });
+            } else if (payload.type === 'ice' && payload.candidate) {
+              const peer = rtcPeersRef.current.get(fromClientId);
+              if (peer?.pc && peer.pc.remoteDescription) {
+                await peer.pc.addIceCandidate(payload.candidate);
+              }
+            }
+          } catch {}
         })
         .subscribe((status) => {
           if (cancelled || channelRef.current !== channel) return;
@@ -923,6 +1223,9 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
               if (cancelled || channelRef.current !== channel || !isSubscribedRef.current) return;
               const pruned = pruneStaleSlavePeers(registryRef.current, Date.now());
               if (pruned.evictedIds.length > 0) {
+                for (const evictedId of pruned.evictedIds) {
+                  closeRtcPeer(evictedId);
+                }
                 commitClientsState(pruned.clients);
               }
               if (pruned.needsProbe) {
@@ -943,10 +1246,14 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     return () => {
       cancelled = true;
       isSubscribedRef.current = false;
+      closeAllRtcPeers();
       if (watchdogInterval) globalThis.clearInterval(watchdogInterval);
       if (initialSecondPingTimeout) globalThis.clearTimeout(initialSecondPingTimeout);
       if (scanTimerRef.current) globalThis.clearTimeout(scanTimerRef.current);
-      if (repeatCmdTimerRef.current) globalThis.clearTimeout(repeatCmdTimerRef.current);
+      for (const t of repeatCmdTimersRef.current) {
+        globalThis.clearTimeout(t);
+      }
+      repeatCmdTimersRef.current = [];
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       }
@@ -961,51 +1268,70 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
         void supabase.removeChannel(activeChannel);
       }
     };
-  }, [bandId, commitClientsState, sendDiscoverRpc, sendSnapshotToClient]);
+  }, [
+    bandId,
+    closeAllRtcPeers,
+    closeRtcPeer,
+    commitClientsState,
+    sendDiscoverRpc,
+    sendSnapshotToClient,
+    sendViaLanDataChannels,
+  ]);
 
-  const broadcast = useCallback((msg: SyncMessage) => {
-    const ch = channelRef.current;
-    if (!ch || !isSubscribedRef.current) return;
+  const broadcast = useCallback(
+    (msg: SyncMessage) => {
+      const ch = channelRef.current;
+      if (!ch || !isSubscribedRef.current) return;
 
-    const cmdId = msg.commandId || `cmd-${Date.now()}-${++cmdSeqRef.current}`;
-    const wirePayload = compactSyncPayload(msg, cmdId);
+      const cmdId = msg.commandId || `cmd-${Date.now()}-${++cmdSeqRef.current}`;
+      const wirePayload = compactSyncPayload(msg, cmdId);
 
-    // Si llega una nueva orden crítica de transporte, cancelar cualquier repetición pendiente de una orden anterior
-    const isCriticalStateChange =
-      msg.type === 'PLAY' ||
-      msg.type === 'PAUSE' ||
-      msg.type === 'STOP' ||
-      msg.type === 'LOAD_SONG';
+      // Si llega una nueva orden crítica de transporte, cancelar cualquier repetición pendiente de una orden anterior
+      const isCriticalStateChange =
+        msg.type === 'PLAY' ||
+        msg.type === 'PAUSE' ||
+        msg.type === 'STOP' ||
+        msg.type === 'LOAD_SONG';
 
-    if (isCriticalStateChange && repeatCmdTimerRef.current) {
-      globalThis.clearTimeout(repeatCmdTimerRef.current);
-      repeatCmdTimerRef.current = null;
-    }
-
-    void ch.send({
-      type: 'broadcast',
-      event: 'transport',
-      payload: wirePayload,
-    });
-
-    // Doble pulso idempotente (+85ms con el MISMO commandId y startAt) para que ningún celular
-    // pierda el arranque por ahorro de energía Wi-Fi (DTIM) o micro-colisión de paquetes
-    if (isCriticalStateChange) {
-      repeatCmdTimerRef.current = globalThis.setTimeout(() => {
-        repeatCmdTimerRef.current = null;
-        if (channelRef.current === ch && isSubscribedRef.current) {
-          void ch.send({
-            type: 'broadcast',
-            event: 'transport',
-            payload: {
-              ...wirePayload,
-              sentAt: Date.now(),
-            },
-          });
+      if (isCriticalStateChange && repeatCmdTimersRef.current.length > 0) {
+        for (const t of repeatCmdTimersRef.current) {
+          globalThis.clearTimeout(t);
         }
-      }, 85);
-    }
-  }, []);
+        repeatCmdTimersRef.current = [];
+      }
+
+      const dispatchWirePacket = (payloadToSend: SyncMessage) => {
+        sendViaLanDataChannels(
+          { event: 'transport', payload: payloadToSend },
+          payloadToSend.targetClientId
+        );
+        void ch.send({
+          type: 'broadcast',
+          event: 'transport',
+          payload: payloadToSend,
+        });
+      };
+
+      dispatchWirePacket(wirePayload);
+
+      // Triple pulso idempotente (0ms, +55ms y +125ms con el MISMO commandId y startAt) por LAN WebRTC + Cloud
+      // para garantizar recepción 100% determinista antes de T_start en todos los celulares conectados
+      if (isCriticalStateChange) {
+        for (const delayOffsetMs of [55, 125]) {
+          const timer = globalThis.setTimeout(() => {
+            if (channelRef.current === ch && isSubscribedRef.current) {
+              dispatchWirePacket({
+                ...wirePayload,
+                sentAt: Date.now(),
+              });
+            }
+          }, delayOffsetMs);
+          repeatCmdTimersRef.current.push(timer);
+        }
+      }
+    },
+    [sendViaLanDataChannels]
+  );
 
   return {
     broadcast,

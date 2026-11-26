@@ -43,8 +43,10 @@ import {
   computeFilteredNtpClockOffset,
   computePhaseLockedSlaveStart,
   computeSlaveDriftCorrection,
+  computeSlavePllServoAdjustment,
   countReadySlavePresences,
   createSlavePeerRegistry,
+  estimateSlaveAcousticOutputLatencyMs,
   pruneStaleSlavePeers,
   reconcilePresenceWithRegistry,
   removeSlavePeerFromBye,
@@ -616,5 +618,49 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     });
     expect(androidDrift.driftMs).toBe(0);
     expect(androidDrift.needsResync).toBe(false);
+
+    // Verify Android AudioFlinger unreported outputLatency compensation (+68ms HAL floor)
+    const mockAndroidCtx = { baseLatency: 0.012, outputLatency: 0, currentTime: 10 } as any;
+    const androidAcousticMs = estimateSlaveAcousticOutputLatencyMs(
+      mockAndroidCtx,
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36'
+    );
+    expect(androidAcousticMs).toBe(80); // 12ms baseLatency + 68ms Android AudioFlinger HAL
+
+    const mockIphoneCtx = { baseLatency: 0.01, outputLatency: undefined, currentTime: 10 } as any;
+    const iphoneAcousticMs = estimateSlaveAcousticOutputLatencyMs(
+      mockIphoneCtx,
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
+    );
+    expect(iphoneAcousticMs).toBe(28); // 10ms baseLatency + 18ms iOS CoreAudio HAL
+
+    // Verify Phase-Locked Loop (PLL) playbackRate servo pulls lagging/leading phones smoothly without cutting audio
+    const laggingPhonePll = computeSlavePllServoAdjustment({
+      masterStartAtMs: 10_000,
+      masterBaseOffsetSec: 0,
+      clientNowMs: 15_000,
+      clockOffsetMs: 0, // expectedMasterGlobalSec = 5.000s
+      slaveCurrentGlobalSec: 5.035, // With 80ms Android DAC latency, audible is 4.955s (-45ms behind PC)
+      slaveOutputLatencyMs: 80,
+      deadbandMs: 6,
+      hardSeekThresholdMs: 160,
+    });
+    expect(laggingPhonePll.mode).toBe('pll_rate');
+    expect(laggingPhonePll.driftMs).toBe(-45);
+    expect(laggingPhonePll.targetPlaybackRate).toBeGreaterThan(1.02);
+    expect(laggingPhonePll.targetPlaybackRate).toBeLessThanOrEqual(1.045);
+
+    const lockedPhonePll = computeSlavePllServoAdjustment({
+      masterStartAtMs: 10_000,
+      masterBaseOffsetSec: 0,
+      clientNowMs: 15_000,
+      clockOffsetMs: 0,
+      slaveCurrentGlobalSec: 5.077, // With 80ms DAC latency, audible is 4.997s (-3ms -> inside 6ms deadband)
+      slaveOutputLatencyMs: 80,
+      deadbandMs: 6,
+      hardSeekThresholdMs: 160,
+    });
+    expect(lockedPhonePll.mode).toBe('locked');
+    expect(lockedPhonePll.targetPlaybackRate).toBe(1.0);
   });
 });

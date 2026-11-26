@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useSyncSlave } from '../hooks/useSyncSlave';
 import {
   computePhaseLockedSlaveStart,
-  computeSlaveDriftCorrection,
-  measureAudioContextOutputLatencyMs,
+  computeSlavePllServoAdjustment,
+  estimateSlaveAcousticOutputLatencyMs,
 } from '../hooks/useSyncMaster';
 import {
   Volume2,
@@ -114,6 +114,7 @@ export default function MobileInEar() {
 
   const {
     connectionStatus,
+    transportMode,
     masterSetlistId,
     currentSongId,
     nextSongId,
@@ -127,6 +128,7 @@ export default function MobileInEar() {
     clockOffset,
     rttMs,
     requestMasterState,
+    triggerNtpRecalibration,
   } = useSyncSlave(FAKE_BAND_ID, {
     enabled: hasInteracted,
     deviceLabel,
@@ -228,10 +230,12 @@ export default function MobileInEar() {
 
   const cueSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const fohSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const keepAliveSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const keepAliveGainRef = useRef<GainNode | null>(null);
   const isAudioNodePlayingRef = useRef<boolean>(false);
   const loadedSongSignatureRef = useRef<string>('');
   const loadRequestIdRef = useRef<number>(0);
-  // Caché LRU en RAM de AudioBuffers ya decodificados (máx 4 canciones) para transición instantánea en 0ms entre temas
+  // Caché LRU en RAM de AudioBuffers ya decodificados (hasta 12 canciones) para transición instantánea en 0ms entre temas
   const decodedRamCacheRef = useRef<
     Map<string, { fohBuffer: AudioBuffer; cueBuffer: AudioBuffer }>
   >(new Map());
@@ -245,10 +249,28 @@ export default function MobileInEar() {
     ts: number;
     songId?: string;
   } | null>(null);
+  const masterTimelineAnchorRef = useRef<{
+    startAt: number;
+    offset: number;
+    zeroOriginMs: number;
+    songId?: string;
+  } | null>(null);
+  const playbackClockRef = useRef<{
+    whenContextSec: number;
+    anchorContextSec: number;
+    anchorBufferOffsetSec: number;
+    currentRate: number;
+  }>({
+    whenContextSec: 0,
+    anchorContextSec: 0,
+    anchorBufferOffsetSec: 0,
+    currentRate: 1.0,
+  });
   const lastExecutedTriggerTsRef = useRef<number>(0);
   const lastHandledPauseTsRef = useRef<number>(0);
   const lastHandledSeekTsRef = useRef<number>(0);
   const consecutiveDriftCountRef = useRef<number>(0);
+  const [liveDriftMs, setLiveDriftMs] = useState<number>(0);
 
   const cueGainRef = useRef<GainNode | null>(null);
   const fohGainRef = useRef<GainNode | null>(null);
@@ -262,6 +284,18 @@ export default function MobileInEar() {
   const [cueVolume, setCueVolume] = useState(1);
   const [bandVolume, setBandVolume] = useState(0.8);
 
+  const stopKeepAliveNode = useCallback(() => {
+    try {
+      keepAliveSourceRef.current?.stop();
+      keepAliveSourceRef.current?.disconnect();
+    } catch {}
+    try {
+      keepAliveGainRef.current?.disconnect();
+    } catch {}
+    keepAliveSourceRef.current = null;
+    keepAliveGainRef.current = null;
+  }, []);
+
   const stopActiveSources = useCallback(() => {
     try {
       cueSourceRef.current?.stop();
@@ -274,12 +308,14 @@ export default function MobileInEar() {
     cueSourceRef.current = null;
     fohSourceRef.current = null;
     isAudioNodePlayingRef.current = false;
+    playbackClockRef.current.currentRate = 1.0;
     cancelAnimationFrame(animationFrameRef.current);
   }, []);
 
   const cleanupAudioAndWakeLock = useCallback(() => {
     downloadAbortRef.current?.abort();
     stopActiveSources();
+    stopKeepAliveNode();
     if (wakeLockRef.current) {
       wakeLockRef.current.release?.().catch?.(() => {});
       wakeLockRef.current = null;
@@ -288,7 +324,7 @@ export default function MobileInEar() {
       audioCtxRef.current.close().catch(() => {});
     }
     audioCtxRef.current = null;
-  }, [stopActiveSources]);
+  }, [stopActiveSources, stopKeepAliveNode]);
 
   useEffect(() => {
     return () => {
@@ -540,19 +576,27 @@ export default function MobileInEar() {
 
   const handleDisconnectFromSession = () => {
     stopActiveSources();
+    stopKeepAliveNode();
+    masterTimelineAnchorRef.current = null;
     setHasInteracted(false);
     setIsSongBuffersReady(false);
     loadedSongSignatureRef.current = '';
   };
 
-  // Paso 2: Inicializar AudioContext y conectarse a la sala de sincronización SOLO tras descargar la Playlist
+  // Paso 2: Inicializar AudioContext de baja latencia + Keep-Alive DAC cálido y conectarse tras descargar la Playlist
   const handleConnect = async () => {
     const AudioContextClass =
       window.AudioContext || (window as any).webkitAudioContext;
-    const ctx: AudioContext =
-      audioCtxRef.current && audioCtxRef.current.state !== 'closed'
-        ? audioCtxRef.current
-        : new AudioContextClass();
+    let ctx: AudioContext;
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      ctx = audioCtxRef.current;
+    } else {
+      try {
+        ctx = new AudioContextClass({ latencyHint: 'interactive' });
+      } catch {
+        ctx = new AudioContextClass();
+      }
+    }
 
     if (ctx.state === 'suspended') {
       try {
@@ -570,17 +614,28 @@ export default function MobileInEar() {
     fGain.gain.value = bandVolume;
     fohGainRef.current = fGain;
 
+    // Mantener el pipeline de audio del celular (Android AudioFlinger / iOS CoreAudio) 100% despierto
+    // con un buffer silencioso en loop continuo para eliminar los 80-140ms de arranque en frío del DAC
+    stopKeepAliveNode();
+    try {
+      const sr = ctx.sampleRate || 44100;
+      const silentLoopBuffer = ctx.createBuffer(1, sr, sr);
+      const kaSource = ctx.createBufferSource();
+      kaSource.buffer = silentLoopBuffer;
+      kaSource.loop = true;
+      const kaGain = ctx.createGain();
+      kaGain.gain.value = 0;
+      kaSource.connect(kaGain);
+      kaGain.connect(ctx.destination);
+      kaSource.start();
+      keepAliveSourceRef.current = kaSource;
+      keepAliveGainRef.current = kaGain;
+    } catch {}
+
     audioCtxRef.current = ctx;
     setAudioCtx(ctx);
     setHasInteracted(true);
-    setLoadStatus('Sincronizando reloj NTP con el Administrador...');
-
-    // Desbloquear salida de audio en iOS/Android Safari/Chrome
-    const silentBuffer = ctx.createBuffer(1, 1, 22050);
-    const source = ctx.createBufferSource();
-    source.buffer = silentBuffer;
-    source.connect(ctx.destination);
-    source.start();
+    setLoadStatus('Sincronizando reloj de alta precisión con el Administrador...');
 
     // Precargar las 11 voces guía WAV en RAM en segundo plano
     void ensureVoiceCueWavsLoaded(ctx);
@@ -638,8 +693,45 @@ export default function MobileInEar() {
   }, []);
 
   const getEffectiveSlaveOutputLatencyMs = useCallback((ctx: AudioContext | null) => {
-    const hwMs = measureAudioContextOutputLatencyMs(ctx);
+    const hwMs = estimateSlaveAcousticOutputLatencyMs(ctx);
     return hwMs + (syncTrimMsRef.current || 0);
+  }, []);
+
+  const getCurrentSlaveBufferPositionSec = useCallback((ctxNow: number): number => {
+    const clock = playbackClockRef.current;
+    if (ctxNow <= clock.whenContextSec) {
+      return Math.max(
+        0,
+        clock.anchorBufferOffsetSec - (clock.whenContextSec - ctxNow)
+      );
+    }
+    const elapsedSinceAnchor = Math.max(0, ctxNow - clock.anchorContextSec);
+    return Math.max(
+      0,
+      clock.anchorBufferOffsetSec + elapsedSinceAnchor * clock.currentRate
+    );
+  }, []);
+
+  const applySlavePlaybackRate = useCallback((ctxNow: number, nextRate: number) => {
+    const clock = playbackClockRef.current;
+    const clampedRate = Math.max(0.94, Math.min(1.06, Number(nextRate) || 1.0));
+    const effectiveNow = Math.max(ctxNow, clock.whenContextSec);
+    if (effectiveNow > clock.anchorContextSec) {
+      clock.anchorBufferOffsetSec +=
+        (effectiveNow - clock.anchorContextSec) * clock.currentRate;
+      clock.anchorContextSec = effectiveNow;
+    }
+    if (Math.abs(clock.currentRate - clampedRate) > 0.0001) {
+      clock.currentRate = clampedRate;
+      try {
+        cueSourceRef.current?.playbackRate.setValueAtTime(clampedRate, ctxNow);
+        fohSourceRef.current?.playbackRate.setValueAtTime(clampedRate, ctxNow);
+      } catch {
+        if (cueSourceRef.current) cueSourceRef.current.playbackRate.value = clampedRate;
+        if (fohSourceRef.current) fohSourceRef.current.playbackRate.value = clampedRate;
+      }
+    }
+    startTimeRef.current = effectiveNow - clock.anchorBufferOffsetSec;
   }, []);
 
   const updateTime = useCallback(() => {
@@ -647,17 +739,18 @@ export default function MobileInEar() {
     if (!ctx || !isAudioNodePlayingRef.current) return;
 
     const outLatSec = getEffectiveSlaveOutputLatencyMs(ctx) / 1000;
-    const globalTime = Math.max(0, ctx.currentTime - startTimeRef.current - outLatSec);
+    const renderPosSec = getCurrentSlaveBufferPositionSec(ctx.currentTime);
+    const globalTime = Math.max(0, renderPosSec - outLatSec);
     const preRoll = getPreRoll(songDataRef.current);
     const visualTime = globalTime - preRoll;
 
     setCurrentTime(visualTime);
     animationFrameRef.current = requestAnimationFrame(updateTime);
-  }, [getEffectiveSlaveOutputLatencyMs, getPreRoll]);
+  }, [getCurrentSlaveBufferPositionSec, getEffectiveSlaveOutputLatencyMs, getPreRoll]);
 
   // Lanzamiento de reproducción sincronizada con compensación exacta de DAC móvil y paquetes tardíos
   const startSynchronizedPlayback = useCallback(
-    async (trigger: { startAt: number; offset: number; ts?: number }) => {
+    async (trigger: { startAt: number; offset: number; ts?: number; songId?: string }) => {
       const ctx = audioCtxRef.current;
       const cBuf = cueBufferRef.current;
       const fBuf = fohBufferRef.current;
@@ -697,10 +790,24 @@ export default function MobileInEar() {
       cSource.start(schedule.whenContextSec, schedule.startOffsetSec);
       fSource.start(schedule.whenContextSec, schedule.startOffsetSec);
 
+      playbackClockRef.current = {
+        whenContextSec: schedule.whenContextSec,
+        anchorContextSec: schedule.whenContextSec,
+        anchorBufferOffsetSec: schedule.startOffsetSec,
+        currentRate: 1.0,
+      };
+      masterTimelineAnchorRef.current = {
+        startAt: trigger.startAt,
+        offset: trigger.offset,
+        zeroOriginMs: trigger.startAt - trigger.offset * 1000,
+        songId: trigger.songId || songDataRef.current?.id,
+      };
+
       startTimeRef.current = schedule.whenContextSec - schedule.startOffsetSec;
       pauseOffsetRef.current = schedule.startOffsetSec;
       isAudioNodePlayingRef.current = true;
       consecutiveDriftCountRef.current = 0;
+      setLiveDriftMs(0);
       if (trigger.ts) {
         lastExecutedTriggerTsRef.current = trigger.ts;
       }
@@ -709,7 +816,7 @@ export default function MobileInEar() {
       animationFrameRef.current = requestAnimationFrame(updateTime);
       setLoadStatus(
         schedule.isLatePacket
-          ? `EN VIVO · FASE COMPENSADA (+${schedule.lateByMs}ms)`
+          ? `EN VIVO · ENGANCHADO (+${schedule.lateByMs}ms)`
           : 'REPRODUCIENDO EN SINCRONÍA EXACTA'
       );
     },
@@ -723,7 +830,7 @@ export default function MobileInEar() {
     return `${song.id}|${fohSig}|${sectionsUpd}`;
   }, []);
 
-  // Decodificador compartido con deduplicación en vuelo y caché LRU en RAM (hasta 4 canciones listas para cambio en 0ms)
+  // Decodificador paralelo con deduplicación en vuelo y caché LRU en RAM (hasta 12 canciones listas para cambio en 0ms)
   const decodeSongBuffersToRamCache = useCallback(
     async (
       song: any,
@@ -745,8 +852,10 @@ export default function MobileInEar() {
 
       const promise = (async () => {
         try {
-          let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-          let cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+          let [fohBytes, cueBytes] = await Promise.all([
+            readDecryptedTrackArrayBuffer(song.id, 'foh'),
+            readDecryptedTrackArrayBuffer(song.id, 'cue'),
+          ]);
 
           if (
             !fohBytes ||
@@ -760,12 +869,10 @@ export default function MobileInEar() {
               includeCue: true,
             });
             setTracksBySongId((prev) => ({ ...prev, [song.id]: updatedMeta }));
-            if (!fohBytes) {
-              fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-            }
-            if (!cueBytes) {
-              cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-            }
+            [fohBytes, cueBytes] = await Promise.all([
+              fohBytes ? Promise.resolve(fohBytes) : readDecryptedTrackArrayBuffer(song.id, 'foh'),
+              cueBytes ? Promise.resolve(cueBytes) : readDecryptedTrackArrayBuffer(song.id, 'cue'),
+            ]);
           }
 
           if (!audioCtxRef.current || !fohBytes) {
@@ -775,48 +882,59 @@ export default function MobileInEar() {
           if (isForeground) {
             setLoadStatus('Decodificando MP3 en RAM (Cero Latencia)...');
           }
-          const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
-          wipeAudioArrayBufferInRam(fohBytes);
 
-          let decodedCue: AudioBuffer | null = null;
           const needsRamCue = !cueBytes || shouldSynthesizeLiveCueInRam(song);
+          let decodedFoh: AudioBuffer;
+          let decodedCue: AudioBuffer | null = null;
 
-          if (needsRamCue && Number(song?.prompter_data?.bpm) > 0) {
-            const loadedVoices = await ensureVoiceCueWavsLoaded(ctx);
-            if (loadedVoices > 0 || !cueBytes) {
-              const savedClick = song?.prompter_data?.mixConfig?.click;
-              const savedCues = song?.prompter_data?.mixConfig?.cues;
-              decodedCue = await synthesizeLiveCueBuffer(
-                ctx,
-                song.prompter_data,
-                decodedFoh.duration,
-                voiceCueBuffersRef.current,
-                voiceCueOffsetsRef.current,
-                0.85,
-                {
-                  exactPreRollSec: resolveEffectivePreRoll(song),
-                  clickVolume:
-                    typeof savedClick?.volume === 'number'
-                      ? savedClick.volume
-                      : 0.8,
-                  clickPan:
-                    typeof savedClick?.pan === 'number' ? savedClick.pan : 0,
-                  clickMuted: savedClick?.muted === true,
-                  cueVolume:
-                    typeof savedCues?.volume === 'number'
-                      ? savedCues.volume
-                      : 0.85,
-                  cuePan:
-                    typeof savedCues?.pan === 'number' ? savedCues.pan : 0,
-                  cueMuted: savedCues?.muted === true,
-                }
-              );
+          if (!needsRamCue && cueBytes) {
+            // Decodificación dual en paralelo (FOH + CUE simultáneos -> 2x más rápido en CPU móvil)
+            const [fBuf, cBuf] = await Promise.all([
+              ctx.decodeAudioData(fohBytes.slice(0)),
+              ctx.decodeAudioData(cueBytes.slice(0)),
+            ]);
+            decodedFoh = fBuf;
+            decodedCue = cBuf;
+          } else {
+            decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
+            if (needsRamCue && Number(song?.prompter_data?.bpm) > 0) {
+              const loadedVoices = await ensureVoiceCueWavsLoaded(ctx);
+              if (loadedVoices > 0 || !cueBytes) {
+                const savedClick = song?.prompter_data?.mixConfig?.click;
+                const savedCues = song?.prompter_data?.mixConfig?.cues;
+                decodedCue = await synthesizeLiveCueBuffer(
+                  ctx,
+                  song.prompter_data,
+                  decodedFoh.duration,
+                  voiceCueBuffersRef.current,
+                  voiceCueOffsetsRef.current,
+                  0.85,
+                  {
+                    exactPreRollSec: resolveEffectivePreRoll(song),
+                    clickVolume:
+                      typeof savedClick?.volume === 'number'
+                        ? savedClick.volume
+                        : 0.8,
+                    clickPan:
+                      typeof savedClick?.pan === 'number' ? savedClick.pan : 0,
+                    clickMuted: savedClick?.muted === true,
+                    cueVolume:
+                      typeof savedCues?.volume === 'number'
+                        ? savedCues.volume
+                        : 0.85,
+                    cuePan:
+                      typeof savedCues?.pan === 'number' ? savedCues.pan : 0,
+                    cueMuted: savedCues?.muted === true,
+                  }
+                );
+              }
+            }
+            if (!decodedCue && cueBytes) {
+              decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
             }
           }
 
-          if (!decodedCue && cueBytes) {
-            decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
-          }
+          wipeAudioArrayBufferInRam(fohBytes);
           wipeAudioArrayBufferInRam(cueBytes);
 
           if (!decodedCue) {
@@ -824,7 +942,7 @@ export default function MobileInEar() {
           }
 
           const entry = { fohBuffer: decodedFoh, cueBuffer: decodedCue };
-          if (decodedRamCacheRef.current.size >= 4) {
+          if (decodedRamCacheRef.current.size >= 12) {
             const oldestKey = decodedRamCacheRef.current.keys().next().value;
             if (oldestKey && oldestKey !== loadedSongSignatureRef.current) {
               decodedRamCacheRef.current.delete(oldestKey);
@@ -914,6 +1032,9 @@ export default function MobileInEar() {
       loadedSongSignatureRef.current = targetSignature;
       setIsSongBuffersReady(true);
 
+      // Re-calibrar NTP ahora que la CPU terminó de decodificar audio y el hilo principal está 100% libre
+      triggerNtpRecalibration(4);
+
       const initialOffset = pauseOffsetRef.current || 0;
       setCurrentTime(initialOffset - getPreRoll(song));
       setLoadStatus('Listo en RAM (Esperando Play del Administrador)');
@@ -935,31 +1056,43 @@ export default function MobileInEar() {
       getPreRoll,
       startSynchronizedPlayback,
       stopActiveSources,
+      triggerNtpRecalibration,
     ]
   );
 
-  // Pre-decodificar silenciosamente en RAM la SIGUIENTE canción mientras suena o espera la actual (cambio en 0ms al terminar)
+  // Pre-calentar en RAM toda la Playlist seleccionada apenas el músico se conecta (para que cualquier canción arranque en 0ms)
   useEffect(() => {
-    if (!hasInteracted || !audioCtx || !isSongBuffersReady) return;
+    if (!hasInteracted || !audioCtx || activePlaylistSongs.length === 0) return;
 
-    const candidateNext =
-      nextSongData && nextSongData.id !== songData?.id
-        ? nextSongData
-        : (() => {
-            if (!songData?.id || activePlaylistSongs.length === 0) return null;
-            const curIdx = activePlaylistSongs.findIndex(
-              (s) => s.id === songData.id
-            );
-            return curIdx >= 0 && curIdx + 1 < activePlaylistSongs.length
-              ? activePlaylistSongs[curIdx + 1]
-              : null;
-          })();
+    let cancelled = false;
+    const warmUpPlaylistInRam = async () => {
+      // Si el Master aún no envió canción activa, pre-decodificar la primera de la playlist de inmediato
+      if (!songDataRef.current && activePlaylistSongs[0]) {
+        await decodeSongBuffersToRamCache(activePlaylistSongs[0], false);
+      }
+      const candidateNext =
+        nextSongData && nextSongData.id !== songData?.id ? nextSongData : null;
+      if (candidateNext && !cancelled) {
+        await decodeSongBuffersToRamCache(candidateNext, false);
+      }
+      // Pre-decodificar secuencialmente las canciones de la playlist mientras no esté decodificando en primer plano
+      for (const item of activePlaylistSongs.slice(0, 10)) {
+        if (cancelled) break;
+        const sig = getInEarSongSignature(item);
+        if (decodedRamCacheRef.current.has(sig)) continue;
+        await new Promise((r) => window.setTimeout(r, 180));
+        if (cancelled) break;
+        await decodeSongBuffersToRamCache(item, false);
+      }
+    };
 
-    if (!candidateNext?.id) return;
     const timer = window.setTimeout(() => {
-      void decodeSongBuffersToRamCache(candidateNext, false);
-    }, 120);
-    return () => window.clearTimeout(timer);
+      void warmUpPlaylistInRam();
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [
     hasInteracted,
     audioCtx,
@@ -968,6 +1101,7 @@ export default function MobileInEar() {
     nextSongData,
     activePlaylistSongs,
     decodeSongBuffersToRamCache,
+    getInEarSongSignature,
   ]);
 
   // Cargar canción cuando el Master envía LOAD_SONG / STATE_SNAPSHOT / PLAY
@@ -1007,7 +1141,9 @@ export default function MobileInEar() {
     if (!pauseTrigger || pauseTrigger.ts === lastHandledPauseTsRef.current) return;
     lastHandledPauseTsRef.current = pauseTrigger.ts;
     pendingPlayTriggerRef.current = null;
+    masterTimelineAnchorRef.current = null;
     consecutiveDriftCountRef.current = 0;
+    setLiveDriftMs(0);
     stopActiveSources();
     setLoadStatus(
       cueBufferRef.current && fohBufferRef.current
@@ -1025,7 +1161,9 @@ export default function MobileInEar() {
 
     if (seekTrigger.isStop) {
       pendingPlayTriggerRef.current = null;
+      masterTimelineAnchorRef.current = null;
       consecutiveDriftCountRef.current = 0;
+      setLiveDriftMs(0);
       stopActiveSources();
       setLoadStatus('Detenido · Listo en Inicio / Pre-Roll');
     } else if (isPlayingRef.current && isAudioNodePlayingRef.current) {
@@ -1036,7 +1174,60 @@ export default function MobileInEar() {
     }
   }, [seekTrigger, getPreRoll, stopActiveSources, startSynchronizedPlayback]);
 
-  // Heartbeat cada 1.5s del Master: engancha cualquier celular rezagado al instante y mantiene fase <18ms
+  // Función que aplica una iteración del Servo Phase-Locked Loop (PLL) sin cortar el audio
+  const evaluateAndApplyPllServo = useCallback(
+    (anchor: { startAt: number; offset: number; songId?: string }) => {
+      const ctx = audioCtxRef.current;
+      if (!ctx || !isAudioNodePlayingRef.current) return;
+
+      // No intervenir mientras la programación futura `whenContextSec` aún no empezó a sonar
+      if (ctx.currentTime < playbackClockRef.current.whenContextSec + 0.06) {
+        return;
+      }
+
+      const slaveCurrentGlobalSec = getCurrentSlaveBufferPositionSec(ctx.currentTime);
+      const slaveOutLatMs = getEffectiveSlaveOutputLatencyMs(ctx);
+
+      const servo = computeSlavePllServoAdjustment({
+        masterStartAtMs: anchor.startAt,
+        masterBaseOffsetSec: anchor.offset,
+        clientNowMs: Date.now(),
+        clockOffsetMs: clockOffsetRef.current,
+        slaveCurrentGlobalSec,
+        slaveOutputLatencyMs: slaveOutLatMs,
+        deadbandMs: 6,
+        hardSeekThresholdMs: 165,
+      });
+
+      setLiveDriftMs(servo.driftMs);
+
+      if (servo.mode === 'locked') {
+        consecutiveDriftCountRef.current = 0;
+        applySlavePlaybackRate(ctx.currentTime, 1.0);
+        setLoadStatus('REPRODUCIENDO EN SINCRONÍA EXACTA');
+      } else if (servo.mode === 'pll_rate') {
+        consecutiveDriftCountRef.current = 0;
+        applySlavePlaybackRate(ctx.currentTime, servo.targetPlaybackRate);
+        setLoadStatus(
+          `EN VIVO · FASE BLOQUEADA PLL (${servo.driftMs > 0 ? `+${servo.driftMs}` : servo.driftMs}ms)`
+        );
+      } else if (servo.mode === 'hard_seek') {
+        consecutiveDriftCountRef.current += 1;
+        if (consecutiveDriftCountRef.current >= 2) {
+          consecutiveDriftCountRef.current = 0;
+          void startSynchronizedPlayback(anchor);
+        }
+      }
+    },
+    [
+      applySlavePlaybackRate,
+      getCurrentSlaveBufferPositionSec,
+      getEffectiveSlaveOutputLatencyMs,
+      startSynchronizedPlayback,
+    ]
+  );
+
+  // Heartbeat del Master cada 1.5s: actualiza el ancla suavizada de tiempo y engancha celulares rezagados
   useEffect(() => {
     if (!heartbeatTrigger || !hasInteracted || !isPlayingRef.current) return;
     const ctx = audioCtxRef.current;
@@ -1061,41 +1252,61 @@ export default function MobileInEar() {
       return;
     }
 
-    const slaveCurrentGlobalSec = Math.max(
-      0,
-      ctx.currentTime - startTimeRef.current
-    );
-    const slaveOutLatMs = getEffectiveSlaveOutputLatencyMs(ctx);
-    const drift = computeSlaveDriftCorrection({
-      masterStartAtMs: heartbeatTrigger.startAt,
-      masterBaseOffsetSec: heartbeatTrigger.offset,
-      clientNowMs: Date.now(),
-      clockOffsetMs: clockOffsetRef.current,
-      slaveCurrentGlobalSec,
-      slaveOutputLatencyMs: slaveOutLatMs,
-      driftThresholdSec: 0.018,
-    });
+    const impliedZeroOriginMs =
+      heartbeatTrigger.startAt - heartbeatTrigger.offset * 1000;
+    const prevAnchor = masterTimelineAnchorRef.current;
 
-    const absDriftMs = Math.abs(drift.driftMs);
-    if (absDriftMs >= 35) {
-      consecutiveDriftCountRef.current = 0;
-      void startSynchronizedPlayback(heartbeatTrigger);
-    } else if (drift.needsResync) {
-      consecutiveDriftCountRef.current += 1;
-      if (consecutiveDriftCountRef.current >= 2) {
-        consecutiveDriftCountRef.current = 0;
-        void startSynchronizedPlayback(heartbeatTrigger);
-      }
+    let smoothedAnchor: {
+      startAt: number;
+      offset: number;
+      zeroOriginMs: number;
+      songId?: string;
+    };
+
+    if (
+      prevAnchor &&
+      (!heartbeatTrigger.songId || prevAnchor.songId === heartbeatTrigger.songId) &&
+      Math.abs(impliedZeroOriginMs - prevAnchor.zeroOriginMs) < 90
+    ) {
+      // Suavizado exponencial (70/30) del origen Master para inmunizar contra jitter de paquetes individuales
+      const blendedOrigin =
+        prevAnchor.zeroOriginMs * 0.7 + impliedZeroOriginMs * 0.3;
+      smoothedAnchor = {
+        startAt: blendedOrigin + heartbeatTrigger.offset * 1000,
+        offset: heartbeatTrigger.offset,
+        zeroOriginMs: blendedOrigin,
+        songId: heartbeatTrigger.songId || prevAnchor.songId,
+      };
     } else {
-      consecutiveDriftCountRef.current = 0;
+      smoothedAnchor = {
+        startAt: heartbeatTrigger.startAt,
+        offset: heartbeatTrigger.offset,
+        zeroOriginMs: impliedZeroOriginMs,
+        songId: heartbeatTrigger.songId,
+      };
     }
+
+    masterTimelineAnchorRef.current = smoothedAnchor;
+    evaluateAndApplyPllServo(smoothedAnchor);
   }, [
     heartbeatTrigger,
     hasInteracted,
     isSongBuffersReady,
-    getEffectiveSlaveOutputLatencyMs,
+    evaluateAndApplyPllServo,
     startSynchronizedPlayback,
   ]);
+
+  // Bucle local de Servo PLL cada 350ms: corrige proactivamente cualquier deriva del DAC móvil desde el Compás 1
+  useEffect(() => {
+    if (!hasInteracted || !isPlaying || !isSongBuffersReady) return;
+    const intervalId = window.setInterval(() => {
+      if (!isPlayingRef.current || !isAudioNodePlayingRef.current) return;
+      const anchor = masterTimelineAnchorRef.current;
+      if (!anchor) return;
+      evaluateAndApplyPllServo(anchor);
+    }, 350);
+    return () => window.clearInterval(intervalId);
+  }, [hasInteracted, isPlaying, isSongBuffersReady, evaluateAndApplyPllServo]);
 
   // ============================================================================
   // PANTALLA PREVIA A CONECTARSE: PASO 1 (DESCARGAR PLAYLIST MP3) -> PASO 2 (CONECTAR)
@@ -1409,7 +1620,9 @@ export default function MobileInEar() {
                 }`}
               >
                 {connectionStatus === 'connected'
-                  ? `SINCRONIZADO${rttMs > 0 ? ` · ${rttMs}ms` : ''}`
+                  ? `${transportMode === 'lan_direct' ? 'LAN DIRECTO' : 'SINCRONIZADO'}${
+                      rttMs > 0 ? ` · ${rttMs}ms` : ''
+                    }${isPlaying ? ` · Δ${liveDriftMs >= 0 ? `+${liveDriftMs}` : liveDriftMs}ms` : ''}`
                   : 'CONECTANDO...'}
               </span>
               <h2 className="font-bold text-xs leading-tight truncate">

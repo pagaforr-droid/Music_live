@@ -866,7 +866,11 @@ export default function LiveConcert() {
     }
 
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    audioCtxRef.current = new AudioContextClass();
+    try {
+      audioCtxRef.current = new AudioContextClass({ latencyHint: 'interactive' });
+    } catch {
+      audioCtxRef.current = new AudioContextClass();
+    }
     ensureDspGraph();
     applyAllDspParams(activeEqProfileRef.current);
     refreshHardwareDevices();
@@ -2440,7 +2444,15 @@ export default function LiveConcert() {
     const ctx = audioCtxRef.current;
     const hasActiveWifiSlaves =
       broadcastEnabledRef.current && (connectionsRef.current > 0 || broadcastEnabledRef.current);
-    const delayMs = hasActiveWifiSlaves ? 380 : 25;
+    const maxObservedSlaveRttMs = readyClients.reduce(
+      (maxRtt, c) => (typeof c.rttMs === 'number' && c.rttMs > maxRtt ? c.rttMs : maxRtt),
+      0
+    );
+    // Ventana adaptativa (440ms en LAN rápida .. 650ms en Wi-Fi Cloud) para que TODOS los celulares
+    // reciban la orden PLAY antes de T_start y agenden su DAC con 0ms de paquete tardío
+    const delayMs = hasActiveWifiSlaves
+      ? Math.max(440, Math.min(650, Math.round(maxObservedSlaveRttMs * 1.5 + 340)))
+      : 25;
     const nowWallMs = Date.now();
     const ctxNow = ctx.currentTime;
     const T_start = nowWallMs + delayMs;
