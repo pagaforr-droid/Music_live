@@ -1042,22 +1042,36 @@ export const useAudioEngine = (initialStems: StemTrack[]) => {
       onProgress('Codificando MP3 FOH Ligero (128 kbps)...');
       const fohMp3Blob = await audioBufferToMp3Blob(fohResult.buffer, 128, false);
       const fohMp3Path = `${bandId}/${songId}/mixes/foh_mobile_${Date.now()}.mp3`;
-      await supabase.storage.from('audios').upload(fohMp3Path, fohMp3Blob, {
-        contentType: 'audio/mpeg',
-        cacheControl: '31536000',
-        upsert: true,
-      });
-      const fohMobileUrl = supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl;
+      const { error: fohMp3Error } = await supabase.storage
+        .from('audios')
+        .upload(fohMp3Path, fohMp3Blob, {
+          contentType: 'audio/mpeg',
+          cacheControl: '31536000',
+          upsert: true,
+        });
+      if (fohMp3Error) {
+        console.warn('[exportLiveMix] Advertencia subiendo FOH MP3 móvil:', fohMp3Error);
+      }
+      const fohMobileUrl = fohMp3Error
+        ? null
+        : supabase.storage.from('audios').getPublicUrl(fohMp3Path).data.publicUrl;
 
       onProgress('Codificando MP3 CUE Ligero (64 kbps Mono)...');
       const cueMp3Blob = await audioBufferToMp3Blob(cueResult.buffer, 64, true);
       const cueMp3Path = `${bandId}/${songId}/mixes/cue_mobile_${Date.now()}.mp3`;
-      await supabase.storage.from('audios').upload(cueMp3Path, cueMp3Blob, {
-        contentType: 'audio/mpeg',
-        cacheControl: '31536000',
-        upsert: true,
-      });
-      const cueMobileUrl = supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl;
+      const { error: cueMp3Error } = await supabase.storage
+        .from('audios')
+        .upload(cueMp3Path, cueMp3Blob, {
+          contentType: 'audio/mpeg',
+          cacheControl: '31536000',
+          upsert: true,
+        });
+      if (cueMp3Error) {
+        console.warn('[exportLiveMix] Advertencia subiendo CUE MP3 móvil:', cueMp3Error);
+      }
+      const cueMobileUrl = cueMp3Error
+        ? null
+        : supabase.storage.from('audios').getPublicUrl(cueMp3Path).data.publicUrl;
 
       onProgress('Guardando URLs y metadatos exactos de Pre-Roll...');
       const { data: existingSongRow } = await supabase

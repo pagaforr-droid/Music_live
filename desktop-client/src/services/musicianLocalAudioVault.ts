@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { audioBufferToMp3Blob } from '../hooks/useAudioEngine';
+import { loadLameJs } from '../utils/loadLameJs';
 import { sha256Hex } from './userManagementService';
 
 const FAKE_BAND_ID = '00000000-0000-0000-0000-000000000000';
@@ -12,6 +13,7 @@ const STORE_MP3_BLOBS = 'mp3_blobs';
 const STORE_CRYPTO_KEYS = 'crypto_keys';
 const CATALOG_RECORD_KEY = 'active_live_catalog';
 const MASTER_KEY_ID = 'vault_aes256_master_key_v2';
+const FALLBACK_SECRET_STORAGE_KEY = 'tandu_vault_fallback_secret_v2';
 
 // Enfriamiento automático de 24 horas para reducir en ~98% las consultas repetidas a Supabase Postgres
 export const CATALOG_SYNC_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -58,12 +60,13 @@ export interface LocalMp3TrackMeta {
   savedAt: string;
   encrypted?: boolean;
   convertedFromWav?: boolean;
+  cueSynthesizedFallback?: boolean;
 }
 
 interface StoredEncryptedPayload {
   key: string;
   buffer: ArrayBuffer;
-  iv?: Uint8Array;
+  iv?: Uint8Array | number[];
   cipherScheme: 'aes-256-gcm' | 'sha256-ctr-v1';
   mimeType: string;
 }
@@ -96,12 +99,13 @@ export interface OfflineLeaseStatus {
 }
 
 // ============================================================================
-// IN-MEMORY FALLBACK (Para entornos sin IndexedDB / Vitest / WebViews privados)
+// IN-MEMORY FALLBACK (Para entornos sin IndexedDB / Vitest / Safari Modo Privado)
 // ============================================================================
 let memoryCatalogCache: PracticeCatalogSnapshot | null = null;
 const memoryIndexMap = new Map<string, LocalMp3TrackMeta>();
 const memoryBlobMap = new Map<string, StoredEncryptedPayload>();
 let memoryCryptoKey: CryptoKey | null = null;
+let aesIdbKeyUnsupported = false;
 let memoryFallbackSecret: string | null = null;
 let memoryOfflineLease: {
   email: string;
@@ -116,6 +120,7 @@ export function resetMusicianVaultMemoryForTests(): void {
   memoryIndexMap.clear();
   memoryBlobMap.clear();
   memoryCryptoKey = null;
+  aesIdbKeyUnsupported = false;
   memoryFallbackSecret = null;
   memoryOfflineLease = null;
   lastCatalogRemoteSyncMs = 0;
@@ -123,6 +128,7 @@ export function resetMusicianVaultMemoryForTests(): void {
     try {
       window.localStorage.removeItem(LAST_SYNC_STORAGE_KEY);
       window.localStorage.removeItem(OFFLINE_LEASE_STORAGE_KEY);
+      window.localStorage.removeItem(FALLBACK_SECRET_STORAGE_KEY);
     } catch {}
   }
 }
@@ -237,17 +243,32 @@ export function checkMusicianOfflineLease(email?: string | null): OfflineLeaseSt
 }
 
 // ============================================================================
-// INDEXEDDB LOW-LEVEL ENGINE
+// INDEXEDDB LOW-LEVEL ENGINE (HARDENED FOR iOS SAFARI, ANDROID & PRIVATE WEBVIEW)
 // ============================================================================
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function openVaultDb(): Promise<IDBDatabase | null> {
-  if (typeof indexedDB === 'undefined') {
+  if (typeof indexedDB === 'undefined' || !indexedDB) {
     return Promise.resolve(null);
   }
   if (dbPromise) return dbPromise;
 
   dbPromise = new Promise<IDBDatabase | null>((resolve) => {
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      if (!db) {
+        dbPromise = null;
+      }
+      resolve(db);
+    };
+
+    const timeoutId = globalThis.setTimeout(() => {
+      finish(null);
+    }, 2500);
+
     try {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
@@ -265,14 +286,23 @@ function openVaultDb(): Promise<IDBDatabase | null> {
           db.createObjectStore(STORE_CRYPTO_KEYS, { keyPath: 'id' });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => {
-        dbPromise = null;
-        resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          try {
+            db.close();
+          } catch {}
+          dbPromise = null;
+        };
+        db.onclose = () => {
+          dbPromise = null;
+        };
+        finish(db);
       };
+      req.onerror = () => finish(null);
+      req.onblocked = () => finish(null);
     } catch {
-      dbPromise = null;
-      resolve(null);
+      finish(null);
     }
   });
 
@@ -281,62 +311,110 @@ function openVaultDb(): Promise<IDBDatabase | null> {
 
 function idbGet<T>(db: IDBDatabase, storeName: string, key: string): Promise<T | undefined> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val: T | undefined) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = globalThis.setTimeout(() => finish(undefined), 3500);
+
     try {
       const tx = db.transaction(storeName, 'readonly');
+      tx.onabort = () => finish(undefined);
+      tx.onerror = () => finish(undefined);
       const store = tx.objectStore(storeName);
       const req = store.get(key);
-      req.onsuccess = () => resolve(req.result as T | undefined);
-      req.onerror = () => resolve(undefined);
+      req.onsuccess = () => finish(req.result as T | undefined);
+      req.onerror = () => finish(undefined);
     } catch {
-      resolve(undefined);
+      dbPromise = null;
+      finish(undefined);
     }
   });
 }
 
 function idbGetAll<T>(db: IDBDatabase, storeName: string): Promise<T[]> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val: T[]) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      resolve(val);
+    };
+    const timer = globalThis.setTimeout(() => finish([]), 3500);
+
     try {
       const tx = db.transaction(storeName, 'readonly');
+      tx.onabort = () => finish([]);
+      tx.onerror = () => finish([]);
       const store = tx.objectStore(storeName);
       const req = store.getAll();
-      req.onsuccess = () => resolve(Array.isArray(req.result) ? (req.result as T[]) : []);
-      req.onerror = () => resolve([]);
+      req.onsuccess = () => finish(Array.isArray(req.result) ? (req.result as T[]) : []);
+      req.onerror = () => finish([]);
     } catch {
-      resolve([]);
+      dbPromise = null;
+      finish([]);
     }
   });
 }
 
 function idbPut(db: IDBDatabase, storeName: string, value: unknown): Promise<boolean> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = globalThis.setTimeout(() => finish(false), 8000);
+
     try {
       const tx = db.transaction(storeName, 'readwrite');
+      tx.oncomplete = () => finish(true);
+      tx.onerror = () => finish(false);
+      tx.onabort = () => finish(false);
       const store = tx.objectStore(storeName);
-      store.put(value);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => resolve(false);
+      const req = store.put(value);
+      req.onerror = () => finish(false);
     } catch {
-      resolve(false);
+      dbPromise = null;
+      finish(false);
     }
   });
 }
 
 function idbDelete(db: IDBDatabase, storeName: string, key: string): Promise<boolean> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = globalThis.setTimeout(() => finish(false), 3500);
+
     try {
       const tx = db.transaction(storeName, 'readwrite');
+      tx.oncomplete = () => finish(true);
+      tx.onerror = () => finish(false);
+      tx.onabort = () => finish(false);
       const store = tx.objectStore(storeName);
-      store.delete(key);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => resolve(false);
+      const req = store.delete(key);
+      req.onerror = () => finish(false);
     } catch {
-      resolve(false);
+      dbPromise = null;
+      finish(false);
     }
   });
 }
 
 // ============================================================================
-// MILITARY-GRADE LOCAL ENCRYPTION (AES-256-GCM extractable:false + CTR Fallback)
+// MILITARY-GRADE LOCAL ENCRYPTION (AES-256-GCM + Mobile Safari/HTTP CTR Fallback)
 // ============================================================================
 function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);
@@ -350,6 +428,17 @@ function randomBytes(length: number): Uint8Array {
   return out;
 }
 
+function normalizeIvBytes(iv: unknown): Uint8Array | null {
+  if (!iv) return null;
+  if (iv instanceof Uint8Array) return iv;
+  if (Array.isArray(iv)) return new Uint8Array(iv);
+  if (iv instanceof ArrayBuffer) return new Uint8Array(iv);
+  if (ArrayBuffer.isView(iv)) {
+    return new Uint8Array(iv.buffer, iv.byteOffset, iv.byteLength);
+  }
+  return null;
+}
+
 /** Sobrescribe con ceros cualquier ArrayBuffer sensible en RAM inmediatamente después de decodificar */
 export function wipeAudioArrayBufferInRam(buffer: ArrayBuffer | null | undefined): void {
   if (!buffer || buffer.byteLength === 0) return;
@@ -361,6 +450,7 @@ export function wipeAudioArrayBufferInRam(buffer: ArrayBuffer | null | undefined
 }
 
 async function getOrCreateNonExportableAesKey(db: IDBDatabase | null): Promise<CryptoKey | null> {
+  if (aesIdbKeyUnsupported) return null;
   if (memoryCryptoKey) return memoryCryptoKey;
   if (typeof crypto === 'undefined' || !crypto.subtle) return null;
 
@@ -383,19 +473,37 @@ async function getOrCreateNonExportableAesKey(db: IDBDatabase | null): Promise<C
       false,
       ['encrypt', 'decrypt']
     );
-    memoryCryptoKey = generated;
 
     if (db) {
-      await idbPut(db, STORE_CRYPTO_KEYS, { id: MASTER_KEY_ID, key: generated });
+      // En Safari iOS / ciertos WebViews, clonar un CryptoKey no-exportable en IndexedDB aborta la transacción.
+      // Verificamos que realmente se persista antes de usarlo; si falla, usamos sha256-ctr-v1 para no perder descifrado al recargar.
+      const savedOk = await idbPut(db, STORE_CRYPTO_KEYS, { id: MASTER_KEY_ID, key: generated });
+      if (!savedOk) {
+        aesIdbKeyUnsupported = true;
+        return null;
+      }
+      const verified = await idbGet<{ id: string; key: CryptoKey }>(
+        db,
+        STORE_CRYPTO_KEYS,
+        MASTER_KEY_ID
+      );
+      if (!verified?.key) {
+        aesIdbKeyUnsupported = true;
+        return null;
+      }
     }
+
+    memoryCryptoKey = generated;
     return generated;
   } catch {
+    aesIdbKeyUnsupported = true;
     return null;
   }
 }
 
 async function getOrCreateFallbackSecret(db: IDBDatabase | null): Promise<string> {
   if (memoryFallbackSecret) return memoryFallbackSecret;
+
   if (db) {
     const existing = await idbGet<{ id: string; secret: string }>(
       db,
@@ -407,9 +515,32 @@ async function getOrCreateFallbackSecret(db: IDBDatabase | null): Promise<string
       return existing.secret;
     }
   }
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const storedLocal = window.localStorage.getItem(FALLBACK_SECRET_STORAGE_KEY);
+      if (storedLocal && storedLocal.length >= 32) {
+        memoryFallbackSecret = storedLocal;
+        if (db) {
+          await idbPut(db, STORE_CRYPTO_KEYS, {
+            id: `${MASTER_KEY_ID}_fallback`,
+            secret: storedLocal,
+          });
+        }
+        return storedLocal;
+      }
+    } catch {}
+  }
+
   const bytes = randomBytes(32);
   const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   memoryFallbackSecret = secret;
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.setItem(FALLBACK_SECRET_STORAGE_KEY, secret);
+    } catch {}
+  }
   if (db) {
     await idbPut(db, STORE_CRYPTO_KEYS, { id: `${MASTER_KEY_ID}_fallback`, secret });
   }
@@ -446,7 +577,8 @@ async function encryptAudioBufferForVault(
   blobKey: string,
   db: IDBDatabase | null
 ): Promise<StoredEncryptedPayload> {
-  const iv = randomBytes(12);
+  const ivBytes = randomBytes(12);
+  const ivArray = Array.from(ivBytes);
   const aesKey = await getOrCreateNonExportableAesKey(db);
 
   if (aesKey && typeof crypto !== 'undefined' && crypto.subtle) {
@@ -455,7 +587,7 @@ async function encryptAudioBufferForVault(
       const encrypted = await crypto.subtle.encrypt(
         {
           name: 'AES-GCM',
-          iv,
+          iv: ivBytes as Uint8Array<ArrayBuffer>,
           additionalData: aad,
         },
         aesKey,
@@ -464,7 +596,7 @@ async function encryptAudioBufferForVault(
       return {
         key: blobKey,
         buffer: encrypted,
-        iv,
+        iv: ivArray,
         cipherScheme: 'aes-256-gcm',
         mimeType: 'application/octet-stream',
       };
@@ -474,11 +606,11 @@ async function encryptAudioBufferForVault(
   }
 
   const secret = await getOrCreateFallbackSecret(db);
-  const transformed = xorCtrStreamTransform(plainBuffer, secret, iv, blobKey);
+  const transformed = xorCtrStreamTransform(plainBuffer, secret, ivBytes, blobKey);
   return {
     key: blobKey,
     buffer: transformed,
-    iv,
+    iv: ivArray,
     cipherScheme: 'sha256-ctr-v1',
     mimeType: 'application/octet-stream',
   };
@@ -489,8 +621,9 @@ async function decryptVaultPayloadToRamBuffer(
   db: IDBDatabase | null
 ): Promise<ArrayBuffer | null> {
   if (!stored?.buffer || stored.buffer.byteLength === 0) return null;
+  const ivBytes = normalizeIvBytes(stored.iv);
 
-  if (stored.cipherScheme === 'aes-256-gcm' && stored.iv) {
+  if (stored.cipherScheme === 'aes-256-gcm' && ivBytes) {
     const aesKey = await getOrCreateNonExportableAesKey(db);
     if (!aesKey || typeof crypto === 'undefined' || !crypto.subtle) return null;
     try {
@@ -498,7 +631,7 @@ async function decryptVaultPayloadToRamBuffer(
       return await crypto.subtle.decrypt(
         {
           name: 'AES-GCM',
-          iv: stored.iv,
+          iv: ivBytes as Uint8Array<ArrayBuffer>,
           additionalData: aad,
         },
         aesKey,
@@ -509,9 +642,9 @@ async function decryptVaultPayloadToRamBuffer(
     }
   }
 
-  if (stored.cipherScheme === 'sha256-ctr-v1' && stored.iv) {
+  if (stored.cipherScheme === 'sha256-ctr-v1' && ivBytes) {
     const secret = await getOrCreateFallbackSecret(db);
-    return xorCtrStreamTransform(stored.buffer, secret, stored.iv, stored.key);
+    return xorCtrStreamTransform(stored.buffer, secret, ivBytes, stored.key);
   }
 
   // Retrocompatibilidad con entradas v1 previas a cifrado
@@ -536,7 +669,10 @@ export async function requestPersistentDeviceStorage(): Promise<{
         persisted = await navigator.storage.persisted();
       }
       if (!persisted && typeof navigator.storage.persist === 'function') {
-        persisted = await navigator.storage.persist();
+        persisted = await Promise.race([
+          navigator.storage.persist(),
+          new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 1500)),
+        ]);
       }
     } catch {}
 
@@ -584,6 +720,36 @@ export function resolvePreferredMp3Source(
   return { url: chosen, isLikelyWav };
 }
 
+/**
+ * Devuelve la cadena ordenada de URLs candidatas para un canal:
+ * 1) `*_mobile_url` (MP3 ligero optimizado para celulares)
+ * 2) `*_mix_url` (respaldo automático WAV/MP3 si `*_mobile_url` devuelve 404/error)
+ */
+export function resolveCandidateAudioSources(
+  song: PracticeSongItem | null | undefined,
+  channel: 'foh' | 'cue'
+): Array<{ url: string; isLikelyWav: boolean }> {
+  if (!song) return [];
+  const rawList =
+    channel === 'foh'
+      ? [song.foh_mobile_url, song.foh_mix_url]
+      : [song.cue_mobile_url, song.cue_mix_url];
+
+  const seen = new Set<string>();
+  const out: Array<{ url: string; isLikelyWav: boolean }> = [];
+  for (const raw of rawList) {
+    const clean = typeof raw === 'string' ? raw.trim() : '';
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    const pathLower = clean.split('?')[0].toLowerCase();
+    out.push({
+      url: clean,
+      isLikelyWav: pathLower.endsWith('.wav'),
+    });
+  }
+  return out;
+}
+
 export function computeSongChannelSignature(
   song: PracticeSongItem | null | undefined,
   channel: 'foh' | 'cue'
@@ -607,6 +773,7 @@ export function evaluateSongVaultState(
 
   const hasLocalFoh = Boolean(localMeta?.hasFoh);
   const hasLocalCue = Boolean(localMeta?.hasCue);
+  const hasCueSynthFallback = Boolean(localMeta?.cueSynthesizedFallback);
   const localBytes = localMeta?.totalBytes || 0;
 
   if (!hasCloudFoh && !hasLocalFoh) {
@@ -626,10 +793,12 @@ export function evaluateSongVaultState(
 
   if (hasLocalFoh) {
     const fohMatches = !fohSigNow || localMeta?.fohSourceSig === fohSigNow;
+    const cueSatisfied = hasLocalCue || hasCueSynthFallback;
     const cueMatchesIfCached =
-      !hasLocalCue || !cueSigNow || localMeta?.cueSourceSig === cueSigNow;
+      !cueSatisfied || !cueSigNow || localMeta?.cueSourceSig === cueSigNow;
     const cueNeedsDownload =
-      hasCloudCue && (!hasLocalCue || (Boolean(cueSigNow) && localMeta?.cueSourceSig !== cueSigNow));
+      hasCloudCue &&
+      (!cueSatisfied || (Boolean(cueSigNow) && localMeta?.cueSourceSig !== cueSigNow));
 
     if (fohMatches && cueMatchesIfCached) {
       return {
@@ -752,7 +921,21 @@ export async function syncPracticeCatalogFromSupabase(options?: {
         .order('title', { ascending: true }),
     ]);
 
-    if (setlistsRes.error || lightSongsRes.error) {
+    let resolvedSongsData: any[] | null = lightSongsRes.data as any[] | null;
+    if (lightSongsRes.error) {
+      // Respaldo de compatibilidad si alguna instancia aún no migró columnas *_mobile_url
+      const fallbackSongsRes = await supabase
+        .from('songs')
+        .select('id, title, foh_mix_url, cue_mix_url')
+        .eq('band_id', FAKE_BAND_ID)
+        .order('title', { ascending: true });
+      if (fallbackSongsRes.error) {
+        return cached;
+      }
+      resolvedSongsData = fallbackSongsRes.data as any[];
+    }
+
+    if (setlistsRes.error) {
       return cached;
     }
 
@@ -766,12 +949,37 @@ export async function syncPracticeCatalogFromSupabase(options?: {
       (cached?.allLiveSongs || []).map((s) => [s.id, s])
     );
 
-    const lightSongs: PracticeSongItem[] = (lightSongsRes.data || []) as PracticeSongItem[];
+    const lightSongs: PracticeSongItem[] = (resolvedSongsData || []) as PracticeSongItem[];
+    const knownSongIds = new Set<string>(lightSongs.map((s) => s.id));
     const setlistSongIds = new Set<string>();
+    const missingSetlistSongIds: string[] = [];
+
     for (const link of setlistSongsRes.data || []) {
-      if ((link as any)?.song_id) {
-        setlistSongIds.add((link as any).song_id);
+      const sid = (link as any)?.song_id;
+      if (sid) {
+        setlistSongIds.add(sid);
+        if (!knownSongIds.has(sid)) {
+          knownSongIds.add(sid);
+          missingSetlistSongIds.push(sid);
+        }
       }
+    }
+
+    // Si algún setlist referencia canciones cuyo band_id difiera, recuperarlas también para paridad 1:1 con Live Concert
+    if (missingSetlistSongIds.length > 0) {
+      try {
+        const extraQuery: any = supabase
+          .from('songs')
+          .select('id, title, foh_mix_url, cue_mix_url, foh_mobile_url, cue_mobile_url');
+        if (typeof extraQuery.in === 'function') {
+          const extraRes = await extraQuery.in('id', missingSetlistSongIds);
+          if (!extraRes.error && Array.isArray(extraRes.data)) {
+            for (const row of extraRes.data) {
+              if (row?.id) lightSongs.push(row as PracticeSongItem);
+            }
+          }
+        }
+      } catch {}
     }
 
     const activeLightSongs = lightSongs.filter(
@@ -877,35 +1085,54 @@ export async function readLocalTrackMeta(
   songId: string
 ): Promise<LocalMp3TrackMeta | undefined> {
   if (!songId) return undefined;
+  const mem = memoryIndexMap.get(songId);
   const db = await openVaultDb();
   if (db) {
     const row = await idbGet<LocalMp3TrackMeta>(db, STORE_MP3_INDEX, songId);
     if (row) {
+      // Si en la sesión actual en RAM tiene más canales descargados (ej. Safari Modo Privado), priorizar el más completo
+      if (mem && ((mem.hasCue && !row.hasCue) || (mem.hasFoh && !row.hasFoh))) {
+        return mem;
+      }
       memoryIndexMap.set(songId, row);
       return row;
     }
   }
-  return memoryIndexMap.get(songId);
+  return mem;
 }
 
 export async function readLocalVaultSummary(): Promise<LocalVaultSummary> {
   const db = await openVaultDb();
-  let entries: LocalMp3TrackMeta[] = [];
+  const mergedById = new Map<string, LocalMp3TrackMeta>();
 
   if (db) {
-    entries = await idbGetAll<LocalMp3TrackMeta>(db, STORE_MP3_INDEX);
-    for (const item of entries) {
-      memoryIndexMap.set(item.songId, item);
+    const idbEntries = await idbGetAll<LocalMp3TrackMeta>(db, STORE_MP3_INDEX);
+    for (const item of idbEntries) {
+      if (item?.songId) {
+        mergedById.set(item.songId, item);
+        if (!memoryIndexMap.has(item.songId)) {
+          memoryIndexMap.set(item.songId, item);
+        }
+      }
     }
-  } else {
-    entries = Array.from(memoryIndexMap.values());
+  }
+
+  // Unir siempre con memoryIndexMap para que dispositivos en Modo Privado o con cuota IndexedDB restringida funcionen al 100%
+  for (const [songId, memMeta] of memoryIndexMap.entries()) {
+    const existing = mergedById.get(songId);
+    if (
+      !existing ||
+      (memMeta.savedAt && (!existing.savedAt || memMeta.savedAt >= existing.savedAt))
+    ) {
+      mergedById.set(songId, memMeta);
+    }
   }
 
   const tracksBySongId: Record<string, LocalMp3TrackMeta> = {};
   let totalSavedSongs = 0;
   let totalBytesUsed = 0;
 
-  for (const meta of entries) {
+  for (const meta of mergedById.values()) {
     if (!meta?.songId) continue;
     tracksBySongId[meta.songId] = meta;
     if (meta.hasFoh) {
@@ -955,7 +1182,10 @@ export async function readDecryptedTrackArrayBuffer(
   if (db) {
     const stored = await idbGet<StoredEncryptedPayload>(db, STORE_MP3_BLOBS, blobKey);
     if (stored?.buffer && stored.buffer.byteLength > 0) {
-      return decryptVaultPayloadToRamBuffer(stored, db);
+      const decrypted = await decryptVaultPayloadToRamBuffer(stored, db);
+      if (decrypted && decrypted.byteLength > 0) {
+        return decrypted;
+      }
     }
   }
 
@@ -1008,15 +1238,12 @@ export async function saveRawMp3BufferToVault(params: {
   const blobKey = `${songId}:${channel}`;
   const db = await openVaultDb();
 
-  // Cifrar con AES-256-GCM (extractable: false) antes de tocar IndexedDB
+  // Cifrar antes de escribir en IndexedDB
   const encryptedPayload = await encryptAudioBufferForVault(buffer, blobKey, db);
 
-  let existingMeta: LocalMp3TrackMeta | undefined;
-  if (db) {
+  let existingMeta: LocalMp3TrackMeta | undefined = memoryIndexMap.get(songId);
+  if (!existingMeta && db) {
     existingMeta = await idbGet<LocalMp3TrackMeta>(db, STORE_MP3_INDEX, songId);
-  }
-  if (!existingMeta) {
-    existingMeta = memoryIndexMap.get(songId);
   }
 
   const fohBytes = channel === 'foh' ? buffer.byteLength : existingMeta?.fohBytes || 0;
@@ -1035,16 +1262,20 @@ export async function saveRawMp3BufferToVault(params: {
     savedAt: new Date().toISOString(),
     encrypted: true,
     convertedFromWav: Boolean(convertedFromWav || existingMeta?.convertedFromWav),
+    cueSynthesizedFallback:
+      channel === 'cue' ? false : Boolean(existingMeta?.cueSynthesizedFallback),
   };
 
+  // Mantener copia cifrada en RAM para disponibilidad inmediata aun si IndexedDB está en Modo Privado / baja cuota
   memoryBlobMap.set(blobKey, encryptedPayload);
   memoryIndexMap.set(songId, nextMeta);
 
   if (db) {
-    await Promise.all([
-      idbPut(db, STORE_MP3_BLOBS, encryptedPayload),
-      idbPut(db, STORE_MP3_INDEX, nextMeta),
-    ]);
+    // Escribir primero el blob cifrado; solo persistir el índice en IDB si el blob se guardó con éxito
+    const blobSaved = await idbPut(db, STORE_MP3_BLOBS, encryptedPayload);
+    if (blobSaved) {
+      await idbPut(db, STORE_MP3_INDEX, nextMeta);
+    }
   }
 
   return nextMeta;
@@ -1065,6 +1296,193 @@ function hasRiffWavHeader(buffer: ArrayBuffer): boolean {
   );
 }
 
+function looksLikeTextOrHtmlErrorPayload(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 4) return true;
+  const head = new Uint8Array(buffer, 0, Math.min(24, buffer.byteLength));
+  let start = 0;
+  while (
+    start < head.length &&
+    (head[start] === 0x20 || head[start] === 0x09 || head[start] === 0x0a || head[start] === 0x0d)
+  ) {
+    start++;
+  }
+  if (start >= head.length) return true;
+  const ascii = String.fromCharCode(...Array.from(head.slice(start, start + 12))).toLowerCase();
+  return (
+    ascii.startsWith('<!doc') ||
+    ascii.startsWith('<html') ||
+    ascii.startsWith('<?xml') ||
+    ascii.startsWith('{"error') ||
+    ascii.startsWith('{"status')
+  );
+}
+
+/**
+ * Codificador streaming RIFF WAV -> MP3 en JavaScript puro (CERO `AudioContext` de hardware).
+ * Evita por completo el límite de 4–6 AudioContexts y el bloqueo de gesto táctil en Safari iOS / Chrome Android,
+ * usando <32 KB de buffers temporales en lugar de ~180 MB de Float32Array.
+ */
+export async function encodeRiffWavBufferToMp3(
+  wavBuffer: ArrayBuffer,
+  bitrate: number = 128,
+  forceMono: boolean = false
+): Promise<ArrayBuffer> {
+  if (!hasRiffWavHeader(wavBuffer)) {
+    throw new Error('El archivo no tiene cabecera RIFF WAVE válida');
+  }
+
+  const view = new DataView(wavBuffer);
+  let offset = 12;
+  let audioFormat = 0;
+  let numChannels = 0;
+  let sampleRate = 0;
+  let bitsPerSample = 0;
+  let dataOffset = -1;
+  let dataLength = 0;
+
+  while (offset + 8 <= wavBuffer.byteLength) {
+    const id = String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3)
+    );
+    const chunkSize = view.getUint32(offset + 4, true);
+    const chunkDataStart = offset + 8;
+
+    if (id === 'fmt ' && chunkSize >= 16 && chunkDataStart + 16 <= wavBuffer.byteLength) {
+      audioFormat = view.getUint16(chunkDataStart, true);
+      numChannels = view.getUint16(chunkDataStart + 2, true);
+      sampleRate = view.getUint32(chunkDataStart + 4, true);
+      bitsPerSample = view.getUint16(chunkDataStart + 14, true);
+      // WAVE_FORMAT_EXTENSIBLE (0xFFFE)
+      if (audioFormat === 0xfffe && chunkSize >= 40 && chunkDataStart + 26 <= wavBuffer.byteLength) {
+        audioFormat = view.getUint16(chunkDataStart + 24, true);
+      }
+    } else if (id === 'data') {
+      dataOffset = chunkDataStart;
+      dataLength = Math.min(chunkSize, wavBuffer.byteLength - chunkDataStart);
+      break;
+    }
+
+    const padded = chunkSize + (chunkSize & 1);
+    offset = chunkDataStart + padded;
+  }
+
+  const isSupportedPcm =
+    (audioFormat === 1 && (bitsPerSample === 16 || bitsPerSample === 24 || bitsPerSample === 32)) ||
+    (audioFormat === 3 && bitsPerSample === 32);
+
+  if (
+    !isSupportedPcm ||
+    numChannels < 1 ||
+    sampleRate < 8000 ||
+    dataOffset < 0 ||
+    dataLength <= 0
+  ) {
+    throw new Error(`Formato WAV no soportado directamente (fmt=${audioFormat}, bits=${bitsPerSample})`);
+  }
+
+  const lamejs = await loadLameJs();
+  const outChannels = forceMono || numChannels === 1 ? 1 : 2;
+  const encoder = new lamejs.Mp3Encoder(outChannels, sampleRate, bitrate);
+
+  const bytesPerSample = bitsPerSample >> 3;
+  const blockAlign = numChannels * bytesPerSample;
+  const totalFrames = Math.floor(dataLength / blockAlign);
+  const blockSize = 1152;
+
+  const left16 = new Int16Array(blockSize);
+  const right16 = new Int16Array(blockSize);
+  const mp3Chunks: Uint8Array[] = [];
+  let totalMp3Bytes = 0;
+
+  const readSampleInt16 = (bytePos: number): number => {
+    if (audioFormat === 1) {
+      if (bitsPerSample === 16) {
+        return view.getInt16(bytePos, true);
+      }
+      if (bitsPerSample === 24) {
+        const b0 = view.getUint8(bytePos);
+        const b1 = view.getUint8(bytePos + 1);
+        const b2 = view.getInt8(bytePos + 2);
+        return ((b2 << 16) | (b1 << 8) | b0) >> 8;
+      }
+      return view.getInt32(bytePos, true) >> 16;
+    }
+    const f = Math.max(-1, Math.min(1, view.getFloat32(bytePos, true)));
+    return f < 0 ? (f * 0x8000) | 0 : (f * 0x7fff) | 0;
+  };
+
+  let frameOffset = 0;
+  let iter = 0;
+  while (frameOffset < totalFrames) {
+    const count = Math.min(blockSize, totalFrames - frameOffset);
+
+    if (outChannels === 1) {
+      if (numChannels === 1) {
+        for (let i = 0; i < count; i++) {
+          left16[i] = readSampleInt16(dataOffset + (frameOffset + i) * blockAlign);
+        }
+      } else {
+        for (let i = 0; i < count; i++) {
+          const base = dataOffset + (frameOffset + i) * blockAlign;
+          const l = readSampleInt16(base);
+          const r = readSampleInt16(base + bytesPerSample);
+          left16[i] = (l + r) >> 1;
+        }
+      }
+      const encoded: Int8Array = encoder.encodeBuffer(
+        count === blockSize ? left16 : left16.subarray(0, count)
+      );
+      if (encoded.byteLength > 0) {
+        const copy = new Uint8Array(encoded.byteLength);
+        copy.set(new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+        mp3Chunks.push(copy);
+        totalMp3Bytes += copy.byteLength;
+      }
+    } else {
+      for (let i = 0; i < count; i++) {
+        const base = dataOffset + (frameOffset + i) * blockAlign;
+        left16[i] = readSampleInt16(base);
+        right16[i] = readSampleInt16(base + bytesPerSample);
+      }
+      const encoded: Int8Array = encoder.encodeBuffer(
+        count === blockSize ? left16 : left16.subarray(0, count),
+        count === blockSize ? right16 : right16.subarray(0, count)
+      );
+      if (encoded.byteLength > 0) {
+        const copy = new Uint8Array(encoded.byteLength);
+        copy.set(new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+        mp3Chunks.push(copy);
+        totalMp3Bytes += copy.byteLength;
+      }
+    }
+
+    frameOffset += count;
+    iter++;
+    if (iter % 80 === 0) {
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+    }
+  }
+
+  const tail: Int8Array = encoder.flush();
+  if (tail.byteLength > 0) {
+    const copy = new Uint8Array(tail.byteLength);
+    copy.set(new Uint8Array(tail.buffer, tail.byteOffset, tail.byteLength));
+    mp3Chunks.push(copy);
+    totalMp3Bytes += copy.byteLength;
+  }
+
+  const merged = new Uint8Array(totalMp3Bytes);
+  let writePos = 0;
+  for (const chunk of mp3Chunks) {
+    merged.set(chunk, writePos);
+    writePos += chunk.byteLength;
+  }
+  return merged.buffer;
+}
+
 async function ensureMp3BufferFromFetchedAudio(
   rawBuffer: ArrayBuffer,
   contentType: string,
@@ -1072,44 +1490,168 @@ async function ensureMp3BufferFromFetchedAudio(
   channel: 'foh' | 'cue',
   onProgress?: (msg: string) => void
 ): Promise<{ buffer: ArrayBuffer; convertedFromWav: boolean }> {
-  const isWav =
-    isLikelyWav ||
-    contentType.toLowerCase().includes('wav') ||
-    hasRiffWavHeader(rawBuffer);
+  const isRiffWav = hasRiffWavHeader(rawBuffer);
+  const isWav = isRiffWav || (isLikelyWav && contentType.toLowerCase().includes('wav'));
 
   if (!isWav) {
     return { buffer: rawBuffer, convertedFromWav: false };
   }
 
-  if (typeof window === 'undefined') {
-    return { buffer: rawBuffer, convertedFromWav: false };
+  onProgress?.('Comprimiendo audio a MP3 ligero para memoria del celular...');
+  const targetBitrate = channel === 'cue' ? 96 : 128;
+
+  // 1. Ruta principal sin AudioContext: decodificación streaming RIFF PCM WAV -> MP3 (0 límite de hardware móvil)
+  if (isRiffWav) {
+    try {
+      const mp3Buffer = await encodeRiffWavBufferToMp3(rawBuffer, targetBitrate, false);
+      if (mp3Buffer.byteLength > 128) {
+        return { buffer: mp3Buffer, convertedFromWav: true };
+      }
+    } catch (directErr) {
+      console.warn('[Vault] Fallback tras codificación WAV directa:', directErr);
+    }
   }
 
-  const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioCtxClass) {
-    return { buffer: rawBuffer, convertedFromWav: false };
+  // 2. Ruta secundaria con OfflineAudioContext (NO consume los 6 slots de hardware AudioContext en iOS/Android)
+  if (typeof window !== 'undefined') {
+    const OfflineCtxClass =
+      window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    if (OfflineCtxClass) {
+      try {
+        const offlineCtx = new OfflineCtxClass(2, 1, 44100);
+        const decoded = await offlineCtx.decodeAudioData(rawBuffer.slice(0));
+        const mp3Blob = await audioBufferToMp3Blob(decoded, targetBitrate, false);
+        const mp3Arr = await new Response(mp3Blob).arrayBuffer();
+        if (mp3Arr.byteLength > 128) {
+          return { buffer: mp3Arr, convertedFromWav: true };
+        }
+      } catch (offlineErr) {
+        console.warn('[Vault] Fallback guardando audio original sin recodificar:', offlineErr);
+      }
+    }
   }
 
-  onProgress?.('Comprimiendo audio para memoria interna...');
-  const tempCtx = new AudioCtxClass();
-  try {
-    const decoded = await tempCtx.decodeAudioData(rawBuffer.slice(0));
-    // FOH a 192 kbps Estéreo (calidad transparente de escenario), CUE a 128 kbps Estéreo (preserva paneo L/R de Click y Voz Guía)
-    const mp3Blob =
-      channel === 'cue'
-        ? await audioBufferToMp3Blob(decoded, 128, false)
-        : await audioBufferToMp3Blob(decoded, 192, false);
-    const mp3Arr = await mp3Blob.arrayBuffer();
-    return { buffer: mp3Arr, convertedFromWav: true };
-  } finally {
-    tempCtx.close().catch(() => {});
+  // 3. Red de seguridad final: jamás abortar la descarga si falla la compresión MP3 en un móvil antiguo
+  return { buffer: rawBuffer, convertedFromWav: false };
+}
+
+async function fetchSingleUrlWithRetry(
+  url: string,
+  callerSignal?: AbortSignal,
+  maxAttempts = 2
+): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (callerSignal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const attemptCtrl = new AbortController();
+    const onCallerAbort = () => attemptCtrl.abort();
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+    const timeoutId = globalThis.setTimeout(() => attemptCtrl.abort(), 60000);
+
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        signal: attemptCtrl.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const rawBuf = await res.arrayBuffer();
+      const contentType = res.headers?.get?.('content-type') || '';
+
+      if (rawBuf.byteLength < 8 || looksLikeTextOrHtmlErrorPayload(rawBuf)) {
+        throw new Error('Respuesta de audio inválida o incompleta');
+      }
+
+      return { buffer: rawBuf, contentType };
+    } catch (err: any) {
+      if (callerSignal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // No reintentar el mismo URL si el archivo no existe (400/404); pasar de inmediato al URL de respaldo
+      if (/HTTP (400|403|404)/i.test(lastError.message)) {
+        break;
+      }
+      if (attempt < maxAttempts) {
+        await new Promise<void>((r) => globalThis.setTimeout(r, 350));
+      }
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    }
   }
+
+  throw lastError || new Error('Error de red descargando pista');
+}
+
+async function fetchChannelAudioWithFallback(
+  song: PracticeSongItem,
+  channel: 'foh' | 'cue',
+  signal?: AbortSignal
+): Promise<{ buffer: ArrayBuffer; contentType: string; isLikelyWav: boolean }> {
+  const candidates = resolveCandidateAudioSources(song, channel);
+  if (candidates.length === 0) {
+    throw new Error(`Sin URL de audio para canal ${channel.toUpperCase()}`);
+  }
+
+  let lastErr: Error | null = null;
+  for (const candidate of candidates) {
+    try {
+      const fetched = await fetchSingleUrlWithRetry(candidate.url, signal, 2);
+      return {
+        buffer: fetched.buffer,
+        contentType: fetched.contentType,
+        isLikelyWav: candidate.isLikelyWav,
+      };
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+      lastErr = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  throw (
+    lastErr ||
+    new Error(`No se pudo descargar el audio (${channel.toUpperCase()}) de "${song.title}"`)
+  );
+}
+
+async function markCueSynthesizedFallbackInVault(
+  songId: string,
+  cueSig: string
+): Promise<LocalMp3TrackMeta | undefined> {
+  const db = await openVaultDb();
+  let existing = memoryIndexMap.get(songId);
+  if (!existing && db) {
+    existing = await idbGet<LocalMp3TrackMeta>(db, STORE_MP3_INDEX, songId);
+  }
+  if (!existing) return undefined;
+
+  const updated: LocalMp3TrackMeta = {
+    ...existing,
+    cueSourceSig: cueSig,
+    cueSynthesizedFallback: true,
+    savedAt: new Date().toISOString(),
+  };
+  memoryIndexMap.set(songId, updated);
+  if (db) {
+    await idbPut(db, STORE_MP3_INDEX, updated);
+  }
+  return updated;
 }
 
 /**
  * Sincroniza en la bóveda cifrada local la pista de Live Concert.
  * Por defecto `includeCue = false` (ahorra 50% de Supabase Storage Egress);
- * el canal Click/Guía se descarga únicamente bajo demanda cuando el músico activa `+ Click / Guía`.
+ * el canal Click/Guía se descarga únicamente bajo demanda cuando el músico activa `+ Click / Guía` o en In-Ear Monitor.
  */
 export async function ensureSongMp3CachedInDevice(params: {
   song: PracticeSongItem;
@@ -1120,39 +1662,42 @@ export async function ensureSongMp3CachedInDevice(params: {
 }): Promise<LocalMp3TrackMeta> {
   const { song, includeCue = false, forceRefresh = false, signal, onProgress } = params;
 
-  const db = await openVaultDb();
-  let currentMeta = db
-    ? await idbGet<LocalMp3TrackMeta>(db, STORE_MP3_INDEX, song.id)
-    : memoryIndexMap.get(song.id);
-  if (!currentMeta) currentMeta = memoryIndexMap.get(song.id);
+  const currentMetaInitial = await readLocalTrackMeta(song.id);
+  let currentMeta = currentMetaInitial;
 
-  const fohSrc = resolvePreferredMp3Source(song, 'foh');
-  const cueSrc = resolvePreferredMp3Source(song, 'cue');
+  const fohCandidates = resolveCandidateAudioSources(song, 'foh');
+  const cueCandidates = resolveCandidateAudioSources(song, 'cue');
   const fohSig = computeSongChannelSignature(song, 'foh');
   const cueSig = computeSongChannelSignature(song, 'cue');
 
-  if (!fohSrc.url && !currentMeta?.hasFoh) {
-    throw new Error('Esta canción aún no tiene mezcla exportada para Live Concert.');
+  if (fohCandidates.length === 0 && !currentMeta?.hasFoh) {
+    throw new Error(`"${song.title}" aún no tiene mezcla exportada para Live Concert.`);
   }
 
-  // 1. Verificar / Sincronizar Pista Musical (FOH)
+  // Verificar que el blob FOH realmente exista en almacenamiento si el índice afirma tenerlo
+  let fohBlobVerified = false;
+  if (!forceRefresh && currentMeta?.hasFoh) {
+    const existingFohBuf = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+    if (existingFohBuf && existingFohBuf.byteLength > 0) {
+      fohBlobVerified = true;
+      wipeAudioArrayBufferInRam(existingFohBuf);
+    }
+  }
+
+  // 1. Verificar / Sincronizar Pista Musical (FOH) con respaldo automático mobile_url -> mix_url
   const fohAlreadyFresh =
     !forceRefresh &&
+    fohBlobVerified &&
     Boolean(currentMeta?.hasFoh) &&
     (!fohSig || currentMeta?.fohSourceSig === fohSig);
 
-  if (!fohAlreadyFresh && fohSrc.url) {
-    onProgress?.(`Sincronizando "${song.title}" en memoria cifrada...`);
-    const res = await fetch(fohSrc.url, { signal });
-    if (!res.ok) {
-      throw new Error(`No se pudo sincronizar la pista (${res.status})`);
-    }
-    const rawBuf = await res.arrayBuffer();
-    const contentType = res.headers.get('content-type') || '';
+  if (!fohAlreadyFresh && fohCandidates.length > 0) {
+    onProgress?.(`Descargando pistas de "${song.title}"...`);
+    const fetchedFoh = await fetchChannelAudioWithFallback(song, 'foh', signal);
     const { buffer: mp3Buf, convertedFromWav } = await ensureMp3BufferFromFetchedAudio(
-      rawBuf,
-      contentType,
-      fohSrc.isLikelyWav,
+      fetchedFoh.buffer,
+      fetchedFoh.contentType,
+      fetchedFoh.isLikelyWav,
       'foh',
       onProgress
     );
@@ -1165,44 +1710,68 @@ export async function ensureSongMp3CachedInDevice(params: {
       sourceSig: fohSig,
       convertedFromWav,
     });
+    if (mp3Buf !== fetchedFoh.buffer) {
+      wipeAudioArrayBufferInRam(fetchedFoh.buffer);
+    }
     wipeAudioArrayBufferInRam(mp3Buf);
   }
 
-  // 2. Verificar / Sincronizar Click & Voz Guía (CUE) SOLO bajo demanda cuando includeCue === true
-  if (includeCue && cueSrc.url) {
+  // 2. Verificar / Sincronizar Click & Voz Guía (CUE) bajo demanda cuando includeCue === true
+  if (includeCue && cueCandidates.length > 0) {
+    let cueBlobVerified = false;
+    if (!forceRefresh && currentMeta?.hasCue) {
+      const existingCueBuf = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+      if (existingCueBuf && existingCueBuf.byteLength > 0) {
+        cueBlobVerified = true;
+        wipeAudioArrayBufferInRam(existingCueBuf);
+      }
+    }
+
     const cueAlreadyFresh =
       !forceRefresh &&
-      Boolean(currentMeta?.hasCue) &&
+      ((cueBlobVerified && Boolean(currentMeta?.hasCue)) ||
+        Boolean(currentMeta?.cueSynthesizedFallback)) &&
       (!cueSig || currentMeta?.cueSourceSig === cueSig);
 
     if (!cueAlreadyFresh) {
-      onProgress?.(`Sincronizando Click y Voz Guía de "${song.title}"...`);
+      onProgress?.(`Descargando Click y Voz Guía de "${song.title}"...`);
       try {
-        const cueRes = await fetch(cueSrc.url, { signal });
-        if (cueRes.ok) {
-          const rawCueBuf = await cueRes.arrayBuffer();
-          const cueContentType = cueRes.headers.get('content-type') || '';
-          const { buffer: cueMp3Buf, convertedFromWav: cueConverted } =
-            await ensureMp3BufferFromFetchedAudio(
-              rawCueBuf,
-              cueContentType,
-              cueSrc.isLikelyWav,
-              'cue',
-              onProgress
-            );
+        const fetchedCue = await fetchChannelAudioWithFallback(song, 'cue', signal);
+        const { buffer: cueMp3Buf, convertedFromWav: cueConverted } =
+          await ensureMp3BufferFromFetchedAudio(
+            fetchedCue.buffer,
+            fetchedCue.contentType,
+            fetchedCue.isLikelyWav,
+            'cue',
+            onProgress
+          );
 
-          currentMeta = await saveRawMp3BufferToVault({
-            songId: song.id,
-            title: song.title,
-            channel: 'cue',
-            buffer: cueMp3Buf,
-            sourceSig: cueSig,
-            convertedFromWav: cueConverted,
-          });
-          wipeAudioArrayBufferInRam(cueMp3Buf);
+        currentMeta = await saveRawMp3BufferToVault({
+          songId: song.id,
+          title: song.title,
+          channel: 'cue',
+          buffer: cueMp3Buf,
+          sourceSig: cueSig,
+          convertedFromWav: cueConverted,
+        });
+        if (cueMp3Buf !== fetchedCue.buffer) {
+          wipeAudioArrayBufferInRam(fetchedCue.buffer);
         }
+        wipeAudioArrayBufferInRam(cueMp3Buf);
       } catch (err: any) {
         if (err?.name === 'AbortError') throw err;
+        // Si el archivo CUE en la nube dio 404/error pero la canción tiene BPM válido,
+        // activar síntesis de Click + Voz Guía en RAM para NO bloquear al músico en "Pendiente MP3"
+        if (Number(song?.prompter_data?.bpm) > 0 && currentMeta?.hasFoh) {
+          const fallbackMeta = await markCueSynthesizedFallbackInVault(song.id, cueSig);
+          if (fallbackMeta) {
+            currentMeta = fallbackMeta;
+          }
+        } else {
+          throw new Error(
+            `No se pudo descargar el canal Guía de "${song.title}" (${err?.message || 'Error de red'})`
+          );
+        }
       }
     }
   }
@@ -1276,7 +1845,9 @@ export function evaluateInEarPlaylistReadiness(
 export async function downloadInEarPlaylistToLocalVault(params: {
   songs: PracticeSongItem[];
   tracksBySongId?: Record<string, LocalMp3TrackMeta>;
+  forceRefresh?: boolean;
   signal?: AbortSignal;
+  onTrackSaved?: (songId: string, meta: LocalMp3TrackMeta) => void;
   onSongProgress?: (info: {
     currentIndex: number;
     totalToDownload: number;
@@ -1288,7 +1859,7 @@ export async function downloadInEarPlaylistToLocalVault(params: {
   skippedCachedCount: number;
   summary: LocalVaultSummary;
 }> {
-  const { songs, signal, onSongProgress } = params;
+  const { songs, forceRefresh = false, signal, onTrackSaved, onSongProgress } = params;
   const initialSummary = params.tracksBySongId
     ? { tracksBySongId: params.tracksBySongId }
     : await readLocalVaultSummary();
@@ -1297,8 +1868,8 @@ export async function downloadInEarPlaylistToLocalVault(params: {
     songs,
     initialSummary.tracksBySongId
   );
-  const toDownload = readiness.pendingSongs;
-  const skippedCachedCount = readiness.readySongs.length;
+  const toDownload = forceRefresh ? readiness.exportableSongs : readiness.pendingSongs;
+  const skippedCachedCount = forceRefresh ? 0 : readiness.readySongs.length;
   let downloadedCount = 0;
 
   for (let i = 0; i < toDownload.length; i++) {
@@ -1313,9 +1884,10 @@ export async function downloadInEarPlaylistToLocalVault(params: {
       detail: `Descargando ${i + 1}/${toDownload.length}: "${song.title}"...`,
     });
 
-    await ensureSongMp3CachedInDevice({
+    const savedMeta = await ensureSongMp3CachedInDevice({
       song,
       includeCue: true,
+      forceRefresh,
       signal,
       onProgress: (msg) => {
         if (msg) {
@@ -1328,6 +1900,7 @@ export async function downloadInEarPlaylistToLocalVault(params: {
         }
       },
     });
+    onTrackSaved?.(song.id, savedMeta);
     downloadedCount += 1;
   }
 
@@ -1372,6 +1945,7 @@ export async function clearAllLocalMp3Vault(): Promise<void> {
     try {
       window.localStorage.removeItem(OFFLINE_LEASE_STORAGE_KEY);
       window.localStorage.removeItem(LAST_SYNC_STORAGE_KEY);
+      window.localStorage.removeItem(FALLBACK_SECRET_STORAGE_KEY);
     } catch {}
   }
 

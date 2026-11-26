@@ -266,7 +266,8 @@ export default function MobileInEar() {
 
   useEffect(() => {
     void requestPersistentDeviceStorage();
-    void loadCatalogAndVaultStatus(false);
+    // En In-Ear Monitor sincronizar siempre el catálogo fresco al entrar para tener los últimos MP3 exportados
+    void loadCatalogAndVaultStatus(true);
   }, [loadCatalogAndVaultStatus]);
 
   // Canciones de la Playlist seleccionada actualmente
@@ -294,9 +295,8 @@ export default function MobileInEar() {
   }, [catalog, selectedSetlistId]);
 
   // Descargar toda la Playlist seleccionada en MP3 a la bóveda local cifrada (IndexedDB)
-  const handleDownloadPlaylistMp3 = async () => {
-    if (isDownloadingPlaylist || playlistReadiness.exportableSongs.length === 0)
-      return;
+  const handleDownloadPlaylistMp3 = async (forceRefresh = false) => {
+    if (isDownloadingPlaylist) return;
 
     downloadAbortRef.current?.abort();
     const abortCtrl = new AbortController();
@@ -304,38 +304,95 @@ export default function MobileInEar() {
 
     setIsDownloadingPlaylist(true);
     setDownloadError(null);
-    setDownloadProgressPct(0);
-    setDownloadProgressText('Verificando memoria local del dispositivo...');
+    setDownloadProgressPct(2);
+    setDownloadProgressText('Verificando playlist y memoria local del celular...');
 
     try {
-      await requestPersistentDeviceStorage();
-      const totalPending = Math.max(1, playlistReadiness.pendingSongs.length);
+      void requestPersistentDeviceStorage();
 
-      const result = await downloadInEarPlaylistToLocalVault({
-        songs: activePlaylistSongs,
-        tracksBySongId,
-        signal: abortCtrl.signal,
-        onSongProgress: ({ currentIndex, totalToDownload, detail }) => {
-          setDownloadProgressText(detail);
-          const pct = Math.min(
-            99,
-            Math.round(((currentIndex - 0.35) / Math.max(1, totalToDownload)) * 100)
-          );
-          setDownloadProgressPct(pct);
-        },
-      });
+      // Si alguna canción aparecía sin mezcla o se pide forzar, refrescar catálogo desde Supabase primero
+      let targetSongs = activePlaylistSongs;
+      if (
+        forceRefresh ||
+        playlistReadiness.exportableSongs.length === 0 ||
+        playlistReadiness.noMixSongs.length > 0
+      ) {
+        const refreshed = await syncPracticeCatalogFromSupabase({ force: true });
+        if (refreshed) {
+          setCatalog(refreshed);
+          targetSongs =
+            selectedSetlistId && Array.isArray(refreshed.setlistSongsMap[selectedSetlistId])
+              ? refreshed.setlistSongsMap[selectedSetlistId]
+              : refreshed.allLiveSongs || [];
+        }
+      }
+
+      const currentReadiness = evaluateInEarPlaylistReadiness(targetSongs, tracksBySongId);
+      if (currentReadiness.exportableSongs.length === 0) {
+        throw new Error(
+          'Las canciones de esta playlist aún no tienen mezclas exportadas desde Studio.'
+        );
+      }
+
+      const runDownloadBatch = async (songsBatch: PracticeSongItem[]) => {
+        return downloadInEarPlaylistToLocalVault({
+          songs: songsBatch,
+          tracksBySongId,
+          forceRefresh,
+          signal: abortCtrl.signal,
+          onTrackSaved: (songId, meta) => {
+            setTracksBySongId((prev) => ({ ...prev, [songId]: meta }));
+          },
+          onSongProgress: ({ currentIndex, totalToDownload, detail }) => {
+            setDownloadProgressText(detail);
+            const pct = Math.min(
+              99,
+              Math.max(4, Math.round(((currentIndex - 0.35) / Math.max(1, totalToDownload)) * 100))
+            );
+            setDownloadProgressPct(pct);
+          },
+        });
+      };
+
+      let result;
+      try {
+        result = await runDownloadBatch(targetSongs);
+      } catch (firstErr: any) {
+        if (firstErr?.name === 'AbortError') throw firstErr;
+        // Si falló por un URL antiguo en caché (HTTP 400/404), refrescar catálogo y reintentar automáticamente una vez
+        if (/HTTP (400|403|404)/i.test(String(firstErr?.message || ''))) {
+          setDownloadProgressText('Actualizando enlaces recientes desde la nube y reintentando...');
+          const freshCat = await syncPracticeCatalogFromSupabase({ force: true });
+          if (freshCat) {
+            setCatalog(freshCat);
+            const freshSongs =
+              selectedSetlistId && Array.isArray(freshCat.setlistSongsMap[selectedSetlistId])
+                ? freshCat.setlistSongsMap[selectedSetlistId]
+                : freshCat.allLiveSongs || [];
+            result = await runDownloadBatch(freshSongs);
+          } else {
+            throw firstErr;
+          }
+        } else {
+          throw firstErr;
+        }
+      }
 
       setTracksBySongId(result.summary.tracksBySongId);
       setDownloadProgressPct(100);
       setDownloadProgressText(
         result.downloadedCount > 0
-          ? `¡Playlist guardada en memoria (${result.downloadedCount} descargadas, ${result.skippedCachedCount} ya estaban en caché)!`
-          : `¡Playlist lista desde memoria local (${totalPending === 0 ? result.skippedCachedCount : 0} canciones · 0 MB de red)!`
+          ? `¡Playlist guardada en el celular (${result.downloadedCount} descargadas${
+              result.skippedCachedCount > 0
+                ? `, ${result.skippedCachedCount} ya estaban en memoria`
+                : ''
+            })!`
+          : `¡Playlist lista desde memoria local (${result.skippedCachedCount} canciones · 0 MB de red)!`
       );
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       setDownloadError(
-        err?.message || 'No se pudo completar la descarga de la playlist.'
+        err?.message || 'No se pudo completar la descarga de la playlist en el celular.'
       );
     } finally {
       setIsDownloadingPlaylist(false);
@@ -1123,46 +1180,63 @@ export default function MobileInEar() {
           </div>
 
           {/* PASO 1: Botón de Descarga de Playlist en MP3 */}
-          <button
-            type="button"
-            onClick={() => void handleDownloadPlaylistMp3()}
-            disabled={
-              isDownloadingPlaylist ||
-              isSyncingCatalog ||
-              playlistReadiness.exportableSongs.length === 0 ||
-              playlistReadiness.isFullyCached
-            }
-            className={`w-full py-3.5 px-5 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all cursor-pointer ${
-              playlistReadiness.isFullyCached
-                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 cursor-default'
-                : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-[0_0_25px_rgba(245,158,11,0.35)] active:scale-95 disabled:opacity-40'
-            }`}
-          >
-            {isDownloadingPlaylist ? (
-              <>
-                <Loader2 size={17} className="animate-spin" />
-                <span>Descargando Playlist MP3... ({downloadProgressPct}%)</span>
-              </>
-            ) : playlistReadiness.isFullyCached ? (
-              <>
-                <Check size={17} />
-                <span>
-                  1. Playlist MP3 Guardada en Memoria ({playlistReadiness.readySongs.length}/{playlistReadiness.exportableSongs.length})
-                </span>
-              </>
-            ) : (
-              <>
-                <CloudDownload size={17} />
-                <span>
-                  1. Descargar Playlist en MP3 ({playlistReadiness.pendingSongs.length}{' '}
-                  {playlistReadiness.pendingSongs.length === 1
-                    ? 'canción'
-                    : 'canciones'}
-                  )
-                </span>
-              </>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => void handleDownloadPlaylistMp3(false)}
+              disabled={
+                isDownloadingPlaylist ||
+                isSyncingCatalog ||
+                playlistReadiness.exportableSongs.length === 0 ||
+                playlistReadiness.isFullyCached
+              }
+              className={`w-full py-3.5 px-5 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all cursor-pointer ${
+                playlistReadiness.isFullyCached
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 cursor-default'
+                  : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-[0_0_25px_rgba(245,158,11,0.35)] active:scale-95 disabled:opacity-40'
+              }`}
+            >
+              {isDownloadingPlaylist ? (
+                <>
+                  <Loader2 size={17} className="animate-spin" />
+                  <span>Descargando Playlist MP3... ({downloadProgressPct}%)</span>
+                </>
+              ) : playlistReadiness.isFullyCached ? (
+                <>
+                  <Check size={17} />
+                  <span>
+                    1. Playlist MP3 Guardada en Memoria ({playlistReadiness.readySongs.length}/{playlistReadiness.exportableSongs.length})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <CloudDownload size={17} />
+                  <span>
+                    1. Descargar Playlist en MP3 ({playlistReadiness.pendingSongs.length}{' '}
+                    {playlistReadiness.pendingSongs.length === 1
+                      ? 'canción'
+                      : 'canciones'}
+                    )
+                  </span>
+                </>
+              )}
+            </button>
+
+            {playlistReadiness.readySongs.length > 0 && !isDownloadingPlaylist && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadPlaylistMp3(true)}
+                  disabled={isSyncingCatalog}
+                  className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-zinc-400 hover:text-amber-300 transition-colors cursor-pointer disabled:opacity-40"
+                  title="Volver a descargar todas las canciones de la playlist desde la nube"
+                >
+                  <RefreshCw size={11} />
+                  <span>Volver a descargar MP3</span>
+                </button>
+              </div>
             )}
-          </button>
+          </div>
 
           {/* PASO 2: Botón Conectar y Sincronizar al Ensayo (Habilitado solo tras descargar la Playlist) */}
           <button

@@ -20,6 +20,7 @@ import {
   clearAllLocalMp3Vault,
   computeSongChannelSignature,
   downloadInEarPlaylistToLocalVault,
+  encodeRiffWavBufferToMp3,
   ensureSongMp3CachedInDevice,
   evaluateInEarPlaylistReadiness,
   formatBytesCompact,
@@ -31,6 +32,7 @@ import {
   readLocalVaultSummary,
   renewMusicianOfflineLease,
   resetMusicianVaultMemoryForTests,
+  resolveCandidateAudioSources,
   resolvePreferredMp3Source,
   saveCachedPracticeCatalog,
   wipeAudioArrayBufferInRam,
@@ -451,5 +453,92 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     );
     expect(evictCheck.evictedIds).toEqual(['slave-phone-1']);
     expect(evictCheck.clients).toHaveLength(0);
+  });
+
+  it('recovers on mobile when *_mobile_url returns 404 by falling back to *_mix_url WAV and streaming-encoding MP3 with zero AudioContext', async () => {
+    // Build a valid 16-bit Stereo 44100 Hz RIFF PCM WAV buffer (2400 frames = ~54ms)
+    const sampleRate = 44100;
+    const numChannels = 2;
+    const numFrames = 2400;
+    const dataBytes = numFrames * numChannels * 2;
+    const wavBuf = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(wavBuf);
+    const writeStr = (off: number, s: string) => {
+      for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * 2, true);
+    view.setUint16(32, numChannels * 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataBytes, true);
+    for (let i = 0; i < numFrames; i++) {
+      const sample = Math.round(Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 14000);
+      view.setInt16(44 + i * 4, sample, true);
+      view.setInt16(44 + i * 4 + 2, sample, true);
+    }
+
+    // Direct streaming WAV -> MP3 verification (no AudioContext exists in Vitest Node env!)
+    const directMp3 = await encodeRiffWavBufferToMp3(wavBuf, 128, false);
+    expect(directMp3.byteLength).toBeGreaterThan(200);
+
+    const mobileBrokenSong: PracticeSongItem = {
+      id: 'song-mobile-fallback-1',
+      title: 'Eres la Esperanza Mobile Test',
+      // Simulate broken 404 mobile MP3 URL + valid legacy WAV mix URL
+      foh_mobile_url: 'https://supa.example.com/audios/missing_foh_404.mp3',
+      foh_mix_url: 'https://supa.example.com/audios/valid_foh_mix.wav',
+      // Simulate broken 404 CUE URL with valid BPM so RAM Cue fallback unlocks readiness instead of infinite Pendiente MP3
+      cue_mobile_url: 'https://supa.example.com/audios/missing_cue_404.mp3',
+      cue_mix_url: null,
+      prompter_data: { bpm: 98, timeSignature: '4/4' },
+    };
+
+    expect(resolveCandidateAudioSources(mobileBrokenSong, 'foh').map((c) => c.url)).toEqual([
+      'https://supa.example.com/audios/missing_foh_404.mp3',
+      'https://supa.example.com/audios/valid_foh_mix.wav',
+    ]);
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+      const url = String(input);
+      if (url.includes('404')) {
+        return new Response('{"statusCode":"404","error":"not_found"}', { status: 404 });
+      }
+      return new Response(wavBuf.slice(0), {
+        status: 200,
+        headers: { 'content-type': 'audio/wav' },
+      });
+    });
+
+    const dlResult = await downloadInEarPlaylistToLocalVault({
+      songs: [mobileBrokenSong],
+    });
+
+    expect(dlResult.downloadedCount).toBe(1);
+    const savedMeta = dlResult.summary.tracksBySongId[mobileBrokenSong.id];
+    expect(savedMeta).toBeDefined();
+    expect(savedMeta.hasFoh).toBe(true);
+    expect(savedMeta.convertedFromWav).toBe(true);
+    expect(savedMeta.cueSynthesizedFallback).toBe(true);
+
+    // Readiness MUST be 100% ready (never stuck in Pendiente MP3!)
+    const readinessAfter = evaluateInEarPlaylistReadiness(
+      [mobileBrokenSong],
+      dlResult.summary.tracksBySongId
+    );
+    expect(readinessAfter.isFullyCached).toBe(true);
+    expect(readinessAfter.pendingSongs).toHaveLength(0);
+    expect(readinessAfter.readySongs).toHaveLength(1);
+
+    const decryptedMp3 = await readDecryptedTrackArrayBuffer(mobileBrokenSong.id, 'foh');
+    expect(decryptedMp3).not.toBeNull();
+    expect(decryptedMp3!.byteLength).toBeGreaterThan(200);
   });
 });
