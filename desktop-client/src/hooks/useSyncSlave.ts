@@ -7,6 +7,7 @@ import {
   SLAVE_HEARTBEAT_INTERVAL_MS,
   acquireCleanRealtimeChannel,
   computeFilteredNtpClockOffset,
+  nowSharedMs,
 } from './useSyncMaster';
 
 const SLAVE_CLIENT_ID_STORAGE_KEY = 'tandu_inear_slave_client_id_v1';
@@ -35,6 +36,326 @@ function getIncomingSongVersionKey(song: any): string {
   }`;
 }
 
+export interface MasterTransportState {
+  kind: 'idle' | 'loaded' | 'playing' | 'paused' | 'stopped';
+  sessionId: string;
+  seq: number;
+  commandId?: string;
+  songId?: string;
+  cueSig?: string;
+  startAt?: number;
+  offset: number;
+  ts: number;
+}
+
+export interface MasterHeartbeatAnchor {
+  sessionId: string;
+  seq: number;
+  startAt: number;
+  offset: number;
+  songId?: string;
+  ts: number;
+}
+
+export const INITIAL_MASTER_TRANSPORT_STATE: MasterTransportState = {
+  kind: 'idle',
+  sessionId: '',
+  seq: 0,
+  offset: 0,
+  ts: 0,
+};
+
+/**
+ * Máquina de estados monotónica por `(sessionId, seq)` para el esclavo móvil:
+ * garantiza que una pausa/carga de canción previa JAMÁS pise un `PLAY` más reciente cuando
+ * los paquetes llegan en ráfaga (por ejemplo durante auto-avance o react batching).
+ */
+export function reduceSlaveTransportIntent(
+  current: MasterTransportState,
+  msg: SyncMessage,
+  nowMs: number
+): {
+  nextTransport: MasterTransportState;
+  heartbeatAnchorUpdate: MasterHeartbeatAnchor | null;
+  ignoredAsStale: boolean;
+} {
+  if (!msg || msg.type === 'PREFETCH_SONG') {
+    return {
+      nextTransport: current,
+      heartbeatAnchorUpdate: null,
+      ignoredAsStale: false,
+    };
+  }
+
+  const incomingSession = msg.sessionId || current.sessionId || '';
+  const sessionChanged =
+    Boolean(msg.sessionId && current.sessionId && msg.sessionId !== current.sessionId);
+
+  const effectiveCurrentSeq = sessionChanged ? 0 : current.seq;
+  const incomingSeq =
+    typeof msg.seq === 'number' && Number.isFinite(msg.seq) && msg.seq > 0
+      ? msg.seq
+      : effectiveCurrentSeq + 1;
+
+  // Descartar paquetes retrasados de una secuencia anterior
+  if (!sessionChanged && incomingSeq < effectiveCurrentSeq) {
+    return {
+      nextTransport: current,
+      heartbeatAnchorUpdate: null,
+      ignoredAsStale: true,
+    };
+  }
+
+  if (msg.type === 'HEARTBEAT') {
+    if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
+      const anchor: MasterHeartbeatAnchor = {
+        sessionId: incomingSession,
+        seq: incomingSeq,
+        startAt: msg.startAt,
+        offset: msg.offset,
+        songId: msg.songId || current.songId,
+        ts: nowMs,
+      };
+      // Si el HEARTBEAT revela una orden PLAY más nueva que aún no llegó al celular, recuperarla
+      if (incomingSeq > effectiveCurrentSeq || current.kind !== 'playing') {
+        return {
+          nextTransport: {
+            kind: 'playing',
+            sessionId: incomingSession,
+            seq: incomingSeq,
+            commandId: msg.commandId,
+            songId: msg.songId || current.songId,
+            cueSig: msg.cueSig ?? current.cueSig,
+            startAt: msg.startAt,
+            offset: msg.offset,
+            ts: nowMs,
+          },
+          heartbeatAnchorUpdate: anchor,
+          ignoredAsStale: false,
+        };
+      }
+      return {
+        nextTransport: current,
+        heartbeatAnchorUpdate: anchor,
+        ignoredAsStale: false,
+      };
+    }
+
+    // Heartbeat en pausa si tenía seq mayor al conocido
+    if (incomingSeq > effectiveCurrentSeq && msg.isPlaying === false) {
+      return {
+        nextTransport: {
+          kind: 'paused',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          offset: typeof msg.offset === 'number' ? msg.offset : current.offset,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+
+    return {
+      nextTransport: current,
+      heartbeatAnchorUpdate: null,
+      ignoredAsStale: false,
+    };
+  }
+
+  // Para comandos discretos con el MISMO seq en la misma sesión, no reprocesar duplicados (a menos que sea SEEK/SNAPSHOT nuevo)
+  if (
+    !sessionChanged &&
+    incomingSeq === effectiveCurrentSeq &&
+    msg.commandId &&
+    msg.commandId === current.commandId
+  ) {
+    return {
+      nextTransport: current,
+      heartbeatAnchorUpdate: null,
+      ignoredAsStale: true,
+    };
+  }
+
+  switch (msg.type) {
+    case 'LOAD_SONG': {
+      return {
+        nextTransport: {
+          kind: 'loaded',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId,
+          cueSig: msg.cueSig,
+          offset: typeof msg.offset === 'number' ? msg.offset : 0,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+
+    case 'PLAY': {
+      if (msg.startAt === undefined || msg.offset === undefined) {
+        return { nextTransport: current, heartbeatAnchorUpdate: null, ignoredAsStale: false };
+      }
+      return {
+        nextTransport: {
+          kind: 'playing',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          startAt: msg.startAt,
+          offset: msg.offset,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: {
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          startAt: msg.startAt,
+          offset: msg.offset,
+          songId: msg.songId || current.songId,
+          ts: nowMs,
+        },
+        ignoredAsStale: false,
+      };
+    }
+
+    case 'STATE_SNAPSHOT': {
+      if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
+        return {
+          nextTransport: {
+            kind: 'playing',
+            sessionId: incomingSession,
+            seq: incomingSeq,
+            commandId: msg.commandId,
+            songId: msg.songId || current.songId,
+            cueSig: msg.cueSig ?? current.cueSig,
+            startAt: msg.startAt,
+            offset: msg.offset,
+            ts: nowMs,
+          },
+          heartbeatAnchorUpdate: {
+            sessionId: incomingSession,
+            seq: incomingSeq,
+            startAt: msg.startAt,
+            offset: msg.offset,
+            songId: msg.songId || current.songId,
+            ts: nowMs,
+          },
+          ignoredAsStale: false,
+        };
+      }
+      return {
+        nextTransport: {
+          kind: 'paused',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          offset: typeof msg.offset === 'number' ? msg.offset : 0,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+
+    case 'PAUSE': {
+      return {
+        nextTransport: {
+          kind: 'paused',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          offset: typeof msg.offset === 'number' ? msg.offset : current.offset,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+
+    case 'STOP': {
+      return {
+        nextTransport: {
+          kind: 'stopped',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          offset: typeof msg.offset === 'number' ? msg.offset : 0,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+
+    case 'SEEK': {
+      if (msg.offset === undefined) {
+        return { nextTransport: current, heartbeatAnchorUpdate: null, ignoredAsStale: false };
+      }
+      if (msg.isPlaying && msg.startAt !== undefined) {
+        return {
+          nextTransport: {
+            kind: 'playing',
+            sessionId: incomingSession,
+            seq: incomingSeq,
+            commandId: msg.commandId,
+            songId: msg.songId || current.songId,
+            cueSig: msg.cueSig ?? current.cueSig,
+            startAt: msg.startAt,
+            offset: msg.offset,
+            ts: nowMs,
+          },
+          heartbeatAnchorUpdate: {
+            sessionId: incomingSession,
+            seq: incomingSeq,
+            startAt: msg.startAt,
+            offset: msg.offset,
+            songId: msg.songId || current.songId,
+            ts: nowMs,
+          },
+          ignoredAsStale: false,
+        };
+      }
+      return {
+        nextTransport: {
+          kind: current.kind === 'playing' ? 'playing' : 'paused',
+          sessionId: incomingSession,
+          seq: incomingSeq,
+          commandId: msg.commandId,
+          songId: msg.songId || current.songId,
+          cueSig: msg.cueSig ?? current.cueSig,
+          startAt:
+            msg.startAt ??
+            (current.kind === 'playing' ? nowMs + 100 : undefined),
+          offset: msg.offset,
+          ts: nowMs,
+        },
+        heartbeatAnchorUpdate: null,
+        ignoredAsStale: false,
+      };
+    }
+  }
+
+  return {
+    nextTransport: current,
+    heartbeatAnchorUpdate: null,
+    ignoredAsStale: false,
+  };
+}
+
 export interface UseSyncSlaveOptions {
   /**
    * Cuando es `false`, el dispositivo NO se suscribe ni anuncia presencia en el canal del Master.
@@ -44,6 +365,10 @@ export interface UseSyncSlaveOptions {
   deviceLabel?: string;
   setlistId?: string | null;
   songReady?: boolean;
+  readySongId?: string | null;
+  readyCueSig?: string | null;
+  audioState?: 'running' | 'suspended' | 'interrupted' | 'closed';
+  driftMs?: number;
 }
 
 export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
@@ -51,32 +376,55 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   const deviceLabel = options?.deviceLabel;
   const setlistId = options?.setlistId ?? null;
   const songReady = options?.songReady ?? false;
+  const readySongId = options?.readySongId ?? null;
+  const readyCueSig = options?.readyCueSig ?? null;
+  const audioState = options?.audioState ?? 'running';
+  const driftMs = options?.driftMs;
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const rtcPcRef = useRef<RTCPeerConnection | null>(null);
-  const rtcDcRef = useRef<RTCDataChannel | null>(null);
+  const rtcTransportDcRef = useRef<RTCDataChannel | null>(null);
+  const rtcNtpDcRef = useRef<RTCDataChannel | null>(null);
+  const pendingIceCandidatesRef = useRef<any[]>([]);
+  const rtcRetryAttemptRef = useRef<number>(0);
+  const rtcRetryTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const clientIdRef = useRef<string>(getOrCreateStableSlaveClientId());
   const connectedAtRef = useRef<number>(Date.now());
   const ntpSamplesRef = useRef<NtpPingSample[]>([]);
   const isSubscribedRef = useRef<boolean>(false);
   const seenCommandIdsRef = useRef<Set<string>>(new Set());
+  const transportStateRef = useRef<MasterTransportState>(INITIAL_MASTER_TRANSPORT_STATE);
+  const clockOffsetLockedRef = useRef<number | undefined>(undefined);
   const currentSongIdRef = useRef<string | null>(null);
-  const isPlayingInternalRef = useRef<boolean>(false);
 
   const slaveMetaRef = useRef<{
     deviceLabel?: string;
     setlistId: string | null;
     songReady: boolean;
+    readySongId: string | null;
+    readyCueSig: string | null;
+    audioState: 'running' | 'suspended' | 'interrupted' | 'closed';
+    transportMode: 'lan_direct' | 'cloud_realtime';
+    driftMs?: number;
     rttMs: number;
   }>({
     deviceLabel,
     setlistId,
     songReady,
+    readySongId,
+    readyCueSig,
+    audioState,
+    transportMode: 'cloud_realtime',
+    driftMs,
     rttMs: 0,
   });
   slaveMetaRef.current.deviceLabel = deviceLabel;
   slaveMetaRef.current.setlistId = setlistId;
   slaveMetaRef.current.songReady = songReady;
+  slaveMetaRef.current.readySongId = readySongId;
+  slaveMetaRef.current.readyCueSig = readyCueSig;
+  slaveMetaRef.current.audioState = audioState;
+  slaveMetaRef.current.driftMs = driftMs;
 
   // Slave state
   const [connectionStatus, setConnectionStatus] = useState<
@@ -90,30 +438,14 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   const [nextSongId, setNextSongId] = useState<string | null>(null);
   const [songData, setSongData] = useState<any>(null);
   const [nextSongData, setNextSongData] = useState<any>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  // Transport control signals triggered by Master
-  const [playTrigger, setPlayTrigger] = useState<{
-    commandId?: string;
-    startAt: number;
-    offset: number;
-    ts: number;
-    songId?: string;
-  } | null>(null);
-  const [pauseTrigger, setPauseTrigger] = useState<{ ts: number } | null>(null);
-  const [seekTrigger, setSeekTrigger] = useState<{
-    offset: number;
-    ts: number;
-    isStop?: boolean;
-  } | null>(null);
-  const [heartbeatTrigger, setHeartbeatTrigger] = useState<{
-    startAt: number;
-    offset: number;
-    songId?: string;
-    ts: number;
-  } | null>(null);
+  const [masterTransport, setMasterTransport] = useState<MasterTransportState>(
+    INITIAL_MASTER_TRANSPORT_STATE
+  );
+  const [heartbeatAnchor, setHeartbeatAnchor] = useState<MasterHeartbeatAnchor | null>(null);
   const [clockOffset, setClockOffset] = useState<number>(0);
   const [rttMs, setRttMs] = useState<number>(0);
+
+  const isPlaying = masterTransport.kind === 'playing';
 
   const updateActiveSongSafe = useCallback((incomingSongId?: string, incomingSongData?: any) => {
     if (incomingSongId) {
@@ -140,6 +472,14 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       deviceLabel: meta.deviceLabel,
       setlistId: meta.setlistId,
       songReady: meta.songReady,
+      readySongId: meta.readySongId,
+      readyCueSig: meta.readyCueSig,
+      audioState: meta.audioState,
+      transportMode: meta.transportMode,
+      driftMs:
+        typeof meta.driftMs === 'number' && Number.isFinite(meta.driftMs)
+          ? Math.round(meta.driftMs)
+          : undefined,
       rttMs: meta.rttMs > 0 ? meta.rttMs : undefined,
       connectedAt: connectedAtRef.current,
       ts: Date.now(),
@@ -155,7 +495,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     ) => {
       if (!ch || channelRef.current !== ch || !isSubscribedRef.current) return;
       const payload = buildSlaveRpcPayload(extra);
-      const dc = rtcDcRef.current;
+      const dc = rtcTransportDcRef.current;
       if (dc && dc.readyState === 'open') {
         try {
           dc.send(JSON.stringify({ event, payload }));
@@ -178,15 +518,20 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       globalThis.setTimeout(() => {
         if (channelRef.current !== targetCh || !isSubscribedRef.current) return;
         const reqPayload = {
-          t0: Date.now(),
+          t0: nowSharedMs(),
           clientId,
           ready: true,
           seq: i,
         };
-        const dc = rtcDcRef.current;
-        if (dc && dc.readyState === 'open') {
+        const ntpDc =
+          rtcNtpDcRef.current?.readyState === 'open'
+            ? rtcNtpDcRef.current
+            : rtcTransportDcRef.current?.readyState === 'open'
+            ? rtcTransportDcRef.current
+            : null;
+        if (ntpDc) {
           try {
-            dc.send(JSON.stringify({ event: 'sync_request', payload: reqPayload }));
+            ntpDc.send(JSON.stringify({ event: 'sync_request', payload: reqPayload }));
           } catch {}
         }
         void targetCh.send({
@@ -211,8 +556,8 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     const ch = channelRef.current;
     if (!ch || !isSubscribedRef.current) return;
     emitSlaveRpc(ch, 'rpc_slave_announce');
-    const reqPayload = buildSlaveRpcPayload({ t0: Date.now() });
-    const dc = rtcDcRef.current;
+    const reqPayload = buildSlaveRpcPayload({ t0: nowSharedMs() });
+    const dc = rtcTransportDcRef.current;
     if (dc && dc.readyState === 'open') {
       try {
         dc.send(JSON.stringify({ event: 'request_state', payload: reqPayload }));
@@ -228,10 +573,12 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   useEffect(() => {
     if (!bandId || !enabled) {
       isSubscribedRef.current = false;
-      isPlayingInternalRef.current = false;
+      transportStateRef.current = INITIAL_MASTER_TRANSPORT_STATE;
+      slaveMetaRef.current.transportMode = 'cloud_realtime';
+      setMasterTransport(INITIAL_MASTER_TRANSPORT_STATE);
+      setHeartbeatAnchor(null);
       setConnectionStatus('disconnected');
       setTransportMode('cloud_realtime');
-      setIsPlaying(false);
       return;
     }
 
@@ -246,17 +593,33 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     connectedAtRef.current = Date.now();
     ntpSamplesRef.current = [];
     seenCommandIdsRef.current.clear();
+    transportStateRef.current = INITIAL_MASTER_TRANSPORT_STATE;
+    clockOffsetLockedRef.current = undefined;
+    pendingIceCandidatesRef.current = [];
+    rtcRetryAttemptRef.current = 0;
+    setMasterTransport(INITIAL_MASTER_TRANSPORT_STATE);
+    setHeartbeatAnchor(null);
     setConnectionStatus('connecting');
     setTransportMode('cloud_realtime');
+    slaveMetaRef.current.transportMode = 'cloud_realtime';
 
     const closeSlaveRtc = () => {
+      if (rtcRetryTimerRef.current) {
+        globalThis.clearTimeout(rtcRetryTimerRef.current);
+        rtcRetryTimerRef.current = null;
+      }
+      pendingIceCandidatesRef.current = [];
       try {
-        rtcDcRef.current?.close();
+        rtcTransportDcRef.current?.close();
+      } catch {}
+      try {
+        rtcNtpDcRef.current?.close();
       } catch {}
       try {
         rtcPcRef.current?.close();
       } catch {}
-      rtcDcRef.current = null;
+      rtcTransportDcRef.current = null;
+      rtcNtpDcRef.current = null;
       rtcPcRef.current = null;
     };
 
@@ -303,17 +666,26 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
 
     const handleIncomingSyncResponse = (payload: any) => {
       if (!payload || payload.clientId !== clientId) return;
-      const t2 = Date.now();
-      const sample: NtpPingSample = {
-        t0: Number(payload.t0),
-        t1: Number(payload.t1),
-        t2,
-      };
-      const updatedSamples = [...ntpSamplesRef.current.slice(-19), sample];
+      const t3 = nowSharedMs();
+      const t0 = Number(payload.t0);
+      const t1 = Number(payload.t1);
+      const t2 = payload.t2 !== undefined ? Number(payload.t2) : t3;
+      const sample: NtpPingSample =
+        payload.t2 !== undefined
+          ? { t0, t1, t2, t3 }
+          : { t0, t1, t2: t3 };
+
+      const updatedSamples = [...ntpSamplesRef.current.slice(-29), sample];
       ntpSamplesRef.current = updatedSamples;
 
-      const filtered = computeFilteredNtpClockOffset(updatedSamples);
+      const filtered = computeFilteredNtpClockOffset(
+        updatedSamples,
+        clockOffsetLockedRef.current
+      );
       if (filtered.sampleCount > 0) {
+        if (filtered.sampleCount >= 6) {
+          clockOffsetLockedRef.current = filtered.clockOffsetMs;
+        }
         slaveMetaRef.current.rttMs = filtered.bestRttMs;
         setClockOffset(filtered.clockOffsetMs);
         setRttMs(filtered.bestRttMs);
@@ -325,13 +697,13 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       if (!msg) return;
       if (msg.targetClientId && msg.targetClientId !== clientId) return;
 
-      // Deduplicar tanto los pulsos idempotentes (+55ms / +125ms) como la doble vía (LAN WebRTC + Cloud)
+      // Deduplicar tanto los pulsos idempotentes (+55ms / +125ms) como la doble vía (LAN + Nube)
       if (msg.commandId) {
         if (seenCommandIdsRef.current.has(msg.commandId)) {
           return;
         }
         seenCommandIdsRef.current.add(msg.commandId);
-        if (seenCommandIdsRef.current.size > 96) {
+        if (seenCommandIdsRef.current.size > 128) {
           const oldest = seenCommandIdsRef.current.values().next().value;
           if (oldest) seenCommandIdsRef.current.delete(oldest);
         }
@@ -341,7 +713,9 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
         setMasterSetlistId((prev) => (prev !== msg.setlistId ? msg.setlistId! : prev));
       }
       if (msg.nextSongId !== undefined) {
-        setNextSongId((prev) => (prev !== (msg.nextSongId ?? null) ? msg.nextSongId ?? null : prev));
+        setNextSongId((prev) =>
+          prev !== (msg.nextSongId ?? null) ? msg.nextSongId ?? null : prev
+        );
       }
       if (msg.nextSongData !== undefined) {
         setNextSongData((prev: any) => {
@@ -356,146 +730,101 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
         });
       }
 
-      const nowTs = Date.now();
+      const nowMs = nowSharedMs();
 
-      switch (msg.type) {
-        case 'PREFETCH_SONG':
-          if (msg.songId) {
-            setNextSongId((prev) => (prev !== msg.songId ? msg.songId! : prev));
-          }
-          if (msg.nextSongData || msg.songData) {
-            const cand = msg.nextSongData || msg.songData;
-            setNextSongData((prev: any) =>
-              prev && getIncomingSongVersionKey(prev) === getIncomingSongVersionKey(cand)
-                ? prev
-                : cand
-            );
-          }
-          break;
-
-        case 'LOAD_SONG': {
-          const songChanged = Boolean(msg.songId && msg.songId !== currentSongIdRef.current);
-          updateActiveSongSafe(msg.songId, msg.songData);
-          if (songChanged || isPlayingInternalRef.current) {
-            isPlayingInternalRef.current = false;
-            setIsPlaying(false);
-            setPauseTrigger({ ts: nowTs });
-          }
-          if (typeof msg.offset === 'number') {
-            setSeekTrigger({ offset: msg.offset, ts: nowTs });
-          }
-          break;
+      if (msg.type === 'PREFETCH_SONG') {
+        if (msg.songId) {
+          setNextSongId((prev) => (prev !== msg.songId ? msg.songId! : prev));
         }
+        if (msg.nextSongData || msg.songData) {
+          const cand = msg.nextSongData || msg.songData;
+          setNextSongData((prev: any) =>
+            prev && getIncomingSongVersionKey(prev) === getIncomingSongVersionKey(cand)
+              ? prev
+              : cand
+          );
+        }
+        return;
+      }
 
-        case 'STATE_SNAPSHOT':
-          updateActiveSongSafe(msg.songId, msg.songData);
-          if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
-            isPlayingInternalRef.current = true;
-            setIsPlaying(true);
-            setPlayTrigger({
-              commandId: msg.commandId,
-              startAt: msg.startAt,
-              offset: msg.offset,
-              songId: msg.songId,
-              ts: nowTs,
-            });
-          } else {
-            isPlayingInternalRef.current = false;
-            setIsPlaying(false);
-            if (typeof msg.offset === 'number') {
-              setSeekTrigger({ offset: msg.offset, ts: nowTs });
-            }
-          }
-          break;
+      const reduced = reduceSlaveTransportIntent(
+        transportStateRef.current,
+        msg,
+        nowMs
+      );
+      if (reduced.ignoredAsStale) {
+        return;
+      }
 
-        case 'PLAY':
-          updateActiveSongSafe(msg.songId, msg.songData);
-          if (msg.startAt !== undefined && msg.offset !== undefined) {
-            isPlayingInternalRef.current = true;
-            setIsPlaying(true);
-            setPlayTrigger({
-              commandId: msg.commandId,
-              startAt: msg.startAt,
-              offset: msg.offset,
-              songId: msg.songId,
-              ts: nowTs,
-            });
-          }
-          break;
+      updateActiveSongSafe(msg.songId, msg.songData);
 
-        case 'HEARTBEAT':
-          updateActiveSongSafe(msg.songId, msg.songData);
-          if (msg.isPlaying && msg.startAt !== undefined && msg.offset !== undefined) {
-            isPlayingInternalRef.current = true;
-            setIsPlaying(true);
-            setHeartbeatTrigger({
-              startAt: msg.startAt,
-              offset: msg.offset,
-              songId: msg.songId,
-              ts: nowTs,
-            });
-          }
-          break;
-
-        case 'PAUSE':
-          isPlayingInternalRef.current = false;
-          setIsPlaying(false);
-          setPauseTrigger({ ts: nowTs });
-          if (typeof msg.offset === 'number') {
-            setSeekTrigger({ offset: msg.offset, ts: nowTs });
-          }
-          break;
-
-        case 'STOP':
-          isPlayingInternalRef.current = false;
-          setIsPlaying(false);
-          setPauseTrigger({ ts: nowTs });
-          setSeekTrigger({
-            offset: typeof msg.offset === 'number' ? msg.offset : 0,
-            ts: nowTs,
-            isStop: true,
-          });
-          break;
-
-        case 'SEEK':
-          if (msg.offset !== undefined) {
-            setSeekTrigger({ offset: msg.offset, ts: nowTs });
-          }
-          break;
+      if (reduced.nextTransport !== transportStateRef.current) {
+        transportStateRef.current = reduced.nextTransport;
+        setMasterTransport(reduced.nextTransport);
+      }
+      if (reduced.heartbeatAnchorUpdate) {
+        setHeartbeatAnchor(reduced.heartbeatAnchorUpdate);
+      } else if (reduced.nextTransport.kind !== 'playing') {
+        setHeartbeatAnchor(null);
       }
     };
 
     const connectLanWebRtcFastPath = async (channel: RealtimeChannel) => {
       if (cancelled || typeof RTCPeerConnection !== 'function') return;
-      if (rtcDcRef.current && rtcDcRef.current.readyState === 'open') return;
+      const existingPc = rtcPcRef.current;
+      // Jamás interrumpir ni reiniciar una conexión WebRTC activa o en negociación
+      if (
+        existingPc &&
+        (existingPc.connectionState === 'connected' ||
+          existingPc.connectionState === 'connecting' ||
+          existingPc.iceConnectionState === 'checking' ||
+          existingPc.iceConnectionState === 'connected')
+      ) {
+        return;
+      }
+
       try {
         closeSlaveRtc();
         const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+          iceServers: [],
         });
         rtcPcRef.current = pc;
 
-        const dc = pc.createDataChannel('tandu-sync-lan', {
+        const transportDc = pc.createDataChannel('tandu-transport', {
+          ordered: true,
+        });
+        const ntpDc = pc.createDataChannel('tandu-ntp', {
           ordered: false,
           maxRetransmits: 0,
         });
-        rtcDcRef.current = dc;
+        rtcTransportDcRef.current = transportDc;
+        rtcNtpDcRef.current = ntpDc;
 
-        dc.onopen = () => {
-          if (cancelled || rtcDcRef.current !== dc) return;
+        const markLanConnected = () => {
+          if (cancelled || rtcPcRef.current !== pc) return;
+          rtcRetryAttemptRef.current = 0;
+          slaveMetaRef.current.transportMode = 'lan_direct';
           setTransportMode('lan_direct');
-          // Ráfaga NTP inmediata por LAN Directa (~2-6ms RTT) para clavar el reloj del celular con el PC
-          sendNtpBurst(channel, 8);
+          sendNtpBurst(channel, 10);
           emitSlaveRpc(channel, 'rpc_slave_announce');
         };
 
-        dc.onclose = () => {
-          if (rtcDcRef.current === dc) {
+        transportDc.onopen = markLanConnected;
+        ntpDc.onopen = () => {
+          if (cancelled || rtcPcRef.current !== pc) return;
+          if (transportDc.readyState === 'open') {
+            sendNtpBurst(channel, 8);
+          }
+        };
+
+        transportDc.onclose = () => {
+          if (rtcTransportDcRef.current === transportDc) {
+            slaveMetaRef.current.transportMode = 'cloud_realtime';
             setTransportMode('cloud_realtime');
           }
         };
 
-        dc.onmessage = (msgEv) => {
+        const onDcMessage = (msgEv: MessageEvent) => {
           if (cancelled) return;
           try {
             const env = JSON.parse(String(msgEv.data || '{}'));
@@ -510,6 +839,30 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
               sendNtpBurst(channel, 3);
             }
           } catch {}
+        };
+        transportDc.onmessage = onDcMessage;
+        ntpDc.onmessage = onDcMessage;
+
+        pc.onconnectionstatechange = () => {
+          if (cancelled || rtcPcRef.current !== pc) return;
+          if (
+            pc.connectionState === 'failed' ||
+            pc.connectionState === 'disconnected' ||
+            pc.connectionState === 'closed'
+          ) {
+            slaveMetaRef.current.transportMode = 'cloud_realtime';
+            setTransportMode('cloud_realtime');
+            if (!rtcRetryTimerRef.current && rtcRetryAttemptRef.current < 4) {
+              const delayMs = 2000 * Math.pow(2, rtcRetryAttemptRef.current);
+              rtcRetryAttemptRef.current += 1;
+              rtcRetryTimerRef.current = globalThis.setTimeout(() => {
+                rtcRetryTimerRef.current = null;
+                if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
+                  void connectLanWebRtcFastPath(channel);
+                }
+              }, delayMs);
+            }
+          }
         };
 
         pc.onicecandidate = (ev) => {
@@ -528,7 +881,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        if (!cancelled && channelRef.current === channel) {
+        if (!cancelled && channelRef.current === channel && rtcPcRef.current === pc) {
           void channel.send({
             type: 'broadcast',
             event: 'webrtc_signal',
@@ -569,7 +922,9 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
           replyToRequestId: payload?.requestId,
         });
         sendNtpBurst(channel, 2);
-        if (!rtcDcRef.current || rtcDcRef.current.readyState !== 'open') {
+        // Solo iniciar WebRTC si nunca se abrió o está cerrado/fallido
+        const pcState = rtcPcRef.current?.connectionState;
+        if (!rtcPcRef.current || pcState === 'failed' || pcState === 'closed') {
           void connectLanWebRtcFastPath(channel);
         }
       });
@@ -584,12 +939,21 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
         ) {
           return;
         }
+        const pc = rtcPcRef.current;
         try {
           if (payload.type === 'answer' && payload.sdp) {
-            await rtcPcRef.current.setRemoteDescription(payload.sdp);
+            await pc.setRemoteDescription(payload.sdp);
+            while (pendingIceCandidatesRef.current.length > 0) {
+              const cand = pendingIceCandidatesRef.current.shift();
+              if (cand) {
+                await pc.addIceCandidate(cand).catch(() => {});
+              }
+            }
           } else if (payload.type === 'ice' && payload.candidate) {
-            if (rtcPcRef.current.remoteDescription) {
-              await rtcPcRef.current.addIceCandidate(payload.candidate);
+            if (pc.remoteDescription) {
+              await pc.addIceCandidate(payload.candidate);
+            } else {
+              pendingIceCandidatesRef.current.push(payload.candidate);
             }
           }
         } catch {}
@@ -612,20 +976,14 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
 
           void channel.track(buildSlaveRpcPayload()).catch(() => {});
 
-          // 1. Anuncio RPC instantáneo al Master (<30ms) + solicitud de snapshot
           emitSlaveRpc(channel, 'rpc_slave_announce', { needsSnapshot: true });
-
-          // 2. Iniciar canal directo LAN WebRTC P2P (~2-6ms RTT en la misma red Wi-Fi)
           void connectLanWebRtcFastPath(channel);
+          sendNtpBurst(channel, 10);
 
-          // 3. Ráfaga inicial de 8 muestras NTP para calibrar reloj
-          sendNtpBurst(channel, 8);
-
-          // 4. Solicitar estado actual al Master inmediatamente
           void channel.send({
             type: 'broadcast',
             event: 'request_state',
-            payload: buildSlaveRpcPayload({ t0: Date.now() }),
+            payload: buildSlaveRpcPayload({ t0: nowSharedMs() }),
           });
 
           timeouts.push(
@@ -642,12 +1000,12 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
                 void channel.send({
                   type: 'broadcast',
                   event: 'request_state',
-                  payload: buildSlaveRpcPayload({ t0: Date.now() }),
+                  payload: buildSlaveRpcPayload({ t0: nowSharedMs() }),
                 });
               }
             }, 700)
           );
-          // Ráfagas NTP secundarias cuando la CPU del celular ya terminó la carga inicial
+
           for (const idleCheckMs of [1400, 2800]) {
             timeouts.push(
               globalThis.setTimeout(() => {
@@ -658,7 +1016,6 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
             );
           }
 
-          // 5. Latido RPC ultrarrápido cada 1.8s
           if (fastHeartbeatId !== null) globalThis.clearInterval(fastHeartbeatId);
           fastHeartbeatId = globalThis.setInterval(() => {
             if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
@@ -666,7 +1023,6 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
             }
           }, SLAVE_HEARTBEAT_INTERVAL_MS);
 
-          // 6. Re-calibración periódica de reloj NTP cada 6s para anular deriva térmica de osciladores móviles
           if (ntpIntervalId !== null) globalThis.clearInterval(ntpIntervalId);
           ntpIntervalId = globalThis.setInterval(() => {
             if (!cancelled && channelRef.current === channel && isSubscribedRef.current) {
@@ -681,6 +1037,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
           isSubscribedRef.current = false;
           setConnectionStatus('disconnected');
           setTransportMode('cloud_realtime');
+          slaveMetaRef.current.transportMode = 'cloud_realtime';
         }
       });
     })();
@@ -715,7 +1072,17 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     if (!ch || !enabled || !isSubscribedRef.current) return;
     emitSlaveRpc(ch, 'rpc_slave_announce');
     void ch.track(buildSlaveRpcPayload()).catch(() => {});
-  }, [enabled, deviceLabel, setlistId, songReady, buildSlaveRpcPayload, emitSlaveRpc]);
+  }, [
+    enabled,
+    deviceLabel,
+    setlistId,
+    songReady,
+    readySongId,
+    readyCueSig,
+    audioState,
+    buildSlaveRpcPayload,
+    emitSlaveRpc,
+  ]);
 
   return {
     connectionStatus,
@@ -726,10 +1093,8 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     songData,
     nextSongData,
     isPlaying,
-    playTrigger,
-    pauseTrigger,
-    seekTrigger,
-    heartbeatTrigger,
+    masterTransport,
+    heartbeatAnchor,
     clockOffset,
     rttMs,
     requestMasterState,

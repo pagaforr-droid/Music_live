@@ -12,11 +12,14 @@ export interface SyncMessage {
     | 'STATE_SNAPSHOT'
     | 'HEARTBEAT'
     | 'PREFETCH_SONG';
+  sessionId?: string;
+  seq?: number;
   commandId?: string;
+  cueSig?: string;
   setlistId?: string | null;
   songId?: string;
   nextSongId?: string | null;
-  startAt?: number; // Exact Master timestamp in ms when audio sound exits speakers/headphones at `offset`
+  startAt?: number; // Exact Master shared-wall timestamp in ms when audio sound exits speakers/headphones at `offset`
   offset?: number; // Global audio time in seconds corresponding to `startAt` (or pause/seek position)
   isPlaying?: boolean;
   songData?: any;
@@ -30,6 +33,11 @@ export interface ReadySlaveClient {
   deviceLabel?: string;
   setlistId?: string | null;
   songReady?: boolean;
+  readySongId?: string | null;
+  readyCueSig?: string | null;
+  audioState?: 'running' | 'suspended' | 'interrupted' | 'closed';
+  transportMode?: 'lan_direct' | 'cloud_realtime';
+  driftMs?: number;
   rttMs?: number;
   connectedAt?: number;
   lastSeenAt?: number;
@@ -47,9 +55,123 @@ export interface SlavePeerRegistryState {
 }
 
 export interface NtpPingSample {
-  t0: number;
-  t1: number;
-  t2: number;
+  t0: number; // Esclavo envía
+  t1: number; // Master recibe
+  t2: number; // Master responde (o en modo 3-ts legacy, Esclavo recibe)
+  t3?: number; // Esclavo recibe (modo 4-timestamps RFC 5905)
+}
+
+export interface AudioOutputClockMapping {
+  /** `AudioContext.currentTime` de la muestra física que sale por el DAC en `sharedTimeMs` */
+  heardContextTimeSec: number;
+  /** Tiempo de reloj monotónico de pared (`performance.timeOrigin + ts.performanceTime`) en ms */
+  sharedTimeMs: number;
+  /** Latencia medida de pipeline `ctx.currentTime - audibleCtxTime` en ms */
+  pipelineLatencyMs: number;
+  /** `true` si `getOutputTimestamp()` devolvió timestamps de hardware no nulos */
+  hasOutputTimestamp: boolean;
+}
+
+/**
+ * Reloj monotónico de pared de alta resolución (`performance.timeOrigin + performance.now()`).
+ * Evita saltos del reloj NTP del SO y mantiene resolución sub-milisegundo entre paquetes de audio.
+ */
+export function nowSharedMs(): number {
+  if (
+    typeof performance !== 'undefined' &&
+    typeof performance.timeOrigin === 'number' &&
+    Number.isFinite(performance.timeOrigin) &&
+    typeof performance.now === 'function'
+  ) {
+    return performance.timeOrigin + performance.now();
+  }
+  return Date.now();
+}
+
+/**
+ * Lee el mapeo exacto entre el reloj de muestras de hardware (`AudioContext.getOutputTimestamp().contextTime`)
+ * y el reloj compartido de pared (`sharedTimeMs`), eliminando el error de granularidad de bloques (20-40ms)
+ * que ocurre al mezclar `Date.now()` con `ctx.currentTime`.
+ */
+export function measureAudioOutputClockMapping(
+  ctx: AudioContext | null | undefined
+): AudioOutputClockMapping | null {
+  if (!ctx || typeof (ctx as any).getOutputTimestamp !== 'function') {
+    return null;
+  }
+  try {
+    const ts = (ctx as any).getOutputTimestamp();
+    if (
+      !ts ||
+      typeof ts.contextTime !== 'number' ||
+      !Number.isFinite(ts.contextTime) ||
+      ts.contextTime <= 0 ||
+      typeof ts.performanceTime !== 'number' ||
+      !Number.isFinite(ts.performanceTime) ||
+      ts.performanceTime <= 0 ||
+      ctx.currentTime < ts.contextTime
+    ) {
+      return null;
+    }
+
+    const perfOrigin =
+      typeof performance !== 'undefined' &&
+      typeof performance.timeOrigin === 'number' &&
+      Number.isFinite(performance.timeOrigin)
+        ? performance.timeOrigin
+        : Date.now() - ts.performanceTime;
+    const perfNow =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : ts.performanceTime;
+
+    const elapsedSinceTsSec = Math.max(
+      0,
+      Math.min(0.15, (perfNow - ts.performanceTime) / 1000)
+    );
+    const audibleNowSec = ts.contextTime + elapsedSinceTsSec;
+    const rawPipelineMs = (ctx.currentTime - audibleNowSec) * 1000;
+    if (!Number.isFinite(rawPipelineMs) || rawPipelineMs < 0 || rawPipelineMs >= 350) {
+      return null;
+    }
+
+    return {
+      heardContextTimeSec: ts.contextTime,
+      sharedTimeMs: perfOrigin + ts.performanceTime,
+      pipelineLatencyMs: Math.round(rawPipelineMs),
+      hasOutputTimestamp: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Calcula el timestamp exacto de reloj compartido (`startAt`) en el que el audio agendado
+ * en `targetContextTimeSec` saldrá físicamente por los parlantes/consola del Master (PC).
+ */
+export function computeMasterStartAtForContextTime(
+  ctx: AudioContext | null | undefined,
+  targetContextTimeSec: number,
+  extraOffsetMs: number = 0,
+  fallbackLatencyMs: number = 0
+): number {
+  const mapping = measureAudioOutputClockMapping(ctx);
+  if (mapping?.hasOutputTimestamp) {
+    return (
+      mapping.sharedTimeMs +
+      (targetContextTimeSec - mapping.heardContextTimeSec) * 1000 +
+      extraOffsetMs
+    );
+  }
+  const ctxNow = ctx ? ctx.currentTime : 0;
+  const hwLatMs = Math.max(fallbackLatencyMs, measureAudioContextOutputLatencyMs(ctx));
+  return (
+    nowSharedMs() +
+    (targetContextTimeSec - ctxNow) * 1000 +
+    hwLatMs +
+    extraOffsetMs
+  );
 }
 
 /** Intervalo de latido ultrarrápido de los celulares (ms) */
@@ -107,17 +229,25 @@ export function measureAudioContextOutputLatencyMs(
 }
 
 /**
- * Estima la latencia acústica física real de salida (en ms) de un dispositivo esclavo móvil
- * (Android AudioTrack / AudioFlinger HAL o iOS CoreAudio).
- * En Android Chrome, `AudioContext.outputLatency` suele reportar 0 (solo expone `baseLatency` ~10-20ms)
- * aunque el mixer del sistema operativo Android (`AudioFlinger` + HAL) añade ~68ms adicionales
- * antes de que la onda sonora salga físicamente por los audífonos o el parlante.
+ * Estima la latencia física mínima no reportada únicamente cuando el navegador devuelve `0`
+ * tanto en `AudioContext.outputLatency` como en `getOutputTimestamp()` (evita doble conteo).
+ * Con `getOutputTimestamp()` activo en iOS/Android/Desktop, devuelve `0` extra porque el mapeo
+ * hardware ya incluye la cola del DAC de salida de forma nativa.
  */
 export function estimateSlaveAcousticOutputLatencyMs(
   ctx: AudioContext | null | undefined,
   userAgent?: string
 ): number {
-  const measuredMs = measureAudioContextOutputLatencyMs(ctx);
+  const mapping = measureAudioOutputClockMapping(ctx);
+  if (mapping?.hasOutputTimestamp && mapping.pipelineLatencyMs >= 18) {
+    return 0;
+  }
+
+  const rawOut = Number((ctx as any)?.outputLatency);
+  if (Number.isFinite(rawOut) && rawOut >= 0.015) {
+    return mapping?.hasOutputTimestamp ? 0 : Math.round(rawOut * 1000);
+  }
+
   const ua =
     typeof userAgent === 'string'
       ? userAgent
@@ -128,25 +258,21 @@ export function estimateSlaveAcousticOutputLatencyMs(
   const isAndroid = /Android/i.test(ua);
   const isIOS = /iPhone|iPad|iPod/i.test(ua);
 
-  const rawOut = Number((ctx as any)?.outputLatency);
-  const hasExplicitOsOutputLatency = Number.isFinite(rawOut) && rawOut >= 0.035;
+  const measuredMs = measureAudioContextOutputLatencyMs(ctx);
+
+  // Solo si Chrome/WebView omitió completamente reportar buffer de OS (<18ms), usar piso conservador
+  if (mapping?.hasOutputTimestamp) {
+    if (isAndroid) return Math.max(0, 42 - mapping.pipelineLatencyMs);
+    if (isIOS) return Math.max(0, 18 - mapping.pipelineLatencyMs);
+    return 0;
+  }
 
   if (isAndroid) {
-    if (hasExplicitOsOutputLatency) {
-      return Math.max(75, measuredMs);
-    }
-    const baseMs = Math.max(12, measuredMs);
-    return Math.min(220, baseMs + 68);
+    return Math.max(45, measuredMs);
   }
-
   if (isIOS) {
-    if (hasExplicitOsOutputLatency) {
-      return Math.max(24, measuredMs);
-    }
-    const baseMs = Math.max(8, measuredMs);
-    return Math.min(120, baseMs + 18);
+    return Math.max(20, measuredMs);
   }
-
   return measuredMs;
 }
 
@@ -220,6 +346,14 @@ function snapshotRegistryClients(registry: SlavePeerRegistryState): ReadySlaveCl
       deviceLabel: p.deviceLabel,
       setlistId: p.setlistId ?? null,
       songReady: Boolean(p.songReady),
+      readySongId: p.readySongId ?? null,
+      readyCueSig: p.readyCueSig ?? null,
+      audioState: p.audioState,
+      transportMode: p.transportMode,
+      driftMs:
+        typeof p.driftMs === 'number' && Number.isFinite(p.driftMs)
+          ? Math.round(p.driftMs)
+          : undefined,
       rttMs: typeof p.rttMs === 'number' && Number.isFinite(p.rttMs) ? Math.round(p.rttMs) : undefined,
       connectedAt: p.connectedAt,
       lastSeenAt: p.lastSeenAt,
@@ -254,6 +388,10 @@ export function upsertSlavePeerFromRpc(
     typeof rttRaw === 'number' && Number.isFinite(rttRaw) && rttRaw >= 0
       ? Math.round(rttRaw)
       : existing?.rttMs;
+  const parsedDrift =
+    typeof payload.driftMs === 'number' && Number.isFinite(payload.driftMs)
+      ? Math.round(payload.driftMs)
+      : existing?.driftMs;
 
   registry.peers.set(clientId, {
     clientId,
@@ -265,6 +403,13 @@ export function upsertSlavePeerFromRpc(
       payload.setlistId !== undefined ? payload.setlistId ?? null : existing?.setlistId ?? null,
     songReady:
       payload.songReady !== undefined ? Boolean(payload.songReady) : Boolean(existing?.songReady),
+    readySongId:
+      payload.readySongId !== undefined ? payload.readySongId ?? null : existing?.readySongId ?? null,
+    readyCueSig:
+      payload.readyCueSig !== undefined ? payload.readyCueSig ?? null : existing?.readyCueSig ?? null,
+    audioState: payload.audioState ?? existing?.audioState,
+    transportMode: payload.transportMode ?? existing?.transportMode,
+    driftMs: parsedDrift,
     rttMs: parsedRtt,
     connectedAt,
     lastSeenAt: nowMs,
@@ -479,46 +624,71 @@ export function countReadySlavePresences(
 }
 
 /**
- * Calcula el desfase de reloj NTP (Master - Esclavo en ms) usando el cuartil de menor RTT
- * (RFC 5905 Minimum-Delay Filter) para eliminar asimetrías de cola Wi-Fi con precisión <3ms.
+ * Calcula el desfase de reloj NTP (Master - Esclavo en ms) usando 4 timestamps RFC 5905 (`t0, t1, t2, t3`)
+ * con retrocompatibilidad 3-ts, filtro de mínimo RTT (elimina picos de router/DTIM) y slew-rate limit
+ * opcional (±1.5ms máx por actualización) para evitar saltos bruscos mientras suena una canción.
  */
-export function computeFilteredNtpClockOffset(samples: NtpPingSample[]): {
+export function computeFilteredNtpClockOffset(
+  samples: NtpPingSample[],
+  prevLockedOffsetMs?: number
+): {
   clockOffsetMs: number;
   bestRttMs: number;
   sampleCount: number;
 } {
-  const valid = (samples || [])
-    .filter(
-      (s) =>
-        s &&
-        Number.isFinite(s.t0) &&
-        Number.isFinite(s.t1) &&
-        Number.isFinite(s.t2) &&
-        s.t2 >= s.t0
-    )
-    .map((s) => {
+  const valid: Array<{ rtt: number; offset: number }> = [];
+
+  for (const s of samples || []) {
+    if (!s || !Number.isFinite(s.t0) || !Number.isFinite(s.t1) || !Number.isFinite(s.t2)) {
+      continue;
+    }
+    if (typeof s.t3 === 'number' && Number.isFinite(s.t3) && s.t3 >= s.t0) {
+      // Formato completo 4 timestamps: t0=slaveTx, t1=masterRx, t2=masterTx, t3=slaveRx
+      const serverProc = Math.max(0, Math.min(250, s.t2 - s.t1));
+      const rtt = Math.max(0, s.t3 - s.t0 - serverProc);
+      const offset = (s.t1 - s.t0 + (s.t2 - s.t3)) / 2;
+      valid.push({ rtt, offset });
+    } else if (s.t2 >= s.t0) {
+      // Formato 3 timestamps: t0=slaveTx, t1=master, t2=slaveRx
       const rtt = Math.max(0, s.t2 - s.t0);
-      const latency = rtt / 2;
-      const masterTimeAtT2 = s.t1 + latency;
-      const offset = masterTimeAtT2 - s.t2;
-      return { rtt, offset };
-    });
+      const offset = s.t1 + rtt / 2 - s.t2;
+      valid.push({ rtt, offset });
+    }
+  }
 
   if (valid.length === 0) {
     return { clockOffsetMs: 0, bestRttMs: 0, sampleCount: 0 };
   }
 
-  // Ordenar por menor RTT: las muestras con mínimo RTT (especialmente LAN WebRTC <10ms) sufrieron mínima cola Wi-Fi
   valid.sort((a, b) => a.rtt - b.rtt);
-  const keepCount = Math.max(1, Math.min(4, Math.ceil(valid.length * 0.25)));
-  const bestSlice = valid.slice(0, keepCount);
+  const minRtt = valid[0].rtt;
+  const maxAllowedRtt = minRtt + 6;
+  const maxSliceSize = Math.max(1, Math.min(5, Math.ceil(valid.length * 0.3)));
+  const bestSlice = valid
+    .filter((item) => item.rtt <= maxAllowedRtt)
+    .slice(0, maxSliceSize);
+  const chosenSlice = bestSlice.length > 0 ? bestSlice : valid.slice(0, 1);
 
   const avgOffset =
-    bestSlice.reduce((sum, item) => sum + item.offset, 0) / bestSlice.length;
+    chosenSlice.reduce((sum, item) => sum + item.offset, 0) / chosenSlice.length;
+  let finalOffsetMs = Math.round(avgOffset * 100) / 100;
+
+  // Slew-rate limit progresivo una vez calibrado el reloj (mínimo 6 muestras) para inmunizar el audio
+  if (
+    typeof prevLockedOffsetMs === 'number' &&
+    Number.isFinite(prevLockedOffsetMs) &&
+    valid.length >= 6
+  ) {
+    const delta = finalOffsetMs - prevLockedOffsetMs;
+    if (Math.abs(delta) <= 60) {
+      const clampedDelta = Math.max(-1.5, Math.min(1.5, delta));
+      finalOffsetMs = Math.round((prevLockedOffsetMs + clampedDelta) * 100) / 100;
+    }
+  }
 
   return {
-    clockOffsetMs: Math.round(avgOffset * 100) / 100,
-    bestRttMs: Math.round(bestSlice[0].rtt),
+    clockOffsetMs: finalOffsetMs,
+    bestRttMs: Math.round(minRtt),
     sampleCount: valid.length,
   };
 }
@@ -532,11 +702,11 @@ export interface SlavePllServoResult {
 }
 
 /**
- * Controlador Phase-Locked Loop (PLL) para sincronización continua en celulares sin cortes de audio:
- * - |drift| <= 6ms: Fase bloqueada (`playbackRate = 1.0`).
- * - 6ms < |drift| <= 160ms: Micro-ajuste proporcional suave de `playbackRate` (0.955 .. 1.045)
- *   que corrige cualquier desfase progresivamente sin detener ni recrear los nodos WebAudio (cero clicks/cortes).
- * - |drift| > 160ms: Resincronización dura (`hard_seek`) solo para saltos grandes o recuperaciones tras suspensión.
+ * Micro-PLL Musical para sincronización continua sin cortes ni deformación de afinación/tempo:
+ * - |drift| <= 8ms: Fase bloqueada (`playbackRate = 1.0000` clavado).
+ * - 8ms < |drift| <= 40ms: Micro-ajuste inaudible (`0.9985 .. 1.0015`, ±0.15% = ±2.6 cents)
+ *   que absorbe deriva de osciladores de cuarzo sin alterar el tempo del clic guía.
+ * - |drift| > 40ms: Re-enganche limpio (`hard_seek` con micro-crossfade tras confirmación).
  */
 export function computeSlavePllServoAdjustment(params: {
   masterStartAtMs: number;
@@ -547,6 +717,9 @@ export function computeSlavePllServoAdjustment(params: {
   slaveOutputLatencyMs?: number;
   deadbandMs?: number;
   hardSeekThresholdMs?: number;
+  maxRateDev?: number;
+  outputMapping?: AudioOutputClockMapping | null;
+  slaveAudioCtxCurrentTimeSec?: number;
 }): SlavePllServoResult {
   const {
     masterStartAtMs,
@@ -555,8 +728,11 @@ export function computeSlavePllServoAdjustment(params: {
     clockOffsetMs,
     slaveCurrentGlobalSec,
     slaveOutputLatencyMs = 0,
-    deadbandMs = 6,
-    hardSeekThresholdMs = 160,
+    deadbandMs = 8,
+    hardSeekThresholdMs = 40,
+    maxRateDev = 0.0015,
+    outputMapping,
+    slaveAudioCtxCurrentTimeSec,
   } = params;
 
   const base = computeSlaveDriftCorrection({
@@ -567,6 +743,8 @@ export function computeSlavePllServoAdjustment(params: {
     slaveCurrentGlobalSec,
     slaveOutputLatencyMs,
     driftThresholdSec: deadbandMs / 1000,
+    outputMapping,
+    slaveAudioCtxCurrentTimeSec,
   });
 
   const absDriftMs = Math.abs(base.driftMs);
@@ -591,10 +769,10 @@ export function computeSlavePllServoAdjustment(params: {
     };
   }
 
-  // Si driftSec < 0 (celular ATRASADO respecto al PC), rate > 1.0 acelera suavemente para empatar la fase.
-  // Si driftSec > 0 (celular ADELANTADO respecto al PC), rate < 1.0 frena suavemente.
-  const proportionalPull = -base.driftSec * 0.65;
-  const clampedPull = Math.max(-0.045, Math.min(0.045, proportionalPull));
+  // Pull musical muy suave (máximo ±0.15% = ±0.15 BPM a 100 BPM): corrige ~1.5ms/seg imperceptiblemente
+  const safeMaxDev = Math.max(0.0005, Math.min(0.005, maxRateDev));
+  const proportionalPull = -base.driftSec * 0.08;
+  const clampedPull = Math.max(-safeMaxDev, Math.min(safeMaxDev, proportionalPull));
   const targetPlaybackRate = Math.round((1.0 + clampedPull) * 10000) / 10000;
 
   return {
@@ -608,8 +786,8 @@ export function computeSlavePllServoAdjustment(params: {
 
 /**
  * Calcula el instante exacto de `AudioContext.currentTime` (`whenContextSec`) y el `startOffsetSec`
- * compensando tanto el desfase de reloj NTP como la latencia de salida de audio (`slaveOutputLatencyMs`)
- * propia de cada celular (Android AudioTrack / iOS CoreAudio) para que el sonido salga al unísono con el PC.
+ * compensando el desfase NTP y la salida física de audio usando preferentemente `getOutputTimestamp()`
+ * para anular la granularidad de bloques del OS.
  */
 export function computePhaseLockedSlaveStart(params: {
   startAtMs: number;
@@ -620,6 +798,7 @@ export function computePhaseLockedSlaveStart(params: {
   slaveOutputLatencyMs?: number;
   bufferDurationSec?: number;
   minScheduleLookaheadSec?: number;
+  outputMapping?: AudioOutputClockMapping | null;
 }): {
   whenContextSec: number;
   startOffsetSec: number;
@@ -635,6 +814,7 @@ export function computePhaseLockedSlaveStart(params: {
     slaveOutputLatencyMs = 0,
     bufferDurationSec,
     minScheduleLookaheadSec = 0.025,
+    outputMapping,
   } = params;
 
   const safeBaseOffset = Math.max(0, Number(baseOffsetSec) || 0);
@@ -642,26 +822,45 @@ export function computePhaseLockedSlaveStart(params: {
   const lookaheadSec = Math.max(0.005, minScheduleLookaheadSec);
   const slaveOutLatMs = Number.isFinite(slaveOutputLatencyMs) ? Number(slaveOutputLatencyMs) : 0;
 
-  // El sonido debe SALIR por los audífonos en `startAtMs`, por lo que WebAudio debe iniciar `slaveOutLatMs` antes
-  const effectiveRenderStartAtMs = startAtMs - slaveOutLatMs;
-  const masterNowMs = clientNowMs + (Number(clockOffsetMs) || 0);
-  const timeUntilStartMs = effectiveRenderStartAtMs - masterNowMs;
-
   let whenContextSec: number;
   let startOffsetSec: number;
   let isLatePacket = false;
   let lateByMs = 0;
 
-  if (timeUntilStartMs >= lookaheadSec * 1000) {
-    whenContextSec = safeCtxNow + timeUntilStartMs / 1000;
-    startOffsetSec = safeBaseOffset;
+  if (outputMapping?.hasOutputTimestamp) {
+    // El audio debe salir físicamente por audífonos cuando el reloj del celular marca `startAtMs - clockOffsetMs`
+    const targetClientAudibleMs = startAtMs - (Number(clockOffsetMs) || 0) - slaveOutLatMs;
+    const idealWhenCtxSec =
+      outputMapping.heardContextTimeSec +
+      (targetClientAudibleMs - outputMapping.sharedTimeMs) / 1000;
+    const deltaCtxSec = idealWhenCtxSec - safeCtxNow;
+
+    if (deltaCtxSec >= lookaheadSec) {
+      whenContextSec = idealWhenCtxSec;
+      startOffsetSec = safeBaseOffset;
+    } else {
+      isLatePacket = deltaCtxSec < 0;
+      lateByMs = isLatePacket ? Math.round(-deltaCtxSec * 1000) : 0;
+      whenContextSec = safeCtxNow + lookaheadSec;
+      const elapsedPastTargetSec = whenContextSec - idealWhenCtxSec;
+      startOffsetSec = Math.max(0, safeBaseOffset + elapsedPastTargetSec);
+    }
   } else {
-    isLatePacket = timeUntilStartMs < 0;
-    lateByMs = isLatePacket ? Math.round(-timeUntilStartMs) : 0;
-    whenContextSec = safeCtxNow + lookaheadSec;
-    const elapsedAtScheduleSec =
-      (masterNowMs - effectiveRenderStartAtMs) / 1000 + lookaheadSec;
-    startOffsetSec = Math.max(0, safeBaseOffset + elapsedAtScheduleSec);
+    const effectiveRenderStartAtMs = startAtMs - slaveOutLatMs;
+    const masterNowMs = clientNowMs + (Number(clockOffsetMs) || 0);
+    const timeUntilStartMs = effectiveRenderStartAtMs - masterNowMs;
+
+    if (timeUntilStartMs >= lookaheadSec * 1000) {
+      whenContextSec = safeCtxNow + timeUntilStartMs / 1000;
+      startOffsetSec = safeBaseOffset;
+    } else {
+      isLatePacket = timeUntilStartMs < 0;
+      lateByMs = isLatePacket ? Math.round(-timeUntilStartMs) : 0;
+      whenContextSec = safeCtxNow + lookaheadSec;
+      const elapsedAtScheduleSec =
+        (masterNowMs - effectiveRenderStartAtMs) / 1000 + lookaheadSec;
+      startOffsetSec = Math.max(0, safeBaseOffset + elapsedAtScheduleSec);
+    }
   }
 
   if (
@@ -682,7 +881,7 @@ export function computePhaseLockedSlaveStart(params: {
 
 /**
  * Evalúa si el audio audible de un esclavo se ha desfasado respecto al reloj del Master
- * durante la reproducción continua, descontando la latencia del DAC del celular (`slaveOutputLatencyMs`).
+ * durante la reproducción continua.
  */
 export function computeSlaveDriftCorrection(params: {
   masterStartAtMs: number;
@@ -692,6 +891,8 @@ export function computeSlaveDriftCorrection(params: {
   slaveCurrentGlobalSec: number;
   slaveOutputLatencyMs?: number;
   driftThresholdSec?: number;
+  outputMapping?: AudioOutputClockMapping | null;
+  slaveAudioCtxCurrentTimeSec?: number;
 }): {
   driftSec: number;
   driftMs: number;
@@ -706,6 +907,8 @@ export function computeSlaveDriftCorrection(params: {
     slaveCurrentGlobalSec,
     slaveOutputLatencyMs = 0,
     driftThresholdSec = 0.018,
+    outputMapping,
+    slaveAudioCtxCurrentTimeSec,
   } = params;
 
   const slaveOutLatSec =
@@ -715,8 +918,22 @@ export function computeSlaveDriftCorrection(params: {
     0,
     (Number(masterBaseOffsetSec) || 0) + (masterNowMs - masterStartAtMs) / 1000
   );
-  // `slaveCurrentGlobalSec` es el cursor de render WebAudio; lo que suena ahora mismo en el oído es `cursor - slaveOutLatSec`
-  const slaveAudibleGlobalSec = slaveCurrentGlobalSec - slaveOutLatSec;
+
+  let slaveAudibleGlobalSec: number;
+  if (
+    outputMapping?.hasOutputTimestamp &&
+    typeof slaveAudioCtxCurrentTimeSec === 'number' &&
+    Number.isFinite(slaveAudioCtxCurrentTimeSec)
+  ) {
+    const heardCtxSec =
+      outputMapping.heardContextTimeSec +
+      (clientNowMs - outputMapping.sharedTimeMs) / 1000;
+    const renderLeadSec = slaveAudioCtxCurrentTimeSec - heardCtxSec;
+    slaveAudibleGlobalSec = slaveCurrentGlobalSec - renderLeadSec - slaveOutLatSec;
+  } else {
+    slaveAudibleGlobalSec = slaveCurrentGlobalSec - slaveOutLatSec;
+  }
+
   const driftSec = slaveAudibleGlobalSec - expectedMasterGlobalSec;
   const driftMs = Math.round(driftSec * 1000);
 
@@ -732,14 +949,21 @@ function buildClientsRenderSignature(clients: ReadySlaveClient[]): string {
   return clients
     .map(
       (c) =>
-        `${c.clientId}|${c.deviceLabel || ''}|${c.songReady ? 1 : 0}|${c.rttMs ?? ''}|${
-          c.setlistId || ''
-        }`
+        `${c.clientId}|${c.deviceLabel || ''}|${c.songReady ? 1 : 0}|${
+          c.readySongId || ''
+        }|${c.audioState || ''}|${c.transportMode || ''}|${c.driftMs ?? ''}|${
+          c.rttMs ?? ''
+        }|${c.setlistId || ''}`
     )
     .join(';');
 }
 
-function compactSyncPayload(msg: SyncMessage, commandId: string): SyncMessage {
+function compactSyncPayload(
+  msg: SyncMessage,
+  commandId: string,
+  sessionId: string,
+  seq: number
+): SyncMessage {
   const compactSong = msg.songData ? stripHeavySongPayloadForRealtime(msg.songData) : undefined;
   const compactNext = msg.nextSongData
     ? stripHeavySongPayloadForRealtime(msg.nextSongData)
@@ -749,12 +973,21 @@ function compactSyncPayload(msg: SyncMessage, commandId: string): SyncMessage {
 
   return {
     ...msg,
+    sessionId,
+    seq: msg.seq ?? seq,
     commandId,
     ...(resolvedNextId !== undefined ? { nextSongId: resolvedNextId } : {}),
     ...(compactSong !== undefined ? { songData: compactSong } : {}),
     ...(compactNext !== undefined ? { nextSongData: compactNext } : {}),
-    sentAt: Date.now(),
+    sentAt: nowSharedMs(),
   };
+}
+
+interface MasterRtcPeerRecord {
+  pc: RTCPeerConnection | null;
+  transportDc: RTCDataChannel | null;
+  ntpDc: RTCDataChannel | null;
+  pendingIceCandidates: any[];
 }
 
 export interface UseSyncMasterOptions {
@@ -767,14 +1000,16 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
   const masterKeyRef = useRef<string>(
     `master-${Math.random().toString(36).slice(2, 9)}`
   );
+  const sessionIdRef = useRef<string>(
+    `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  );
+  const transportSeqRef = useRef<number>(0);
   const cmdSeqRef = useRef<number>(0);
   const repeatCmdTimersRef = useRef<ReturnType<typeof globalThis.setTimeout>[]>([]);
   const registryRef = useRef<SlavePeerRegistryState>(createSlavePeerRegistry());
   const lastRenderSigRef = useRef<string>('');
   const scanTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
-  const rtcPeersRef = useRef<
-    Map<string, { pc: RTCPeerConnection; dc: RTCDataChannel | null }>
-  >(new Map());
+  const rtcPeersRef = useRef<Map<string, MasterRtcPeerRecord>>(new Map());
 
   const [channelStatus, setChannelStatus] = useState<
     'disconnected' | 'connecting' | 'connected'
@@ -797,10 +1032,13 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     if (!existing) return;
     rtcPeersRef.current.delete(clientId);
     try {
-      existing.dc?.close();
+      existing.transportDc?.close();
     } catch {}
     try {
-      existing.pc.close();
+      existing.ntpDc?.close();
+    } catch {}
+    try {
+      existing.pc?.close();
     } catch {}
   }, []);
 
@@ -811,21 +1049,40 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
   }, [closeRtcPeer]);
 
   const sendViaLanDataChannels = useCallback(
-    (envelope: { event: string; payload: any }, targetClientId?: string) => {
+    (
+      envelope: { event: string; payload: any },
+      targetClientId?: string,
+      preferNtpChannel = false
+    ) => {
       const serialized = JSON.stringify(envelope);
+      const pickDc = (peer: MasterRtcPeerRecord): RTCDataChannel | null => {
+        if (preferNtpChannel && peer.ntpDc?.readyState === 'open') {
+          return peer.ntpDc;
+        }
+        if (peer.transportDc?.readyState === 'open') {
+          return peer.transportDc;
+        }
+        if (peer.ntpDc?.readyState === 'open') {
+          return peer.ntpDc;
+        }
+        return null;
+      };
+
       if (targetClientId) {
         const peer = rtcPeersRef.current.get(targetClientId);
-        if (peer?.dc && peer.dc.readyState === 'open') {
+        const dc = peer ? pickDc(peer) : null;
+        if (dc) {
           try {
-            peer.dc.send(serialized);
+            dc.send(serialized);
           } catch {}
         }
         return;
       }
       for (const peer of rtcPeersRef.current.values()) {
-        if (peer.dc && peer.dc.readyState === 'open') {
+        const dc = pickDc(peer);
+        if (dc) {
           try {
-            peer.dc.send(serialized);
+            dc.send(serialized);
           } catch {}
         }
       }
@@ -842,24 +1099,27 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
     }
   }, []);
 
-  const sendDiscoverRpc = useCallback((ch?: RealtimeChannel | null) => {
-    const target = ch || channelRef.current;
-    if (!target || !isSubscribedRef.current) return false;
-    const discoverPayload = {
-      requestId: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      masterTs: Date.now(),
-    };
-    sendViaLanDataChannels({
-      event: 'rpc_discover_slaves',
-      payload: discoverPayload,
-    });
-    void target.send({
-      type: 'broadcast',
-      event: 'rpc_discover_slaves',
-      payload: discoverPayload,
-    });
-    return true;
-  }, [sendViaLanDataChannels]);
+  const sendDiscoverRpc = useCallback(
+    (ch?: RealtimeChannel | null) => {
+      const target = ch || channelRef.current;
+      if (!target || !isSubscribedRef.current) return false;
+      const discoverPayload = {
+        requestId: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        masterTs: nowSharedMs(),
+      };
+      sendViaLanDataChannels({
+        event: 'rpc_discover_slaves',
+        payload: discoverPayload,
+      });
+      void target.send({
+        type: 'broadcast',
+        event: 'rpc_discover_slaves',
+        payload: discoverPayload,
+      });
+      return true;
+    },
+    [sendViaLanDataChannels]
+  );
 
   const sendSnapshotToClient = useCallback(
     (ch: RealtimeChannel, targetClientId?: string) => {
@@ -867,12 +1127,15 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
       const snap = getStateSnapshotRef.current();
       if (!snap) return;
       const cmdId = `snap-${Date.now()}-${++cmdSeqRef.current}`;
+      const seq = Math.max(1, transportSeqRef.current || ++transportSeqRef.current);
       const wirePayload = compactSyncPayload(
         {
           ...snap,
           ...(targetClientId ? { targetClientId } : {}),
         },
-        cmdId
+        cmdId,
+        sessionIdRef.current,
+        seq
       );
       sendViaLanDataChannels(
         { event: 'transport', payload: wirePayload },
@@ -1066,16 +1329,20 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
         })
         .on('broadcast', { event: 'sync_request' }, ({ payload }) => {
           if (cancelled) return;
+          const t1 = nowSharedMs();
+          const t2 = nowSharedMs();
           const replyPayload = {
             t0: payload?.t0,
-            t1: Date.now(),
+            t1,
+            t2,
             clientId: payload?.clientId,
             seq: payload?.seq,
           };
           if (payload?.clientId) {
             sendViaLanDataChannels(
               { event: 'sync_response', payload: replyPayload },
-              String(payload.clientId)
+              String(payload.clientId),
+              true
             );
           }
           void channel.send({
@@ -1112,13 +1379,18 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
           const fromClientId = String(payload.fromClientId);
           try {
             if (payload.type === 'offer' && payload.sdp) {
+              const queuedFromStub =
+                rtcPeersRef.current.get(fromClientId)?.pendingIceCandidates || [];
               closeRtcPeer(fromClientId);
+
               const pc = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+                iceServers: [],
               });
-              const peerRecord: { pc: RTCPeerConnection; dc: RTCDataChannel | null } = {
+              const peerRecord: MasterRtcPeerRecord = {
                 pc,
-                dc: null,
+                transportDc: null,
+                ntpDc: null,
+                pendingIceCandidates: [...queuedFromStub],
               };
               rtcPeersRef.current.set(fromClientId, peerRecord);
 
@@ -1140,16 +1412,32 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
 
               pc.ondatachannel = (ev) => {
                 const dc = ev.channel;
-                peerRecord.dc = dc;
+                if (dc.label === 'tandu-ntp') {
+                  peerRecord.ntpDc = dc;
+                } else {
+                  peerRecord.transportDc = dc;
+                }
+                dc.onopen = () => {
+                  if (cancelled) return;
+                  const peer = registryRef.current.peers.get(fromClientId);
+                  if (peer) {
+                    peer.transportMode = 'lan_direct';
+                    commitClientsState(
+                      upsertSlavePeerFromRpc(registryRef.current, peer, Date.now()).clients
+                    );
+                  }
+                };
                 dc.onmessage = (msgEv) => {
                   if (cancelled) return;
+                  const t1 = nowSharedMs();
                   try {
                     const env = JSON.parse(String(msgEv.data || '{}'));
                     const p = env?.payload;
                     if (env?.event === 'sync_request' && p) {
                       const reply = {
                         t0: p.t0,
-                        t1: Date.now(),
+                        t1,
+                        t2: nowSharedMs(),
                         clientId: p.clientId || fromClientId,
                         seq: p.seq,
                         viaLan: true,
@@ -1159,7 +1447,12 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
                       }
                       const res = upsertSlavePeerFromRpc(
                         registryRef.current,
-                        { ...p, clientId: p.clientId || fromClientId, ready: true },
+                        {
+                          ...p,
+                          clientId: p.clientId || fromClientId,
+                          ready: true,
+                          transportMode: 'lan_direct',
+                        },
                         Date.now()
                       );
                       commitClientsState(res.clients);
@@ -1168,7 +1461,11 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
                         env?.event === 'rpc_slave_announce') &&
                       p
                     ) {
-                      const res = upsertSlavePeerFromRpc(registryRef.current, p, Date.now());
+                      const res = upsertSlavePeerFromRpc(
+                        registryRef.current,
+                        { ...p, transportMode: 'lan_direct' },
+                        Date.now()
+                      );
                       commitClientsState(res.clients);
                       if (env.event === 'rpc_slave_announce' && p.needsSnapshot) {
                         sendSnapshotToClient(channel, fromClientId);
@@ -1181,6 +1478,14 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
               };
 
               await pc.setRemoteDescription(payload.sdp);
+              // Vaciar cola de candidatos ICE locales que llegaron mientras se negociaba la descripción remota
+              while (peerRecord.pendingIceCandidates.length > 0) {
+                const cand = peerRecord.pendingIceCandidates.shift();
+                if (cand) {
+                  await pc.addIceCandidate(cand).catch(() => {});
+                }
+              }
+
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
               void channel.send({
@@ -1194,9 +1499,20 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
                 },
               });
             } else if (payload.type === 'ice' && payload.candidate) {
-              const peer = rtcPeersRef.current.get(fromClientId);
-              if (peer?.pc && peer.pc.remoteDescription) {
+              let peer = rtcPeersRef.current.get(fromClientId);
+              if (!peer) {
+                peer = {
+                  pc: null,
+                  transportDc: null,
+                  ntpDc: null,
+                  pendingIceCandidates: [],
+                };
+                rtcPeersRef.current.set(fromClientId, peer);
+              }
+              if (peer.pc && peer.pc.remoteDescription) {
                 await peer.pc.addIceCandidate(payload.candidate);
+              } else {
+                peer.pendingIceCandidates.push(payload.candidate);
               }
             }
           } catch {}
@@ -1283,15 +1599,25 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
       const ch = channelRef.current;
       if (!ch || !isSubscribedRef.current) return;
 
-      const cmdId = msg.commandId || `cmd-${Date.now()}-${++cmdSeqRef.current}`;
-      const wirePayload = compactSyncPayload(msg, cmdId);
-
-      // Si llega una nueva orden crítica de transporte, cancelar cualquier repetición pendiente de una orden anterior
       const isCriticalStateChange =
         msg.type === 'PLAY' ||
         msg.type === 'PAUSE' ||
         msg.type === 'STOP' ||
-        msg.type === 'LOAD_SONG';
+        msg.type === 'LOAD_SONG' ||
+        msg.type === 'SEEK';
+
+      // Incrementar secuencia monotónica solo en cambios reales de transporte (HEARTBEAT/SNAPSHOT conservan la actual)
+      const nextSeq = isCriticalStateChange
+        ? ++transportSeqRef.current
+        : Math.max(1, transportSeqRef.current || ++transportSeqRef.current);
+
+      const cmdId = msg.commandId || `cmd-${Date.now()}-${++cmdSeqRef.current}`;
+      const wirePayload = compactSyncPayload(
+        msg,
+        cmdId,
+        sessionIdRef.current,
+        nextSeq
+      );
 
       if (isCriticalStateChange && repeatCmdTimersRef.current.length > 0) {
         for (const t of repeatCmdTimersRef.current) {
@@ -1314,15 +1640,15 @@ export function useSyncMaster(bandId: string, options?: UseSyncMasterOptions) {
 
       dispatchWirePacket(wirePayload);
 
-      // Triple pulso idempotente (0ms, +55ms y +125ms con el MISMO commandId y startAt) por LAN WebRTC + Cloud
-      // para garantizar recepción 100% determinista antes de T_start en todos los celulares conectados
+      // Triple pulso idempotente (0ms, +55ms y +125ms con el MISMO seq/commandId/startAt) por LAN WebRTC + Cloud
+      // para garantizar recepción 100% determinista sin duplicar acciones ni pisar órdenes más nuevas
       if (isCriticalStateChange) {
         for (const delayOffsetMs of [55, 125]) {
           const timer = globalThis.setTimeout(() => {
             if (channelRef.current === ch && isSubscribedRef.current) {
               dispatchWirePacket({
                 ...wirePayload,
-                sentAt: Date.now(),
+                sentAt: nowSharedMs(),
               });
             }
           }, delayOffsetMs);

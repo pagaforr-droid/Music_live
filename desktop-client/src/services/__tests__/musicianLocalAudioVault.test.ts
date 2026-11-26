@@ -38,6 +38,7 @@ import {
   wipeAudioArrayBufferInRam,
 } from '../musicianLocalAudioVault';
 import {
+  type AudioOutputClockMapping,
   SLAVE_HEARTBEAT_TTL_MS,
   SLAVE_PROBE_THRESHOLD_MS,
   computeFilteredNtpClockOffset,
@@ -47,12 +48,21 @@ import {
   countReadySlavePresences,
   createSlavePeerRegistry,
   estimateSlaveAcousticOutputLatencyMs,
+  measureAudioOutputClockMapping,
   pruneStaleSlavePeers,
   reconcilePresenceWithRegistry,
   removeSlavePeerFromBye,
   stripHeavySongPayloadForRealtime,
   upsertSlavePeerFromRpc,
 } from '../../hooks/useSyncMaster';
+import {
+  INITIAL_MASTER_TRANSPORT_STATE,
+  reduceSlaveTransportIntent,
+} from '../../hooks/useSyncSlave';
+import {
+  computeSongCueSignature,
+  shouldSynthesizeCueInRehearsalMp3Mode,
+} from '../../utils/cueEngine';
 
 describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', () => {
   beforeEach(() => {
@@ -619,48 +629,239 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     expect(androidDrift.driftMs).toBe(0);
     expect(androidDrift.needsResync).toBe(false);
 
-    // Verify Android AudioFlinger unreported outputLatency compensation (+68ms HAL floor)
+    // Verify conservative fallback DAC latency when getOutputTimestamp is unavailable, and zero double-count when available
     const mockAndroidCtx = { baseLatency: 0.012, outputLatency: 0, currentTime: 10 } as any;
     const androidAcousticMs = estimateSlaveAcousticOutputLatencyMs(
       mockAndroidCtx,
       'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36'
     );
-    expect(androidAcousticMs).toBe(80); // 12ms baseLatency + 68ms Android AudioFlinger HAL
+    expect(androidAcousticMs).toBe(45); // Conservative Android floor without getOutputTimestamp
 
     const mockIphoneCtx = { baseLatency: 0.01, outputLatency: undefined, currentTime: 10 } as any;
     const iphoneAcousticMs = estimateSlaveAcousticOutputLatencyMs(
       mockIphoneCtx,
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'
     );
-    expect(iphoneAcousticMs).toBe(28); // 10ms baseLatency + 18ms iOS CoreAudio HAL
+    expect(iphoneAcousticMs).toBe(20); // Conservative iOS floor without getOutputTimestamp
 
-    // Verify Phase-Locked Loop (PLL) playbackRate servo pulls lagging/leading phones smoothly without cutting audio
+    const nowPerf = performance.now();
+    const mockHwAndroidCtx = {
+      baseLatency: 0.01,
+      outputLatency: 0,
+      currentTime: 10.042,
+      getOutputTimestamp: () => ({ contextTime: 10.0, performanceTime: nowPerf }),
+    } as any;
+    const hwMapping = measureAudioOutputClockMapping(mockHwAndroidCtx);
+    expect(hwMapping?.hasOutputTimestamp).toBe(true);
+    expect(hwMapping!.pipelineLatencyMs).toBeGreaterThanOrEqual(40);
+    expect(hwMapping!.pipelineLatencyMs).toBeLessThanOrEqual(43);
+    expect(
+      estimateSlaveAcousticOutputLatencyMs(
+        mockHwAndroidCtx,
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/124.0.0.0'
+      )
+    ).toBe(0); // Never double-counts HAL delay when getOutputTimestamp already measured >=18ms
+
+    // Verify Musical Micro-PLL (±0.15% imperceptible pitch lock, 8ms deadband, 40ms hardSeek)
     const laggingPhonePll = computeSlavePllServoAdjustment({
       masterStartAtMs: 10_000,
       masterBaseOffsetSec: 0,
       clientNowMs: 15_000,
       clockOffsetMs: 0, // expectedMasterGlobalSec = 5.000s
-      slaveCurrentGlobalSec: 5.035, // With 80ms Android DAC latency, audible is 4.955s (-45ms behind PC)
+      slaveCurrentGlobalSec: 5.055, // With 80ms latency, audible is 4.975s (-25ms behind PC)
       slaveOutputLatencyMs: 80,
-      deadbandMs: 6,
-      hardSeekThresholdMs: 160,
+      deadbandMs: 8,
+      hardSeekThresholdMs: 40,
+      maxRateDev: 0.0015,
     });
     expect(laggingPhonePll.mode).toBe('pll_rate');
-    expect(laggingPhonePll.driftMs).toBe(-45);
-    expect(laggingPhonePll.targetPlaybackRate).toBeGreaterThan(1.02);
-    expect(laggingPhonePll.targetPlaybackRate).toBeLessThanOrEqual(1.045);
+    expect(laggingPhonePll.driftMs).toBe(-25);
+    expect(laggingPhonePll.targetPlaybackRate).toBe(1.0015);
 
     const lockedPhonePll = computeSlavePllServoAdjustment({
       masterStartAtMs: 10_000,
       masterBaseOffsetSec: 0,
       clientNowMs: 15_000,
       clockOffsetMs: 0,
-      slaveCurrentGlobalSec: 5.077, // With 80ms DAC latency, audible is 4.997s (-3ms -> inside 6ms deadband)
+      slaveCurrentGlobalSec: 5.077, // With 80ms latency, audible is 4.997s (-3ms -> inside 8ms deadband)
       slaveOutputLatencyMs: 80,
-      deadbandMs: 6,
-      hardSeekThresholdMs: 160,
+      deadbandMs: 8,
+      hardSeekThresholdMs: 40,
+      maxRateDev: 0.0015,
     });
     expect(lockedPhonePll.mode).toBe('locked');
     expect(lockedPhonePll.targetPlaybackRate).toBe(1.0);
+
+    const farOffPhonePll = computeSlavePllServoAdjustment({
+      masterStartAtMs: 10_000,
+      masterBaseOffsetSec: 0,
+      clientNowMs: 15_000,
+      clockOffsetMs: 0,
+      slaveCurrentGlobalSec: 5.015, // Audible 4.935s -> -65ms -> exceeds 40ms threshold
+      slaveOutputLatencyMs: 80,
+      deadbandMs: 8,
+      hardSeekThresholdMs: 40,
+      maxRateDev: 0.0015,
+    });
+    expect(farOffPhonePll.mode).toBe('hard_seek');
+    expect(farOffPhonePll.targetPlaybackRate).toBe(1.0);
+  });
+
+  it('guarantees monotonic (sessionId, seq) slave transport order, 4-timestamp NTP slew clamp, outputMapping lock and Rehearsal MP3 CUE priority', () => {
+    // 1. Monotonic transport reducer prevents late PAUSE from overriding newer PLAY
+    let state = INITIAL_MASTER_TRANSPORT_STATE;
+
+    state = reduceSlaveTransportIntent(
+      state,
+      { type: 'PAUSE', sessionId: 'sess-1', seq: 7, offset: 0, sentAt: 1000 },
+      1001
+    ).nextTransport;
+    expect(state.kind).toBe('paused');
+
+    state = reduceSlaveTransportIntent(
+      state,
+      { type: 'LOAD_SONG', sessionId: 'sess-1', seq: 8, songId: 'song-2', offset: 0, sentAt: 1020 },
+      1021
+    ).nextTransport;
+    expect(state.kind).toBe('loaded');
+    expect(state.songId).toBe('song-2');
+
+    state = reduceSlaveTransportIntent(
+      state,
+      { type: 'PLAY', sessionId: 'sess-1', seq: 9, songId: 'song-2', startAt: 20500, offset: 0, sentAt: 1040 },
+      1041
+    ).nextTransport;
+    expect(state.kind).toBe('playing');
+    expect(state.seq).toBe(9);
+
+    // Delayed PAUSE seq=7 arrives out of order after PLAY seq=9 -> MUST be ignored
+    const latePause = reduceSlaveTransportIntent(
+      state,
+      { type: 'PAUSE', sessionId: 'sess-1', seq: 7, offset: 0, sentAt: 1000 },
+      1100
+    );
+    expect(latePause.ignoredAsStale).toBe(true);
+    expect(latePause.nextTransport.kind).toBe('playing');
+    expect(latePause.nextTransport.seq).toBe(9);
+
+    // Missed PLAY packet recovery via higher-seq HEARTBEAT
+    const missedPlayRecovered = reduceSlaveTransportIntent(
+      { ...state, kind: 'paused', seq: 9 },
+      {
+        type: 'HEARTBEAT',
+        sessionId: 'sess-1',
+        seq: 11,
+        songId: 'song-2',
+        isPlaying: true,
+        startAt: 20500,
+        offset: 0,
+        sentAt: 2500,
+      },
+      2505
+    );
+    expect(missedPlayRecovered.ignoredAsStale).toBe(false);
+    expect(missedPlayRecovered.nextTransport.kind).toBe('playing');
+    expect(missedPlayRecovered.nextTransport.seq).toBe(11);
+    expect(missedPlayRecovered.heartbeatAnchorUpdate?.startAt).toBe(20500);
+
+    // New Master sessionId resets seq epoch cleanly
+    const newSession = reduceSlaveTransportIntent(
+      state,
+      { type: 'LOAD_SONG', sessionId: 'sess-2', seq: 1, songId: 'song-3', offset: 0, sentAt: 3000 },
+      3001
+    );
+    expect(newSession.ignoredAsStale).toBe(false);
+    expect(newSession.nextTransport.sessionId).toBe('sess-2');
+    expect(newSession.nextTransport.seq).toBe(1);
+
+    // 2. 4-timestamp NTP RFC 5905 filter + ±1.5ms slew-rate limiter
+    // True offset = +100ms (Master = Slave + 100ms). Server processing = t2 - t1 = 2ms.
+    const ntpSamples = [
+      { t0: 1000, t1: 1102, t2: 1104, t3: 1006 }, // RTT = 4ms, offset = 100ms
+      { t0: 1200, t1: 1303, t2: 1305, t3: 1207 }, // RTT = 5ms, offset = 100.5ms? (103 + 98)/2 = 100.5
+      { t0: 1400, t1: 1502, t2: 1504, t3: 1406 }, // RTT = 4ms, offset = 100ms
+      { t0: 1600, t1: 1702, t2: 1704, t3: 1606 }, // RTT = 4ms, offset = 100ms
+      { t0: 1800, t1: 1902, t2: 1904, t3: 1806 }, // RTT = 4ms, offset = 100ms
+      { t0: 2000, t1: 2150, t2: 2152, t3: 2070 }, // High-RTT spike (RTT = 68ms, distorted offset) -> filtered out!
+    ];
+    const ntpFree = computeFilteredNtpClockOffset(ntpSamples);
+    expect(ntpFree.bestRttMs).toBe(4);
+    expect(ntpFree.clockOffsetMs).toBeGreaterThanOrEqual(99.5);
+    expect(ntpFree.clockOffsetMs).toBeLessThanOrEqual(100.5);
+
+    // With prevLockedOffsetMs = 90ms and >=6 samples, per-cycle slew is capped at +1.5ms -> 91.5ms
+    const ntpSlewed = computeFilteredNtpClockOffset(ntpSamples, 90);
+    expect(ntpSlewed.clockOffsetMs).toBe(91.5);
+
+    // 3. Hardware getOutputTimestamp() AudioOutputClockMapping scheduling & drift evaluation
+    const outMap: AudioOutputClockMapping = {
+      heardContextTimeSec: 12.0,
+      sharedTimeMs: 50_000,
+      pipelineLatencyMs: 36,
+      hasOutputTimestamp: true,
+    };
+    // Master target audible start = 50_500ms, clockOffset = +100ms -> client audible target = 50_400ms
+    // Difference from sharedTimeMs(50_000) is +400ms -> ideal heardContextTime = 12.400s!
+    const mappedStart = computePhaseLockedSlaveStart({
+      startAtMs: 50_500,
+      baseOffsetSec: 0,
+      clientNowMs: 50_010,
+      clockOffsetMs: 100,
+      audioCtxCurrentTimeSec: 12.036,
+      slaveOutputLatencyMs: 0,
+      outputMapping: outMap,
+    });
+    expect(mappedStart.whenContextSec).toBeCloseTo(12.4, 4);
+    expect(mappedStart.startOffsetSec).toBe(0);
+
+    // At clientNowMs = 53_500ms (masterNow = 53_600ms -> 3.100s after start):
+    // heardCtxSec = 12.0 + 3.5 = 15.5s, ctx.currentTime = 15.536s (36ms pipeline lead).
+    // Render cursor is at 3.136s -> audible position = 3.136 - 0.036 = 3.100s -> 0ms drift!
+    const mappedDrift = computeSlaveDriftCorrection({
+      masterStartAtMs: 50_500,
+      masterBaseOffsetSec: 0,
+      clientNowMs: 53_500,
+      clockOffsetMs: 100,
+      slaveCurrentGlobalSec: 3.136,
+      slaveOutputLatencyMs: 0,
+      outputMapping: outMap,
+      slaveAudioCtxCurrentTimeSec: 15.536,
+    });
+    expect(mappedDrift.driftMs).toBe(0);
+
+    // 4. Rehearsal MP3 mode preserves downloaded cue_mobile.mp3 and detects beatTimes changes via cueSig
+    const songWithLegacyV2Export = {
+      id: 'song-cue-1',
+      prompter_data: {
+        bpm: 120,
+        timeSignature: '4/4',
+        sectionsUpdatedAt: '2026-11-26T10:00:00Z',
+        liveMixMeta: { version: 2, exportedAt: '2026-11-26T10:05:00Z' },
+        beatTimes: [0.5, 1.0, 1.5, 2.0],
+        sections: [{ name: 'INTRO', time: 0.5, cueEnabled: true }],
+      },
+    };
+    expect(shouldSynthesizeCueInRehearsalMp3Mode(songWithLegacyV2Export, true)).toBe(false);
+    expect(shouldSynthesizeCueInRehearsalMp3Mode(songWithLegacyV2Export, false)).toBe(true);
+
+    const songEditedAfterExport = {
+      ...songWithLegacyV2Export,
+      prompter_data: {
+        ...songWithLegacyV2Export.prompter_data,
+        sectionsUpdatedAt: '2026-11-26T12:00:00Z',
+      },
+    };
+    expect(shouldSynthesizeCueInRehearsalMp3Mode(songEditedAfterExport, true)).toBe(true);
+
+    const sigA = computeSongCueSignature(songWithLegacyV2Export);
+    const sigB = computeSongCueSignature({
+      ...songWithLegacyV2Export,
+      prompter_data: {
+        ...songWithLegacyV2Export.prompter_data,
+        beatTimes: [0.5, 1.05, 1.5, 2.0], // Even 1 edited beat shifts signature
+      },
+    });
+    expect(sigA).toMatch(/^cs1-/);
+    expect(sigB).not.toBe(sigA);
   });
 });

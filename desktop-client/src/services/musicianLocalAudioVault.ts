@@ -853,6 +853,32 @@ export async function readCachedPracticeCatalog(): Promise<PracticeCatalogSnapsh
   return memoryCatalogCache;
 }
 
+/**
+ * Obtiene desde Supabase la fila fresca de una sola canción (URLs + `prompter_data` con `beatTimes[]`)
+ * cuando el Master detecta o anuncia una firma de grilla/CUE distinta a la del caché local del celular.
+ */
+export async function fetchFreshSongRowFromSupabase(
+  songId: string
+): Promise<PracticeSongItem | null> {
+  if (!songId) return null;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return null;
+  }
+  try {
+    const query: any = supabase
+      .from('songs')
+      .select('id, title, foh_mix_url, cue_mix_url, foh_mobile_url, cue_mobile_url, prompter_data');
+    if (typeof query.eq === 'function') {
+      const eqRes = query.eq('id', songId);
+      const res = typeof eqRes.single === 'function' ? await eqRes.single() : await eqRes;
+      if (!res?.error && res?.data?.id) {
+        return res.data as PracticeSongItem;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 export async function saveCachedPracticeCatalog(snapshot: PracticeCatalogSnapshot): Promise<void> {
   memoryCatalogCache = snapshot;
   const db = await openVaultDb();
@@ -1000,6 +1026,7 @@ export async function syncPracticeCatalogFromSupabase(options?: {
         prev.cue_mix_url !== s.cue_mix_url ||
         prev.prompter_data === undefined;
 
+      // Si no cambió nada en URLs ni version/prompter_data, igualmente refrescar cuando es `force`
       if (force || urlsChanged) {
         idsNeedingPrompterData.push(s.id);
       }
@@ -1008,15 +1035,16 @@ export async function syncPracticeCatalogFromSupabase(options?: {
     const freshPrompterById = new Map<string, any>();
     if (idsNeedingPrompterData.length > 0) {
       try {
-        const queryBuilder: any = supabase
-          .from('songs')
-          .select('id, prompter_data')
-          .eq('band_id', FAKE_BAND_ID);
+        const baseSongsTable: any = supabase.from('songs');
+        const selectedQuery: any = baseSongsTable.select('id, prompter_data');
 
+        // NO filtrar por band_id al consultar por IDs explícitos (permite canciones compartidas en setlists)
         const prompterRes =
-          typeof queryBuilder.in === 'function'
-            ? await queryBuilder.in('id', idsNeedingPrompterData)
-            : await queryBuilder.order('title', { ascending: true });
+          typeof selectedQuery.in === 'function'
+            ? await selectedQuery.in('id', idsNeedingPrompterData)
+            : typeof selectedQuery.eq === 'function'
+            ? await selectedQuery.eq('band_id', FAKE_BAND_ID).order('title', { ascending: true })
+            : await selectedQuery.order('title', { ascending: true });
 
         if (!prompterRes.error && Array.isArray(prompterRes.data)) {
           for (const row of prompterRes.data) {

@@ -32,6 +32,8 @@ export interface SynthesizeLiveCueOptions {
   cuePan?: number;
   clickMuted?: boolean;
   cueMuted?: boolean;
+  /** 1 = mono (ahorra 50% de RAM en Modo Ensayo/Celulares), 2 = estéreo (default) */
+  outputChannels?: 1 | 2;
 }
 
 export interface LyricsSyncMeta {
@@ -510,8 +512,8 @@ export const loadCueBuffers = async (
 };
 
 /**
- * Determina si LiveConcert debe sintetizar el bus CUE en RAM para garantizar que la Voz Guía
- * siempre esté presente y actualizada respecto a las secciones guardadas en Studio Prompter.
+ * Determina si LiveConcert (Modo En Vivo WAV) debe sintetizar el bus CUE en RAM para garantizar
+ * que la Voz Guía siempre esté presente y actualizada respecto a las secciones guardadas en Studio Prompter.
  */
 export const shouldSynthesizeLiveCueInRam = (song: any): boolean => {
   if (!song) return false;
@@ -538,6 +540,87 @@ export const shouldSynthesizeLiveCueInRam = (song: any): boolean => {
     }
   }
   return false;
+};
+
+/**
+ * Modo Ensayo MP3 (PC REHEARSAL + Celulares In-Ear):
+ * Prioriza reproducir directamente `cue_mobile.mp3` cuando ya está descargado en la bóveda local,
+ * garantizando paridad 1:1 de clic/voz guía y padding MP3 idéntico entre PC y celulares (~100 ms de carga),
+ * sintetizando en RAM únicamente si falta el archivo CUE o si las secciones se editaron DESPUÉS de exportar.
+ */
+export const shouldSynthesizeCueInRehearsalMp3Mode = (
+  song: any,
+  hasDownloadedCueAudio: boolean
+): boolean => {
+  if (!song) return false;
+  const pd = extractPrompterData(song);
+  const bpm = Number(pd?.bpm);
+  if (!Number.isFinite(bpm) || bpm <= 0) return false;
+
+  const clickMuted = pd?.mixConfig?.click?.muted === true;
+  const cuesMuted = pd?.mixConfig?.cues?.muted === true;
+  if (clickMuted && cuesMuted) return false;
+
+  if (!hasDownloadedCueAudio) {
+    return true;
+  }
+
+  const meta = pd?.liveMixMeta as LiveMixMeta | undefined;
+  const sectionsUpdatedAt = pd?.sectionsUpdatedAt;
+  if (sectionsUpdatedAt && meta?.exportedAt) {
+    const secTs = Date.parse(sectionsUpdatedAt);
+    const expTs = Date.parse(meta.exportedAt);
+    if (Number.isFinite(secTs) && Number.isFinite(expTs) && secTs > expTs + 1000) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Firma determinista única de la grilla CUE/Metrónomo de una canción (incluyendo hash de `beatTimes[]`),
+ * usada por PC y celulares para verificar que ambos usan exactamente el mismo mapa de tiempo y clic.
+ */
+export const computeSongCueSignature = (song: any): string => {
+  const pd = extractPrompterData(song) || {};
+  const beats = Array.isArray(pd.beatTimes) ? pd.beatTimes : [];
+  let beatsHash = 2166136261;
+  for (let i = 0; i < beats.length; i++) {
+    const q = Math.round((Number(beats[i]) || 0) * 1000);
+    beatsHash ^= q & 0xffff;
+    beatsHash = Math.imul(beatsHash, 16777619);
+    beatsHash ^= (q >>> 16) & 0xffff;
+    beatsHash = Math.imul(beatsHash, 16777619);
+  }
+
+  const secHash = Array.isArray(pd.sections)
+    ? pd.sections
+        .map((s: any) => `${s?.name || s?.section || ''}:${s?.time ?? ''}:${s?.cueEnabled !== false ? 1 : 0}`)
+        .join('|')
+    : '';
+
+  const raw = JSON.stringify({
+    v: pd.liveMixMeta?.version ?? 0,
+    exp: pd.liveMixMeta?.exportedAt ?? '',
+    upd: pd.sectionsUpdatedAt ?? '',
+    cnt: Array.isArray(pd.sections) ? pd.sections.length : 0,
+    secHash,
+    bpm: pd.bpm ?? 0,
+    ts: pd.timeSignature ?? '4/4',
+    firstBeat: pd.firstBeatOffset ?? 0,
+    beatsLen: beats.length,
+    beatsHash: (beatsHash >>> 0).toString(16),
+    click: pd.mixConfig?.click ?? null,
+    cues: pd.mixConfig?.cues ?? null,
+  });
+
+  let fnv = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    fnv ^= raw.charCodeAt(i);
+    fnv = Math.imul(fnv, 16777619);
+  }
+  return `cs1-${(fnv >>> 0).toString(16)}-${beats.length}-${Number(pd.bpm) || 0}`;
 };
 
 // Programador unificado de Guías de Voz: Coloca el conteo en el compás inmediatamente previo al inicio de la sección
@@ -828,8 +911,9 @@ export const synthesizeLiveCueBuffer = async (
   const sampleRate = audioCtx.sampleRate;
   const lengthSeconds = Math.max(totalDuration, preRollDuration + LIVE_EXPORT_TAIL_SECONDS);
   const lengthSamples = Math.ceil(lengthSeconds * sampleRate);
+  const numOutChannels: 1 | 2 = opts.outputChannels === 1 ? 1 : 2;
 
-  const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(2, lengthSamples, sampleRate);
+  const offlineCtx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(numOutChannels, lengthSamples, sampleRate);
 
   const clickHighBuffer = generateClickBuffer(offlineCtx, 1200);
   const clickLowBuffer = generateClickBuffer(offlineCtx, 800);

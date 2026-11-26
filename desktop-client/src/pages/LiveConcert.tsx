@@ -4,7 +4,12 @@ import { supabase } from '../lib/supabase';
 import { Prompter, getSectionSolidStyle } from '../components/Prompter';
 import { LyricVisualizer } from '../components/LyricVisualizer';
 import { Play, Pause, Square, SkipBack, SkipForward, Music, LayoutList, Wifi, Type, Columns, ExternalLink, Repeat, Volume2, Headphones, Maximize2, RefreshCw, Check, Radio, Lock, Sliders, Activity, Zap, CloudDownload, HardDrive, Loader2, Smartphone } from 'lucide-react';
-import { useSyncMaster, measureAudioContextOutputLatencyMs } from '../hooks/useSyncMaster';
+import {
+  type ReadySlaveClient,
+  useSyncMaster,
+  measureAudioContextOutputLatencyMs,
+  computeMasterStartAtForContextTime,
+} from '../hooks/useSyncMaster';
 import {
   type LocalMp3TrackMeta,
   type PracticeSongItem,
@@ -27,14 +32,44 @@ import {
   CUE_NAMES,
   CueBuffersMap,
   CueOffsetsMap,
+  computeSongCueSignature,
   loadCueBuffers,
   synthesizeLiveCueBuffer,
   shouldSynthesizeLiveCueInRam,
+  shouldSynthesizeCueInRehearsalMp3Mode,
   resolveEffectivePreRoll,
   resolveEffectivePreRollBars,
   resolveEffectivePlaybackBounds,
   resolveLyricsTimeMapping,
 } from '../utils/cueEngine';
+
+const PC_LIVE_WAV_CACHE_NAME = 'tandu-pc-live-wav-v1';
+
+async function fetchPcLiveWavArrayBuffer(
+  url: string,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  if (typeof caches !== 'undefined') {
+    try {
+      const cache = await caches.open(PC_LIVE_WAV_CACHE_NAME);
+      const hit = await cache.match(url);
+      if (hit && hit.ok) {
+        return await hit.arrayBuffer();
+      }
+      const res = await fetch(url, { mode: 'cors', credentials: 'omit', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      try {
+        await cache.put(url, res.clone());
+      } catch {}
+      return await res.arrayBuffer();
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+    }
+  }
+  const res = await fetch(url, { mode: 'cors', credentials: 'omit', signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.arrayBuffer();
+}
 import {
   STAGE_EQ_18_BANDS,
   StageEqProfile,
@@ -423,10 +458,13 @@ export default function LiveConcert() {
     MODULE_PC_RAM_AUDIO_CACHE
   );
 
-  // Network Sync (Para In-Ears de Práctica por Wi-Fi)
+  // Network Sync (Para In-Ears de Práctica MP3 por Wi-Fi)
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
   const broadcastEnabledRef = useRef<boolean>(false);
   const connectionsRef = useRef<number>(0);
+  const readyClientsRef = useRef<ReadySlaveClient[]>([]);
+  const playGateReqIdRef = useRef<number>(0);
+  const [isArmingInEarWait, setIsArmingInEarWait] = useState<boolean>(false);
   const selectedSetlistIdRef = useRef<string | null>(selectedSetlistId);
   useEffect(() => { broadcastEnabledRef.current = broadcastEnabled; }, [broadcastEnabled]);
   useEffect(() => { selectedSetlistIdRef.current = selectedSetlistId; }, [selectedSetlistId]);
@@ -458,18 +496,23 @@ export default function LiveConcert() {
     if (livePcLatMs > 0) {
       hardwareLatencyMsRef.current = livePcLatMs;
     }
-    const syncCompMs = Math.round(
-      livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
+    const ctxNow = ctx ? ctx.currentTime : 0;
+    const startAt = computeMasterStartAtForContextTime(
+      ctx,
+      ctxNow,
+      multiChannelPatchRef.current.syncOffsetMs || 0,
+      livePcLatMs
     );
     return {
       type: 'STATE_SNAPSHOT' as const,
       setlistId: selectedSetlistIdRef.current,
       songId: curSong.id,
+      cueSig: computeSongCueSignature(curSong),
       nextSongId: nextSong?.id ?? null,
       songData: curSong,
       nextSongData: nextSong,
       isPlaying: playingNow,
-      startAt: Date.now() + syncCompMs,
+      startAt,
       offset: curGlobalOffset,
     };
   };
@@ -484,7 +527,37 @@ export default function LiveConcert() {
   } = useSyncMaster(isProjectorWindow ? '' : FAKE_BAND_ID, {
     getStateSnapshot: buildMasterSyncSnapshot,
   });
-  useEffect(() => { connectionsRef.current = connections; }, [connections]);
+  useEffect(() => {
+    connectionsRef.current = connections;
+    readyClientsRef.current = readyClients;
+  }, [connections, readyClients]);
+
+  const handleToggleInEarBroadcast = (forceNext?: boolean) => {
+    const next = typeof forceNext === 'boolean' ? forceNext : !broadcastEnabled;
+    if (next && playbackModeRef.current === 'LIVE') {
+      if (isPlayingRef.current) {
+        pauseRef.current(true);
+      }
+      setPlaybackMode('REHEARSAL');
+      setSyncFeedback('Modo Ensayo (MP3) activado para sincronizar celulares In-Ear');
+      setTimeout(() => setSyncFeedback(null), 2800);
+    }
+    setBroadcastEnabled(next);
+    if (next) {
+      scanDevices();
+    }
+  };
+
+  const handleTogglePlaybackMode = (nextMode?: 'LIVE' | 'REHEARSAL') => {
+    if (isPlayingRef.current) return;
+    const target = nextMode || (playbackModeRef.current === 'LIVE' ? 'REHEARSAL' : 'LIVE');
+    if (target === 'LIVE' && broadcastEnabledRef.current) {
+      setBroadcastEnabled(false);
+      setSyncFeedback('Consola Vivo (WAV): In-Ear Wi-Fi desactivado (uso exclusivo en consola)');
+      setTimeout(() => setSyncFeedback(null), 2800);
+    }
+    setPlaybackMode(target);
+  };
 
   const [isInEarRadarOpen, setIsInEarRadarOpen] = useState(false);
   const inEarRadarRef = useRef<HTMLDivElement | null>(null);
@@ -732,23 +805,7 @@ export default function LiveConcert() {
   };
 
   const getSongCueSignature = (song: any): string => {
-    const pd = song?.prompter_data || {};
-    return JSON.stringify({
-      v: pd.liveMixMeta?.version ?? 0,
-      exp: pd.liveMixMeta?.exportedAt ?? '',
-      upd: pd.sectionsUpdatedAt ?? '',
-      cnt: Array.isArray(pd.sections) ? pd.sections.length : 0,
-      secHash: Array.isArray(pd.sections)
-        ? pd.sections
-            .map((s: any) => `${s?.name || s?.section || ''}:${s?.time ?? ''}:${s?.cueEnabled !== false ? 1 : 0}`)
-            .join('|')
-        : '',
-      bpm: pd.bpm ?? 0,
-      ts: pd.timeSignature ?? '4/4',
-      firstBeat: pd.firstBeatOffset ?? 0,
-      click: pd.mixConfig?.click ?? null,
-      cues: pd.mixConfig?.cues ?? null,
-    });
+    return computeSongCueSignature(song);
   };
 
   const ensureLiveCueBuffersLoaded = async (ctx: AudioContext): Promise<number> => {
@@ -781,7 +838,8 @@ export default function LiveConcert() {
     song: any,
     decodedFoh: AudioBuffer,
     decodedCue: AudioBuffer | null,
-    forceRam = false
+    forceRam = false,
+    outputChannels: 1 | 2 = 2
   ): Promise<{ buffer: AudioBuffer; source: 'mix' | 'ram' } | null> => {
     const ctx = audioCtxRef.current;
     const needsRam = forceRam || !decodedCue || shouldSynthesizeLiveCueInRam(song);
@@ -822,6 +880,7 @@ export default function LiveConcert() {
                   ? savedCues.pan
                   : 0,
               cueMuted: savedCues?.muted === true,
+              outputChannels,
             }
           );
           return { buffer: synthBuf, source: 'ram' };
@@ -1016,6 +1075,7 @@ export default function LiveConcert() {
         type: 'LOAD_SONG',
         setlistId: selectedSetlistId,
         songId: currentSong.id,
+        cueSig: computeSongCueSignature(currentSong),
         nextSongId: nextInList?.id ?? null,
         songData: currentSong,
         nextSongData: nextInList,
@@ -1034,24 +1094,29 @@ export default function LiveConcert() {
       const curSong = currentSongRef.current;
       if (!curSong) return;
       tickCount += 1;
-      const curGlobalOffset = Math.max(0, ctx.currentTime - startTimeRef.current);
+      const ctxNow = ctx.currentTime;
+      const curGlobalOffset = Math.max(0, ctxNow - startTimeRef.current);
       const livePcLatMs =
         measureAudioContextOutputLatencyMs(ctx) || hardwareLatencyMsRef.current || 0;
       if (livePcLatMs > 0) {
         hardwareLatencyMsRef.current = livePcLatMs;
       }
-      const syncCompMs = Math.round(
-        livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
+      const startAt = computeMasterStartAtForContextTime(
+        ctx,
+        ctxNow,
+        multiChannelPatchRef.current.syncOffsetMs || 0,
+        livePcLatMs
       );
       const nextInList = getNextSongInSetlist();
       broadcast({
         type: 'HEARTBEAT',
         setlistId: selectedSetlistIdRef.current,
         songId: curSong.id,
+        cueSig: computeSongCueSignature(curSong),
         nextSongId: nextInList?.id ?? null,
         ...(tickCount % 4 === 1 ? { songData: curSong, nextSongData: nextInList } : {}),
         isPlaying: true,
-        startAt: Date.now() + syncCompMs,
+        startAt,
         offset: curGlobalOffset,
       });
     }, 1500);
@@ -1744,10 +1809,10 @@ export default function LiveConcert() {
     });
   };
 
-  const getPcRamCacheKey = (song: any): string => {
+  const getPcRamCacheKey = (song: any, mode: 'LIVE' | 'REHEARSAL' = playbackModeRef.current): string => {
     const fohSig = computeSongChannelSignature(song as PracticeSongItem, 'foh');
     const cueSig = computeSongChannelSignature(song as PracticeSongItem, 'cue');
-    return `${song?.id || ''}|${getSongCueSignature(song)}|${fohSig}|${cueSig}`;
+    return `${mode}|${song?.id || ''}|${getSongCueSignature(song)}|${fohSig}|${cueSig}`;
   };
 
   const storeInPcRamCache = (
@@ -1755,7 +1820,9 @@ export default function LiveConcert() {
     entry: PcRamCachedSongEntry
   ) => {
     if (!key) return;
-    if (pcRamAudioCacheRef.current.size >= 16 && !pcRamAudioCacheRef.current.has(key)) {
+    if (pcRamAudioCacheRef.current.has(key)) {
+      pcRamAudioCacheRef.current.delete(key);
+    } else if (pcRamAudioCacheRef.current.size >= 4) {
       const oldestKey = pcRamAudioCacheRef.current.keys().next().value;
       if (oldestKey) {
         pcRamAudioCacheRef.current.delete(oldestKey);
@@ -1765,48 +1832,95 @@ export default function LiveConcert() {
   };
 
   /**
-   * Motor unificado Local-First para LiveConcert (aplica tanto en CONSOLA VIVO como en MODO PRÁCTICA):
-   * 1. Revisa Caché RAM persistente a nivel de módulo (`MODULE_PC_RAM_AUDIO_CACHE`) -> 0.0 ms, sin pantalla de carga al cambiar de módulo.
-   * 2. Revisa la Memoria Local Persistente de la PC (IndexedDB `readLocalTrackMeta` + `readDecryptedTrackArrayBuffer`) -> lee desde el disco del PC con 0 bytes de internet.
-   * 3. SOLO si la canción no está aún guardada en la PC (o fue re-exportada en Studio), la descarga UNA vez y la guarda permanentemente en el PC.
+   * Motor dual estricto LiveConcert:
+   * - `REHEARSAL` (Modo Práctica / In-Ear Wi-Fi): usa 100% MP3 de la Bóveda Local (`foh_mobile.mp3` + `cue_mobile.mp3`)
+   *   idéntico bit a bit al de los celulares para máxima paridad de fase, padding y clic guía.
+   * - `LIVE` (Consola Vivo): usa 100% WAV sin pérdida (`foh_mix_url` + `cue_mix_url`) cacheado en `tandu-pc-live-wav-v1`,
+   *   completamente aislado de la transmisión In-Ear Wi-Fi móvil.
    */
   const resolveAndDecodeSongBuffers = async (
     song: any,
-    _mode: 'LIVE' | 'REHEARSAL',
+    mode: 'LIVE' | 'REHEARSAL',
     signal?: AbortSignal,
     onStatus?: (msg: string) => void
   ): Promise<PcRamCachedSongEntry | null> => {
     const ctx = audioCtxRef.current;
     if (!ctx || !song?.id) return null;
 
-    const ramKey = getPcRamCacheKey(song);
+    const ramKey = getPcRamCacheKey(song, mode);
     const ramCached = pcRamAudioCacheRef.current.get(ramKey);
     if (ramCached) {
+      pcRamAudioCacheRef.current.delete(ramKey);
+      pcRamAudioCacheRef.current.set(ramKey, ramCached);
       return ramCached;
     }
 
-    const cueSrc = resolvePreferredMp3Source(song as PracticeSongItem, 'cue');
-    const wantsRamCue = !cueSrc.url || shouldSynthesizeLiveCueInRam(song);
+    // RUTA 1: MODO EN VIVO (CONSOLA VIVO -> WAV puro sin pérdida)
+    if (mode === 'LIVE') {
+      const wavFohUrl = song.foh_mix_url || song.foh_mobile_url;
+      const wavCueUrl = song.cue_mix_url || song.cue_mobile_url;
+      const wantsRamCue = !wavCueUrl || shouldSynthesizeLiveCueInRam(song);
 
-    // Consultar directamente el índice de IndexedDB (evita condiciones de carrera al montar el componente)
+      if (!wavFohUrl) return null;
+
+      onStatus?.('Preparando audio WAV sin pérdida para Consola En Vivo...');
+      const [fohArr] = await Promise.all([
+        fetchPcLiveWavArrayBuffer(wavFohUrl, signal),
+        wantsRamCue ? ensureLiveCueBuffersLoaded(ctx) : Promise.resolve(0),
+      ]);
+      if (signal?.aborted || !audioCtxRef.current) return null;
+
+      const decodedFoh = await ctx.decodeAudioData(fohArr.slice(0));
+      if (signal?.aborted || !audioCtxRef.current) return null;
+
+      let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null = null;
+      if (wantsRamCue) {
+        resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true, 2);
+      }
+
+      if (!resolvedCue && wavCueUrl) {
+        const cueArr = await fetchPcLiveWavArrayBuffer(wavCueUrl, signal);
+        if (signal?.aborted || !audioCtxRef.current) return null;
+        const decodedCue = await ctx.decodeAudioData(cueArr.slice(0));
+        resolvedCue = await resolveCueBufferForSong(song, decodedFoh, decodedCue, false, 2);
+      }
+
+      if (!resolvedCue) {
+        throw new Error('No se pudo preparar el canal CUE WAV de músicos.');
+      }
+
+      const result: PcRamCachedSongEntry = {
+        fohBuffer: decodedFoh,
+        cueBuffer: resolvedCue.buffer,
+        cueSource: resolvedCue.source,
+      };
+      storeInPcRamCache(ramKey, result);
+      return result;
+    }
+
+    // RUTA 2: MODO ENSAYO / PRÁCTICA (MP3 1:1 con celulares In-Ear)
+    const cueSrc = resolvePreferredMp3Source(song as PracticeSongItem, 'cue');
     const storedMeta =
       (await readLocalTrackMeta(song.id)) ||
       pcVaultTracksBySongIdRef.current[song.id];
     const ev = evaluateSongVaultState(song as PracticeSongItem, storedMeta);
 
     let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-    let cueBytes = !wantsRamCue
-      ? await readDecryptedTrackArrayBuffer(song.id, 'cue')
-      : null;
+    let cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+
+    const wantsRamCueEarly = shouldSynthesizeCueInRehearsalMp3Mode(
+      song,
+      Boolean(cueSrc.url || (cueBytes && cueBytes.byteLength > 0))
+    );
 
     const needsVaultDownload =
       !fohBytes ||
       ev.status === 'update_available' ||
-      (!wantsRamCue && (!cueBytes || ev.cueNeedsDownload));
+      (!wantsRamCueEarly && cueSrc.url && (!cueBytes || ev.cueNeedsDownload));
 
     if (needsVaultDownload) {
       onStatus?.(
-        `Descargando "${song.title}" y guardando en Memoria Local del PC...`
+        `Descargando MP3 de ensayo "${song.title}" en Memoria Local del PC...`
       );
       const [updatedMeta] = await Promise.all([
         ensureSongMp3CachedInDevice({
@@ -1817,7 +1931,7 @@ export default function LiveConcert() {
             if (msg) onStatus?.(msg);
           },
         }),
-        wantsRamCue ? ensureLiveCueBuffersLoaded(ctx) : Promise.resolve(0),
+        wantsRamCueEarly ? ensureLiveCueBuffersLoaded(ctx) : Promise.resolve(0),
       ]);
       if (signal?.aborted) return null;
       setPcVaultTracksBySongId((prev) => ({
@@ -1825,58 +1939,45 @@ export default function LiveConcert() {
         [song.id]: updatedMeta,
       }));
       fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-      if (!wantsRamCue) {
-        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-      }
+      cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
     } else {
-      onStatus?.('Preparando pista desde Memoria Local del PC (Sin Internet)...');
-      if (wantsRamCue) {
+      onStatus?.('Preparando MP3 de ensayo desde Memoria Local del PC (1:1 In-Ear)...');
+      if (wantsRamCueEarly) {
         await ensureLiveCueBuffersLoaded(ctx);
       }
     }
 
     if (signal?.aborted || !audioCtxRef.current || !fohBytes) return null;
 
-    const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
-    wipeAudioArrayBufferInRam(fohBytes);
-    if (signal?.aborted || !audioCtxRef.current) return null;
+    const wantsRamCue = shouldSynthesizeCueInRehearsalMp3Mode(
+      song,
+      Boolean(cueBytes && cueBytes.byteLength > 0)
+    );
 
-    let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null =
-      null;
+    let decodedFoh: AudioBuffer;
+    let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null = null;
 
-    if (wantsRamCue) {
-      resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true);
-    }
-
-    if (!resolvedCue) {
-      if (!cueBytes) {
-        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-      }
-      if (!cueBytes && cueSrc.url) {
-        const updatedMeta = await ensureSongMp3CachedInDevice({
-          song: song as PracticeSongItem,
-          includeCue: true,
-          signal,
-        });
-        setPcVaultTracksBySongId((prev) => ({
-          ...prev,
-          [song.id]: updatedMeta,
-        }));
-        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-      }
-      if (cueBytes && audioCtxRef.current) {
-        const decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
-        wipeAudioArrayBufferInRam(cueBytes);
-        resolvedCue = await resolveCueBufferForSong(
-          song,
-          decodedFoh,
-          decodedCue,
-          false
-        );
-      }
+    if (!wantsRamCue && cueBytes) {
+      // Mismo camino exacto que MobileInEar: decodificación paralela directa de foh_mobile.mp3 + cue_mobile.mp3
+      const [fBuf, cBuf] = await Promise.all([
+        ctx.decodeAudioData(fohBytes.slice(0)),
+        ctx.decodeAudioData(cueBytes.slice(0)),
+      ]);
+      decodedFoh = fBuf;
+      resolvedCue = { buffer: cBuf, source: 'mix' };
     } else {
-      wipeAudioArrayBufferInRam(cueBytes);
+      decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
+      if (!signal?.aborted && audioCtxRef.current) {
+        resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true, 1);
+      }
+      if (!resolvedCue && cueBytes && audioCtxRef.current) {
+        const cBuf = await ctx.decodeAudioData(cueBytes.slice(0));
+        resolvedCue = { buffer: cBuf, source: 'mix' };
+      }
     }
+
+    wipeAudioArrayBufferInRam(fohBytes);
+    wipeAudioArrayBufferInRam(cueBytes);
 
     if (!resolvedCue) {
       throw new Error('No se pudo preparar el canal CUE de músicos.');
@@ -1910,16 +2011,16 @@ export default function LiveConcert() {
 
     const mode = playbackModeRef.current;
     const targetFohUrl =
-      mode === 'REHEARSAL' && song.foh_mobile_url
-        ? song.foh_mobile_url
-        : song.foh_mix_url;
+      mode === 'REHEARSAL'
+        ? song.foh_mobile_url || song.foh_mix_url
+        : song.foh_mix_url || song.foh_mobile_url;
     const targetCueUrl =
-      mode === 'REHEARSAL' && song.cue_mobile_url
-        ? song.cue_mobile_url
-        : song.cue_mix_url;
+      mode === 'REHEARSAL'
+        ? song.cue_mobile_url || song.cue_mix_url
+        : song.cue_mix_url || song.cue_mobile_url;
     const songCueSig = getSongCueSignature(song);
     const fullCueSig = `${song.id}|${songCueSig}`;
-    const ramKey = getPcRamCacheKey(song);
+    const ramKey = getPcRamCacheKey(song, mode);
 
     // 1. Verificar Caché RAM o Prefetch de la siguiente canción (Transición en 0ms sin red ni espera)
     const ramCached = pcRamAudioCacheRef.current.get(ramKey);
@@ -1964,6 +2065,7 @@ export default function LiveConcert() {
           type: 'LOAD_SONG',
           setlistId: selectedSetlistIdRef.current,
           songId: song.id,
+          cueSig: songCueSig,
           songData: song,
           nextSongData: nextInSetlist,
           offset: initGlobal,
@@ -2008,7 +2110,9 @@ export default function LiveConcert() {
     if (!targetFohUrl || (!targetCueUrl && !canSynthesizeRamCue)) {
       setIsLoading(false);
       setLoadStatus(
-        'Falta exportar el Mix En Vivo de esta canción en Studio Prompter.'
+        mode === 'REHEARSAL'
+          ? 'Falta exportar el MP3 de ensayo de esta canción en Studio Prompter.'
+          : 'Falta exportar el Mix En Vivo de esta canción en Studio Prompter.'
       );
       return;
     }
@@ -2051,6 +2155,7 @@ export default function LiveConcert() {
           type: 'LOAD_SONG',
           setlistId: selectedSetlistIdRef.current,
           songId: song.id,
+          cueSig: songCueSig,
           songData: song,
           nextSongData: nextInSetlist,
           offset: initGlobal,
@@ -2380,40 +2485,48 @@ export default function LiveConcert() {
     cuePannerRef.current.connect(masterGainRef.current!);
   };
 
-  const play = async () => {
-    if (!audioCtxRef.current || !fohBufferRef.current || !cueBufferRef.current) return;
+  const schedulePcAudioSourcesAt = (
+    ctx: AudioContext,
+    targetCtxTime: number,
+    offsetSec: number,
+    fadeOldAtCtxTime?: number
+  ) => {
+    const oldFoh = fohSourceRef.current;
+    const oldCue = cueSourceRef.current;
+    const oldStems = [...stemSourcesRef.current];
 
-    if (audioCtxRef.current.state === 'suspended') {
-      await audioCtxRef.current.resume();
+    if (fadeOldAtCtxTime !== undefined) {
+      try { oldFoh?.stop(fadeOldAtCtxTime); } catch {}
+      try { oldCue?.stop(fadeOldAtCtxTime); } catch {}
+      oldStems.forEach((st) => {
+        try { st.source.stop(fadeOldAtCtxTime); } catch {}
+      });
+    } else {
+      if (oldFoh) {
+        try { oldFoh.stop(); oldFoh.disconnect(); } catch {}
+      }
+      if (oldCue) {
+        try { oldCue.stop(); oldCue.disconnect(); } catch {}
+      }
+      oldStems.forEach((st) => {
+        try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); st.pannerNode.disconnect(); } catch {}
+      });
     }
 
-    // Limpiar nodos previos si existieran
-    if (fohSourceRef.current) {
-      try { fohSourceRef.current.stop(); fohSourceRef.current.disconnect(); } catch {}
-      fohSourceRef.current = null;
-    }
-    if (cueSourceRef.current) {
-      try { cueSourceRef.current.stop(); cueSourceRef.current.disconnect(); } catch {}
-      cueSourceRef.current = null;
-    }
-    stemSourcesRef.current.forEach((st) => {
-      try { st.source.stop(); st.source.disconnect(); st.gainNode.disconnect(); st.pannerNode.disconnect(); } catch {}
-    });
+    fohSourceRef.current = null;
+    cueSourceRef.current = null;
     stemSourcesRef.current = [];
 
     ensureDspGraph();
-    const maxOffset = Math.max(0, (fohBufferRef.current.duration || 0) - 0.05);
-    const offset = Math.max(0, Math.min(pauseTimeRef.current, maxOffset));
     const useMultitrack = isUsingMultitrackStems();
 
-    // 1. Preparar todo el grafo de ruteo y nodos ANTES de capturar reloj para cero jitter de CPU
     if (useMultitrack) {
       stemSourcesRef.current = activeStemsRef.current.map((stem) => {
-        const src = audioCtxRef.current!.createBufferSource();
+        const src = ctx.createBufferSource();
         src.buffer = stem.buffer;
-        const gainNode = audioCtxRef.current!.createGain();
+        const gainNode = ctx.createGain();
         gainNode.gain.value = stem.volume * fohVolumeRef.current;
-        const pannerNode = audioCtxRef.current!.createStereoPanner();
+        const pannerNode = ctx.createStereoPanner();
         pannerNode.pan.value = stem.pan || 0;
         src.connect(gainNode);
         gainNode.connect(pannerNode);
@@ -2429,52 +2542,113 @@ export default function LiveConcert() {
         };
       });
       buildRoutingGraph();
-    } else {
-      buildRoutingGraph();
-      fohSourceRef.current = audioCtxRef.current.createBufferSource();
-      fohSourceRef.current.buffer = fohBufferRef.current;
-      fohSourceRef.current.connect(fohGainRef.current!);
-    }
-
-    cueSourceRef.current = audioCtxRef.current.createBufferSource();
-    cueSourceRef.current.buffer = cueBufferRef.current;
-    cueSourceRef.current.connect(cueGainRef.current!);
-
-    // 2. Capturar reloj atómico y latencia física real del DAC del PC en el instante exacto de agendar
-    const ctx = audioCtxRef.current;
-    const hasActiveWifiSlaves =
-      broadcastEnabledRef.current && (connectionsRef.current > 0 || broadcastEnabledRef.current);
-    const maxObservedSlaveRttMs = readyClients.reduce(
-      (maxRtt, c) => (typeof c.rttMs === 'number' && c.rttMs > maxRtt ? c.rttMs : maxRtt),
-      0
-    );
-    // Ventana adaptativa (440ms en LAN rápida .. 650ms en Wi-Fi Cloud) para que TODOS los celulares
-    // reciban la orden PLAY antes de T_start y agenden su DAC con 0ms de paquete tardío
-    const delayMs = hasActiveWifiSlaves
-      ? Math.max(440, Math.min(650, Math.round(maxObservedSlaveRttMs * 1.5 + 340)))
-      : 25;
-    const nowWallMs = Date.now();
-    const ctxNow = ctx.currentTime;
-    const T_start = nowWallMs + delayMs;
-    const startAudioContextTime = ctxNow + delayMs / 1000;
-
-    if (useMultitrack) {
       const preRoll = getPreRoll(currentSongRef.current || currentSong);
       stemSourcesRef.current.forEach((entry) => {
-        if (offset < preRoll) {
-          entry.source.start(startAudioContextTime + (preRoll - offset), 0);
+        if (offsetSec < preRoll) {
+          entry.source.start(targetCtxTime + (preRoll - offsetSec), 0);
         } else {
-          const stemOffset = offset - preRoll;
+          const stemOffset = offsetSec - preRoll;
           if (stemOffset < (entry.source.buffer?.duration || 0)) {
-            entry.source.start(startAudioContextTime, stemOffset);
+            entry.source.start(targetCtxTime, stemOffset);
           }
         }
       });
     } else {
-      fohSourceRef.current!.start(startAudioContextTime, offset);
+      buildRoutingGraph();
+      const newFoh = ctx.createBufferSource();
+      newFoh.buffer = fohBufferRef.current!;
+      newFoh.connect(fohGainRef.current!);
+      fohSourceRef.current = newFoh;
+      newFoh.start(targetCtxTime, offsetSec);
     }
 
-    cueSourceRef.current.start(startAudioContextTime, offset);
+    const newCue = ctx.createBufferSource();
+    newCue.buffer = cueBufferRef.current!;
+    newCue.connect(cueGainRef.current!);
+    cueSourceRef.current = newCue;
+    newCue.start(targetCtxTime, offsetSec);
+  };
+
+  const play = async () => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || !fohBufferRef.current || !cueBufferRef.current) return;
+
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+
+    const gateId = ++playGateReqIdRef.current;
+    const curSongAtStart = currentSongRef.current || currentSong;
+
+    // Gate de Armado In-Ear: en Modo Ensayo MP3 con celulares conectados, si algún celular está
+    // terminando de decodificar esta canción (~100ms), esperar hasta 1.5s a que todos reporten listo
+    if (
+      broadcastEnabledRef.current &&
+      playbackModeRef.current === 'REHEARSAL' &&
+      curSongAtStart?.id &&
+      readyClientsRef.current.length > 0
+    ) {
+      const checkAllPhonesReady = () => {
+        const activePeers = readyClientsRef.current.filter(
+          (c) => c.audioState !== 'closed'
+        );
+        if (activePeers.length === 0) return true;
+        return activePeers.every(
+          (c) => c.readySongId === curSongAtStart.id && c.songReady
+        );
+      };
+
+      if (!checkAllPhonesReady()) {
+        setIsArmingInEarWait(true);
+        broadcast({
+          type: 'LOAD_SONG',
+          setlistId: selectedSetlistIdRef.current,
+          songId: curSongAtStart.id,
+          cueSig: getSongCueSignature(curSongAtStart),
+          songData: curSongAtStart,
+          nextSongData: getNextSongInSetlist(),
+          offset: pauseTimeRef.current,
+        });
+
+        const waitDeadline = Date.now() + 1500;
+        while (
+          !checkAllPhonesReady() &&
+          Date.now() < waitDeadline &&
+          playGateReqIdRef.current === gateId &&
+          currentSongRef.current?.id === curSongAtStart.id
+        ) {
+          await new Promise((r) => window.setTimeout(r, 30));
+        }
+        setIsArmingInEarWait(false);
+
+        if (
+          playGateReqIdRef.current !== gateId ||
+          currentSongRef.current?.id !== curSongAtStart.id
+        ) {
+          return;
+        }
+      }
+    }
+
+    const maxOffset = Math.max(0, (fohBufferRef.current.duration || 0) - 0.05);
+    const offset = Math.max(0, Math.min(pauseTimeRef.current, maxOffset));
+
+    // Preparar nodos primero sin usar `targetCtxTime` aún para no sufrir jitter de CPU
+    const hasActiveWifiSlaves =
+      broadcastEnabledRef.current &&
+      playbackModeRef.current === 'REHEARSAL' &&
+      (connectionsRef.current > 0 || broadcastEnabledRef.current);
+    const maxObservedSlaveRttMs = readyClientsRef.current.reduce(
+      (maxRtt, c) => (typeof c.rttMs === 'number' && c.rttMs > maxRtt ? c.rttMs : maxRtt),
+      0
+    );
+    const delayMs = hasActiveWifiSlaves
+      ? Math.max(440, Math.min(650, Math.round(maxObservedSlaveRttMs * 1.5 + 340)))
+      : 25;
+
+    const ctxNow = ctx.currentTime;
+    const startAudioContextTime = ctxNow + delayMs / 1000;
+    schedulePcAudioSourcesAt(ctx, startAudioContextTime, offset);
 
     if (broadcastEnabledRef.current) {
       const curSong = currentSongRef.current || currentSong;
@@ -2484,18 +2658,22 @@ export default function LiveConcert() {
       if (livePcLatMs > 0) {
         hardwareLatencyMsRef.current = livePcLatMs;
       }
-      const syncCompMs = Math.round(
-        livePcLatMs + (multiChannelPatchRef.current.syncOffsetMs || 0)
+      const startAt = computeMasterStartAtForContextTime(
+        ctx,
+        startAudioContextTime,
+        multiChannelPatchRef.current.syncOffsetMs || 0,
+        livePcLatMs
       );
       broadcast({
         type: 'PLAY',
         setlistId: selectedSetlistIdRef.current,
         songId: curSong?.id,
+        cueSig: getSongCueSignature(curSong),
         nextSongId: nextInList?.id ?? null,
         songData: curSong,
         nextSongData: nextInList,
-        startAt: T_start + syncCompMs,
-        offset: offset,
+        startAt,
+        offset,
       });
     }
 
@@ -2507,6 +2685,8 @@ export default function LiveConcert() {
   };
 
   const pause = (silent = false) => {
+    ++playGateReqIdRef.current;
+    setIsArmingInEarWait(false);
     if (!audioCtxRef.current || !isPlayingRef.current) return;
 
     if (fohSourceRef.current) {
@@ -2605,28 +2785,72 @@ export default function LiveConcert() {
   };
 
   const seekTo = (newVisualTime: number) => {
-    if (!audioCtxRef.current) return;
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
     const wasPlaying = isPlayingRef.current;
-    
-    if (wasPlaying) pause(true);
-    
+
     const curSong = currentSongRef.current || currentSong;
     const preRoll = getPreRoll(curSong);
     const curTotalDur = totalDurationRef.current;
     const maxGlobal = curTotalDur > 0 ? curTotalDur : Math.max(0, newVisualTime + preRoll);
     const globalTime = Math.max(0, Math.min(newVisualTime + preRoll, maxGlobal));
     const clampedVisual = globalTime - preRoll;
-    
+
+    if (wasPlaying && fohBufferRef.current && cueBufferRef.current) {
+      // Salto programado atómico en compás (0ms de silencio muerto en PC + salto simultáneo en celulares)
+      const maxRtt = readyClientsRef.current.reduce(
+        (m, c) => (typeof c.rttMs === 'number' && c.rttMs > m ? c.rttMs : m),
+        0
+      );
+      const jumpDelayMs = broadcastEnabledRef.current
+        ? Math.max(240, Math.min(420, Math.round(maxRtt * 1.4 + 200)))
+        : 25;
+      const jumpCtxTime = ctx.currentTime + jumpDelayMs / 1000;
+      schedulePcAudioSourcesAt(ctx, jumpCtxTime, globalTime, jumpCtxTime);
+
+      window.setTimeout(() => {
+        if (isPlayingRef.current) {
+          startTimeRef.current = jumpCtxTime - globalTime;
+        }
+      }, jumpDelayMs);
+
+      pauseTimeRef.current = globalTime;
+      setCurrentTime(clampedVisual);
+      setAudioTime(globalTime);
+
+      if (broadcastEnabledRef.current) {
+        const livePcLatMs =
+          measureAudioContextOutputLatencyMs(ctx) || hardwareLatencyMsRef.current || 0;
+        const startAt = computeMasterStartAtForContextTime(
+          ctx,
+          jumpCtxTime,
+          multiChannelPatchRef.current.syncOffsetMs || 0,
+          livePcLatMs
+        );
+        broadcast({
+          type: 'SEEK',
+          songId: curSong?.id,
+          cueSig: getSongCueSignature(curSong),
+          offset: globalTime,
+          isPlaying: true,
+          startAt,
+        });
+      }
+      return;
+    }
+
     pauseTimeRef.current = globalTime;
     setCurrentTime(clampedVisual);
     setAudioTime(globalTime);
-    
+
     if (broadcastEnabledRef.current) {
-       broadcast({ type: 'SEEK', offset: globalTime });
-    }
-    
-    if (wasPlaying) {
-      setTimeout(() => playRef.current(), 35);
+      broadcast({
+        type: 'SEEK',
+        songId: curSong?.id,
+        cueSig: getSongCueSignature(curSong),
+        offset: globalTime,
+        isPlaying: false,
+      });
     }
   };
 
@@ -2879,19 +3103,16 @@ export default function LiveConcert() {
 
           {/* Mode Toggle Pill */}
           <div
-            onClick={() => {
-              if (isPlaying) return;
-              setPlaybackMode(prev => prev === 'LIVE' ? 'REHEARSAL' : 'LIVE');
-            }}
+            onClick={() => handleTogglePlaybackMode()}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all cursor-pointer text-[10px] font-semibold uppercase tracking-wider ${
               playbackMode === 'LIVE'
                 ? 'bg-rose-50 text-rose-700 border border-rose-300'
                 : 'bg-amber-50 text-amber-800 border border-amber-300'
             } ${isPlaying ? 'opacity-40 cursor-not-allowed' : 'hover:brightness-105'}`}
-            title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV de Consola)" : "Modo Práctica / Ensayo (Audio Ligero MP3)"}
+            title={playbackMode === 'LIVE' ? "Modo Concierto En Vivo (Audio WAV sin pérdida exclusivo en PC)" : "Modo Práctica / Ensayo (Audio ligero MP3 1:1 con celulares In-Ear)"}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${playbackMode === 'LIVE' ? 'bg-[#e11d48]' : 'bg-[#f59e0b]'}`} />
-            <span>{playbackMode === 'LIVE' ? 'CONSOLA VIVO' : 'MODO PRÁCTICA'}</span>
+            <span>{playbackMode === 'LIVE' ? 'CONSOLA VIVO (WAV)' : 'MODO PRÁCTICA (MP3)'}</span>
           </div>
 
           {/* Botón Maestro "MODO CONCIERTO" */}
@@ -3269,11 +3490,7 @@ export default function LiveConcert() {
               type="button"
               onClick={() => {
                 (document.activeElement as HTMLElement)?.blur();
-                const next = !broadcastEnabled;
-                setBroadcastEnabled(next);
-                if (next) {
-                  scanDevices();
-                }
+                handleToggleInEarBroadcast();
               }}
               className={`px-2.5 py-2 rounded-xl transition-all flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider cursor-pointer border ${
                 broadcastEnabled
@@ -3282,7 +3499,7 @@ export default function LiveConcert() {
                   ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
                   : 'bg-zinc-100 text-zinc-700 hover:text-zinc-950 border-zinc-200 hover:bg-zinc-200'
               }`}
-              title={`Transmitir In-Ear WiFi a celulares para ensayos (${connections} ${connections === 1 ? 'conectado' : 'conectados'})`}
+              title={`Transmitir In-Ear MP3 Wi-Fi a celulares para ensayos (${connections} ${connections === 1 ? 'conectado' : 'conectados'}). Activa automáticamente Modo Práctica MP3.`}
             >
               <Wifi size={13} />
               <span>IN-EAR</span>
@@ -3371,15 +3588,13 @@ export default function LiveConcert() {
                 {/* Estado de transmisión */}
                 <div className="flex items-center justify-between gap-2 py-2 border-b border-zinc-100">
                   <span className="text-[10.5px] font-semibold text-zinc-600">
-                    Transmisión Sync Wi-Fi:
+                    Transmisión Ensayo MP3:
                   </span>
                   <button
                     type="button"
                     onClick={() => {
                       (document.activeElement as HTMLElement)?.blur();
-                      const next = !broadcastEnabled;
-                      setBroadcastEnabled(next);
-                      if (next) scanDevices();
+                      handleToggleInEarBroadcast();
                     }}
                     className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider cursor-pointer transition-all border ${
                       broadcastEnabled
@@ -3392,7 +3607,7 @@ export default function LiveConcert() {
                 </div>
 
                 {/* Lista viva de celulares conectados */}
-                <div className="mt-2.5 max-h-52 overflow-y-auto space-y-1.5">
+                <div className="mt-2.5 max-h-56 overflow-y-auto space-y-1.5">
                   {readyClients.length === 0 ? (
                     <div className="rounded-xl bg-zinc-50 border border-dashed border-zinc-200 p-3 text-center">
                       <p className="text-[11px] font-semibold text-zinc-600">
@@ -3404,40 +3619,93 @@ export default function LiveConcert() {
                       </p>
                     </div>
                   ) : (
-                    readyClients.map((client) => (
-                      <div
-                        key={client.clientId}
-                        className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-emerald-50/70 border border-emerald-200/80"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-bold text-zinc-900 truncate">
-                              {client.deviceLabel || 'Músico In-Ear'}
-                            </p>
-                            <p className="text-[9.5px] font-semibold text-zinc-500 flex items-center gap-1.5">
-                              <span
-                                className={
-                                  client.songReady
-                                    ? 'text-emerald-700 font-bold'
-                                    : 'text-amber-700 font-semibold'
-                                }
-                              >
-                                {client.songReady ? '✓ Listo en RAM' : 'Esperando tema'}
-                              </span>
-                              {typeof client.rttMs === 'number' && client.rttMs > 0 && (
-                                <span className="font-mono text-[9px] px-1.5 py-0 rounded bg-white border border-zinc-200 text-zinc-700">
-                                  {client.rttMs} ms
+                    readyClients.map((client) => {
+                      const isBlocked = client.audioState && client.audioState !== 'running';
+                      const isThisSongReady =
+                        !currentSong?.id
+                          ? client.songReady
+                          : client.readySongId === currentSong.id && client.songReady;
+                      const isLanDirect = client.transportMode === 'lan_direct';
+
+                      return (
+                        <div
+                          key={client.clientId}
+                          className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border ${
+                            isBlocked
+                              ? 'bg-rose-50/80 border-rose-300'
+                              : isThisSongReady
+                              ? 'bg-emerald-50/70 border-emerald-200/80'
+                              : 'bg-amber-50/70 border-amber-200/80'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className={`w-2 h-2 rounded-full shrink-0 ${
+                                isBlocked
+                                  ? 'bg-rose-500 animate-ping'
+                                  : isThisSongReady
+                                  ? 'bg-emerald-500'
+                                  : 'bg-amber-500 animate-pulse'
+                              }`}
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-[11px] font-bold text-zinc-900 truncate">
+                                  {client.deviceLabel || 'Músico In-Ear'}
+                                </p>
+                                <span
+                                  className={`text-[8px] font-extrabold uppercase px-1 rounded ${
+                                    isLanDirect
+                                      ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                      : 'bg-zinc-100 text-zinc-600 border border-zinc-200'
+                                  }`}
+                                >
+                                  {isLanDirect ? 'LAN' : 'Nube'}
                                 </span>
-                              )}
-                            </p>
+                              </div>
+                              <p className="text-[9.5px] font-semibold text-zinc-500 flex items-center gap-1.5 flex-wrap mt-0.5">
+                                <span
+                                  className={
+                                    isBlocked
+                                      ? 'text-rose-700 font-extrabold'
+                                      : isThisSongReady
+                                      ? 'text-emerald-700 font-bold'
+                                      : 'text-amber-700 font-semibold'
+                                  }
+                                >
+                                  {isBlocked
+                                    ? '⚠ Audio bloqueado'
+                                    : isThisSongReady
+                                    ? '✓ Listo (este tema)'
+                                    : 'Cargando MP3...'}
+                                </span>
+                                {typeof client.rttMs === 'number' && client.rttMs > 0 && (
+                                  <span className="font-mono text-[9px] px-1.5 py-0 rounded bg-white border border-zinc-200 text-zinc-700">
+                                    {client.rttMs} ms
+                                  </span>
+                                )}
+                                {typeof client.driftMs === 'number' && isPlaying && (
+                                  <span className="font-mono text-[9px] px-1 py-0 rounded bg-white border border-zinc-200 text-zinc-600">
+                                    {client.driftMs >= 0 ? `+${client.driftMs}` : client.driftMs}ms
+                                  </span>
+                                )}
+                              </p>
+                            </div>
                           </div>
+                          <span
+                            className={`text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full text-white shrink-0 ${
+                              isBlocked
+                                ? 'bg-rose-600'
+                                : isThisSongReady
+                                ? 'bg-emerald-600'
+                                : 'bg-amber-500'
+                            }`}
+                          >
+                            {isBlocked ? 'BLOQ' : isThisSongReady ? 'LISTO' : 'CARGA'}
+                          </span>
                         </div>
-                        <span className="text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-600 text-white shrink-0">
-                          ONLINE
-                        </span>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -3839,7 +4107,11 @@ export default function LiveConcert() {
                   play();
                 }
               }}
-              disabled={isLoading || !currentSong || !currentSong.foh_mix_url}
+              disabled={
+                isLoading ||
+                !currentSong ||
+                !(currentSong.foh_mix_url || currentSong.foh_mobile_url)
+              }
               className={`col-span-3 py-3.5 rounded-2xl flex items-center justify-center text-xs font-semibold transition-all tracking-widest uppercase border ${
                 isPlaying
                   ? 'bg-black text-white border-black hover:bg-zinc-800'
@@ -3847,12 +4119,22 @@ export default function LiveConcert() {
               } disabled:opacity-30`}
             >
               <div className="flex items-center justify-center gap-2">
-                {isPlaying ? (
+                {isArmingInEarWait ? (
+                  <Loader2 size={17} className="animate-spin mr-0.5" />
+                ) : isPlaying ? (
                   <Pause size={19} fill="currentColor" className="mr-0.5" />
                 ) : (
                   <Play size={19} fill="currentColor" className="mr-0.5 ml-0.5" />
                 )}
-                <span>{isPlaying ? 'PAUSAR SHOW' : 'LANZAR CANCIÓN'}</span>
+                <span>
+                  {isArmingInEarWait
+                    ? 'SINCRONIZANDO IN-EAR...'
+                    : isPlaying
+                    ? 'PAUSAR SHOW'
+                    : broadcastEnabled && readyClients.length > 0 && currentSong?.id
+                    ? `LANZAR (${readyClients.filter((c) => c.readySongId === currentSong.id && c.songReady).length}/${readyClients.length} LISTOS)`
+                    : 'LANZAR CANCIÓN'}
+                </span>
                 {isConcertMode && (
                   <kbd className="ml-2 text-[9px] font-mono px-2 py-0.5 rounded-md bg-white/20 border border-white/30 text-white tracking-widest font-bold">
                     ESPACIO
