@@ -27,6 +27,7 @@ import {
   readCachedPracticeCatalog,
   readDecryptedTrackArrayBuffer,
   readLocalMp3Blob,
+  readLocalTrackMeta,
   readLocalVaultSummary,
   renewMusicianOfflineLease,
   resetMusicianVaultMemoryForTests,
@@ -239,6 +240,11 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
       forceRefresh: true,
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // Verify direct IndexedDB metadata lookup (`readLocalTrackMeta`) works without relying on React component state
+    const directMeta = await readLocalTrackMeta(song2.id);
+    expect(directMeta?.songId).toBe(song2.id);
+    expect(directMeta?.hasFoh).toBe(true);
+    expect(directMeta?.hasCue).toBe(true);
   });
 
   it('counts ONLY ready slave presences (eliminating false connected devices) and filters NTP Wi-Fi jitter spikes', () => {

@@ -8,12 +8,14 @@ import { useSyncMaster } from '../hooks/useSyncMaster';
 import {
   type LocalMp3TrackMeta,
   type PracticeSongItem,
+  computeSongChannelSignature,
   downloadInEarPlaylistToLocalVault,
   ensureSongMp3CachedInDevice,
   evaluateInEarPlaylistReadiness,
   evaluateSongVaultState,
   formatBytesCompact,
   readDecryptedTrackArrayBuffer,
+  readLocalTrackMeta,
   readLocalVaultSummary,
   requestPersistentDeviceStorage,
   resolvePreferredMp3Source,
@@ -73,6 +75,63 @@ interface DecodedStemBuffer {
 
 const FAKE_BAND_ID = "00000000-0000-0000-0000-000000000000";
 
+interface PcRamCachedSongEntry {
+  fohBuffer: AudioBuffer;
+  cueBuffer: AudioBuffer;
+  cueSource: 'mix' | 'ram';
+}
+
+// Cachés persistentes a nivel de módulo: sobreviven al cambiar a otros módulos de la app y volver a Live Concert (0ms, sin pantalla de carga)
+const MODULE_PC_RAM_AUDIO_CACHE = new Map<string, PcRamCachedSongEntry>();
+const MODULE_VOICE_CUE_BUFFERS: CueBuffersMap = {};
+const MODULE_VOICE_CUE_OFFSETS: CueOffsetsMap = {};
+const moduleLiveConcertSnapshot: {
+  selectedSetlistId: string | null;
+  setlists: any[];
+  songs: any[];
+  currentSongIndex: number;
+  pcVaultTracksBySongId: Record<string, LocalMp3TrackMeta>;
+  dirtyFromStudio: boolean;
+} = {
+  selectedSetlistId: null,
+  setlists: [],
+  songs: [],
+  currentSongIndex: 0,
+  pcVaultTracksBySongId: {},
+  dirtyFromStudio: false,
+};
+
+function invalidateSongInModuleRamCache(songId: string) {
+  if (!songId) return;
+  for (const key of Array.from(MODULE_PC_RAM_AUDIO_CACHE.keys())) {
+    if (key.startsWith(`${songId}|`)) {
+      MODULE_PC_RAM_AUDIO_CACHE.delete(key);
+    }
+  }
+}
+
+// Escuchar cambios hechos en Studio Prompter / Lyric Studio incluso cuando el usuario salió temporalmente de Live Concert
+if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+  try {
+    const bgSyncChannel = new BroadcastChannel('tandu_stage_sync');
+    bgSyncChannel.onmessage = (event) => {
+      const msgType = event.data?.type;
+      const songId = event.data?.songId;
+      if (
+        songId &&
+        (msgType === 'LIVE_MIX_EXPORTED' ||
+          msgType === 'PROMPTER_UPDATED' ||
+          msgType === 'SONG_LYRICS_UPDATED')
+      ) {
+        moduleLiveConcertSnapshot.dirtyFromStudio = true;
+        if (msgType === 'LIVE_MIX_EXPORTED' || msgType === 'PROMPTER_UPDATED') {
+          invalidateSongInModuleRamCache(songId);
+        }
+      }
+    };
+  } catch {}
+}
+
 export default function LiveConcert() {
   const navigate = useNavigate();
   // Detectar si esta ventana fue abierta como Proyector Externo HDMI (?projector=1)
@@ -114,14 +173,31 @@ export default function LiveConcert() {
     };
   }, [isProjectorWindow]);
 
-  const [setlists, setSetlists] = useState<any[]>([]);
+  const [setlists, setSetlists] = useState<any[]>(() => moduleLiveConcertSnapshot.setlists);
   const [selectedSetlistId, setSelectedSetlistId] = useState<string | null>(() => {
-    return sessionStorage.getItem('tandu_active_setlist_id');
+    return (
+      sessionStorage.getItem('tandu_active_setlist_id') ||
+      moduleLiveConcertSnapshot.selectedSetlistId
+    );
   });
   const [viewMode, setViewMode] = useState<'dual' | 'prompter' | 'lyrics'>('dual');
-  
-  const [songs, setSongs] = useState<any[]>([]);
-  const [currentSongIndex, setCurrentSongIndex] = useState<number>(0);
+
+  const [songs, setSongs] = useState<any[]>(() => {
+    const activeId =
+      sessionStorage.getItem('tandu_active_setlist_id') ||
+      moduleLiveConcertSnapshot.selectedSetlistId;
+    return activeId && moduleLiveConcertSnapshot.selectedSetlistId === activeId
+      ? moduleLiveConcertSnapshot.songs
+      : [];
+  });
+  const [currentSongIndex, setCurrentSongIndex] = useState<number>(() => {
+    const activeId =
+      sessionStorage.getItem('tandu_active_setlist_id') ||
+      moduleLiveConcertSnapshot.selectedSetlistId;
+    return activeId && moduleLiveConcertSnapshot.selectedSetlistId === activeId
+      ? moduleLiveConcertSnapshot.currentSongIndex
+      : 0;
+  });
   const currentSong = songs[currentSongIndex] || null;
   const currentHasLyrics = Boolean(currentSong?.prompter_data?.lyrics && currentSong.prompter_data.lyrics.length > 0);
 
@@ -326,13 +402,16 @@ export default function LiveConcert() {
     } catch {}
   }, [playbackMode]);
 
-  // Memoria Local Persistente de la PC (IndexedDB MP3 Vault) + Caché LRU de AudioBuffers en RAM
+  // Memoria Local Persistente de la PC (IndexedDB MP3 Vault) + Caché LRU de AudioBuffers en RAM a nivel de módulo
   const [pcVaultTracksBySongId, setPcVaultTracksBySongId] = useState<
     Record<string, LocalMp3TrackMeta>
-  >({});
-  const pcVaultTracksBySongIdRef = useRef<Record<string, LocalMp3TrackMeta>>({});
+  >(() => moduleLiveConcertSnapshot.pcVaultTracksBySongId);
+  const pcVaultTracksBySongIdRef = useRef<Record<string, LocalMp3TrackMeta>>(
+    moduleLiveConcertSnapshot.pcVaultTracksBySongId
+  );
   useEffect(() => {
     pcVaultTracksBySongIdRef.current = pcVaultTracksBySongId;
+    moduleLiveConcertSnapshot.pcVaultTracksBySongId = pcVaultTracksBySongId;
   }, [pcVaultTracksBySongId]);
   const [isDownloadingSetlistToPc, setIsDownloadingSetlistToPc] =
     useState<boolean>(false);
@@ -340,16 +419,9 @@ export default function LiveConcert() {
   const [redownloadingSongId, setRedownloadingSongId] = useState<string | null>(
     null
   );
-  const pcRamAudioCacheRef = useRef<
-    Map<
-      string,
-      {
-        fohBuffer: AudioBuffer;
-        cueBuffer: AudioBuffer;
-        cueSource: 'mix' | 'ram';
-      }
-    >
-  >(new Map());
+  const pcRamAudioCacheRef = useRef<Map<string, PcRamCachedSongEntry>>(
+    MODULE_PC_RAM_AUDIO_CACHE
+  );
 
   // Network Sync (Para In-Ears de Práctica por Wi-Fi)
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
@@ -465,9 +537,9 @@ export default function LiveConcert() {
   const [loadStatus, setLoadStatus] = useState('');
   const [liveCueSource, setLiveCueSource] = useState<'mix' | 'ram'>('mix');
 
-  // Caché global en RAM de las 11 Voces Guía (WAV PCM prioritario) para síntesis en vivo / actualizaciones instantáneas
-  const cueBuffersCacheRef = useRef<CueBuffersMap>({});
-  const cueOffsetsCacheRef = useRef<CueOffsetsMap>({});
+  // Caché global en RAM de las 11 Voces Guía (WAV PCM prioritario) compartido a nivel de módulo
+  const cueBuffersCacheRef = useRef<CueBuffersMap>(MODULE_VOICE_CUE_BUFFERS);
+  const cueOffsetsCacheRef = useRef<CueOffsetsMap>(MODULE_VOICE_CUE_OFFSETS);
   const cueLoadPromiseRef = useRef<Promise<number> | null>(null);
   const activeCueSignatureRef = useRef<string>('');
 
@@ -662,8 +734,10 @@ export default function LiveConcert() {
     const promise = (async () => {
       try {
         const loaded = await loadCueBuffers(ctx);
-        cueBuffersCacheRef.current = { ...cueBuffersCacheRef.current, ...loaded.cueBuffers };
-        cueOffsetsCacheRef.current = { ...cueOffsetsCacheRef.current, ...loaded.cueOffsets };
+        Object.assign(MODULE_VOICE_CUE_BUFFERS, loaded.cueBuffers);
+        Object.assign(MODULE_VOICE_CUE_OFFSETS, loaded.cueOffsets);
+        cueBuffersCacheRef.current = MODULE_VOICE_CUE_BUFFERS;
+        cueOffsetsCacheRef.current = MODULE_VOICE_CUE_OFFSETS;
         return Object.keys(cueBuffersCacheRef.current).length;
       } catch (err) {
         console.warn('[LiveConcert] Error precargando voces guía en RAM:', err);
@@ -756,7 +830,14 @@ export default function LiveConcert() {
 
   useEffect(() => {
     if (isProjectorWindow) return;
-    fetchSetlists();
+
+    // Solo consultar setlists en Supabase si aún no están en memoria de sesión o hubo cambios en Studio
+    if (
+      moduleLiveConcertSnapshot.setlists.length === 0 ||
+      moduleLiveConcertSnapshot.dirtyFromStudio
+    ) {
+      void fetchSetlists();
+    }
 
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     audioCtxRef.current = new AudioContextClass();
@@ -819,15 +900,47 @@ export default function LiveConcert() {
     prefetchedSongRef.current = null;
     if (selectedSetlistId) {
       sessionStorage.setItem('tandu_active_setlist_id', selectedSetlistId);
-      fetchSetlistSongs(selectedSetlistId);
+      // Si ya tenemos las canciones de este Setlist en memoria y no hubo cambios en Studio, reutilizarlas al instante (0 queries)
+      if (
+        moduleLiveConcertSnapshot.selectedSetlistId === selectedSetlistId &&
+        moduleLiveConcertSnapshot.songs.length > 0 &&
+        !moduleLiveConcertSnapshot.dirtyFromStudio
+      ) {
+        if (songs.length === 0) {
+          setSongs(moduleLiveConcertSnapshot.songs);
+          setCurrentSongIndex(moduleLiveConcertSnapshot.currentSongIndex);
+        }
+        return;
+      }
+      moduleLiveConcertSnapshot.selectedSetlistId = selectedSetlistId;
+      moduleLiveConcertSnapshot.dirtyFromStudio = false;
+      void fetchSetlistSongs(selectedSetlistId, {
+        preserveCurrentSong:
+          moduleLiveConcertSnapshot.selectedSetlistId === selectedSetlistId,
+      });
     } else {
+      moduleLiveConcertSnapshot.selectedSetlistId = null;
+      moduleLiveConcertSnapshot.songs = [];
+      moduleLiveConcertSnapshot.currentSongIndex = 0;
       setSongs([]);
       setCurrentSongIndex(0);
     }
   }, [selectedSetlistId, isProjectorWindow]);
 
-  useEffect(() => { songsRef.current = songs; }, [songs]);
-  useEffect(() => { currentSongIndexRef.current = currentSongIndex; }, [currentSongIndex]);
+  useEffect(() => {
+    songsRef.current = songs;
+    if (selectedSetlistId) {
+      moduleLiveConcertSnapshot.selectedSetlistId = selectedSetlistId;
+      moduleLiveConcertSnapshot.songs = songs;
+    }
+  }, [songs, selectedSetlistId]);
+  useEffect(() => {
+    currentSongIndexRef.current = currentSongIndex;
+    moduleLiveConcertSnapshot.currentSongIndex = currentSongIndex;
+  }, [currentSongIndex]);
+  useEffect(() => {
+    moduleLiveConcertSnapshot.setlists = setlists;
+  }, [setlists]);
   useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
   useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
 
@@ -1302,11 +1415,11 @@ export default function LiveConcert() {
         incomingData
       ) {
         const { songId } = event.data;
-        if (
-          (msgType === 'LIVE_MIX_EXPORTED' || msgType === 'PROMPTER_UPDATED') &&
-          prefetchedSongRef.current?.songId === songId
-        ) {
-          prefetchedSongRef.current = null;
+        if (msgType === 'LIVE_MIX_EXPORTED' || msgType === 'PROMPTER_UPDATED') {
+          invalidateSongInModuleRamCache(songId);
+          if (prefetchedSongRef.current?.songId === songId) {
+            prefetchedSongRef.current = null;
+          }
         }
         const prevMatch = songsRef.current.find((s) => s.id === songId) || (currentSongRef.current?.id === songId ? currentSongRef.current : null);
         const updatedSongForCue = prevMatch
@@ -1585,28 +1698,18 @@ export default function LiveConcert() {
     });
   };
 
-  const getPcRamCacheKey = (song: any, mode: 'LIVE' | 'REHEARSAL'): string => {
-    const targetFohUrl =
-      mode === 'REHEARSAL' && song?.foh_mobile_url
-        ? song.foh_mobile_url
-        : song?.foh_mix_url || '';
-    const targetCueUrl =
-      mode === 'REHEARSAL' && song?.cue_mobile_url
-        ? song.cue_mobile_url
-        : song?.cue_mix_url || '';
-    return `${song?.id || ''}|${mode}|${getSongCueSignature(song)}|${targetFohUrl}|${targetCueUrl}`;
+  const getPcRamCacheKey = (song: any): string => {
+    const fohSig = computeSongChannelSignature(song as PracticeSongItem, 'foh');
+    const cueSig = computeSongChannelSignature(song as PracticeSongItem, 'cue');
+    return `${song?.id || ''}|${getSongCueSignature(song)}|${fohSig}|${cueSig}`;
   };
 
   const storeInPcRamCache = (
     key: string,
-    entry: {
-      fohBuffer: AudioBuffer;
-      cueBuffer: AudioBuffer;
-      cueSource: 'mix' | 'ram';
-    }
+    entry: PcRamCachedSongEntry
   ) => {
     if (!key) return;
-    if (pcRamAudioCacheRef.current.size >= 6 && !pcRamAudioCacheRef.current.has(key)) {
+    if (pcRamAudioCacheRef.current.size >= 16 && !pcRamAudioCacheRef.current.has(key)) {
       const oldestKey = pcRamAudioCacheRef.current.keys().next().value;
       if (oldestKey) {
         pcRamAudioCacheRef.current.delete(oldestKey);
@@ -1616,218 +1719,130 @@ export default function LiveConcert() {
   };
 
   /**
-   * Motor unificado de carga para LiveConcert:
-   * 1. Revisa Caché RAM de AudioBuffers ya decodificados (0ms).
-   * 2. En MODO PRÁCTICA / ENSAYO ('REHEARSAL'), lee desde la Memoria Local Persistente de la PC (IndexedDB MP3);
-   *    solo descarga de Supabase si la canción aún no está guardada en la PC y la persiste automáticamente.
-   * 3. En CONSOLA VIVO ('LIVE'), descarga/decodifica el master WAV y lo retiene en Caché RAM.
+   * Motor unificado Local-First para LiveConcert (aplica tanto en CONSOLA VIVO como en MODO PRÁCTICA):
+   * 1. Revisa Caché RAM persistente a nivel de módulo (`MODULE_PC_RAM_AUDIO_CACHE`) -> 0.0 ms, sin pantalla de carga al cambiar de módulo.
+   * 2. Revisa la Memoria Local Persistente de la PC (IndexedDB `readLocalTrackMeta` + `readDecryptedTrackArrayBuffer`) -> lee desde el disco del PC con 0 bytes de internet.
+   * 3. SOLO si la canción no está aún guardada en la PC (o fue re-exportada en Studio), la descarga UNA vez y la guarda permanentemente en el PC.
    */
   const resolveAndDecodeSongBuffers = async (
     song: any,
-    mode: 'LIVE' | 'REHEARSAL',
+    _mode: 'LIVE' | 'REHEARSAL',
     signal?: AbortSignal,
     onStatus?: (msg: string) => void
-  ): Promise<{
-    fohBuffer: AudioBuffer;
-    cueBuffer: AudioBuffer;
-    cueSource: 'mix' | 'ram';
-  } | null> => {
+  ): Promise<PcRamCachedSongEntry | null> => {
     const ctx = audioCtxRef.current;
     if (!ctx || !song?.id) return null;
 
-    const ramKey = getPcRamCacheKey(song, mode);
+    const ramKey = getPcRamCacheKey(song);
     const ramCached = pcRamAudioCacheRef.current.get(ramKey);
     if (ramCached) {
       return ramCached;
     }
 
-    const targetFohUrl =
-      mode === 'REHEARSAL' && song.foh_mobile_url
-        ? song.foh_mobile_url
-        : song.foh_mix_url;
-    const targetCueUrl =
-      mode === 'REHEARSAL' && song.cue_mobile_url
-        ? song.cue_mobile_url
-        : song.cue_mix_url;
-    const wantsRamCue = !targetCueUrl || shouldSynthesizeLiveCueInRam(song);
+    const cueSrc = resolvePreferredMp3Source(song as PracticeSongItem, 'cue');
+    const wantsRamCue = !cueSrc.url || shouldSynthesizeLiveCueInRam(song);
 
-    // MODO ENSAYO / PRÁCTICA: Usar Bóveda Local MP3 Persistente de la PC (IndexedDB)
-    if (mode === 'REHEARSAL') {
-      const ev = evaluateSongVaultState(
-        song,
-        pcVaultTracksBySongIdRef.current[song.id]
+    // Consultar directamente el índice de IndexedDB (evita condiciones de carrera al montar el componente)
+    const storedMeta =
+      (await readLocalTrackMeta(song.id)) ||
+      pcVaultTracksBySongIdRef.current[song.id];
+    const ev = evaluateSongVaultState(song as PracticeSongItem, storedMeta);
+
+    let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+    let cueBytes = !wantsRamCue
+      ? await readDecryptedTrackArrayBuffer(song.id, 'cue')
+      : null;
+
+    const needsVaultDownload =
+      !fohBytes ||
+      ev.status === 'update_available' ||
+      (!wantsRamCue && (!cueBytes || ev.cueNeedsDownload));
+
+    if (needsVaultDownload) {
+      onStatus?.(
+        `Descargando "${song.title}" y guardando en Memoria Local del PC...`
       );
-      let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-      let cueBytes = !wantsRamCue
-        ? await readDecryptedTrackArrayBuffer(song.id, 'cue')
-        : null;
+      const [updatedMeta] = await Promise.all([
+        ensureSongMp3CachedInDevice({
+          song: song as PracticeSongItem,
+          includeCue: true,
+          signal,
+          onProgress: (msg) => {
+            if (msg) onStatus?.(msg);
+          },
+        }),
+        wantsRamCue ? ensureLiveCueBuffersLoaded(ctx) : Promise.resolve(0),
+      ]);
+      if (signal?.aborted) return null;
+      setPcVaultTracksBySongId((prev) => ({
+        ...prev,
+        [song.id]: updatedMeta,
+      }));
+      fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+      if (!wantsRamCue) {
+        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+      }
+    } else {
+      onStatus?.('Preparando pista desde Memoria Local del PC (Sin Internet)...');
+      if (wantsRamCue) {
+        await ensureLiveCueBuffersLoaded(ctx);
+      }
+    }
 
-      const needsVaultSync =
-        !fohBytes ||
-        ev.status === 'update_available' ||
-        (!wantsRamCue && (!cueBytes || ev.cueNeedsDownload));
+    if (signal?.aborted || !audioCtxRef.current || !fohBytes) return null;
 
-      if (needsVaultSync) {
-        onStatus?.(`Descargando y guardando "${song.title}" en Memoria Local del PC (MP3)...`);
-        const [updatedMeta] = await Promise.all([
-          ensureSongMp3CachedInDevice({
-            song,
-            includeCue: !wantsRamCue,
-            signal,
-            onProgress: (msg) => {
-              if (msg) onStatus?.(msg);
-            },
-          }),
-          wantsRamCue ? ensureLiveCueBuffersLoaded(ctx) : Promise.resolve(0),
-        ]);
-        if (signal?.aborted) return null;
+    const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
+    wipeAudioArrayBufferInRam(fohBytes);
+    if (signal?.aborted || !audioCtxRef.current) return null;
+
+    let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null =
+      null;
+
+    if (wantsRamCue) {
+      resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true);
+    }
+
+    if (!resolvedCue) {
+      if (!cueBytes) {
+        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+      }
+      if (!cueBytes && cueSrc.url) {
+        const updatedMeta = await ensureSongMp3CachedInDevice({
+          song: song as PracticeSongItem,
+          includeCue: true,
+          signal,
+        });
         setPcVaultTracksBySongId((prev) => ({
           ...prev,
           [song.id]: updatedMeta,
         }));
-        fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-        if (!wantsRamCue) {
-          cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-        }
-      } else {
-        onStatus?.('Cargando MP3 desde Memoria Local del PC (0ms de red)...');
-        if (wantsRamCue) {
-          await ensureLiveCueBuffersLoaded(ctx);
-        }
+        cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
       }
-
-      if (signal?.aborted || !audioCtxRef.current || !fohBytes) return null;
-
-      onStatus?.('Decodificando canales en RAM (Cero Latencia)...');
-      const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
-      wipeAudioArrayBufferInRam(fohBytes);
-      if (signal?.aborted || !audioCtxRef.current) return null;
-
-      let resolvedCue: { buffer: AudioBuffer; source: 'mix' | 'ram' } | null =
-        null;
-
-      if (wantsRamCue) {
-        resolvedCue = await resolveCueBufferForSong(song, decodedFoh, null, true);
-      }
-
-      if (!resolvedCue) {
-        if (!cueBytes && resolvePreferredMp3Source(song, 'cue').url) {
-          const updatedMeta = await ensureSongMp3CachedInDevice({
-            song,
-            includeCue: true,
-            signal,
-          });
-          setPcVaultTracksBySongId((prev) => ({
-            ...prev,
-            [song.id]: updatedMeta,
-          }));
-          cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-        }
-        if (cueBytes && audioCtxRef.current) {
-          const decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
-          wipeAudioArrayBufferInRam(cueBytes);
-          resolvedCue = await resolveCueBufferForSong(
-            song,
-            decodedFoh,
-            decodedCue,
-            false
-          );
-        }
-      } else {
+      if (cueBytes && audioCtxRef.current) {
+        const decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
         wipeAudioArrayBufferInRam(cueBytes);
-      }
-
-      if (!resolvedCue) return null;
-      const result = {
-        fohBuffer: decodedFoh,
-        cueBuffer: resolvedCue.buffer,
-        cueSource: resolvedCue.source,
-      };
-      storeInPcRamCache(ramKey, result);
-      return result;
-    }
-
-    // MODO CONSOLA EN VIVO ('LIVE'): Master WAV/Mix con Caché RAM en sesión
-    let decodedFoh: AudioBuffer;
-    let decodedCue: AudioBuffer | null = null;
-
-    if (wantsRamCue) {
-      const [fohRes] = await Promise.all([
-        fetch(targetFohUrl, { signal }),
-        ensureLiveCueBuffersLoaded(ctx),
-      ]);
-      if (!fohRes.ok) {
-        throw new Error(`HTTP ${fohRes.status} al descargar audio FOH`);
-      }
-      const fohArray = await fohRes.arrayBuffer();
-      if (signal?.aborted || !audioCtxRef.current) return null;
-
-      onStatus?.('Decodificando FOH y sintetizando Click + Voz Guía en RAM...');
-      decodedFoh = await ctx.decodeAudioData(fohArray);
-      if (signal?.aborted || !audioCtxRef.current) return null;
-
-      let resolvedCue = await resolveCueBufferForSong(
-        song,
-        decodedFoh,
-        null,
-        true
-      );
-      if (!resolvedCue && targetCueUrl) {
-        const fallbackCueRes = await fetch(targetCueUrl, { signal });
-        if (fallbackCueRes.ok) {
-          const fallbackCueArr = await fallbackCueRes.arrayBuffer();
-          if (signal?.aborted || !audioCtxRef.current) return null;
-          decodedCue = await ctx.decodeAudioData(fallbackCueArr);
-          resolvedCue = { buffer: decodedCue, source: 'mix' };
-        }
-      }
-      if (!resolvedCue) {
-        throw new Error('No se pudo generar ni descargar el canal CUE de músicos.');
-      }
-      const result = {
-        fohBuffer: decodedFoh,
-        cueBuffer: resolvedCue.buffer,
-        cueSource: resolvedCue.source,
-      };
-      storeInPcRamCache(ramKey, result);
-      return result;
-    } else {
-      const [fohRes, cueRes] = await Promise.all([
-        fetch(targetFohUrl, { signal }),
-        fetch(targetCueUrl, { signal }),
-      ]);
-      if (!fohRes.ok || !cueRes.ok) {
-        throw new Error(
-          `HTTP ${fohRes.status}/${cueRes.status} al descargar audio`
+        resolvedCue = await resolveCueBufferForSong(
+          song,
+          decodedFoh,
+          decodedCue,
+          false
         );
       }
-      const [fohArray, cueArray] = await Promise.all([
-        fohRes.arrayBuffer(),
-        cueRes.arrayBuffer(),
-      ]);
-      if (signal?.aborted || !audioCtxRef.current) return null;
-
-      onStatus?.('Decodificando canales en RAM (Cero Latencia)...');
-      [decodedFoh, decodedCue] = await Promise.all([
-        ctx.decodeAudioData(fohArray),
-        ctx.decodeAudioData(cueArray),
-      ]);
-      if (signal?.aborted || !audioCtxRef.current) return null;
-
-      const resolvedCue = await resolveCueBufferForSong(
-        song,
-        decodedFoh,
-        decodedCue,
-        false
-      );
-      const result = {
-        fohBuffer: decodedFoh,
-        cueBuffer: resolvedCue?.buffer || decodedCue,
-        cueSource: resolvedCue?.source || ('mix' as const),
-      };
-      storeInPcRamCache(ramKey, result);
-      return result;
+    } else {
+      wipeAudioArrayBufferInRam(cueBytes);
     }
+
+    if (!resolvedCue) {
+      throw new Error('No se pudo preparar el canal CUE de músicos.');
+    }
+
+    const result: PcRamCachedSongEntry = {
+      fohBuffer: decodedFoh,
+      cueBuffer: resolvedCue.buffer,
+      cueSource: resolvedCue.source,
+    };
+    storeInPcRamCache(ramKey, result);
+    return result;
   };
 
   const loadSongAudio = async (song: any, shouldAutoPlay = false) => {
@@ -1858,7 +1873,7 @@ export default function LiveConcert() {
         : song.cue_mix_url;
     const songCueSig = getSongCueSignature(song);
     const fullCueSig = `${song.id}|${songCueSig}`;
-    const ramKey = getPcRamCacheKey(song, mode);
+    const ramKey = getPcRamCacheKey(song);
 
     // 1. Verificar Caché RAM o Prefetch de la siguiente canción (Transición en 0ms sin red ni espera)
     const ramCached = pcRamAudioCacheRef.current.get(ramKey);
@@ -1953,11 +1968,7 @@ export default function LiveConcert() {
     }
 
     setIsLoading(true);
-    setLoadStatus(
-      mode === 'REHEARSAL'
-        ? 'Cargando Audio Ligero desde Memoria Local del PC...'
-        : 'Cargando Audio Master de Consola (FOH + Músicos)...'
-    );
+    setLoadStatus('Preparando pista desde Memoria Local del PC...');
 
     try {
       const resolved = await resolveAndDecodeSongBuffers(
@@ -2005,12 +2016,10 @@ export default function LiveConcert() {
         void prefetchNextSong(nextInSetlist);
       }
 
-      // En Modo Ensayo, guardar silenciosamente en la memoria local del PC las demás canciones pendientes del setlist
-      if (mode === 'REHEARSAL') {
-        window.setTimeout(() => {
-          void handleDownloadPendingSetlistToPc(songsRef.current, true);
-        }, 450);
-      }
+      // Guardar silenciosamente en la memoria local del PC cualquier canción pendiente del Setlist (tanto en LIVE como en REHEARSAL)
+      window.setTimeout(() => {
+        void handleDownloadPendingSetlistToPc(songsRef.current, true);
+      }, 450);
 
       if (shouldAutoPlay) {
         setTimeout(() => {

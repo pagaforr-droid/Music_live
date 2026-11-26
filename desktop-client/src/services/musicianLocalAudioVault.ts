@@ -869,6 +869,25 @@ export async function syncPracticeCatalogFromSupabase(options?: {
 // ============================================================================
 // ENCRYPTED VAULT INDEX & VOLATILE RAM DECRYPTION
 // ============================================================================
+/**
+ * Lee directamente desde IndexedDB (o memoria) el metadato de caché local de una canción,
+ * evitando condiciones de carrera con refs/estados de React recién montados.
+ */
+export async function readLocalTrackMeta(
+  songId: string
+): Promise<LocalMp3TrackMeta | undefined> {
+  if (!songId) return undefined;
+  const db = await openVaultDb();
+  if (db) {
+    const row = await idbGet<LocalMp3TrackMeta>(db, STORE_MP3_INDEX, songId);
+    if (row) {
+      memoryIndexMap.set(songId, row);
+      return row;
+    }
+  }
+  return memoryIndexMap.get(songId);
+}
+
 export async function readLocalVaultSummary(): Promise<LocalVaultSummary> {
   const db = await openVaultDb();
   let entries: LocalMp3TrackMeta[] = [];
@@ -1075,11 +1094,11 @@ async function ensureMp3BufferFromFetchedAudio(
   const tempCtx = new AudioCtxClass();
   try {
     const decoded = await tempCtx.decodeAudioData(rawBuffer.slice(0));
-    // FOH a 128 kbps Estéreo, CUE (Click/Guía) a 64 kbps Mono para mínimo espacio
+    // FOH a 192 kbps Estéreo (calidad transparente de escenario), CUE a 128 kbps Estéreo (preserva paneo L/R de Click y Voz Guía)
     const mp3Blob =
       channel === 'cue'
-        ? await audioBufferToMp3Blob(decoded, 64, true)
-        : await audioBufferToMp3Blob(decoded, 128, false);
+        ? await audioBufferToMp3Blob(decoded, 128, false)
+        : await audioBufferToMp3Blob(decoded, 192, false);
     const mp3Arr = await mp3Blob.arrayBuffer();
     return { buffer: mp3Arr, convertedFromWav: true };
   } finally {
