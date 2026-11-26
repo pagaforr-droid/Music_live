@@ -38,6 +38,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
   const [masterSetlistId, setMasterSetlistId] = useState<string | null>(null);
   const [currentSongId, setCurrentSongId] = useState<string | null>(null);
   const [songData, setSongData] = useState<any>(null);
+  const [nextSongData, setNextSongData] = useState<any>(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Transport control signals triggered by Master
@@ -114,8 +115,17 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
       if (msg.setlistId !== undefined && msg.setlistId !== null) {
         setMasterSetlistId(msg.setlistId);
       }
+      if (msg.nextSongData !== undefined) {
+        setNextSongData(msg.nextSongData);
+      }
 
       switch (msg.type) {
+        case 'PREFETCH_SONG':
+          if (msg.nextSongData || msg.songData) {
+            setNextSongData(msg.nextSongData || msg.songData);
+          }
+          break;
+
         case 'LOAD_SONG':
           if (msg.songId) {
             setCurrentSongId(msg.songId);
@@ -304,6 +314,7 @@ export function useSyncSlave(bandId: string, options?: UseSyncSlaveOptions) {
     masterSetlistId,
     currentSongId,
     songData,
+    nextSongData,
     isPlaying,
     playTrigger,
     pauseTrigger,

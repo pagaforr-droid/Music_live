@@ -3,13 +3,22 @@ import { supabase } from '../lib/supabase';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
 export interface SyncMessage {
-  type: 'LOAD_SONG' | 'PLAY' | 'PAUSE' | 'SEEK' | 'STOP' | 'STATE_SNAPSHOT' | 'HEARTBEAT';
+  type:
+    | 'LOAD_SONG'
+    | 'PLAY'
+    | 'PAUSE'
+    | 'SEEK'
+    | 'STOP'
+    | 'STATE_SNAPSHOT'
+    | 'HEARTBEAT'
+    | 'PREFETCH_SONG';
   setlistId?: string | null;
   songId?: string;
   startAt?: number; // Master timestamp in ms when playback starts/started at `offset`
   offset?: number; // Global audio time in seconds corresponding to `startAt` (or pause/seek position)
   isPlaying?: boolean;
   songData?: any;
+  nextSongData?: any; // Siguiente canción del setlist para pre-decodificación instantánea en RAM en los celulares
   sentAt?: number;
   targetClientId?: string;
 }

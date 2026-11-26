@@ -214,6 +214,31 @@ describe('Musician Encrypted Local Vault & Zero Supabase Egress Optimization', (
     expect(secondBatch.downloadedCount).toBe(0);
     expect(secondBatch.skippedCachedCount).toBe(2);
     expect(fetchSpy).toHaveBeenCalledTimes(0);
+
+    // If a 3rd song is added to the setlist in Studio, ONLY the 3rd song is downloaded (2 fetches: FOH + CUE)
+    const song3: PracticeSongItem = {
+      id: 'song-003',
+      title: 'Nuevo Tema',
+      foh_mobile_url: 'https://supa.example.com/audios/foh_mobile_300.mp3',
+      cue_mobile_url: 'https://supa.example.com/audios/cue_mobile_300.mp3',
+    };
+    fetchSpy.mockClear();
+    const deltaBatch = await downloadInEarPlaylistToLocalVault({
+      songs: [...playlist, song3],
+      tracksBySongId: secondBatch.summary.tracksBySongId,
+    });
+    expect(deltaBatch.downloadedCount).toBe(1);
+    expect(deltaBatch.skippedCachedCount).toBe(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // "Volver a Descargar" (forceRefresh: true) re-fetches and overwrites the local vault cleanly
+    fetchSpy.mockClear();
+    await ensureSongMp3CachedInDevice({
+      song: song2,
+      includeCue: true,
+      forceRefresh: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('counts ONLY ready slave presences (eliminating false connected devices) and filters NTP Wi-Fi jitter spikes', () => {

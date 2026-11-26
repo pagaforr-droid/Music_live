@@ -115,6 +115,7 @@ export default function MobileInEar() {
     connectionStatus,
     masterSetlistId,
     songData,
+    nextSongData,
     isPlaying,
     playTrigger,
     pauseTrigger,
@@ -157,6 +158,13 @@ export default function MobileInEar() {
   const isAudioNodePlayingRef = useRef<boolean>(false);
   const loadedSongSignatureRef = useRef<string>('');
   const loadRequestIdRef = useRef<number>(0);
+  // Caché LRU en RAM de AudioBuffers ya decodificados (máx 4 canciones) para transición instantánea en 0ms entre temas
+  const decodedRamCacheRef = useRef<
+    Map<string, { fohBuffer: AudioBuffer; cueBuffer: AudioBuffer }>
+  >(new Map());
+  const inflightDecodeMapRef = useRef<
+    Map<string, Promise<{ fohBuffer: AudioBuffer; cueBuffer: AudioBuffer } | null>>
+  >(new Map());
   const pendingPlayTriggerRef = useRef<{
     startAt: number;
     offset: number;
@@ -565,18 +573,146 @@ export default function MobileInEar() {
     [stopActiveSources, updateTime]
   );
 
-  // Carga instantánea desde la Bóveda Local MP3 (IndexedDB) en RAM cuando el Master selecciona canción
+  const getInEarSongSignature = useCallback((song: any): string => {
+    if (!song?.id) return '';
+    const fohSig = computeSongChannelSignature(song, 'foh');
+    const cueSig = computeSongChannelSignature(song, 'cue');
+    const sectionsUpd = song?.prompter_data?.sectionsUpdatedAt || '';
+    return `${song.id}|${fohSig}|${cueSig}|${sectionsUpd}`;
+  }, []);
+
+  // Decodificador compartido con deduplicación en vuelo y caché LRU en RAM (hasta 4 canciones listas para cambio en 0ms)
+  const decodeSongBuffersToRamCache = useCallback(
+    async (
+      song: any,
+      isForeground = false
+    ): Promise<{ fohBuffer: AudioBuffer; cueBuffer: AudioBuffer } | null> => {
+      const ctx = audioCtxRef.current;
+      if (!ctx || !song?.id) return null;
+
+      const targetSignature = getInEarSongSignature(song);
+      const cached = decodedRamCacheRef.current.get(targetSignature);
+      if (cached) {
+        return cached;
+      }
+
+      const inflight = inflightDecodeMapRef.current.get(targetSignature);
+      if (inflight) {
+        return inflight;
+      }
+
+      const promise = (async () => {
+        try {
+          let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+          let cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+
+          if (
+            !fohBytes ||
+            (!cueBytes && resolvePreferredMp3Source(song, 'cue').url)
+          ) {
+            if (isForeground) {
+              setLoadStatus('Sincronizando MP3 faltante en memoria local...');
+            }
+            const updatedMeta = await ensureSongMp3CachedInDevice({
+              song,
+              includeCue: true,
+            });
+            setTracksBySongId((prev) => ({ ...prev, [song.id]: updatedMeta }));
+            if (!fohBytes) {
+              fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
+            }
+            if (!cueBytes) {
+              cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
+            }
+          }
+
+          if (!audioCtxRef.current || !fohBytes) {
+            return null;
+          }
+
+          if (isForeground) {
+            setLoadStatus('Decodificando MP3 en RAM (Cero Latencia)...');
+          }
+          const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
+          wipeAudioArrayBufferInRam(fohBytes);
+
+          let decodedCue: AudioBuffer | null = null;
+          const needsRamCue = !cueBytes || shouldSynthesizeLiveCueInRam(song);
+
+          if (needsRamCue && Number(song?.prompter_data?.bpm) > 0) {
+            const loadedVoices = await ensureVoiceCueWavsLoaded(ctx);
+            if (loadedVoices > 0 || !cueBytes) {
+              const savedClick = song?.prompter_data?.mixConfig?.click;
+              const savedCues = song?.prompter_data?.mixConfig?.cues;
+              decodedCue = await synthesizeLiveCueBuffer(
+                ctx,
+                song.prompter_data,
+                decodedFoh.duration,
+                voiceCueBuffersRef.current,
+                voiceCueOffsetsRef.current,
+                0.85,
+                {
+                  exactPreRollSec: resolveEffectivePreRoll(song),
+                  clickVolume:
+                    typeof savedClick?.volume === 'number'
+                      ? savedClick.volume
+                      : 0.8,
+                  clickPan:
+                    typeof savedClick?.pan === 'number' ? savedClick.pan : 0,
+                  clickMuted: savedClick?.muted === true,
+                  cueVolume:
+                    typeof savedCues?.volume === 'number'
+                      ? savedCues.volume
+                      : 0.85,
+                  cuePan:
+                    typeof savedCues?.pan === 'number' ? savedCues.pan : 0,
+                  cueMuted: savedCues?.muted === true,
+                }
+              );
+            }
+          }
+
+          if (!decodedCue && cueBytes) {
+            decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
+          }
+          wipeAudioArrayBufferInRam(cueBytes);
+
+          if (!decodedCue) {
+            return null;
+          }
+
+          const entry = { fohBuffer: decodedFoh, cueBuffer: decodedCue };
+          if (decodedRamCacheRef.current.size >= 4) {
+            const oldestKey = decodedRamCacheRef.current.keys().next().value;
+            if (oldestKey && oldestKey !== loadedSongSignatureRef.current) {
+              decodedRamCacheRef.current.delete(oldestKey);
+            }
+          }
+          decodedRamCacheRef.current.set(targetSignature, entry);
+          return entry;
+        } catch (err) {
+          console.warn('[MobileInEar] Error decodificando canción en RAM:', err);
+          return null;
+        } finally {
+          inflightDecodeMapRef.current.delete(targetSignature);
+        }
+      })();
+
+      inflightDecodeMapRef.current.set(targetSignature, promise);
+      return promise;
+    },
+    [ensureVoiceCueWavsLoaded, getInEarSongSignature]
+  );
+
+  // Carga instantánea desde RAM Cache (0ms síncrono si fue pre-decodificada) o desde la Bóveda Local MP3
   const loadAudioForSong = useCallback(
     async (song: any) => {
       const ctx = audioCtxRef.current;
       if (!ctx || !song?.id) return;
 
-      const fohSig = computeSongChannelSignature(song, 'foh');
-      const cueSig = computeSongChannelSignature(song, 'cue');
-      const sectionsUpd = song?.prompter_data?.sectionsUpdatedAt || '';
-      const targetSignature = `${song.id}|${fohSig}|${cueSig}|${sectionsUpd}`;
+      const targetSignature = getInEarSongSignature(song);
 
-      // Si ya tenemos exactamente esta canción y versión decodificada en RAM, no recargar
+      // 1. Si ya es la canción activa en RAM, no hacer nada
       if (
         loadedSongSignatureRef.current === targetSignature &&
         fohBufferRef.current &&
@@ -591,100 +727,18 @@ export default function MobileInEar() {
 
       const reqId = ++loadRequestIdRef.current;
       stopActiveSources();
-      cueBufferRef.current = null;
-      fohBufferRef.current = null;
-      setIsSongBuffersReady(false);
-      loadedSongSignatureRef.current = '';
 
-      setLoadStatus('Cargando audio desde memoria local...');
-
-      try {
-        // 1. Leer FOH desde la bóveda local cifrada (IndexedDB); si no existiera, guardarlo automáticamente
-        let fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-        let cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-
-        if (!fohBytes || (!cueBytes && resolvePreferredMp3Source(song, 'cue').url)) {
-          setLoadStatus('Sincronizando MP3 faltante en memoria local...');
-          const updatedMeta = await ensureSongMp3CachedInDevice({
-            song,
-            includeCue: true,
-          });
-          setTracksBySongId((prev) => ({ ...prev, [song.id]: updatedMeta }));
-          if (!fohBytes) {
-            fohBytes = await readDecryptedTrackArrayBuffer(song.id, 'foh');
-          }
-          if (!cueBytes) {
-            cueBytes = await readDecryptedTrackArrayBuffer(song.id, 'cue');
-          }
-        }
-
-        if (loadRequestIdRef.current !== reqId || !audioCtxRef.current) return;
-        if (!fohBytes) {
-          throw new Error('La canción aún no tiene mezcla FOH exportada.');
-        }
-
-        setLoadStatus('Decodificando MP3 en RAM (Cero Latencia)...');
-        const decodedFoh = await ctx.decodeAudioData(fohBytes.slice(0));
-        wipeAudioArrayBufferInRam(fohBytes);
-        if (loadRequestIdRef.current !== reqId) return;
-
-        // 2. Resolver canal CUE (Click + Voz Guía): sintetizar en RAM si requiere Voz Guía actualizada, o usar MP3 de bóveda
-        let decodedCue: AudioBuffer | null = null;
-        const needsRamCue = !cueBytes || shouldSynthesizeLiveCueInRam(song);
-
-        if (needsRamCue && Number(song?.prompter_data?.bpm) > 0) {
-          const loadedVoices = await ensureVoiceCueWavsLoaded(ctx);
-          if (loadRequestIdRef.current !== reqId) return;
-          if (loadedVoices > 0 || !cueBytes) {
-            const savedClick = song?.prompter_data?.mixConfig?.click;
-            const savedCues = song?.prompter_data?.mixConfig?.cues;
-            decodedCue = await synthesizeLiveCueBuffer(
-              ctx,
-              song.prompter_data,
-              decodedFoh.duration,
-              voiceCueBuffersRef.current,
-              voiceCueOffsetsRef.current,
-              0.85,
-              {
-                exactPreRollSec: resolveEffectivePreRoll(song),
-                clickVolume:
-                  typeof savedClick?.volume === 'number'
-                    ? savedClick.volume
-                    : 0.8,
-                clickPan:
-                  typeof savedClick?.pan === 'number' ? savedClick.pan : 0,
-                clickMuted: savedClick?.muted === true,
-                cueVolume:
-                  typeof savedCues?.volume === 'number'
-                    ? savedCues.volume
-                    : 0.85,
-                cuePan: typeof savedCues?.pan === 'number' ? savedCues.pan : 0,
-                cueMuted: savedCues?.muted === true,
-              }
-            );
-          }
-        }
-
-        if (!decodedCue && cueBytes) {
-          decodedCue = await ctx.decodeAudioData(cueBytes.slice(0));
-        }
-        wipeAudioArrayBufferInRam(cueBytes);
-        if (loadRequestIdRef.current !== reqId) return;
-
-        if (!decodedCue) {
-          throw new Error('No se pudo preparar el canal de Clic/Guía.');
-        }
-
-        fohBufferRef.current = decodedFoh;
-        cueBufferRef.current = decodedCue;
+      // 2. FAST-PATH SÍNCRONO (<0.1ms, cero awaits): si la siguiente canción ya fue pre-decodificada en RAM, activarla al instante
+      const preDecoded = decodedRamCacheRef.current.get(targetSignature);
+      if (preDecoded) {
+        fohBufferRef.current = preDecoded.fohBuffer;
+        cueBufferRef.current = preDecoded.cueBuffer;
         loadedSongSignatureRef.current = targetSignature;
         setIsSongBuffersReady(true);
-
         const initialOffset = pauseOffsetRef.current || 0;
         setCurrentTime(initialOffset - getPreRoll(song));
-        setLoadStatus('Listo en RAM (Esperando Play del Administrador)');
+        setLoadStatus('Listo en RAM · Cambio Instantáneo (0ms)');
 
-        // Si llegó una orden de PLAY mientras se decodificaba la canción, engancharse de inmediato en fase exacta
         const pendingTrigger = pendingPlayTriggerRef.current;
         if (
           isPlayingRef.current &&
@@ -693,20 +747,86 @@ export default function MobileInEar() {
           pendingTrigger.ts !== lastExecutedTriggerTsRef.current
         ) {
           pendingPlayTriggerRef.current = null;
-          await startSynchronizedPlayback(pendingTrigger);
+          void startSynchronizedPlayback(pendingTrigger);
         }
-      } catch (e: any) {
-        if (loadRequestIdRef.current !== reqId) return;
-        setLoadStatus('Error: ' + (e?.message || 'No se pudo cargar el audio'));
+        return;
+      }
+
+      // 3. Ruta asíncrona: decodificar desde IndexedDB (o reutilizar decodificación en vuelo)
+      cueBufferRef.current = null;
+      fohBufferRef.current = null;
+      setIsSongBuffersReady(false);
+      loadedSongSignatureRef.current = '';
+      setLoadStatus('Cargando audio desde memoria local...');
+
+      const decoded = await decodeSongBuffersToRamCache(song, true);
+      if (loadRequestIdRef.current !== reqId) return;
+
+      if (!decoded) {
+        setLoadStatus('Error: No se pudo preparar el audio de la canción');
+        return;
+      }
+
+      fohBufferRef.current = decoded.fohBuffer;
+      cueBufferRef.current = decoded.cueBuffer;
+      loadedSongSignatureRef.current = targetSignature;
+      setIsSongBuffersReady(true);
+
+      const initialOffset = pauseOffsetRef.current || 0;
+      setCurrentTime(initialOffset - getPreRoll(song));
+      setLoadStatus('Listo en RAM (Esperando Play del Administrador)');
+
+      const pendingTrigger = pendingPlayTriggerRef.current;
+      if (
+        isPlayingRef.current &&
+        pendingTrigger &&
+        (!pendingTrigger.songId || pendingTrigger.songId === song.id) &&
+        pendingTrigger.ts !== lastExecutedTriggerTsRef.current
+      ) {
+        pendingPlayTriggerRef.current = null;
+        await startSynchronizedPlayback(pendingTrigger);
       }
     },
     [
-      ensureVoiceCueWavsLoaded,
+      decodeSongBuffersToRamCache,
+      getInEarSongSignature,
       getPreRoll,
       startSynchronizedPlayback,
       stopActiveSources,
     ]
   );
+
+  // Pre-decodificar silenciosamente en RAM la SIGUIENTE canción mientras suena o espera la actual (cambio en 0ms al terminar)
+  useEffect(() => {
+    if (!hasInteracted || !audioCtx || !isSongBuffersReady) return;
+
+    const candidateNext =
+      nextSongData && nextSongData.id !== songData?.id
+        ? nextSongData
+        : (() => {
+            if (!songData?.id || activePlaylistSongs.length === 0) return null;
+            const curIdx = activePlaylistSongs.findIndex(
+              (s) => s.id === songData.id
+            );
+            return curIdx >= 0 && curIdx + 1 < activePlaylistSongs.length
+              ? activePlaylistSongs[curIdx + 1]
+              : null;
+          })();
+
+    if (!candidateNext?.id) return;
+    const timer = window.setTimeout(() => {
+      void decodeSongBuffersToRamCache(candidateNext, false);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [
+    hasInteracted,
+    audioCtx,
+    isSongBuffersReady,
+    songData?.id,
+    nextSongData,
+    activePlaylistSongs,
+    decodeSongBuffersToRamCache,
+  ]);
 
   // Cargar canción cuando el Master envía LOAD_SONG / STATE_SNAPSHOT / PLAY
   useEffect(() => {
