@@ -38,18 +38,30 @@ import {
   Palette,
   Image as ImageIcon,
   SunMedium,
+  Film,
+  Camera,
+  Activity,
+  Crown,
 } from 'lucide-react';
 import {
   LyricLine,
   LyricFontCategory,
   LyricTextCase,
+  LyricWordRole,
   LyricBackgroundConfig,
+  LyricStylePack,
   LYRIC_EFFECT_PRESETS,
   LYRIC_FONT_PRESETS,
   LYRIC_FONT_CATEGORIES,
+  LYRIC_LAYOUT_PRESETS,
+  LYRIC_TEXTURE_PRESETS,
+  LYRIC_CAMERA_PRESETS,
   LYRIC_BACKGROUND_PRESETS,
+  LYRIC_STYLE_PACKS,
   DEFAULT_LYRIC_BACKGROUND,
   computeWordTimings,
+  assignAutoWordHierarchy,
+  quantizeLineWordsToRhythm,
   parseRawLyricsToPills,
   buildBeatGridMs,
   snapTimeMs,
@@ -115,10 +127,12 @@ export default function LyricStudio() {
   const [rawPasteText, setRawPasteText] = useState<string>('');
   const [saveFeedback, setSaveFeedback] = useState<boolean>(false);
   const [inspectorFontCategory, setInspectorFontCategory] = useState<'all' | LyricFontCategory>('all');
-  const [inspectorEffectFilter, setInspectorEffectFilter] = useState<'all' | 'brutal' | 'classic'>('all');
+  const [inspectorEffectFilter, setInspectorEffectFilter] = useState<'all' | 'studio-ae' | 'brutal' | 'classic'>('all');
   const [showAppliedToast, setShowAppliedToast] = useState<boolean>(false);
+  const [rhythmSyncToast, setRhythmSyncToast] = useState<boolean>(false);
+  const [activeStylePackId, setActiveStylePackId] = useState<string | null>(null);
   const [backgroundConfig, setBackgroundConfig] = useState<LyricBackgroundConfig>(DEFAULT_LYRIC_BACKGROUND);
-  const [inspectorTab, setInspectorTab] = useState<'text' | 'background'>('text');
+  const [inspectorTab, setInspectorTab] = useState<'packs' | 'text' | 'background'>('text');
   const bgImageRef = useRef<HTMLImageElement | null>(null);
 
   // Timeline & CapCut Controls State
@@ -493,6 +507,11 @@ export default function LyricStudio() {
       snapGuideX,
       snapGuideY,
       bpm,
+      firstBeatOffset: firstBeatOffsetSec,
+      beatTimes: beatTimesSec,
+      waveformPeaks,
+      totalDurationMs,
+      songTitle: songData?.title,
       background: backgroundConfig,
       backgroundImageElement: bgImageRef.current,
       onUpdateBoundingBox: (lineId, box) => {
@@ -516,6 +535,10 @@ export default function LyricStudio() {
     }
   }, [
     bpm,
+    firstBeatOffsetSec,
+    beatTimesSec,
+    waveformPeaks,
+    songData?.title,
     pxPerSec,
     selectedLineId,
     showSafeZones,
@@ -933,12 +956,111 @@ export default function LyricStudio() {
           if (l.id !== id) return l;
           const next = { ...l, ...updates };
           if (updates.text !== undefined || updates.durationMs !== undefined) {
-            next.words = computeWordTimings(next.text, next.durationMs);
+            next.words =
+              next.rhythmLocked !== false
+                ? quantizeLineWordsToRhythm(
+                    next.text,
+                    next.startMs,
+                    next.durationMs,
+                    bpm,
+                    beatMarkers,
+                    waveformPeaks,
+                    totalDurationMs,
+                    l.words,
+                    next.effect
+                  )
+                : computeWordTimings(next.text, next.durationMs, l.words);
+          } else if (updates.effect !== undefined && next.autoHierarchy !== false) {
+            next.words = assignAutoWordHierarchy(
+              computeWordTimings(next.text, next.durationMs, next.words),
+              next.effect
+            );
           }
           return next;
         }),
       recordUndo
     );
+  };
+
+  // Cycle individual word typographic role (normal -> hero -> badge -> accent-script -> whisper)
+  const handleCycleWordRole = (lineId: string, wordIdx: number) => {
+    const roleOrder: LyricWordRole[] = ['normal', 'hero', 'badge', 'accent-script', 'whisper'];
+    commitLyrics((prev) =>
+      prev.map((l) => {
+        if (l.id !== lineId) return l;
+        const baseWords = computeWordTimings(l.text, l.durationMs, l.words);
+        const currentWords =
+          l.autoHierarchy !== false && !baseWords.some((w) => w.role && w.role !== 'normal')
+            ? assignAutoWordHierarchy(baseWords, l.effect)
+            : baseWords;
+        const updatedWords = currentWords.map((w, idx) => {
+          if (idx !== wordIdx) return w;
+          const curRole: LyricWordRole = w.role || 'normal';
+          const nextRole = roleOrder[(roleOrder.indexOf(curRole) + 1) % roleOrder.length];
+          return { ...w, role: nextRole };
+        });
+        return { ...l, words: updatedWords };
+      })
+    );
+  };
+
+  // Quantize & lock words of the selected line or ALL lines to the song's real rhythm & waveform
+  const handleQuantizeRhythm = (scope: 'selected' | 'all') => {
+    commitLyrics((prev) =>
+      prev.map((l) => {
+        if (scope === 'selected' && l.id !== selectedLineId) return l;
+        const quantized = quantizeLineWordsToRhythm(
+          l.text,
+          l.startMs,
+          l.durationMs,
+          bpm,
+          beatMarkers,
+          waveformPeaks,
+          totalDurationMs,
+          undefined,
+          l.effect
+        );
+        return {
+          ...l,
+          rhythmLocked: true,
+          autoHierarchy: true,
+          words: assignAutoWordHierarchy(quantized, l.effect),
+        };
+      })
+    );
+    setRhythmSyncToast(true);
+    setTimeout(() => setRhythmSyncToast(false), 2200);
+  };
+
+  // Apply a complete 1-Click Studio Style Pack (Art Direction + Rhythm + Camera + Background)
+  const handleApplyStylePack = (pack: LyricStylePack, scope: 'all' | 'selected' = 'all') => {
+    setActiveStylePackId(pack.id);
+    if (scope === 'all') {
+      setBackgroundConfig(pack.background);
+    }
+    commitLyrics((prev) =>
+      prev.map((l) => {
+        if (scope === 'selected' && l.id !== selectedLineId) return l;
+        const quantizedWords = quantizeLineWordsToRhythm(
+          l.text,
+          l.startMs,
+          l.durationMs,
+          bpm,
+          beatMarkers,
+          waveformPeaks,
+          totalDurationMs,
+          undefined,
+          pack.lineStyle.effect
+        );
+        return {
+          ...l,
+          ...pack.lineStyle,
+          words: assignAutoWordHierarchy(quantizedWords, pack.lineStyle.effect),
+        };
+      })
+    );
+    setShowAppliedToast(true);
+    setTimeout(() => setShowAppliedToast(false), 2200);
   };
 
   const addLineAtPlayhead = () => {
@@ -1106,21 +1228,47 @@ export default function LyricStudio() {
   const applyStyleToAll = () => {
     if (!selectedLine) return;
     commitLyrics((prev) =>
-      prev.map((l) => ({
-        ...l,
-        effect: selectedLine.effect,
-        fontFamily: selectedLine.fontFamily,
-        fontSize: selectedLine.fontSize,
-        positionX: selectedLine.positionX,
-        positionY: selectedLine.positionY,
-        primaryColor: selectedLine.primaryColor,
-        accentColor: selectedLine.accentColor,
-        letterSpacing: selectedLine.letterSpacing,
-        textCase: selectedLine.textCase,
-        strokeWidth: selectedLine.strokeWidth,
-        fxIntensity: selectedLine.fxIntensity,
-        ghostText: selectedLine.ghostText,
-      }))
+      prev.map((l) => {
+        const nextWords =
+          selectedLine.rhythmLocked !== false
+            ? quantizeLineWordsToRhythm(
+                l.text,
+                l.startMs,
+                l.durationMs,
+                bpm,
+                beatMarkers,
+                waveformPeaks,
+                totalDurationMs,
+                l.words,
+                selectedLine.effect
+              )
+            : computeWordTimings(l.text, l.durationMs, l.words);
+        return {
+          ...l,
+          effect: selectedLine.effect,
+          fontFamily: selectedLine.fontFamily,
+          secondaryFontFamily: selectedLine.secondaryFontFamily,
+          fontSize: selectedLine.fontSize,
+          positionX: selectedLine.positionX,
+          positionY: selectedLine.positionY,
+          primaryColor: selectedLine.primaryColor,
+          accentColor: selectedLine.accentColor,
+          letterSpacing: selectedLine.letterSpacing,
+          textCase: selectedLine.textCase,
+          strokeWidth: selectedLine.strokeWidth,
+          fxIntensity: selectedLine.fxIntensity,
+          ghostText: selectedLine.ghostText,
+          layoutMode: selectedLine.layoutMode,
+          textTexture: selectedLine.textTexture,
+          cameraMotion: selectedLine.cameraMotion,
+          autoHierarchy: selectedLine.autoHierarchy,
+          rhythmLocked: selectedLine.rhythmLocked,
+          words:
+            selectedLine.autoHierarchy !== false
+              ? assignAutoWordHierarchy(nextWords, selectedLine.effect)
+              : nextWords,
+        };
+      })
     );
     setShowAppliedToast(true);
     setTimeout(() => setShowAppliedToast(false), 2000);
@@ -1894,68 +2042,167 @@ export default function LyricStudio() {
         </main>
 
         {/* RIGHT PANEL: KINETIC & LUXURY TYPOGRAPHY INSPECTOR */}
-        <aside className="w-[360px] bg-[#0b0e14] border-l border-white/[0.07] flex flex-col shrink-0 overflow-y-auto custom-scrollbar">
+        <aside className="w-[375px] bg-[#0b0e14] border-l border-white/[0.07] flex flex-col shrink-0 overflow-y-auto custom-scrollbar">
           <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between sticky top-0 bg-[#0b0e14]/95 backdrop-blur-md z-10">
             <div className="flex items-center gap-2">
               <Sparkles size={15} className="text-amber-400" />
               <div>
                 <h2 className="font-black text-xs uppercase tracking-wider text-white">
-                  Inspector Kinetic
+                  Studio Director Pro
                 </h2>
-                <span className="text-[9px] font-semibold text-gray-500 block leading-tight">
-                  HyperFrames & Lujo Visual
+                <span className="text-[9px] font-semibold text-gray-400 block leading-tight">
+                  After Effects · HyperFrames · Lemo-Opuscar
                 </span>
               </div>
             </div>
-            {selectedLine && (
+            <div className="flex items-center gap-1.5">
               <button
-                onClick={applyStyleToAll}
-                className={`text-[10px] font-bold px-2.5 py-1 rounded-md transition-all border flex items-center gap-1.5 ${
-                  showAppliedToast
+                type="button"
+                onClick={() => handleQuantizeRhythm('all')}
+                className={`text-[10px] font-bold px-2 py-1 rounded-md transition-all border flex items-center gap-1 ${
+                  rhythmSyncToast
                     ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 scale-105'
-                    : 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20'
+                    : 'text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/25'
                 }`}
-                title="Aplicar tipografía, efecto, tracking y estilo a todas las frases de la canción"
+                title="Cuantizar todas las palabras de la canción al pulso musical (BPM/Beats) y picos de onda vocal"
               >
-                {showAppliedToast ? (
-                  <>
-                    <Check size={11} className="text-emerald-400" />
-                    <span>¡Aplicado!</span>
-                  </>
-                ) : (
-                  <span>Aplicar a Todas</span>
-                )}
+                <Activity size={11} />
+                <span>{rhythmSyncToast ? '¡Ritmo Sync!' : 'Sync Ritmo'}</span>
               </button>
-            )}
+              {selectedLine && (
+                <button
+                  onClick={applyStyleToAll}
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded-md transition-all border flex items-center gap-1 ${
+                    showAppliedToast
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 scale-105'
+                      : 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20'
+                  }`}
+                  title="Aplicar tipografía, layout, cámara, textura y efecto a todas las frases de la canción"
+                >
+                  {showAppliedToast ? (
+                    <>
+                      <Check size={11} className="text-emerald-400" />
+                      <span>¡Aplicado!</span>
+                    </>
+                  ) : (
+                    <span>Aplicar Todo</span>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Studio Mode Switcher: Frase & Tipografía vs Fondo de Escenario */}
-          <div className="grid grid-cols-2 p-1.5 bg-[#0e121a] border-b border-white/[0.06] gap-1 shrink-0">
+          {/* Studio Mode Switcher: 1-Click Style Packs vs Frase & FX vs Fondo Escénico */}
+          <div className="grid grid-cols-3 p-1.5 bg-[#0e121a] border-b border-white/[0.06] gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setInspectorTab('packs')}
+              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-all ${
+                inspectorTab === 'packs'
+                  ? 'bg-gradient-to-r from-amber-500 to-red-600 text-white shadow-md'
+                  : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
+              }`}
+            >
+              <Crown size={11} /> Style Packs
+            </button>
             <button
               type="button"
               onClick={() => setInspectorTab('text')}
-              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-all ${
                 inspectorTab === 'text'
                   ? 'bg-red-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
               }`}
             >
-              <Type size={12} /> Frase & Efectos
+              <Type size={11} /> Frase & FX
             </button>
             <button
               type="button"
               onClick={() => setInspectorTab('background')}
-              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+              className={`py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-all ${
                 inspectorTab === 'background'
                   ? 'bg-red-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
               }`}
             >
-              <Palette size={12} /> Fondo Escénico
+              <Palette size={11} /> Escenario
             </button>
           </div>
 
-          {inspectorTab === 'text' ? (
+          {inspectorTab === 'packs' ? (
+            /* TAB 0: 1-CLICK ART-DIRECTED STUDIO STYLE PACKS */
+            <div className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-[11px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                    <Crown size={13} className="text-amber-400" /> Dirección de Arte en 1 Clic
+                  </h3>
+                  <p className="text-[9px] text-gray-400 mt-0.5 leading-snug">
+                    Configura tipografía multi-escala, layout, cámara 2.5D, textura, fondo y sincronía al ritmo.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                {LYRIC_STYLE_PACKS.map((pack) => {
+                  const isPackActive = activeStylePackId === pack.id;
+                  return (
+                    <div
+                      key={pack.id}
+                      className={`p-1 rounded-2xl border transition-all ${
+                        isPackActive
+                          ? 'bg-white/[0.08] border-amber-400/70 shadow-[0_0_20px_rgba(251,191,36,0.2)]'
+                          : 'bg-white/[0.03] border-white/[0.07] hover:border-white/20'
+                      }`}
+                    >
+                      <div
+                        className={`rounded-xl p-3 bg-gradient-to-br ${pack.previewGradient} relative overflow-hidden`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-xs font-black text-white tracking-wide">
+                            {pack.name}
+                          </span>
+                          <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-black/55 text-amber-300 border border-amber-400/30">
+                            {pack.badge}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-200/90 leading-snug mb-2.5">
+                          {pack.description}
+                        </p>
+                        <div className="flex items-center justify-between gap-1.5 text-[9px] font-mono text-white/80 mb-2.5 bg-black/35 px-2 py-1 rounded-lg">
+                          <span>Font: {pack.lineStyle.fontFamily}</span>
+                          <span>·</span>
+                          <span>Layout: {pack.lineStyle.layoutMode}</span>
+                          <span>·</span>
+                          <span>Cam: {pack.lineStyle.cameraMotion}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleApplyStylePack(pack, 'all')}
+                            className="flex-1 py-1.5 px-2.5 rounded-lg bg-white text-black hover:bg-amber-300 font-black text-[10px] uppercase tracking-wider transition-all flex items-center justify-center gap-1 shadow-md cursor-pointer"
+                          >
+                            <Sparkles size={11} />
+                            <span>Aplicar a Toda la Canción</span>
+                          </button>
+                          {selectedLine && (
+                            <button
+                              type="button"
+                              onClick={() => handleApplyStylePack(pack, 'selected')}
+                              className="py-1.5 px-2.5 rounded-lg bg-black/60 hover:bg-black/80 text-white border border-white/20 font-bold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                              title="Aplicar este estilo únicamente a la frase seleccionada"
+                            >
+                              Solo Frase
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : inspectorTab === 'text' ? (
             selectedLine ? (
               <div className="p-4 space-y-4">
                 {/* 1. Active Phrase Quick Editor & Text Case */}
@@ -2004,29 +2251,30 @@ export default function LyricStudio() {
                   </div>
                 </div>
 
-                {/* 2. Animation Templates with HyperFrames Filter */}
+                {/* 2. Animation Templates with Studio AE & HyperFrames Filter */}
                 <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
                   <div className="flex items-center justify-between">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                      Efecto de Animación
+                      Efecto de Animación Rítmica
                     </label>
                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white/5 text-gray-400 border border-white/10">
-                      {LYRIC_EFFECT_PRESETS.length} Efectos
+                      {LYRIC_EFFECT_PRESETS.length} Motores
                     </span>
                   </div>
 
-                  {/* Filter Tabs: Todos | Brutal FX | Clásicos */}
-                  <div className="flex items-center gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
+                  {/* Filter Tabs: Todos | Studio AE | Brutal FX | Clásicos */}
+                  <div className="grid grid-cols-4 gap-1 bg-[#121722] p-1 rounded-lg border border-white/[0.06]">
                     {[
                       { id: 'all', label: 'Todos' },
-                      { id: 'brutal', label: '🔥 Brutal FX' },
+                      { id: 'studio-ae', label: '🎬 Studio AE' },
+                      { id: 'brutal', label: '🔥 Brutal' },
                       { id: 'classic', label: 'Clásicos' },
                     ].map((tab) => (
                       <button
                         key={tab.id}
                         type="button"
                         onClick={() => setInspectorEffectFilter(tab.id as any)}
-                        className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
+                        className={`py-1 rounded text-[9px] font-bold transition-all ${
                           inspectorEffectFilter === tab.id
                             ? 'bg-white/15 text-white shadow-sm'
                             : 'text-gray-400 hover:text-white'
@@ -2037,13 +2285,15 @@ export default function LyricStudio() {
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                  <div className="grid grid-cols-2 gap-2 max-h-[265px] overflow-y-auto custom-scrollbar pr-1">
                     {LYRIC_EFFECT_PRESETS.filter((preset) => {
+                      if (inspectorEffectFilter === 'studio-ae') return preset.group === 'studio-ae';
                       if (inspectorEffectFilter === 'brutal') return preset.group === 'brutal';
-                      if (inspectorEffectFilter === 'classic') return preset.group !== 'brutal';
+                      if (inspectorEffectFilter === 'classic') return preset.group === 'classic';
                       return true;
                     }).map((preset) => {
                       const active = selectedLine.effect === preset.id;
+                      const isStudioAe = preset.group === 'studio-ae';
                       const isBrutal = preset.group === 'brutal';
                       return (
                         <button
@@ -2052,12 +2302,25 @@ export default function LyricStudio() {
                           onClick={() =>
                             updateLine(selectedLine.id, {
                               effect: preset.id,
-                              accentColor: selectedLine.accentColor || preset.defaultAccent,
+                              accentColor: preset.defaultAccent || selectedLine.accentColor,
+                              ...(preset.recommendedLayout
+                                ? { layoutMode: preset.recommendedLayout }
+                                : {}),
+                              ...(preset.recommendedTexture
+                                ? { textTexture: preset.recommendedTexture }
+                                : {}),
+                              ...(preset.recommendedCamera
+                                ? { cameraMotion: preset.recommendedCamera }
+                                : {}),
                             })
                           }
                           className={`p-2 rounded-xl text-left border transition-all relative overflow-hidden flex flex-col justify-between ${
                             active
-                              ? isBrutal
+                              ? isStudioAe
+                                ? 'bg-gradient-to-br ' +
+                                  preset.previewGradient +
+                                  ' border-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.3)] ring-1 ring-cyan-400/50'
+                                : isBrutal
                                 ? 'bg-gradient-to-br ' +
                                   preset.previewGradient +
                                   ' border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/50'
@@ -2070,16 +2333,22 @@ export default function LyricStudio() {
                           <div className="flex items-center justify-between mb-1 gap-1">
                             <span
                               className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
-                                isBrutal
-                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                                : 'bg-black/50 text-red-400 border-white/10'
+                                isStudioAe
+                                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                  : isBrutal
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                  : 'bg-black/50 text-red-400 border-white/10'
                               }`}
                             >
                               {preset.badge}
                             </span>
-                            {isBrutal && (
-                              <span className="text-[8px] text-amber-400 font-bold flex items-center gap-0.5">
-                                <Zap size={9} /> HF
+                            {(isStudioAe || isBrutal) && (
+                              <span
+                                className={`text-[8px] font-bold flex items-center gap-0.5 ${
+                                  isStudioAe ? 'text-cyan-300' : 'text-amber-400'
+                                }`}
+                              >
+                                <Zap size={9} /> {isStudioAe ? 'AE' : 'HF'}
                               </span>
                             )}
                           </div>
@@ -2098,7 +2367,7 @@ export default function LyricStudio() {
                   <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 space-y-1.5 mt-2">
                     <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400">
                       <span className="flex items-center gap-1 text-amber-400">
-                        <Flame size={12} /> Brutalidad FX
+                        <Flame size={12} /> Intensidad / Dinámica Rítmica
                       </span>
                       <span className="font-mono text-amber-300">
                         {((selectedLine.fxIntensity ?? 1.0) * 100).toFixed(0)}% (
@@ -2124,11 +2393,135 @@ export default function LyricStudio() {
                   </div>
                 </div>
 
-                {/* 3. Luxury Typography Catalog & Visual Picker */}
+                {/* 2.5. Multi-Scale Spatial Layout, Glyph Texture & 2.5D Virtual Camera */}
+                <div className="space-y-3 pt-3 border-t border-white/[0.06]">
+                  {/* Layout Mode Picker */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                        <Layers size={12} className="text-cyan-400" /> Arquitectura de Composición
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateLine(selectedLine.id, {
+                            autoHierarchy: selectedLine.autoHierarchy === false ? true : false,
+                          })
+                        }
+                        className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded border transition-all ${
+                          selectedLine.autoHierarchy !== false
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : 'bg-white/5 text-gray-500 border-white/10'
+                        }`}
+                        title="Activa la regla 70/20/8/2 para escalar automáticamente la palabra Hero, conectores en Badge y contraste"
+                      >
+                        Jerarquía 70/20/8/2: {selectedLine.autoHierarchy !== false ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 gap-1.5">
+                      {LYRIC_LAYOUT_PRESETS.map((lp) => {
+                        const active = (selectedLine.layoutMode || 'smart-wrap') === lp.id;
+                        return (
+                          <button
+                            key={lp.id}
+                            type="button"
+                            onClick={() => updateLine(selectedLine.id, { layoutMode: lp.id })}
+                            className={`px-2.5 py-1.5 rounded-xl text-left border transition-all flex items-center justify-between ${
+                              active
+                                ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-[0_0_12px_rgba(34,211,238,0.2)]'
+                                : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06] text-gray-300'
+                            }`}
+                          >
+                            <div className="min-w-0 pr-2">
+                              <div className="text-[10px] font-black flex items-center gap-1.5">
+                                <span>{lp.label}</span>
+                                <span className="text-[8px] font-mono px-1 rounded bg-white/10 text-cyan-300">
+                                  {lp.badge}
+                                </span>
+                              </div>
+                              <div className="text-[8.5px] text-gray-400 truncate">
+                                {lp.description}
+                              </div>
+                            </div>
+                            {active && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Glyph Surface Texture Picker */}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5">
+                      <Film size={12} className="text-amber-400" /> Textura Interior de Letra
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {LYRIC_TEXTURE_PRESETS.map((tp) => {
+                        const active = (selectedLine.textTexture || 'solid') === tp.id;
+                        return (
+                          <button
+                            key={tp.id}
+                            type="button"
+                            onClick={() => updateLine(selectedLine.id, { textTexture: tp.id })}
+                            className={`p-1.5 rounded-lg text-left border transition-all ${
+                              active
+                                ? 'bg-amber-500/20 border-amber-400 text-white'
+                                : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06] text-gray-400'
+                            }`}
+                            title={tp.description}
+                          >
+                            <div className="text-[8px] font-mono text-amber-300 uppercase">
+                              {tp.badge}
+                            </div>
+                            <div className="text-[10px] font-bold text-white truncate">
+                              {tp.label}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 2.5D Virtual Camera Motion Picker */}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5">
+                      <Camera size={12} className="text-rose-400" /> Cámara Virtual 2.5D (Guiada por BPM)
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {LYRIC_CAMERA_PRESETS.map((cp) => {
+                        const active = (selectedLine.cameraMotion || 'static') === cp.id;
+                        return (
+                          <button
+                            key={cp.id}
+                            type="button"
+                            onClick={() => updateLine(selectedLine.id, { cameraMotion: cp.id })}
+                            className={`p-2 rounded-xl text-left border transition-all ${
+                              active
+                                ? 'bg-rose-600/20 border-rose-500 text-white shadow-[0_0_12px_rgba(244,63,94,0.25)]'
+                                : 'bg-[#121722] hover:bg-[#171d2b] border-white/[0.06] text-gray-400'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-[10px] font-black text-white">{cp.label}</span>
+                              <span className="text-[8px] font-mono px-1 rounded bg-white/10 text-rose-300">
+                                {cp.badge}
+                              </span>
+                            </div>
+                            <div className="text-[8.5px] text-gray-400 line-clamp-1">
+                              {cp.description}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Luxury Typography Catalog & Dual Font Pairing */}
                 <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
                   <div className="flex items-center justify-between">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-                      <Type size={12} className="text-red-400" /> Tipografía de Escenario
+                      <Type size={12} className="text-red-400" /> Tipografía Principal
                     </label>
                     <span className="text-[9px] font-mono text-gray-500">
                       {LYRIC_FONT_PRESETS.length} Familias
@@ -2165,7 +2558,7 @@ export default function LyricStudio() {
                   </div>
 
                   {/* Visual Font List / Cards */}
-                  <div className="space-y-1.5 max-h-[240px] overflow-y-auto custom-scrollbar pr-1">
+                  <div className="space-y-1.5 max-h-[210px] overflow-y-auto custom-scrollbar pr-1">
                     {LYRIC_FONT_PRESETS.filter((font) => {
                       if (inspectorFontCategory === 'all') return true;
                       return font.category === inspectorFontCategory;
@@ -2226,6 +2619,33 @@ export default function LyricStudio() {
                       );
                     })}
                   </div>
+
+                  {/* Contrast / Script Secondary Font Selector (For `accent-script` words like `Real Love`) */}
+                  <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[9px] font-black uppercase tracking-wider text-pink-400 block">
+                        Fuente de Contraste (Palabras Script)
+                      </span>
+                      <span className="text-[8.5px] text-gray-400 block truncate">
+                        Para palabras marcadas como ✒️ SCRIPT
+                      </span>
+                    </div>
+                    <select
+                      value={selectedLine.secondaryFontFamily || 'Kaushan Script'}
+                      onChange={(e) =>
+                        updateLine(selectedLine.id, {
+                          secondaryFontFamily: e.target.value as any,
+                        })
+                      }
+                      className="bg-[#0b0e14] border border-white/15 rounded-lg px-2 py-1 text-[10px] font-bold text-white outline-none cursor-pointer"
+                    >
+                      {LYRIC_FONT_PRESETS.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 {/* 4. Optical Adjustments: Size, Tracking, Stroke, Ghost */}
@@ -2233,13 +2653,13 @@ export default function LyricStudio() {
                   {/* Size */}
                   <div>
                     <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
-                      <span>Tamaño en Lienzo</span>
+                      <span>Tamaño Base en Lienzo</span>
                       <span className="text-red-400 font-mono">{selectedLine.fontSize || 108}px</span>
                     </div>
                     <input
                       type="range"
                       min={54}
-                      max={170}
+                      max={180}
                       value={selectedLine.fontSize || 108}
                       onChange={(e) =>
                         updateLine(selectedLine.id, { fontSize: Number(e.target.value) }, false)
@@ -2268,11 +2688,6 @@ export default function LyricStudio() {
                       }
                       className="w-full accent-cyan-500 cursor-pointer"
                     />
-                    <div className="flex justify-between text-[8px] text-gray-500 font-semibold">
-                      <span>Condensado (-0.05em)</span>
-                      <span>Normal</span>
-                      <span>Expandido (+0.20em)</span>
-                    </div>
                   </div>
 
                   {/* Stroke Width / Outline */}
@@ -2303,7 +2718,7 @@ export default function LyricStudio() {
                         <Layers size={12} className="text-cyan-400" /> Texto Fantasma
                       </div>
                       <div className="text-[9px] text-gray-400 mt-0.5">
-                        Palabra gigante en fondo (6.5% drift)
+                        Palabra gigante en fondo reactiva al audio
                       </div>
                     </div>
                     <button
@@ -2322,24 +2737,40 @@ export default function LyricStudio() {
                   </div>
                 </div>
 
-                {/* 5. Stage Color Swatches */}
+                {/* 5. Stage Color Swatches (Primary & Accent) */}
                 <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
                   <div className="flex items-center justify-between">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                      Color de Resaltado / Escenario
+                      Color de Acento & Texto Base
                     </label>
-                    <span className="text-[9px] font-mono text-gray-500">
-                      {selectedLine.accentColor || '#ef4444'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <label
+                        className="flex items-center gap-1 text-[9px] font-mono text-gray-400 cursor-pointer"
+                        title="Color de texto principal"
+                      >
+                        <span>Texto:</span>
+                        <input
+                          type="color"
+                          value={selectedLine.primaryColor || '#ffffff'}
+                          onChange={(e) =>
+                            updateLine(selectedLine.id, { primaryColor: e.target.value })
+                          }
+                          className="w-4 h-4 rounded border border-white/20 cursor-pointer bg-transparent"
+                        />
+                      </label>
+                      <span className="text-[9px] font-mono text-amber-400">
+                        {selectedLine.accentColor || '#ef4444'}
+                      </span>
+                    </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {[
                       { color: '#ef4444', label: 'Stage Red' },
+                      { color: '#facc15', label: 'Wahaj Yellow' },
+                      { color: '#5cf03a', label: 'HyperFrames Acid Lime' },
                       { color: '#ffffff', label: 'Pure White' },
                       { color: '#d4af37', label: 'Oro Escenario' },
-                      { color: '#e5e7eb', label: 'Plata Cromo' },
-                      { color: '#f59e0b', label: 'Gold Amber' },
-                      { color: '#06b6d4', label: 'Cyan Neon' },
+                      { color: '#06b6d4', label: 'Cyan Laser' },
                       { color: '#10b981', label: 'Emerald' },
                       { color: '#ec4899', label: 'Rose Pink' },
                     ].map((sw) => (
@@ -2357,10 +2788,9 @@ export default function LyricStudio() {
                         title={sw.label}
                       />
                     ))}
-                    {/* Custom Color Input */}
                     <label
                       className="w-7 h-7 rounded-lg border-2 border-white/15 hover:border-white/40 cursor-pointer overflow-hidden flex items-center justify-center bg-[#121722] hover:scale-105 transition-transform"
-                      title="Color Personalizado"
+                      title="Color de Acento Personalizado"
                     >
                       <input
                         type="color"
@@ -2375,35 +2805,91 @@ export default function LyricStudio() {
                   </div>
                 </div>
 
-                {/* 6. Word-by-Word Cadence Breakdown */}
-                <div className="space-y-2 pt-3 border-t border-white/[0.06]">
+                {/* 6. Interactive Word Role Director & Rhythm Quantizer */}
+                <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                      Palabras Sincronizadas ({(selectedLine.words || []).length})
-                    </span>
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-wider text-white block">
+                        Director de Palabras & Ritmo
+                      </span>
+                      <span className="text-[8.5px] text-gray-400">
+                        Haz clic en una palabra para cambiar su rol: ★ HERO · 🏷️ BADGE · ✒️ SCRIPT · ◌ WHISPER
+                      </span>
+                    </div>
                     <button
                       onClick={() => handleSplitLine(selectedLine)}
-                      className="text-[10px] text-red-400 hover:text-red-300 font-bold flex items-center gap-1"
+                      className="text-[10px] text-red-400 hover:text-red-300 font-bold flex items-center gap-1 shrink-0"
                     >
-                      <Scissors size={11} /> Dividir Frase
+                      <Scissors size={11} /> Dividir
                     </button>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleQuantizeRhythm('selected')}
+                    className="w-full py-1.5 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Activity size={12} />
+                    <span>🎵 Cuantizar Palabras de esta Frase al Pulso & Onda Vocal</span>
+                  </button>
+
                   <div className="flex flex-wrap gap-1.5">
-                    {computeWordTimings(
-                      selectedLine.text,
-                      selectedLine.durationMs,
-                      selectedLine.words
-                    ).map((w, idx) => (
-                      <div
-                        key={idx}
-                        className="px-2 py-1 rounded-lg bg-[#121722] border border-white/[0.07] text-[10px] flex items-center gap-1.5"
-                      >
-                        <span className="font-bold text-white">{w.word}</span>
-                        <span className="font-mono text-gray-500">
-                          {(w.durationMs / 1000).toFixed(2)}s
-                        </span>
-                      </div>
-                    ))}
+                    {(() => {
+                      const rawW = computeWordTimings(
+                        selectedLine.text,
+                        selectedLine.durationMs,
+                        selectedLine.words
+                      );
+                      const hasExplicit = rawW.some((w) => w.role && w.role !== 'normal');
+                      const displayWords =
+                        selectedLine.autoHierarchy !== false && !hasExplicit
+                          ? assignAutoWordHierarchy(rawW, selectedLine.effect)
+                          : rawW;
+
+                      return displayWords.map((w, idx) => {
+                        const role = w.role || 'normal';
+                        const roleStyle =
+                          role === 'hero'
+                            ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-[0_0_10px_rgba(251,191,36,0.2)]'
+                            : role === 'badge'
+                            ? 'bg-yellow-400 text-black border-yellow-300 font-black'
+                            : role === 'accent-script'
+                            ? 'bg-pink-500/25 border-pink-400 text-pink-200 italic'
+                            : role === 'whisper'
+                            ? 'bg-white/[0.04] border-white/10 text-gray-400'
+                            : 'bg-[#121722] border-white/[0.09] text-white';
+                        const roleTag =
+                          role === 'hero'
+                            ? '★ HERO'
+                            : role === 'badge'
+                            ? '🏷️ BADGE'
+                            : role === 'accent-script'
+                            ? '✒️ SCRIPT'
+                            : role === 'whisper'
+                            ? '◌ 0.6x'
+                            : '';
+
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => handleCycleWordRole(selectedLine.id, idx)}
+                            className={`px-2.5 py-1 rounded-lg border text-[10px] flex items-center gap-1.5 transition-all hover:scale-105 cursor-pointer ${roleStyle}`}
+                            title="Clic para alternar rol: Normal -> ★ HERO -> 🏷️ BADGE -> ✒️ SCRIPT -> ◌ WHISPER"
+                          >
+                            <span className="font-bold">{w.word}</span>
+                            {roleTag && (
+                              <span className="text-[8px] font-black uppercase px-1 rounded bg-black/30">
+                                {roleTag}
+                              </span>
+                            )}
+                            <span className="font-mono text-[8.5px] opacity-70">
+                              {(w.durationMs / 1000).toFixed(2)}s
+                            </span>
+                          </button>
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
               </div>
@@ -2411,15 +2897,24 @@ export default function LyricStudio() {
               <div className="p-6 text-center text-gray-500 text-xs space-y-3">
                 <p>
                   Selecciona una frase de la canción en la línea de tiempo para personalizar su
-                  tipografía, efectos cinéticos y estilos.
+                  tipografía multi-escala, cámara 2.5D y efectos cinéticos.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setInspectorTab('background')}
-                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[10px] uppercase tracking-wider transition-all"
-                >
-                  Configurar Fondo de Escenario
-                </button>
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setInspectorTab('packs')}
+                    className="px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-red-600 text-white font-black text-[10px] uppercase tracking-wider transition-all"
+                  >
+                    Ver Style Packs en 1 Clic
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInspectorTab('background')}
+                    className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[10px] uppercase tracking-wider transition-all"
+                  >
+                    Configurar Fondo de Escenario
+                  </button>
+                </div>
               </div>
             )
           ) : (
@@ -2440,7 +2935,7 @@ export default function LyricStudio() {
               </div>
 
               {/* Preset Cards Grid */}
-              <div className="space-y-1.5 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
+              <div className="space-y-1.5 max-h-[290px] overflow-y-auto custom-scrollbar pr-1">
                 {LYRIC_BACKGROUND_PRESETS.map((preset) => {
                   const active = backgroundConfig.type === preset.id;
                   return (
@@ -2529,12 +3024,16 @@ export default function LyricStudio() {
                 </div>
               )}
 
-              {/* Custom Image Controls */}
-              {backgroundConfig.type === 'custom-image' && (
+              {/* Custom Image Controls (for both custom-image and album-card-stage) */}
+              {(backgroundConfig.type === 'custom-image' ||
+                backgroundConfig.type === 'album-card-stage') && (
                 <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
-                      <ImageIcon size={12} className="text-cyan-400" /> Imagen de Fondo
+                      <ImageIcon size={12} className="text-cyan-400" />{' '}
+                      {backgroundConfig.type === 'album-card-stage'
+                        ? 'Arte de Portada / Álbum'
+                        : 'Imagen de Fondo'}
                     </label>
                     {backgroundConfig.imageUrl && (
                       <button
@@ -2565,7 +3064,7 @@ export default function LyricStudio() {
                   ) : (
                     <div className="border border-dashed border-white/20 rounded-lg p-3 text-center">
                       <p className="text-[10px] text-gray-400 mb-2">
-                        Selecciona una foto o imagen de concierto
+                        Selecciona una portada de canción o foto de concierto
                       </p>
                       <label className="inline-block px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold text-[10px] uppercase cursor-pointer transition-colors">
                         Subir Imagen Local
@@ -2604,23 +3103,49 @@ export default function LyricStudio() {
                           imageUrl: e.target.value || undefined,
                         }))
                       }
-                      placeholder="https://ejemplo.com/fondo.jpg"
+                      placeholder="https://ejemplo.com/portada.jpg"
                       className="w-full bg-[#0b0e14] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-red-500"
                     />
                   </div>
                 </div>
               )}
 
-              {/* Dynamic Lighting & FX Switches */}
+              {/* Rhythm Reactivity & Dynamic Post-FX Switches */}
               <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
+                {/* Rhythm Reactivity Multiplier Slider */}
+                <div className="bg-[#121722] border border-white/[0.06] rounded-xl p-2.5 space-y-1.5">
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    <span className="flex items-center gap-1 text-amber-400">
+                      <Activity size={12} /> Sensibilidad al Ritmo & Audio
+                    </span>
+                    <span className="font-mono text-amber-300">
+                      {((backgroundConfig.rhythmReactivity ?? 1.0) * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.0}
+                    max={2.0}
+                    step={0.1}
+                    value={backgroundConfig.rhythmReactivity ?? 1.0}
+                    onChange={(e) =>
+                      setBackgroundConfig((prev) => ({
+                        ...prev,
+                        rhythmReactivity: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                </div>
+
                 {/* BPM Pulse Toggle */}
                 <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
-                      <SunMedium size={12} className="text-amber-400" /> Pulso con BPM
+                      <SunMedium size={12} className="text-amber-400" /> Pulso con BPM & Onda
                     </div>
                     <div className="text-[9px] text-gray-400 mt-0.5">
-                      Respiración lumínica al compás musical (60 FPS)
+                      Respiración lumínica guiada por los compases (60 FPS)
                     </div>
                   </div>
                   <button
@@ -2648,7 +3173,7 @@ export default function LyricStudio() {
                       <Sparkles size={12} className="text-cyan-400" /> Partículas de Escenario
                     </div>
                     <div className="text-[9px] text-gray-400 mt-0.5">
-                      Polvo de luz y bokeh flotando en segundo plano
+                      Polvo de luz y bokeh reactivo a la energía vocal
                     </div>
                   </div>
                   <button
@@ -2668,14 +3193,70 @@ export default function LyricStudio() {
                     {backgroundConfig.particles ? 'ACTIVADO' : 'OFF'}
                   </button>
                 </div>
+
+                {/* Analog Film Grain 24fps Toggle */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      <Film size={12} className="text-rose-400" /> Grano Analógico / Papel
+                    </div>
+                    <div className="text-[9px] text-gray-400 mt-0.5">
+                      Textura orgánica de cine y serigrafía a 24fps
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBackgroundConfig((prev) => ({
+                        ...prev,
+                        filmGrain: !prev.filmGrain,
+                      }))
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
+                      backgroundConfig.filmGrain
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    {backgroundConfig.filmGrain ? 'ACTIVADO' : 'OFF'}
+                  </button>
+                </div>
+
+                {/* Swiss / Tactical HUD Telemetry Toggle */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#121722] border border-white/[0.06]">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white flex items-center gap-1.5">
+                      <Activity size={12} className="text-emerald-400" /> Telemetría HUD de Compás
+                    </div>
+                    <div className="text-[9px] text-gray-400 mt-0.5">
+                      Muestra BAR / BEAT / BPM e indicador de pulsos en vivo
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBackgroundConfig((prev) => ({
+                        ...prev,
+                        hudTelemetry: !prev.hudTelemetry,
+                      }))
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all border ${
+                      backgroundConfig.hudTelemetry
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    {backgroundConfig.hudTelemetry ? 'ACTIVADO' : 'OFF'}
+                  </button>
+                </div>
               </div>
 
               {/* Cloud Persistence Note */}
               <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] text-[10px] text-gray-400 leading-relaxed">
                 <span className="font-bold text-white block mb-0.5">Sincronización Escénica:</span>
-                Este fondo se guarda en la nube con la canción al hacer clic en{' '}
-                <strong>"Guardar en Nube"</strong> y se proyectará exactamente igual en la pantalla
-                gigante de <strong>Live Concert</strong> y en los videos WebM exportados.
+                Este fondo y su reactividad rítmica se guardan con la canción al hacer clic en{' '}
+                <strong>"Guardar en Canción"</strong> y se proyectarán idénticos en{' '}
+                <strong>Live Concert</strong> y en los videos WebM exportados.
               </div>
             </div>
           )}
