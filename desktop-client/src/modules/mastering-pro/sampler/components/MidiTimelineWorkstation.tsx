@@ -2,11 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ChevronUp,
-  ChevronsLeft,
-  ChevronsRight,
   Crosshair,
   Hand,
   Headphones,
@@ -28,6 +24,11 @@ import type {
   StemDrumHitEvent,
   StemNoteEvent,
 } from '../types/sampler.types';
+import {
+  TimelineHorizontalScrollbar,
+  clampHorizontalScrollNorm,
+  computeAnchoredHorizontalZoom,
+} from './TimelineHorizontalScrollbar';
 
 export interface MidiGridLine {
   sec: number;
@@ -249,6 +250,9 @@ export interface MidiTimelineWorkstationProps {
   selectedHitId: string | null;
   setSelectedHitId: (id: string | null) => void;
   onRequestUploadForRole: (role: DrumPieceRole) => void;
+  autoFollowPlayhead?: boolean;
+  onToggleAutoFollowPlayhead?: () => void;
+  onManualHorizontalScroll?: () => void;
 }
 
 export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = ({
@@ -267,6 +271,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   selectedHitId,
   setSelectedHitId,
   onRequestUploadForRole,
+  autoFollowPlayhead: controlledAutoFollow,
+  onToggleAutoFollowPlayhead,
+  onManualHorizontalScroll,
 }) => {
   const isDrums = r.stemMode === 'drums';
   const [editTool, setEditTool] = useState<
@@ -277,7 +284,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     'floor-tom' | 'mid-tom' | 'high-tom'
   >('floor-tom');
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
-  const [autoFollowPlayhead, setAutoFollowPlayhead] = useState(true);
+  const [internalAutoFollow, setInternalAutoFollow] = useState(true);
+  const autoFollowPlayhead = controlledAutoFollow ?? internalAutoFollow;
+  const [minimapResizeTick, setMinimapResizeTick] = useState(0);
 
   // Vertical Zoom (scales lane height dynamically from 0.65x to 2.6x)
   const [verticalZoom, setVerticalZoom] = useState<number>(1.0);
@@ -289,9 +298,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   const [isPanning2D, setIsPanning2D] = useState(false);
 
   const verticalScrollRef = useRef<HTMLDivElement | null>(null);
-  const hMinimapRef = useRef<HTMLDivElement | null>(null);
   const hMinimapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const vScrollbarTrackRef = useRef<HTMLDivElement | null>(null);
+  const lastAutoFollowTimeRef = useRef<number>(-1);
 
   // Drag refs for 60fps pointer interactions without stale closures
   const pan2DRef = useRef<{
@@ -301,14 +310,6 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     startScrollNorm: number;
     startScrollTop: number;
     laneWidth: number;
-  } | null>(null);
-
-  const hBarDragRef = useRef<{
-    mode: 'move' | 'left' | 'right';
-    startClientX: number;
-    startNormStart: number;
-    startNormEnd: number;
-    trackWidth: number;
   } | null>(null);
 
   const vBarDragRef = useRef<{
@@ -361,37 +362,78 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     Math.max(isDrums ? 42 : 16, Math.min(isDrums ? 184 : 46, baseLaneHeightPx * verticalZoom))
   );
 
-  // Viewport height cap so vertical scroll & vertical zoom are always smoothly accessible
+  // Viewport height adapts cleanly in fullscreen so bottom horizontal scrollbar & inspector are NEVER clipped
   const viewportHeightClass =
     editorSizeMode === 'fullscreen'
-      ? 'h-[52vh] min-h-[340px]'
+      ? 'flex-1 min-h-[175px]'
       : editorSizeMode === 'large'
-      ? 'h-[396px]'
-      : 'h-[268px]';
+      ? 'h-[396px] shrink-0'
+      : 'h-[268px] shrink-0';
+
+  const notifyManualHorizontalScroll = useCallback(() => {
+    if (onManualHorizontalScroll) {
+      onManualHorizontalScroll();
+    } else if (r.isPlaying) {
+      setInternalAutoFollow(false);
+    }
+  }, [onManualHorizontalScroll, r.isPlaying]);
+
+  const handleToggleFollow = useCallback(() => {
+    if (onToggleAutoFollowPlayhead) {
+      onToggleAutoFollowPlayhead();
+      return;
+    }
+    setInternalAutoFollow((prev) => {
+      const next = !prev;
+      if (next && zoom > 1.02 && duration > 0) {
+        const targetStartSec = Math.max(
+          0,
+          Math.min(duration - viewSpanSec, r.currentTimeSec - viewSpanSec * 0.15)
+        );
+        setScrollNorm(clampHorizontalScrollNorm(targetStartSec / duration, zoom));
+      }
+      return next;
+    });
+  }, [onToggleAutoFollowPlayhead, zoom, duration, viewSpanSec, r.currentTimeSec, setScrollNorm]);
 
   // Clamp horizontal scroll norm cleanly
   const clampScrollNorm = useCallback(
-    (nextNorm: number, targetZoom = zoom) => {
-      const maxNorm = Math.max(0, 1 - 1 / Math.max(1, targetZoom));
-      return Math.max(0, Math.min(maxNorm, nextNorm));
-    },
+    (nextNorm: number, targetZoom = zoom) => clampHorizontalScrollNorm(nextNorm, targetZoom),
     [zoom]
   );
 
   const applyHorizontalZoomAtCursor = useCallback(
     (nextZoomRaw: number, anchorNorm01 = 0.5) => {
       if (duration <= 0) return;
-      const nextZoom = Math.max(1, Math.min(48, nextZoomRaw));
-      const anchorSec = viewStartSec + anchorNorm01 * viewSpanSec;
-      const nextSpan = duration / nextZoom;
-      const nextStartSec = Math.max(
-        0,
-        Math.min(duration - nextSpan, anchorSec - anchorNorm01 * nextSpan)
-      );
-      setZoom(nextZoom);
-      setScrollNorm(duration > 0 ? nextStartSec / duration : 0);
+      const next = computeAnchoredHorizontalZoom({
+        duration,
+        currentZoom: zoom,
+        currentScrollNorm: scrollNorm,
+        nextZoomRaw,
+        anchorNorm01,
+      });
+      setZoom(next.zoom);
+      setScrollNorm(next.scrollNorm);
     },
-    [duration, viewStartSec, viewSpanSec, setZoom, setScrollNorm]
+    [duration, zoom, scrollNorm, setZoom, setScrollNorm]
+  );
+
+  const handleMidiScrollbarChange = useCallback(
+    (nextNorm: number, isManual = false) => {
+      setScrollNorm(clampHorizontalScrollNorm(nextNorm, zoom));
+      if (isManual) notifyManualHorizontalScroll();
+    },
+    [zoom, setScrollNorm, notifyManualHorizontalScroll]
+  );
+
+  const handleMidiScrollbarZoomAndScroll = useCallback(
+    (nextZoomRaw: number, nextScrollNorm: number, isManual = false) => {
+      const clampedZoom = Math.max(1, Math.min(48, nextZoomRaw));
+      setZoom(clampedZoom);
+      setScrollNorm(clampHorizontalScrollNorm(nextScrollNorm, clampedZoom));
+      if (isManual) notifyManualHorizontalScroll();
+    },
+    [setZoom, setScrollNorm, notifyManualHorizontalScroll]
   );
 
   // Sync vertical scroll metrics whenever container resizes, lanes change, or verticalZoom changes
@@ -411,7 +453,10 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     syncVerticalMetrics();
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => syncVerticalMetrics());
+      ro = new ResizeObserver(() => {
+        syncVerticalMetrics();
+        setMinimapResizeTick((t) => (t + 1) & 0xffff);
+      });
       ro.observe(el);
     }
     const raf = requestAnimationFrame(syncVerticalMetrics);
@@ -421,15 +466,23 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     };
   }, [syncVerticalMetrics, laneHeightPx, drumLaneMode, editorSizeMode, melodicRows.length, isDrums]);
 
-  // Auto-follow playhead while playing back zoomed-in
+  // Fallback auto-follow playhead when component is used uncontrolled (when controlled, StemReplacerPanel owns it)
   useEffect(() => {
-    if (!r.isPlaying || !autoFollowPlayhead || zoom <= 1.02 || duration <= 0) return;
+    if (controlledAutoFollow !== undefined) return;
+    if (!r.isPlaying || !autoFollowPlayhead || zoom <= 1.02 || duration <= 0) {
+      lastAutoFollowTimeRef.current = r.currentTimeSec;
+      return;
+    }
     const t = r.currentTimeSec;
+    const prevT = lastAutoFollowTimeRef.current;
+    lastAutoFollowTimeRef.current = t;
+    if (Math.abs(t - prevT) < 0.0005) return;
     if (t > viewEndSec - viewSpanSec * 0.06 || t < viewStartSec - 0.02) {
       const targetStartSec = Math.max(0, Math.min(duration - viewSpanSec, t - viewSpanSec * 0.12));
-      setScrollNorm(targetStartSec / duration);
+      setScrollNorm(clampHorizontalScrollNorm(targetStartSec / duration, zoom));
     }
   }, [
+    controlledAutoFollow,
     r.isPlaying,
     r.currentTimeSec,
     autoFollowPlayhead,
@@ -481,6 +534,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
         const rawDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
         const normDelta = (rawDelta / 900) * (1 / zoom);
         setScrollNorm((prev) => clampScrollNorm(prev + normDelta));
+        notifyManualHorizontalScroll();
         return;
       }
 
@@ -506,6 +560,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     clampScrollNorm,
     setScrollNorm,
     syncVerticalMetrics,
+    notifyManualHorizontalScroll,
   ]);
 
   // Global keyboard shortcuts for MIDI scroll & selected note deletion
@@ -523,10 +578,12 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
         e.preventDefault();
         const step = (e.shiftKey ? 0.28 : 0.1) / zoom;
         setScrollNorm((s) => clampScrollNorm(s - step));
+        notifyManualHorizontalScroll();
       } else if (e.key === 'ArrowRight' && !e.altKey && zoom > 1.01) {
         e.preventDefault();
         const step = (e.shiftKey ? 0.28 : 0.1) / zoom;
         setScrollNorm((s) => clampScrollNorm(s + step));
+        notifyManualHorizontalScroll();
       } else if (e.key === 'ArrowUp' && verticalScrollRef.current) {
         const el = verticalScrollRef.current;
         if (el.scrollHeight > el.clientHeight + 2) {
@@ -552,6 +609,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     clampScrollNorm,
     setScrollNorm,
     laneHeightPx,
+    notifyManualHorizontalScroll,
   ]);
 
   // Render High-DPI Horizontal MIDI Minimap Canvas (shows all drum hits or melodic notes across full song)
@@ -603,12 +661,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
         ctx.fillRect(x0, y - 1, bw, 2.2);
       }
     }
-
-    // Playhead marker on minimap
-    const px = (r.currentTimeSec / duration) * w;
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(px - 0.75, 0, 1.5, h);
-  }, [r.analysis, r.currentTimeSec, duration, isDrums, editorSizeMode]);
+  }, [r.analysis, duration, isDrums, editorSizeMode, minimapResizeTick]);
 
   // 2D Drag-to-Pan Handlers (Middle-Click, Alt+Drag, or Pan Tool)
   const begin2DPan = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -625,7 +678,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
       active: true,
       startX: e.clientX,
       startY: e.clientY,
-      startScrollNorm: scrollNorm,
+      startScrollNorm: clampScrollNorm(viewStartSec / Math.max(0.001, duration)),
       startScrollTop: el.scrollTop,
       laneWidth: Math.max(120, rect.width - headerOffset),
     };
@@ -638,9 +691,10 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     if (!st || !st.active) return;
     const dx = e.clientX - st.startX;
     const dy = e.clientY - st.startY;
-    if (zoom > 1.01) {
+    if (zoom > 1.01 && Math.abs(dx) > 1) {
       const normDelta = -(dx / st.laneWidth) * (1 / zoom);
       setScrollNorm(clampScrollNorm(st.startScrollNorm + normDelta));
+      notifyManualHorizontalScroll();
     }
     const el = verticalScrollRef.current;
     if (el && el.scrollHeight > el.clientHeight) {
@@ -656,78 +710,6 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     if (!pan2DRef.current?.active) return;
     pan2DRef.current = null;
     setIsPanning2D(false);
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-  };
-
-  // Horizontal Minimap Scrollbar Pointer Handlers (Drag Viewport + Resize Left/Right Edges to Zoom!)
-  const thumbLeftPct = duration > 0 ? (viewStartSec / duration) * 100 : 0;
-  const thumbWidthPct = Math.max(2.2, Math.min(100, (1 / Math.max(1, zoom)) * 100));
-
-  const onHMinimapPointerDown = (
-    e: React.PointerEvent<HTMLDivElement>,
-    mode: 'track' | 'move' | 'left' | 'right'
-  ) => {
-    if (duration <= 0 || !hMinimapRef.current) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = hMinimapRef.current.getBoundingClientRect();
-    const trackW = Math.max(80, rect.width);
-
-    if (mode === 'track') {
-      const clickNorm = Math.max(0, Math.min(1, (e.clientX - rect.left) / trackW));
-      const halfSpanNorm = 0.5 / Math.max(1, zoom);
-      setScrollNorm(clampScrollNorm(clickNorm - halfSpanNorm));
-      return;
-    }
-
-    const startNormStart = viewStartSec / duration;
-    const startNormEnd = Math.min(1, viewEndSec / duration);
-    hBarDragRef.current = {
-      mode,
-      startClientX: e.clientX,
-      startNormStart,
-      startNormEnd,
-      trackWidth: trackW,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const onHMinimapPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const st = hBarDragRef.current;
-    if (!st) return;
-    const dNorm = (e.clientX - st.startClientX) / st.trackWidth;
-    const minSpanNorm = 1 / 48;
-
-    if (st.mode === 'move') {
-      const span = st.startNormEnd - st.startNormStart;
-      const nextStart = Math.max(0, Math.min(1 - span, st.startNormStart + dNorm));
-      setScrollNorm(nextStart);
-    } else if (st.mode === 'left') {
-      const nextStart = Math.max(
-        0,
-        Math.min(st.startNormEnd - minSpanNorm, st.startNormStart + dNorm)
-      );
-      const nextSpan = Math.max(minSpanNorm, st.startNormEnd - nextStart);
-      setZoom(Math.max(1, Math.min(48, 1 / nextSpan)));
-      setScrollNorm(nextStart);
-    } else if (st.mode === 'right') {
-      const nextEnd = Math.min(
-        1,
-        Math.max(st.startNormStart + minSpanNorm, st.startNormEnd + dNorm)
-      );
-      const nextSpan = Math.max(minSpanNorm, nextEnd - st.startNormStart);
-      setZoom(Math.max(1, Math.min(48, 1 / nextSpan)));
-      setScrollNorm(st.startNormStart);
-    }
-  };
-
-  const onHMinimapPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!hBarDragRef.current) return;
-    hBarDragRef.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -815,9 +797,13 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   if (!r.analysis || duration <= 0) return null;
 
   return (
-    <div className="rounded-2xl border border-slate-800/90 bg-[#050914] overflow-hidden flex flex-col shadow-[0_12px_36px_rgba(0,0,0,0.55)]">
+    <div
+      className={`rounded-2xl border border-slate-800/90 bg-[#050914] overflow-hidden flex flex-col shadow-[0_12px_36px_rgba(0,0,0,0.55)] ${
+        editorSizeMode === 'fullscreen' ? 'flex-1 min-h-[360px]' : 'shrink-0'
+      }`}
+    >
       {/* WORKSTATION TOP TOOLBAR (Tools · Drum 5/9 View · Vertical Zoom · Auto-Follow) */}
-      <div className="px-4 py-2.5 bg-slate-950 border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono">
+      <div className="shrink-0 px-4 py-2 bg-slate-950 border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[#00E5FF] font-bold tracking-tight">
             {isDrums
@@ -1638,8 +1624,8 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
         </div>
       </div>
 
-      {/* ADVANCED HORIZONTAL MINIMAP SCROLLBAR & ZOOM BAR (Bottom of MIDI Editor) */}
-      <div className="flex flex-wrap sm:flex-nowrap items-stretch bg-slate-950 border-t border-slate-800/90 text-[10px] font-mono select-none">
+      {/* ADVANCED HORIZONTAL MINIMAP SCROLLBAR & ZOOM BAR (Bottom of MIDI Editor — Always Visible & Unclipped) */}
+      <div className="shrink-0 flex flex-wrap sm:flex-nowrap items-stretch bg-slate-950 border-t border-slate-800/90 text-[10px] font-mono select-none">
         {/* Left Horizontal Scroll & Follow Controls */}
         <div
           className={`${
@@ -1649,7 +1635,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => setAutoFollowPlayhead((v) => !v)}
+              onClick={handleToggleFollow}
               className={`px-1.5 py-0.5 rounded border text-[9.5px] font-bold flex items-center gap-1 cursor-pointer transition-colors ${
                 autoFollowPlayhead
                   ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 text-[#00E5FF]'
@@ -1687,108 +1673,54 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
           </span>
         </div>
 
-        {/* Interactive Horizontal MIDI Minimap + Viewport Thumb with Left/Right Zoom Edges */}
-        <div className="flex-1 flex items-center gap-1 px-2 py-1.5 min-w-[200px]">
-          <button
-            type="button"
-            disabled={zoom <= 1.01}
-            onClick={() => setScrollNorm(0)}
-            className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-30"
-            title="Ir al inicio de la pista"
-          >
-            <ChevronsLeft size={12} />
-          </button>
-          <button
-            type="button"
-            disabled={zoom <= 1.01}
-            onClick={() => setScrollNorm((s) => clampScrollNorm(s - 0.16 / zoom))}
-            className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-30"
-            title="Desplazar a la izquierda (Shift + Rueda)"
-          >
-            <ChevronLeft size={12} />
-          </button>
+        {/* Interactive Horizontal MIDI Minimap + High-Visibility Draggable Scrollbar Thumb */}
+        <div className="flex-1 flex items-center px-2 py-1.5 min-w-[200px]">
+          <TimelineHorizontalScrollbar
+            duration={duration}
+            zoom={zoom}
+            viewStartSec={viewStartSec}
+            viewEndSec={viewEndSec}
+            currentTimeSec={r.currentTimeSec}
+            onChangeScrollNorm={handleMidiScrollbarChange}
+            onChangeZoomAndScroll={handleMidiScrollbarZoomAndScroll}
+            onSeekToSec={r.seekToSec}
+            accent="cyan"
+            trackHeightClass="h-8"
+            ariaLabel="Scroll horizontal del Editor MIDI"
+            trackTitle="Barra y Minimapa MIDI Horizontal · Arrastra para moverte por toda la canción, arrastra bordes para Zoom Horizontal o doble clic para 1x/4x"
+            overviewContent={
+              <canvas
+                ref={hMinimapCanvasRef}
+                className="w-full h-full block pointer-events-none opacity-90"
+              />
+            }
+          />
+        </div>
 
-          {/* Minimap Overview Strip */}
-          <div
-            ref={hMinimapRef}
-            onPointerDown={(e) => onHMinimapPointerDown(e, 'track')}
-            onDoubleClick={() => {
-              if (zoom > 1.1) {
+        {/* Bottom-Right Corner aligned with Right Vertical Scrollbar */}
+        <div className="hidden sm:flex w-7 shrink-0 border-l border-slate-800 bg-slate-950 items-center justify-center">
+          {zoom > 1.05 ? (
+            <button
+              type="button"
+              onClick={() => {
                 setZoom(1);
                 setScrollNorm(0);
-              } else {
-                applyHorizontalZoomAtCursor(4, 0.2);
-              }
-            }}
-            className="relative flex-1 h-8 rounded-lg overflow-hidden border border-slate-800 bg-[#03060F] cursor-pointer"
-            title="Minimapa MIDI Horizontal · Arrastra la ventana para mover, arrastra sus bordes izquierdo/derecho para Zoom Horizontal, o doble clic para 1x/4x"
-          >
-            <canvas
-              ref={hMinimapCanvasRef}
-              className="w-full h-full block pointer-events-none opacity-90"
-            />
-
-            {/* Draggable Horizontal Viewport Window with Resizable Left/Right Zoom Handles */}
-            <div
-              onPointerDown={(e) => onHMinimapPointerDown(e, 'move')}
-              onPointerMove={onHMinimapPointerMove}
-              onPointerUp={onHMinimapPointerUp}
-              onPointerCancel={onHMinimapPointerUp}
-              style={{
-                left: `${thumbLeftPct}%`,
-                width: `${thumbWidthPct}%`,
               }}
-              className="absolute top-0 bottom-0 bg-[#00E5FF]/18 hover:bg-[#00E5FF]/26 border border-[#00E5FF]/85 rounded-md shadow-[0_0_12px_rgba(0,229,255,0.22)] cursor-grab active:cursor-grabbing flex items-center justify-between"
+              className="text-[8.5px] font-bold text-[#00E5FF] hover:text-white cursor-pointer"
+              title="Restablecer Zoom Horizontal a 1x (ver canción completa)"
             >
-              {/* Left Edge Zoom Handle */}
-              <div
-                onPointerDown={(e) => onHMinimapPointerDown(e, 'left')}
-                onPointerMove={onHMinimapPointerMove}
-                onPointerUp={onHMinimapPointerUp}
-                onPointerCancel={onHMinimapPointerUp}
-                className="w-2.5 h-full cursor-ew-resize flex items-center justify-center group"
-                title="Arrastra el borde izquierdo para hacer Zoom Horizontal"
-              >
-                <span className="w-[2px] h-4 rounded-full bg-[#00E5FF] group-hover:bg-white" />
-              </div>
-
-              {/* Right Edge Zoom Handle */}
-              <div
-                onPointerDown={(e) => onHMinimapPointerDown(e, 'right')}
-                onPointerMove={onHMinimapPointerMove}
-                onPointerUp={onHMinimapPointerUp}
-                onPointerCancel={onHMinimapPointerUp}
-                className="w-2.5 h-full cursor-ew-resize flex items-center justify-center group"
-                title="Arrastra el borde derecho para hacer Zoom Horizontal"
-              >
-                <span className="w-[2px] h-4 rounded-full bg-[#00E5FF] group-hover:bg-white" />
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            disabled={zoom <= 1.01}
-            onClick={() => setScrollNorm((s) => clampScrollNorm(s + 0.16 / zoom))}
-            className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-30"
-            title="Desplazar a la derecha (Shift + Rueda)"
-          >
-            <ChevronRight size={12} />
-          </button>
-          <button
-            type="button"
-            disabled={zoom <= 1.01}
-            onClick={() => setScrollNorm(Math.max(0, 1 - 1 / zoom))}
-            className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-30"
-            title="Ir al final de la pista"
-          >
-            <ChevronsRight size={12} />
-          </button>
+              1x
+            </button>
+          ) : (
+            <span className="text-[9px] text-slate-500 font-bold" title="Scroll Horizontal">
+              H
+            </span>
+          )}
         </div>
       </div>
 
       {/* LIVE SELECTED HIT / NOTE INSPECTOR BAR */}
-      <div className="px-4 py-2.5 bg-slate-950/95 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono">
+      <div className="shrink-0 px-4 py-2 bg-slate-950/95 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono">
         {isDrums && selectedHit ? (
           <>
             <div className="flex flex-wrap items-center gap-2">

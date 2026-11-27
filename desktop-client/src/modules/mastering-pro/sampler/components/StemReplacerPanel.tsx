@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   CloudUpload,
+  Crosshair,
   Disc3,
   Download,
   FolderArchive,
@@ -48,6 +47,11 @@ import type {
   StemAnalysisMode,
 } from '../types/sampler.types';
 import { MidiTimelineWorkstation } from './MidiTimelineWorkstation';
+import {
+  TimelineHorizontalScrollbar,
+  clampHorizontalScrollNorm,
+  computeAnchoredHorizontalZoom,
+} from './TimelineHorizontalScrollbar';
 
 interface StemReplacerPanelProps {
   replacer: ReturnType<typeof useStemReplacer>;
@@ -108,6 +112,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [songSearch, setSongSearch] = useState('');
   const [zoom, setZoom] = useState(1);
   const [scrollNorm, setScrollNorm] = useState(0);
+  const [autoFollowPlayhead, setAutoFollowPlayhead] = useState(true);
+  const [canvasResizeTick, setCanvasResizeTick] = useState(0);
+  const [isPanningWaveform, setIsPanningWaveform] = useState(false);
   const [saveStemName, setSaveStemName] = useState('');
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [showCustomBank, setShowCustomBank] = useState(false);
@@ -124,6 +131,15 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [bpmDraft, setBpmDraft] = useState<string>('120');
   const tapTimesRef = useRef<number[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const waveformOverviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastAutoFollowTimeRef = useRef<number>(-1);
+  const waveformPanRef = useRef<{
+    active: boolean;
+    didDrag: boolean;
+    startClientX: number;
+    startScrollNorm: number;
+    width: number;
+  } | null>(null);
 
   // Keyboard shortcuts for Fullscreen Exit (Escape) & Selected Hit Deletion (Delete / Backspace)
   useEffect(() => {
@@ -493,27 +509,286 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     viewStartSec,
     viewEndSec,
     viewSpanSec,
+    canvasResizeTick,
   ]);
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Keep Waveform & Overview canvases crisp on resize or fullscreen transitions
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      setCanvasResizeTick((t) => (t + 1) & 0xffff);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Render Full-Song Waveform + Hits Overview Canvas inside the Waveform Horizontal Scrollbar
+  useEffect(() => {
+    const canvas = waveformOverviewCanvasRef.current;
+    if (!canvas || !r.originalBuffer || duration <= 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(140, rect.width);
+    const h = Math.max(18, rect.height);
+    if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = '#03060F';
+    ctx.fillRect(0, 0, w, h);
+
+    const midY = h / 2;
+    const totalSamples = r.originalBuffer.length;
+    const samplesPerPx = Math.max(1, totalSamples / w);
+    const level =
+      r.waveformPyramid?.levels
+        .slice()
+        .reverse()
+        .find((lvl) => lvl.bucketSize <= samplesPerPx) ?? r.waveformPyramid?.levels[0];
+
+    if (level) {
+      ctx.fillStyle =
+        r.abMode === 'replaced' ? 'rgba(0, 229, 255, 0.5)' : 'rgba(148, 163, 184, 0.55)';
+      for (let x = 0; x < w; x++) {
+        const b0 = Math.max(0, Math.floor((x * samplesPerPx) / level.bucketSize));
+        const b1 = Math.min(level.mins.length - 1, Math.ceil(((x + 1) * samplesPerPx) / level.bucketSize));
+        let mn = 1;
+        let mx = -1;
+        for (let b = b0; b <= b1; b++) {
+          if (level.mins[b] < mn) mn = level.mins[b];
+          if (level.maxs[b] > mx) mx = level.maxs[b];
+        }
+        const yTop = midY - mx * (h * 0.44);
+        const yBot = midY - mn * (h * 0.44);
+        ctx.fillRect(x, yTop, 1, Math.max(1, yBot - yTop));
+      }
+    }
+
+    if (r.analysis?.mode === 'drums' && r.analysis.drumHits.length > 0) {
+      for (const hit of r.analysis.drumHits) {
+        if (hit.role !== 'kick' && hit.role !== 'snare' && hit.role !== 'crash') continue;
+        const x = (hit.peakTimeSec / duration) * w;
+        ctx.fillStyle =
+          hit.role === 'kick'
+            ? 'rgba(255, 107, 0, 0.72)'
+            : hit.role === 'snare'
+            ? 'rgba(0, 229, 255, 0.65)'
+            : 'rgba(236, 72, 153, 0.65)';
+        ctx.fillRect(x, hit.role === 'kick' ? h - 5 : 1, 1.2, 4);
+      }
+    } else if (r.analysis && r.analysis.noteEvents.length > 0) {
+      const minM = r.analysis.midiRange?.minMidi ?? 36;
+      const maxM = Math.max(minM + 12, r.analysis.midiRange?.maxMidi ?? 72);
+      const spanM = maxM - minM;
+      for (const ev of r.analysis.noteEvents) {
+        const x0 = (ev.startSec / duration) * w;
+        const bw = Math.max(1.5, (ev.durationSec / duration) * w);
+        const y = h - 3 - ((ev.midiNote - minM) / spanM) * (h - 6);
+        ctx.fillStyle =
+          ev.midiNote < 50
+            ? 'rgba(255, 107, 0, 0.78)'
+            : ev.midiNote < 64
+            ? 'rgba(0, 229, 255, 0.75)'
+            : 'rgba(16, 185, 129, 0.78)';
+        ctx.fillRect(x0, y - 1, bw, 2);
+      }
+    }
+  }, [
+    r.originalBuffer,
+    r.waveformPyramid,
+    r.analysis,
+    r.abMode,
+    duration,
+    editorSizeMode,
+    canvasResizeTick,
+  ]);
+
+  const handleManualHorizontalScroll = useCallback(() => {
+    if (r.isPlaying) {
+      setAutoFollowPlayhead(false);
+    }
+  }, [r.isPlaying]);
+
+  const handleHorizontalScrollChange = useCallback(
+    (nextNorm: number, isManualUserAction = false) => {
+      setScrollNorm(clampHorizontalScrollNorm(nextNorm, zoom));
+      if (isManualUserAction && r.isPlaying) {
+        setAutoFollowPlayhead(false);
+      }
+    },
+    [zoom, r.isPlaying]
+  );
+
+  const handleHorizontalZoomAndScroll = useCallback(
+    (nextZoomRaw: number, nextScrollNorm: number, isManualUserAction = false) => {
+      const clampedZoom = Math.max(1, Math.min(48, nextZoomRaw));
+      setZoom(clampedZoom);
+      setScrollNorm(clampHorizontalScrollNorm(nextScrollNorm, clampedZoom));
+      if (isManualUserAction && r.isPlaying) {
+        setAutoFollowPlayhead(false);
+      }
+    },
+    [r.isPlaying]
+  );
+
+  const applyHorizontalZoom = useCallback(
+    (nextZoomRaw: number, anchorNorm01?: number) => {
+      if (duration <= 0) return;
+      let resolvedAnchor = anchorNorm01;
+      if (resolvedAnchor === undefined) {
+        if (r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec) {
+          resolvedAnchor = (r.currentTimeSec - viewStartSec) / Math.max(0.001, viewSpanSec);
+        } else {
+          resolvedAnchor = 0.5;
+        }
+      }
+      const next = computeAnchoredHorizontalZoom({
+        duration,
+        currentZoom: zoom,
+        currentScrollNorm: scrollNorm,
+        nextZoomRaw,
+        anchorNorm01: resolvedAnchor,
+      });
+      setZoom(next.zoom);
+      setScrollNorm(next.scrollNorm);
+    },
+    [duration, r.currentTimeSec, viewStartSec, viewEndSec, viewSpanSec, zoom, scrollNorm]
+  );
+
+  const handleToggleAutoFollowPlayhead = useCallback(() => {
+    setAutoFollowPlayhead((prev) => {
+      const next = !prev;
+      if (next && zoom > 1.02 && duration > 0) {
+        const targetStartSec = Math.max(
+          0,
+          Math.min(duration - viewSpanSec, r.currentTimeSec - viewSpanSec * 0.15)
+        );
+        setScrollNorm(clampHorizontalScrollNorm(targetStartSec / duration, zoom));
+      }
+      return next;
+    });
+  }, [zoom, duration, viewSpanSec, r.currentTimeSec]);
+
+  // Auto-follow playhead during playback (only when currentTimeSec advances so manual horizontal scroll is never fought!)
+  useEffect(() => {
+    if (!r.isPlaying || !autoFollowPlayhead || zoom <= 1.02 || duration <= 0) {
+      lastAutoFollowTimeRef.current = r.currentTimeSec;
+      return;
+    }
+    const t = r.currentTimeSec;
+    const prevT = lastAutoFollowTimeRef.current;
+    lastAutoFollowTimeRef.current = t;
+    if (Math.abs(t - prevT) < 0.0005) return;
+    if (t > viewEndSec - viewSpanSec * 0.06 || t < viewStartSec - 0.02) {
+      const targetStartSec = Math.max(
+        0,
+        Math.min(duration - viewSpanSec, t - viewSpanSec * 0.12)
+      );
+      setScrollNorm(clampHorizontalScrollNorm(targetStartSec / duration, zoom));
+    }
+  }, [
+    r.isPlaying,
+    r.currentTimeSec,
+    autoFollowPlayhead,
+    zoom,
+    duration,
+    viewStartSec,
+    viewEndSec,
+    viewSpanSec,
+  ]);
+
+  // Non-passive Wheel Handler on Waveform Canvas:
+  // - Shift+Wheel or Trackpad Horizontal Swipe = Smooth Horizontal Scroll across the song
+  // - Plain Wheel or Ctrl/Meta+Wheel = Anchored Horizontal Zoom at cursor
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!r.originalBuffer || duration <= 0) return;
+      const isHorizontalIntent =
+        e.shiftKey || (Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) > 2);
+
+      if (isHorizontalIntent) {
+        if (zoom > 1.01) {
+          e.preventDefault();
+          const rawDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+          const normDelta = (rawDelta / 900) * (1 / zoom);
+          setScrollNorm((prev) => clampHorizontalScrollNorm(prev + normDelta, zoom));
+          if (r.isPlaying) setAutoFollowPlayhead(false);
+        }
+        return;
+      }
+
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.3 : 0.77;
+      const rect = canvas.getBoundingClientRect();
+      const cursorNorm = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+      const next = computeAnchoredHorizontalZoom({
+        duration,
+        currentZoom: zoom,
+        currentScrollNorm: scrollNorm,
+        nextZoomRaw: zoom * factor,
+        anchorNorm01: cursorNorm,
+      });
+      setZoom(next.zoom);
+      setScrollNorm(next.scrollNorm);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [r.originalBuffer, r.isPlaying, duration, zoom, scrollNorm]);
+
+  const handleWaveformPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current || duration <= 0) return;
+    const isMiddle = e.button === 1;
+    const isPrimary = e.button === 0;
+    if (!isMiddle && !isPrimary) return;
+    if (isMiddle) e.preventDefault();
     const rect = canvasRef.current.getBoundingClientRect();
-    const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    r.seekToSec(viewStartSec + norm * viewSpanSec);
+    waveformPanRef.current = {
+      active: true,
+      didDrag: false,
+      startClientX: e.clientX,
+      startScrollNorm: clampHorizontalScrollNorm(viewStartSec / duration, zoom),
+      width: Math.max(120, rect.width),
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
-  const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    if (!r.originalBuffer || duration <= 0) return;
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.3 : 0.77;
-    const nextZoom = Math.max(1, Math.min(48, zoom * factor));
-    const rect = e.currentTarget.getBoundingClientRect();
-    const cursorNorm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const cursorSec = viewStartSec + cursorNorm * viewSpanSec;
-    const nextSpan = duration / nextZoom;
-    const nextStart = Math.max(0, Math.min(duration - nextSpan, cursorSec - cursorNorm * nextSpan));
-    setZoom(nextZoom);
-    setScrollNorm(duration > 0 ? nextStart / duration : 0);
+  const handleWaveformPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const st = waveformPanRef.current;
+    if (!st || !st.active || zoom <= 1.01 || duration <= 0) return;
+    const dx = e.clientX - st.startClientX;
+    if (!st.didDrag && Math.abs(dx) >= 5) {
+      st.didDrag = true;
+      setIsPanningWaveform(true);
+      if (r.isPlaying) setAutoFollowPlayhead(false);
+    }
+    if (st.didDrag) {
+      const normDelta = -(dx / st.width) * (1 / zoom);
+      setScrollNorm(clampHorizontalScrollNorm(st.startScrollNorm + normDelta, zoom));
+    }
+  };
+
+  const handleWaveformPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const st = waveformPanRef.current;
+    waveformPanRef.current = null;
+    setIsPanningWaveform(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (!st || st.didDrag || e.button === 1 || !canvasRef.current || duration <= 0) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    r.seekToSec(viewStartSec + norm * viewSpanSec);
   };
 
   const renderCustomSourceControls = (
@@ -1227,12 +1502,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       <div
         className={
           editorSizeMode === 'fullscreen'
-            ? 'fixed inset-0 z-50 bg-[#030611]/98 backdrop-blur-xl p-4 md:p-6 overflow-y-auto studio-scrollbar flex flex-col gap-4'
+            ? 'fixed inset-0 z-50 bg-[#030611]/98 backdrop-blur-xl p-3 md:p-4 overflow-y-auto studio-scrollbar flex flex-col gap-2.5'
             : 'rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3.5 transition-[padding,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]'
         }
       >
         {editorSizeMode === 'fullscreen' && (
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/90">
+          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800/90">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#FF6B00] to-[#00E5FF] flex items-center justify-center text-slate-950 font-black">
                 <Disc3 size={17} />
@@ -1263,7 +1538,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         )}
 
         {/* REPLICATE AI NEURAL AUDIO-TO-MIDI & BEAT BAR */}
-        <div className="rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-[#00E5FF]/45 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono shadow-md">
+        <div className="shrink-0 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-[#00E5FF]/45 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono shadow-md">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -1354,7 +1629,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         </div>
 
         {showReplicateTokenBar && (
-          <div className="rounded-xl bg-slate-950 border border-[#00E5FF]/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+          <div className="shrink-0 rounded-xl bg-slate-950 border border-[#00E5FF]/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
             <span className="text-slate-300">
               Token Replicate API (<code className="text-[#00E5FF]">r8_...</code> · o configurado en{' '}
               <code className="text-emerald-300">.env</code>):
@@ -1385,7 +1660,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-slate-800">
           <div className="flex flex-wrap items-center gap-1.5">
             {MODE_LABELS.map((m) => {
               const active = r.stemMode === m.id;
@@ -1507,54 +1782,141 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
         </div>
 
-        {/* Interactive Waveform & Detected Hits/Notes Overlay (Dynamic Height by Workspace Mode) */}
-        <div
-          className={`relative w-full rounded-xl overflow-hidden border border-slate-800 bg-[#040711] transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            editorSizeMode === 'fullscreen'
-              ? 'h-64'
-              : editorSizeMode === 'large'
-              ? 'h-56'
-              : 'h-44'
-          }`}
-        >
-          <canvas
-            ref={canvasRef}
-            onClick={handleCanvasClick}
-            onWheel={handleCanvasWheel}
-            className="w-full h-full block cursor-pointer"
-            title="Haz clic para saltar al segundo exacto · Rueda del ratón para Zoom"
-          />
-          {r.analysis && (
-            <div className="absolute top-2.5 right-2.5 flex flex-wrap gap-1.5 pointer-events-none text-[10.5px] font-mono tabular-nums">
-              <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-slate-700 text-white font-bold shadow">
-                {r.analysis.bpm} BPM · {r.analysis.durationSec.toFixed(2)}s
-              </span>
-              {r.analysis.mode === 'drums' ? (
-                <>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#FF6B00]/60 text-[#FF6B00] font-bold">
-                    KICK: {r.analysis.counts.kick}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#00E5FF]/60 text-[#00E5FF] font-bold">
-                    SNARE: {r.analysis.counts.snare}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/60 text-emerald-400 font-bold">
-                    TOMS: {r.analysis.counts.tom}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-amber-500/60 text-amber-400 font-bold">
-                    HI-HAT: {r.analysis.counts.hat}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-pink-500/60 text-pink-400 font-bold">
-                    CRASH: {r.analysis.counts.crash}
-                  </span>
-                </>
-              ) : (
-                <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/50 text-emerald-300 font-bold">
-                  {r.analysis.counts.notes} notas{' '}
-                  {r.analysis.midiRange
-                    ? `(${r.analysis.midiRange.minName}–${r.analysis.midiRange.maxName})`
-                    : ''}
+        {/* Interactive Waveform & Detected Hits/Notes Overlay + Dedicated Horizontal Scrollbar */}
+        <div className="shrink-0 w-full rounded-xl overflow-hidden border border-slate-800 bg-[#040711] flex flex-col">
+          <div
+            className={`relative w-full transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              editorSizeMode === 'fullscreen'
+                ? 'h-36 md:h-44'
+                : editorSizeMode === 'large'
+                ? 'h-52'
+                : 'h-40'
+            }`}
+          >
+            <canvas
+              ref={canvasRef}
+              onPointerDown={handleWaveformPointerDown}
+              onPointerMove={handleWaveformPointerMove}
+              onPointerUp={handleWaveformPointerUp}
+              onPointerCancel={handleWaveformPointerUp}
+              className={`w-full h-full block ${
+                isPanningWaveform
+                  ? 'cursor-grabbing'
+                  : zoom > 1.01
+                  ? 'cursor-grab'
+                  : 'cursor-pointer'
+              }`}
+              title="Haz clic para saltar al segundo exacto · Arrastra para moverte cuando haya zoom · Rueda para Zoom · Shift+Rueda para Scroll Horizontal"
+            />
+            {r.analysis && (
+              <div className="absolute top-2.5 right-2.5 flex flex-wrap gap-1.5 pointer-events-none text-[10.5px] font-mono tabular-nums">
+                <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-slate-700 text-white font-bold shadow">
+                  {r.analysis.bpm} BPM · {r.analysis.durationSec.toFixed(2)}s
                 </span>
-              )}
+                {r.analysis.mode === 'drums' ? (
+                  <>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#FF6B00]/60 text-[#FF6B00] font-bold">
+                      KICK: {r.analysis.counts.kick}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#00E5FF]/60 text-[#00E5FF] font-bold">
+                      SNARE: {r.analysis.counts.snare}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/60 text-emerald-400 font-bold">
+                      TOMS: {r.analysis.counts.tom}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-amber-500/60 text-amber-400 font-bold">
+                      HI-HAT: {r.analysis.counts.hat}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-pink-500/60 text-pink-400 font-bold">
+                      CRASH: {r.analysis.counts.crash}
+                    </span>
+                  </>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/50 text-emerald-300 font-bold">
+                    {r.analysis.counts.notes} notas{' '}
+                    {r.analysis.midiRange
+                      ? `(${r.analysis.midiRange.minName}–${r.analysis.midiRange.maxName})`
+                      : ''}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Dedicated Always-Visible Horizontal Scrollbar for Waveform ("Batería (Golpes + MIDI)" / Melódico / Polifónico) */}
+          {duration > 0 && (
+            <div className="shrink-0 bg-slate-950/95 border-t border-slate-800/90 px-2.5 py-1.5 flex flex-wrap sm:flex-nowrap items-center gap-2 text-[10px] font-mono select-none">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-1.5 py-0.5 rounded bg-[#FF6B00]/15 border border-[#FF6B00]/45 text-[#FF6B00] font-bold text-[9.5px]">
+                  {r.stemMode === 'drums'
+                    ? 'Onda Batería'
+                    : r.stemMode === 'monophonic'
+                    ? 'Onda Mono'
+                    : 'Onda Poli'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => applyHorizontalZoom(zoom / 1.45)}
+                  className="p-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                  title="Alejar zoom horizontal de la onda"
+                >
+                  <ZoomOut size={11} />
+                </button>
+                <span className="text-[#FF6B00] font-bold tabular-nums min-w-[30px] text-center">
+                  {zoom.toFixed(1)}x
+                </span>
+                <button
+                  type="button"
+                  onClick={() => applyHorizontalZoom(zoom * 1.45)}
+                  className="p-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                  title="Acercar zoom horizontal de la onda"
+                >
+                  <ZoomIn size={11} />
+                </button>
+              </div>
+
+              <TimelineHorizontalScrollbar
+                duration={duration}
+                zoom={zoom}
+                viewStartSec={viewStartSec}
+                viewEndSec={viewEndSec}
+                currentTimeSec={r.currentTimeSec}
+                onChangeScrollNorm={handleHorizontalScrollChange}
+                onChangeZoomAndScroll={handleHorizontalZoomAndScroll}
+                onSeekToSec={r.seekToSec}
+                accent="orange"
+                trackHeightClass="h-6"
+                ariaLabel="Scroll horizontal de la forma de onda"
+                trackTitle="Barra horizontal de la onda · Arrastra para recorrer toda la canción, arrastra bordes para Zoom o doble clic para 1x/4x"
+                overviewContent={
+                  <canvas
+                    ref={waveformOverviewCanvasRef}
+                    className="w-full h-full block pointer-events-none opacity-90"
+                  />
+                }
+              />
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {(!showMidiRoll || !r.analysis) && (
+                  <button
+                    type="button"
+                    onClick={handleToggleAutoFollowPlayhead}
+                    className={`px-1.5 py-0.5 rounded border text-[9.5px] font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                      autoFollowPlayhead
+                        ? 'bg-[#FF6B00]/15 border-[#FF6B00]/60 text-[#FF6B00]'
+                        : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                    }`}
+                    title="Seguir automáticamente el cabezal de reproducción"
+                  >
+                    <Crosshair size={10} />
+                    <span>Seguir</span>
+                  </button>
+                )}
+                <span className="text-[9.5px] text-slate-400 tabular-nums">
+                  {formatTime(viewStartSec)}–{formatTime(Math.min(duration, viewEndSec))}
+                  <span className="text-slate-600"> / {formatTime(duration)}</span>
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -1576,6 +1938,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             setEditorSizeMode={setEditorSizeMode}
             selectedHitId={selectedHitId}
             setSelectedHitId={setSelectedHitId}
+            autoFollowPlayhead={autoFollowPlayhead}
+            onToggleAutoFollowPlayhead={handleToggleAutoFollowPlayhead}
+            onManualHorizontalScroll={handleManualHorizontalScroll}
             onRequestUploadForRole={(role) => {
               uploadTargetRef.current = role;
               slotFileInputRef.current?.click();
@@ -1583,48 +1948,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           />
         )}
 
-        {/* Horizontal Timeline Scrollbar + Pan Navigator */}
-        {duration > 0 && (!showMidiRoll || !r.analysis) && (
-          <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[10px] font-mono">
-            <button
-              type="button"
-              disabled={zoom <= 1.01}
-              onClick={() => setScrollNorm((s) => Math.max(0, s - 0.12 / zoom))}
-              className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
-              title="Desplazar vista a la izquierda"
-            >
-              <ChevronLeft size={12} />
-            </button>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0.001, 1 - 1 / zoom)}
-              step={0.001}
-              disabled={zoom <= 1.01}
-              value={Math.min(scrollNorm, Math.max(0, 1 - 1 / zoom))}
-              onChange={(e) => setScrollNorm(Number(e.target.value))}
-              className="flex-1 accent-[#00E5FF] h-2 bg-slate-800 rounded-full cursor-pointer disabled:opacity-40"
-              title="Barra de desplazamiento horizontal de la onda"
-            />
-            <button
-              type="button"
-              disabled={zoom <= 1.01}
-              onClick={() =>
-                setScrollNorm((s) => Math.min(Math.max(0, 1 - 1 / zoom), s + 0.12 / zoom))
-              }
-              className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
-              title="Desplazar vista a la derecha"
-            >
-              <ChevronRight size={12} />
-            </button>
-            <span className="text-slate-400 shrink-0 tabular-nums">
-              {formatTime(viewStartSec)}–{formatTime(Math.min(duration, viewEndSec))}
-            </span>
-          </div>
-        )}
-
         {/* Playback Transport + Phase-Locked A/B Comparison + Zoom */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -1725,7 +2050,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
             <button
               type="button"
-              onClick={() => setZoom((z) => Math.max(1, z / 1.5))}
+              onClick={() => applyHorizontalZoom(zoom / 1.5)}
               className="p-1 text-slate-400 hover:text-white cursor-pointer"
               title="Alejar zoom"
             >
@@ -1734,17 +2059,17 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             <span className="px-1.5 text-[#00E5FF] font-bold tabular-nums">{zoom.toFixed(1)}x</span>
             <button
               type="button"
-              onClick={() => setZoom((z) => Math.min(48, z * 1.5))}
+              onClick={() => applyHorizontalZoom(zoom * 1.5)}
               className="p-1 text-slate-400 hover:text-white cursor-pointer"
               title="Acercar zoom"
             >
               <ZoomIn size={13} />
             </button>
-            {[2, 4, 8].map((presetZ) => (
+            {[2, 4, 8, 16].map((presetZ) => (
               <button
                 key={presetZ}
                 type="button"
-                onClick={() => setZoom(presetZ)}
+                onClick={() => applyHorizontalZoom(presetZ)}
                 className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
                   Math.abs(zoom - presetZ) < 0.25
                     ? 'bg-[#00E5FF] text-slate-950 font-bold'
