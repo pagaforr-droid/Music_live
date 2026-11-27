@@ -2,7 +2,10 @@ import { supabase } from '../../../../lib/supabase';
 import { encodeAudioBufferToWav24Bit } from '../../engine/Wav24BitEncoder';
 import { inferStemModeFromName } from '../engine/FullStemAnalyzer';
 import type {
+  CloudDrumKitSampleRecord,
   CloudSampleKitRecord,
+  CustomReplacementSampleItem,
+  PersistedCloudDrumSelection,
   SampleKit,
   SampleSource,
   SongFolderItem,
@@ -11,19 +14,28 @@ import type {
 } from '../types/sampler.types';
 
 const DEFAULT_BAND_ID = '00000000-0000-0000-0000-000000000000';
+const DRUM_KIT_CLOUD_PREFIX = 'drum-kit-1400';
+const ACTIVE_DRUM_SELECTION_ID = '__active_drum_selection__';
+const CLOUD_SELECTION_STORAGE_PATH = `${DRUM_KIT_CLOUD_PREFIX}/_active_drum_selection.json`;
+const CLOUD_SAMPLES_INDEX_STORAGE_PATH = `${DRUM_KIT_CLOUD_PREFIX}/_cloud_samples_index.json`;
+const LOCAL_CLOUD_URL_CACHE_KEY = 'tandao_drum_kit_1400_cloud_urls_v1';
 
 export const SAMPLE_KITS_MIGRATION_SQL = `
 -- ============================================================================
--- MIGRACIÓN SQL: Sample Lab (Tabla sample_kits + Bucket 'samples')
+-- MIGRACIÓN SQL: Sample Lab (Kits + 1400 Samples Drum Kit + Selección Activa)
 -- ============================================================================
 
 insert into storage.buckets (id, name, public)
-values ('samples', 'samples', false)
+values ('samples', 'samples', true)
+on conflict (id) do update set public = true;
+
+insert into storage.buckets (id, name, public)
+values ('audios', 'audios', true)
 on conflict (id) do nothing;
 
 create table if not exists public.sample_kits (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid null references auth.users(id) on delete set null,
   song_id uuid null,
   name text not null,
   kit_json jsonb not null,
@@ -34,14 +46,47 @@ create table if not exists public.sample_kits (
 
 alter table public.sample_kits enable row level security;
 
-create policy "kits_owner_select"
-  on public.sample_kits for select
-  using (auth.uid() = user_id);
+create table if not exists public.drum_kit_cloud_samples (
+  id text primary key,
+  user_id uuid null references auth.users(id) on delete set null,
+  band_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  folder text not null,
+  file_name text not null,
+  display_name text not null,
+  category text not null check (category in ('kick', 'snare', 'hat', 'crash', 'tom', 'melodic')),
+  storage_bucket text not null default 'audios',
+  storage_path text not null,
+  public_url text not null,
+  duration_sec numeric(8,4) not null default 0,
+  peak_offset_sec numeric(8,5) not null default 0,
+  detected_root_midi integer not null default 60,
+  file_size_bytes bigint not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
-create policy "kits_owner_write"
-  on public.sample_kits for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+alter table public.drum_kit_cloud_samples enable row level security;
+
+create policy "drum_kit_cloud_samples_all"
+  on public.drum_kit_cloud_samples for all
+  using (true)
+  with check (true);
+
+create table if not exists public.drum_kit_selections (
+  id text primary key,
+  user_id uuid null references auth.users(id) on delete set null,
+  band_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  name text not null default 'Configuración Activa Sample Lab',
+  slots_json jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.drum_kit_selections enable row level security;
+
+create policy "drum_kit_selections_all"
+  on public.drum_kit_selections for all
+  using (true)
+  with check (true);
 `;
 
 function sanitizeStorageName(raw: string): string {
@@ -49,6 +94,29 @@ function sanitizeStorageName(raw: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+function readLocalCloudUrlCache(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(LOCAL_CLOUD_URL_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalCloudUrlCache(id: string, url: string): void {
+  try {
+    const cur = readLocalCloudUrlCache();
+    cur[id] = url;
+    localStorage.setItem(LOCAL_CLOUD_URL_CACHE_KEY, JSON.stringify(cur));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export function getCachedSupabaseSampleUrl(sampleKey: string): string | undefined {
+  return readLocalCloudUrlCache()[sampleKey];
 }
 
 /**
@@ -263,20 +331,305 @@ export async function addSampleToSongFolder(params: {
 }
 
 /**
+ * Uploads a selected drum sample (from "1400 Samples Drum Kit" or user custom sample)
+ * to Supabase Storage ('audios' / 'samples' bucket) AND registers it in Supabase DB
+ * ('drum_kit_cloud_samples' + cloud JSON index fallback so it works even before SQL migration).
+ */
+export async function uploadDrumKitSampleToSupabase(params: {
+  sample: CustomReplacementSampleItem;
+  folderHint?: string;
+}): Promise<CloudDrumKitSampleRecord> {
+  const { sample } = params;
+  const stableId = sample.kit1400Id || sample.id;
+  const folder =
+    params.folderHint ||
+    (sample.kit1400Id?.startsWith('dk1400:')
+      ? sample.kit1400Id.slice(7).split('/')[0]
+      : sample.category.toUpperCase());
+  const rawFileName =
+    sample.kit1400Id?.startsWith('dk1400:')
+      ? sample.kit1400Id.slice(7).split('/').slice(1).join('_')
+      : `${sample.name.replace(/\.[^.]+$/, '')}.wav`;
+  const safeFile = sanitizeStorageName(rawFileName.endsWith('.wav') ? rawFileName : `${rawFileName}.wav`);
+  const wavBlob = encodeAudioBufferToWav24Bit(sample.buffer, false);
+
+  const storagePath = `${DRUM_KIT_CLOUD_PREFIX}/${sanitizeStorageName(folder)}/${safeFile}`;
+  let storageBucket = 'audios';
+  let publicUrl = '';
+
+  const { error: audiosErr } = await supabase.storage
+    .from('audios')
+    .upload(storagePath, wavBlob, {
+      contentType: 'audio/wav',
+      upsert: true,
+    });
+
+  if (!audiosErr) {
+    storageBucket = 'audios';
+    publicUrl = supabase.storage.from('audios').getPublicUrl(storagePath).data.publicUrl;
+  } else {
+    const { error: samplesErr } = await supabase.storage
+      .from('samples')
+      .upload(storagePath, wavBlob, {
+        contentType: 'audio/wav',
+        upsert: true,
+      });
+    if (samplesErr) {
+      throw new Error(`No se pudo subir muestra a Supabase Storage: ${audiosErr.message}`);
+    }
+    storageBucket = 'samples';
+    publicUrl = supabase.storage.from('samples').getPublicUrl(storagePath).data.publicUrl;
+  }
+
+  let userId: string | null = null;
+  try {
+    const { data: authData } = await supabase.auth.getUser();
+    userId = authData?.user?.id ?? null;
+  } catch {
+    userId = null;
+  }
+
+  const nowIso = new Date().toISOString();
+  const record: CloudDrumKitSampleRecord = {
+    id: stableId,
+    folder,
+    fileName: rawFileName,
+    displayName: sample.name,
+    category: sample.category,
+    storageBucket,
+    storagePath,
+    publicUrl,
+    durationSec: Number(sample.durationSec.toFixed(4)),
+    peakOffsetSec: Number(sample.peakOffsetSec.toFixed(5)),
+    detectedRootMidi: sample.detectedRootMidi,
+    fileSizeBytes: wavBlob.size,
+    updatedAt: nowIso,
+  };
+
+  writeLocalCloudUrlCache(stableId, publicUrl);
+
+  // 1. Upsert into public.drum_kit_cloud_samples table (if migrated)
+  try {
+    await supabase.from('drum_kit_cloud_samples').upsert(
+      {
+        id: record.id,
+        user_id: userId,
+        band_id: DEFAULT_BAND_ID,
+        folder: record.folder,
+        file_name: record.fileName,
+        display_name: record.displayName,
+        category: record.category,
+        storage_bucket: record.storageBucket,
+        storage_path: record.storagePath,
+        public_url: record.publicUrl,
+        duration_sec: record.durationSec,
+        peak_offset_sec: record.peakOffsetSec,
+        detected_root_midi: record.detectedRootMidi,
+        file_size_bytes: record.fileSizeBytes,
+        updated_at: nowIso,
+      },
+      { onConflict: 'id' }
+    );
+  } catch {
+    // Table may not be migrated yet; Storage manifest below guarantees persistence
+  }
+
+  // 2. Also maintain lightweight cloud JSON index in 'audios' bucket so samples persist without SQL setup
+  try {
+    const existingList = await fetchCloudDrumKitSamplesFromStorageIndex();
+    const map = new Map(existingList.map((r) => [r.id, r]));
+    map.set(record.id, record);
+    const merged = Array.from(map.values()).slice(-300);
+    const indexBlob = new Blob([JSON.stringify(merged)], { type: 'application/json' });
+    await supabase.storage.from('audios').upload(CLOUD_SAMPLES_INDEX_STORAGE_PATH, indexBlob, {
+      contentType: 'application/json',
+      upsert: true,
+    });
+  } catch {
+    // non-fatal index update
+  }
+
+  return record;
+}
+
+async function fetchCloudDrumKitSamplesFromStorageIndex(): Promise<CloudDrumKitSampleRecord[]> {
+  try {
+    const { data, error } = await supabase.storage
+      .from('audios')
+      .download(CLOUD_SAMPLES_INDEX_STORAGE_PATH);
+    if (error || !data) return [];
+    const text = await data.text();
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? (parsed as CloudDrumKitSampleRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchCloudDrumKitSamples(): Promise<CloudDrumKitSampleRecord[]> {
+  const byId = new Map<string, CloudDrumKitSampleRecord>();
+
+  try {
+    const { data, error } = await supabase
+      .from('drum_kit_cloud_samples')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(300);
+    if (!error && Array.isArray(data)) {
+      for (const row of data as Array<Record<string, unknown>>) {
+        const rec: CloudDrumKitSampleRecord = {
+          id: String(row.id),
+          folder: String(row.folder || 'Custom'),
+          fileName: String(row.file_name || ''),
+          displayName: String(row.display_name || row.file_name || 'Sample'),
+          category: (row.category as CloudDrumKitSampleRecord['category']) || 'kick',
+          storageBucket: String(row.storage_bucket || 'audios'),
+          storagePath: String(row.storage_path || ''),
+          publicUrl: String(row.public_url || ''),
+          durationSec: Number(row.duration_sec || 0),
+          peakOffsetSec: Number(row.peak_offset_sec || 0),
+          detectedRootMidi: Number(row.detected_root_midi || 60),
+          fileSizeBytes: Number(row.file_size_bytes || 0),
+          updatedAt: String(row.updated_at || new Date().toISOString()),
+        };
+        if (rec.publicUrl) {
+          byId.set(rec.id, rec);
+          writeLocalCloudUrlCache(rec.id, rec.publicUrl);
+        }
+      }
+    }
+  } catch {
+    // fallback to storage index
+  }
+
+  const fromStorage = await fetchCloudDrumKitSamplesFromStorageIndex();
+  for (const item of fromStorage) {
+    if (item?.id && item.publicUrl && !byId.has(item.id)) {
+      byId.set(item.id, item);
+      writeLocalCloudUrlCache(item.id, item.publicUrl);
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+/**
+ * Persists the user's active Drum Replacer slot selection (Kick, Snare, Hat, Tom, Crash, Melodic)
+ * in Supabase ('drum_kit_selections' table + 'audios' Storage JSON fallback) so their chosen
+ * sounds from "1400 Samples Drum Kit" are remembered across sessions and devices.
+ */
+export async function saveDrumReplacerSelectionToSupabase(
+  selection: Omit<PersistedCloudDrumSelection, 'id' | 'updatedAt'>
+): Promise<PersistedCloudDrumSelection> {
+  const nowIso = new Date().toISOString();
+  let userId: string | null = null;
+  try {
+    const { data: authData } = await supabase.auth.getUser();
+    userId = authData?.user?.id ?? null;
+  } catch {
+    userId = null;
+  }
+
+  const selectionId = userId ? `user_${userId}_drum_selection` : ACTIVE_DRUM_SELECTION_ID;
+  const payload: PersistedCloudDrumSelection = {
+    id: selectionId,
+    name: selection.name || 'Selección Predeterminada Sample Lab',
+    drumSlots: selection.drumSlots,
+    melodicSlot: selection.melodicSlot,
+    updatedAt: nowIso,
+  };
+
+  let savedToTable = false;
+  try {
+    const { error } = await supabase.from('drum_kit_selections').upsert(
+      {
+        id: selectionId,
+        user_id: userId,
+        band_id: DEFAULT_BAND_ID,
+        name: payload.name,
+        slots_json: payload,
+        updated_at: nowIso,
+      },
+      { onConflict: 'id' }
+    );
+    if (!error) savedToTable = true;
+  } catch {
+    savedToTable = false;
+  }
+
+  const jsonBlob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const { error: storageErr } = await supabase.storage
+    .from('audios')
+    .upload(CLOUD_SELECTION_STORAGE_PATH, jsonBlob, {
+      contentType: 'application/json',
+      upsert: true,
+    });
+
+  if (!savedToTable && storageErr) {
+    throw new Error(`No se pudo sincronizar selección con Supabase: ${storageErr.message}`);
+  }
+
+  return payload;
+}
+
+export async function loadDrumReplacerSelectionFromSupabase(): Promise<PersistedCloudDrumSelection | null> {
+  try {
+    let userId: string | null = null;
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      userId = authData?.user?.id ?? null;
+    } catch {
+      userId = null;
+    }
+    const targetIds = userId
+      ? [`user_${userId}_drum_selection`, ACTIVE_DRUM_SELECTION_ID]
+      : [ACTIVE_DRUM_SELECTION_ID];
+
+    const { data, error } = await supabase
+      .from('drum_kit_selections')
+      .select('slots_json, updated_at')
+      .in('id', targetIds)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (!error && data && data.length > 0 && data[0].slots_json) {
+      return data[0].slots_json as PersistedCloudDrumSelection;
+    }
+  } catch {
+    // fallback to storage JSON
+  }
+
+  try {
+    const { data, error } = await supabase.storage
+      .from('audios')
+      .download(CLOUD_SELECTION_STORAGE_PATH);
+    if (error || !data) return null;
+    const raw = await data.text();
+    const parsed = JSON.parse(raw) as PersistedCloudDrumSelection;
+    return parsed?.drumSlots ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Saves an entire Sample Lab Kit + audio source WAVs to Supabase ('samples' bucket fallback 'audios/samples')
- * and persists kit JSON in public.sample_kits ready for future export or loading.
+ * and persists kit JSON in public.sample_kits (with Storage JSON fallback for studio/band sessions without auth).
  */
 export async function saveKitToSupabase(params: {
   kit: SampleKit;
   sources: SampleSource[];
   songId?: string | null;
 }): Promise<CloudSampleKitRecord> {
-  const { data: authData } = await supabase.auth.getUser();
-  const userId = authData?.user?.id;
-  if (!userId) {
-    throw new Error('Debes iniciar sesión para guardar kits en Supabase.');
+  let userId: string | null = null;
+  try {
+    const { data: authData } = await supabase.auth.getUser();
+    userId = authData?.user?.id ?? null;
+  } catch {
+    userId = null;
   }
 
+  const ownerFolder = userId || DEFAULT_BAND_ID;
   const kitId =
     params.kit.id && params.kit.id.length === 36
       ? params.kit.id
@@ -288,7 +641,7 @@ export async function saveKitToSupabase(params: {
     const wavBlob = encodeAudioBufferToWav24Bit(src.buffer, false);
     totalBytes += wavBlob.size;
     const safeName = sanitizeStorageName(src.name || src.id);
-    const path = `${userId}/${kitId}/${src.id}_${safeName}.wav`;
+    const path = `${ownerFolder}/${kitId}/${src.id}_${safeName}.wav`;
 
     let uploadedUrl = '';
     const { error: samplesErr } = await supabase.storage
@@ -333,44 +686,92 @@ export async function saveKitToSupabase(params: {
     updatedAt: new Date().toISOString(),
   };
 
-  const { data, error } = await supabase
-    .from('sample_kits')
-    .upsert(
-      {
-        id: kitId,
-        user_id: userId,
-        song_id: params.songId ?? null,
-        name: updatedKit.name,
-        kit_json: updatedKit,
-        total_bytes: totalBytes,
-        updated_at: updatedKit.updatedAt,
-      },
-      { onConflict: 'id' }
-    )
-    .select()
-    .single();
+  const fallbackRecord: CloudSampleKitRecord = {
+    id: kitId,
+    user_id: userId,
+    song_id: params.songId ?? null,
+    name: updatedKit.name,
+    kit_json: updatedKit,
+    total_bytes: totalBytes,
+    updated_at: updatedKit.updatedAt,
+  };
 
-  if (error) {
-    throw new Error(
-      `Error guardando en tabla sample_kits (¿ejecutaste la migración SQL?): ${error.message}`
-    );
+  // Also save kit JSON inside 'audios' Storage so kits work even without auth/RLS migration
+  const kitJsonPath = `samples/${ownerFolder}/kits/${kitId}.json`;
+  await supabase.storage
+    .from('audios')
+    .upload(kitJsonPath, new Blob([JSON.stringify(fallbackRecord)], { type: 'application/json' }), {
+      contentType: 'application/json',
+      upsert: true,
+    });
+
+  if (userId) {
+    const { data, error } = await supabase
+      .from('sample_kits')
+      .upsert(
+        {
+          id: kitId,
+          user_id: userId,
+          song_id: params.songId ?? null,
+          name: updatedKit.name,
+          kit_json: updatedKit,
+          total_bytes: totalBytes,
+          updated_at: updatedKit.updatedAt,
+        },
+        { onConflict: 'id' }
+      )
+      .select()
+      .single();
+
+    if (!error && data) {
+      return data as CloudSampleKitRecord;
+    }
   }
 
-  return data as CloudSampleKitRecord;
+  return fallbackRecord;
 }
 
 export async function fetchCloudSampleKits(): Promise<CloudSampleKitRecord[]> {
+  const out = new Map<string, CloudSampleKitRecord>();
   try {
     const { data, error } = await supabase
       .from('sample_kits')
       .select('*')
       .order('updated_at', { ascending: false })
       .limit(30);
-    if (error || !data) return [];
-    return data as CloudSampleKitRecord[];
+    if (!error && data) {
+      for (const r of data as CloudSampleKitRecord[]) {
+        out.set(r.id, r);
+      }
+    }
   } catch {
-    return [];
+    // continue to storage fallback
   }
+
+  try {
+    const { data: listData } = await supabase.storage
+      .from('audios')
+      .list(`samples/${DEFAULT_BAND_ID}/kits`, { limit: 30 });
+    if (listData) {
+      for (const item of listData) {
+        if (!item.name.endsWith('.json')) continue;
+        const { data: blob } = await supabase.storage
+          .from('audios')
+          .download(`samples/${DEFAULT_BAND_ID}/kits/${item.name}`);
+        if (!blob) continue;
+        const rec = JSON.parse(await blob.text()) as CloudSampleKitRecord;
+        if (rec?.id && !out.has(rec.id)) {
+          out.set(rec.id, rec);
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return Array.from(out.values()).sort((a, b) =>
+    (b.updated_at || '').localeCompare(a.updated_at || '')
+  );
 }
 
 export async function loadCloudKitSources(

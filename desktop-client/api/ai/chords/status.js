@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ttneetsehlekoajpintk.supabase.co';
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://izdlfwridgvhhnqzqwhc.supabase.co';
 const supabase = createClient(SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
 function formatChordName(chord) {

@@ -232,16 +232,22 @@ export function renderFullStemReplacement(params: {
       const srcLen = zone.left.length;
       const maxOutFrames = Math.floor((srcLen - 1) / rate);
       let renderLen = Math.min(totalLen - startOut, maxOutFrames);
-      // When using a long custom Hi-Hat or Snare sample, shape closed/pedal/rim articulations naturally
+      // When using a long Open Hi-Hat (>0.35s) or long Snare sample on closed/pedal/rim articulations,
+      // shape tight decay naturally while preserving short one-shot WAV samples from 1400 Samples Drum Kit intact!
       let customArticulationDecayRate = 0;
       if (slot.sourceType !== 'preset' && slot.customBuffer) {
-        if (hit.role === 'hat' && (hit.articulation === 'closed' || hit.articulation === 'pedal')) {
-          const maxClosedFrames = Math.round(sr * (hit.articulation === 'pedal' ? 0.085 : 0.125));
+        const customDurSec = slot.customBuffer.duration;
+        if (
+          hit.role === 'hat' &&
+          (hit.articulation === 'closed' || hit.articulation === 'pedal') &&
+          customDurSec > 0.35
+        ) {
+          const maxClosedFrames = Math.round(sr * (hit.articulation === 'pedal' ? 0.095 : 0.16));
           renderLen = Math.min(renderLen, maxClosedFrames);
-          customArticulationDecayRate = hit.articulation === 'pedal' ? 32 : 22;
-        } else if (hit.role === 'snare' && hit.articulation === 'rim') {
-          renderLen = Math.min(renderLen, Math.round(sr * 0.15));
-          customArticulationDecayRate = 20;
+          customArticulationDecayRate = hit.articulation === 'pedal' ? 28 : 18;
+        } else if (hit.role === 'snare' && hit.articulation === 'rim' && customDurSec > 0.25) {
+          renderLen = Math.min(renderLen, Math.round(sr * 0.16));
+          customArticulationDecayRate = 18;
         }
       }
       const startsHot = Math.max(Math.abs(zone.left[0] ?? 0), Math.abs(zone.right[0] ?? 0)) > 0.015;

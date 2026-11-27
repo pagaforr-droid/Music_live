@@ -316,6 +316,7 @@ export interface MidiTimelineWorkstationProps {
   selectedHitId: string | null;
   setSelectedHitId: (id: string | null) => void;
   onRequestUploadForRole: (role: DrumPieceRole) => void;
+  onRequestBrowseKit1400ForRole?: (role: DrumPieceRole) => void;
   autoFollowPlayhead?: boolean;
   onToggleAutoFollowPlayhead?: () => void;
   onManualHorizontalScroll?: () => void;
@@ -337,6 +338,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   selectedHitId,
   setSelectedHitId,
   onRequestUploadForRole,
+  onRequestBrowseKit1400ForRole,
   autoFollowPlayhead: controlledAutoFollow,
   onToggleAutoFollowPlayhead,
   onManualHorizontalScroll,
@@ -1575,6 +1577,16 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           >
                             <Volume2 size={9.5} />
                           </button>
+                          {onRequestBrowseKit1400ForRole && (
+                            <button
+                              type="button"
+                              onClick={() => onRequestBrowseKit1400ForRole(lane.role)}
+                              className="px-1.5 py-0.5 rounded-md bg-orange-500/15 hover:bg-orange-500/25 border border-orange-400/35 text-orange-300 hover:text-white text-[9px] font-semibold cursor-pointer transition-colors"
+                              title={`Elegir muestra de 1400 Samples Drum Kit para ${lane.title}`}
+                            >
+                              1400
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => onRequestUploadForRole(lane.role)}
@@ -1582,7 +1594,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                             title={`Subir tu propio sample para ${lane.title}`}
                           >
                             <Upload size={8.5} />
-                            <span className="hidden sm:inline">Sample</span>
+                            <span className="hidden sm:inline">PC</span>
                           </button>
                         </div>
                         <span className="text-[8.5px] font-mono text-zinc-500 truncate max-w-[74px]">
@@ -2267,7 +2279,7 @@ onClick={handleToggleFollow}
             </span>
           )}
         </div>
-
+
         </div>
 
       {/* LIVE SELECTED HIT / NOTE INSPECTOR BAR */}

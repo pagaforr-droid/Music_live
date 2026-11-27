@@ -197,7 +197,10 @@ interface StoredCustomReplacementRecord {
   id: string;
   name: string;
   category: CustomSampleCategory;
-  sourceType: 'file' | 'recorded' | 'pad' | 'cloud';
+  sourceType: 'file' | 'recorded' | 'pad' | 'cloud' | 'kit-1400';
+  kit1400Id?: string;
+  cloudUrl?: string;
+  supabaseSynced?: boolean;
   wavBlob: Blob;
   durationSec: number;
   peakOffsetSec: number;
@@ -218,6 +221,9 @@ export async function saveCustomReplacementSampleToIdb(
       name: item.name,
       category: item.category,
       sourceType: item.sourceType,
+      kit1400Id: item.kit1400Id,
+      cloudUrl: item.cloudUrl,
+      supabaseSynced: item.supabaseSynced,
       wavBlob,
       durationSec: item.durationSec,
       peakOffsetSec: item.peakOffsetSec,
@@ -255,6 +261,9 @@ export async function loadAllCustomReplacementSamplesFromIdb(
           name: rec.name,
           category: rec.category,
           sourceType: rec.sourceType,
+          kit1400Id: rec.kit1400Id,
+          cloudUrl: rec.cloudUrl,
+          supabaseSynced: rec.supabaseSynced,
           buffer: decoded,
           durationSec: rec.durationSec || decoded.duration,
           peakOffsetSec: rec.peakOffsetSec,

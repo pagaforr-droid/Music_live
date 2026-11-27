@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Cloud,
   CloudUpload,
   Crosshair,
   Disc3,
@@ -30,6 +33,11 @@ import {
 } from 'lucide-react';
 import { midiNoteToName } from '../engine/PitchDetector';
 import {
+  DEFAULT_DRUM_KIT_1400_BY_ROLE,
+  getDrumKit1400ForRole,
+  type DrumKit1400Folder,
+} from '../engine/DrumKit1400Catalog';
+import {
   BASS_PRESET_CATALOG,
   DRUM_PRESET_CATALOG,
   isBassPresetId,
@@ -45,6 +53,7 @@ import type {
   SamplePad,
   StemAnalysisMode,
 } from '../types/sampler.types';
+import { DrumKit1400BrowserModal } from './DrumKit1400BrowserModal';
 import { MidiTimelineWorkstation } from './MidiTimelineWorkstation';
 import {
   TimelineHorizontalScrollbar,
@@ -119,6 +128,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [showCustomBank, setShowCustomBank] = useState(false);
   const [showCloudSamplePicker, setShowCloudSamplePicker] = useState(false);
   const [cloudTargetRole, setCloudTargetRole] = useState<CustomSampleCategory>('kick');
+  const [kit1400ModalState, setKit1400ModalState] = useState<{
+    open: boolean;
+    role: DrumPieceRole;
+    folder?: DrumKit1400Folder;
+  }>({ open: false, role: 'kick' });
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
   const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | 'master-ref' | null>(null);
   const [showBeatGrid, setShowBeatGrid] = useState(true);
@@ -183,11 +197,37 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     }
   };
 
+  const userUploadedSamplesCount = useMemo(
+    () => r.customSamples.filter((s) => s.sourceType !== 'kit-1400').length,
+    [r.customSamples]
+  );
+
   useEffect(() => {
-    if (r.customSamples.length > 0) {
+    if (userUploadedSamplesCount > 0) {
       setShowCustomBank(true);
     }
-  }, [r.customSamples.length]);
+  }, [userUploadedSamplesCount]);
+
+  const syncedSampleIds = useMemo(() => {
+    const ids = new Set<string>(r.cloudDrumSamples.map((c) => c.id));
+    for (const cs of r.customSamples) {
+      if (cs.supabaseSynced && cs.kit1400Id) {
+        ids.add(cs.kit1400Id);
+      }
+    }
+    return ids;
+  }, [r.cloudDrumSamples, r.customSamples]);
+
+  const activeKit1400ByRole = useMemo(
+    () => ({
+      kick: r.drumSlots.kick.kit1400Id,
+      snare: r.drumSlots.snare.kit1400Id,
+      hat: r.drumSlots.hat.kit1400Id,
+      tom: r.drumSlots.tom.kit1400Id,
+      crash: r.drumSlots.crash.kit1400Id,
+    }),
+    [r.drumSlots]
+  );
 
   useEffect(() => {
     if (r.stemTitle) {
@@ -797,6 +837,18 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     const isRec = r.recordingTarget === target;
     return (
       <div className="flex flex-wrap items-center gap-1.5">
+        {target !== 'melodic' && (
+          <button
+            type="button"
+            onClick={() => setKit1400ModalState({ open: true, role: target })}
+            className="px-2.5 py-1 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 border border-orange-400/35 text-[10.5px] font-semibold text-orange-200 flex items-center gap-1 cursor-pointer transition-all"
+            title="Explorar carpeta 1400 Samples Drum Kit (Kicks, Snares, Hats, Claps)"
+          >
+            <FolderOpen size={11} className="text-orange-400" />
+            <span>Pack 1400</span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => {
@@ -876,21 +928,31 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 if (target === 'melodic') {
                   r.updateMelodicSlot({
                     sourceType: 'preset',
+                    kit1400Id: undefined,
                     customSampleId: undefined,
                     customBuffer: undefined,
                     customName: undefined,
                   });
                 } else {
-                  r.updateDrumSlot(target, {
-                    sourceType: 'preset',
-                    customSampleId: undefined,
-                    customBuffer: undefined,
-                    customName: undefined,
-                  });
+                  const defaultKitId = DEFAULT_DRUM_KIT_1400_BY_ROLE[target];
+                  if (defaultKitId && slot.kit1400Id !== defaultKitId) {
+                    void r.selectDrumKit1400Sample(defaultKitId, target, {
+                      audition: true,
+                      saveToSupabase: true,
+                    });
+                  } else {
+                    r.updateDrumSlot(target, {
+                      sourceType: 'preset',
+                      kit1400Id: undefined,
+                      customSampleId: undefined,
+                      customBuffer: undefined,
+                      customName: undefined,
+                    });
+                  }
                 }
               }}
               className="px-2 py-1 rounded-lg bg-[#1C1C21] hover:bg-[#27272E] text-[10px] text-zinc-400 hover:text-white cursor-pointer"
-              title="Volver a muestra predeterminada de estudio"
+              title="Restablecer a muestra predeterminada"
             >
               Volver a Predet.
             </button>
@@ -1913,6 +1975,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               uploadTargetRef.current = role;
               slotFileInputRef.current?.click();
             }}
+            onRequestBrowseKit1400ForRole={(role) =>
+              setKit1400ModalState({ open: true, role })
+            }
           />
         )}
 
@@ -2086,6 +2151,49 @@ onClick={() => applyHorizontalZoom(presetZ)}
 
             {/* Professional Custom Sample Upload & Library Action Bar */}
             <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              {r.stemMode === 'drums' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setKit1400ModalState({ open: true, role: 'kick', folder: 'Kicks' })}
+                    className="px-3 py-1.5 rounded-xl bg-orange-500/20 hover:bg-orange-500/30 border border-orange-400/45 text-orange-200 font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    title="Abrir biblioteca completa de 1400 Samples Drum Kit (Kicks, Snares/Snake, Hats, Claps)"
+                  >
+                    <FolderOpen size={12} className="text-orange-400" />
+                    <span>1400 Samples Drum Kit</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void r.syncCurrentDrumKitToSupabase()}
+                    disabled={r.supabaseDrumSyncStatus === 'syncing'}
+                    className={`px-2.5 py-1.5 rounded-xl border font-medium flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      r.supabaseDrumSyncStatus === 'synced'
+                        ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25'
+                        : r.supabaseDrumSyncStatus === 'pending-offline'
+                        ? 'bg-amber-500/15 border-amber-500/35 text-amber-300 hover:bg-amber-500/25'
+                        : 'bg-[#17171C] border-white/[0.08] text-zinc-200 hover:border-white/[0.18]'
+                    }`}
+                    title="Guardar y sincronizar en Supabase los sonidos seleccionados para cada pieza"
+                  >
+                    {r.supabaseDrumSyncStatus === 'syncing' ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : r.supabaseDrumSyncStatus === 'synced' ? (
+                      <CheckCircle2 size={12} />
+                    ) : (
+                      <CloudUpload size={12} />
+                    )}
+                    <span>
+                      {r.supabaseDrumSyncStatus === 'syncing'
+                        ? 'Sincronizando...'
+                        : r.supabaseDrumSyncStatus === 'synced'
+                        ? 'Guardado en Supabase'
+                        : 'Guardar en Supabase'}
+                    </span>
+                  </button>
+                </>
+              )}
+
               <button
                 type="button"
                 onClick={() => bankBatchFileInputRef.current?.click()}
@@ -2361,17 +2469,17 @@ onClick={() => applyHorizontalZoom(presetZ)}
 
           {r.stemMode === 'drums' ? (
             <div className="flex flex-col gap-3">
-              {/* Quick Clean Audio Upload Strip for Detected Drum Pieces in Tempo */}
+              {/* Quick Access Strip for 1400 Samples Drum Kit + Custom Upload by Piece */}
               <div className="rounded-xl bg-[#0C0C0F] border border-white/[0.07] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
                   <span className="text-zinc-200 font-medium">
                     {r.analysis
                       ? `Detectados en ${r.analysis.bpm} BPM:`
-                      : 'Sube tu audio limpio por pieza:'}
+                      : '1400 Samples Drum Kit activo:'}
                   </span>
                   <span className="text-zinc-500">
-                    Carga un sample limpio por pieza para reemplazar cada golpe:
+                    Selecciona cada sonido predeterminado (Kicks, Snares/Snake, Hats, Claps) o sube el tuyo:
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -2382,23 +2490,39 @@ onClick={() => applyHorizontalZoom(presetZ)}
                       <button
                         key={`quick-up-${role}`}
                         type="button"
-                        onClick={() => {
-                          uploadTargetRef.current = role;
-                          slotFileInputRef.current?.click();
-                        }}
+                        onClick={() => setKit1400ModalState({ open: true, role })}
                         style={{ borderColor: `${color}55` }}
                         className="px-2 py-1 rounded-lg bg-[#16161B] hover:bg-[#222229] border text-[10.5px] font-medium flex items-center gap-1 cursor-pointer transition-all"
-                        title={`Subir audio limpio para reemplazar los ${count} golpes de ${label}`}
+                        title={`Elegir muestra de 1400 Samples Drum Kit para ${label} (${count} golpes)`}
                       >
-                        <Upload size={10} style={{ color }} />
+                        <FolderOpen size={10} style={{ color }} />
                         <span style={{ color }}>
                           {hasCustom ? '✓ ' : '+ '}
-                          {role === 'hat' ? 'Hi-Hat' : role === 'snare' ? 'Snare' : role === 'crash' ? 'Crash' : role === 'kick' ? 'Kick' : 'Tom'}
+                          {role === 'hat'
+                            ? 'Hi-Hat'
+                            : role === 'snare'
+                            ? 'Snare / Snake'
+                            : role === 'crash'
+                            ? 'Crash'
+                            : role === 'kick'
+                            ? 'Kick'
+                            : 'Tom'}
                         </span>
                         <span className="text-zinc-500 font-mono">({count})</span>
                       </button>
                     );
                   })}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setKit1400ModalState({ open: true, role: 'snare', folder: 'Claps' })
+                    }
+                    className="px-2 py-1 rounded-lg bg-[#16161B] hover:bg-[#222229] border border-purple-400/35 text-[10.5px] font-medium text-purple-300 flex items-center gap-1 cursor-pointer transition-all"
+                    title="Elegir Claps de 1400 Samples Drum Kit (50 Claps)"
+                  >
+                    <FolderOpen size={10} className="text-purple-400" />
+                    <span>Claps (50)</span>
+                  </button>
                 </div>
               </div>
 
@@ -2406,12 +2530,33 @@ onClick={() => applyHorizontalZoom(presetZ)}
               {DRUM_ROLES.map(({ role, label, color }) => {
                 const slot = r.drumSlots[role];
                 const presets = DRUM_PRESET_CATALOG.filter((p) => p.category === role);
+                const kit1400Pack = getDrumKit1400ForRole(role, r.kit1400DynamicManifest);
+                const featuredIds = new Set(kit1400Pack.featured.map((f) => f.id));
+                const primaryRest = kit1400Pack.primaryEntries.filter(
+                  (e) => !featuredIds.has(e.id)
+                );
+                const secondaryRest = (kit1400Pack.secondaryEntries ?? []).filter(
+                  (e) => !featuredIds.has(e.id)
+                );
+                const userSamplesForRole = r.customSamples.filter(
+                  (cs) => cs.sourceType !== 'kit-1400' && cs.category === role
+                );
+                const userSamplesOther = r.customSamples.filter(
+                  (cs) => cs.sourceType !== 'kit-1400' && cs.category !== role
+                );
+
                 const hitCount = r.analysis?.counts[role] ?? 0;
                 const isDragOver = dragOverTarget === role;
-                const selectVal =
-                  slot.sourceType !== 'preset' && slot.customSampleId
-                    ? `custom:${slot.customSampleId}`
-                    : slot.presetId;
+                const isLoadingThisRole = r.loadingKit1400Role === role;
+                const isSyncedInCloud = Boolean(
+                  slot.cloudUrl || (slot.kit1400Id && syncedSampleIds.has(slot.kit1400Id))
+                );
+
+                const selectVal = slot.kit1400Id
+                  ? `kit1400:${slot.kit1400Id}`
+                  : slot.sourceType !== 'preset' && slot.customSampleId
+                  ? `custom:${slot.customSampleId}`
+                  : slot.presetId;
 
                 return (
                   <div
@@ -2436,7 +2581,7 @@ onClick={() => applyHorizontalZoom(presetZ)}
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <label className="flex items-center gap-2 cursor-pointer font-semibold text-zinc-100">
+                      <label className="flex items-center gap-2 cursor-pointer font-semibold text-zinc-100 min-w-0">
                         <input
                           type="checkbox"
                           checked={slot.enabled}
@@ -2444,7 +2589,7 @@ onClick={() => applyHorizontalZoom(presetZ)}
                           className="accent-zinc-100"
                         />
                         <span
-                          className="w-2 h-2 rounded-full"
+                          className="w-2 h-2 rounded-full shrink-0"
                           style={{ backgroundColor: color }}
                         />
                         <span className="truncate">{label}</span>
@@ -2457,53 +2602,149 @@ onClick={() => applyHorizontalZoom(presetZ)}
                           onClick={() => r.auditionSlotSample(slot)}
                           className="px-2 py-0.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] border border-white/[0.08] text-zinc-200 text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
                         >
-                          <Volume2 size={10} />
+                          {isLoadingThisRole ? (
+                            <Loader2 size={10} className="animate-spin" />
+                          ) : (
+                            <Volume2 size={10} />
+                          )}
                           Probar
                         </button>
                       </div>
                     </div>
 
-                    {/* Unified selector: User's Uploaded Custom Samples + Studio Presets */}
-                    <select
-                      value={selectVal}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val.startsWith('custom:')) {
-                          r.assignCustomSampleToSlot(val.slice(7), role);
-                        } else {
-                          r.updateDrumSlot(role, {
-                            sourceType: 'preset',
-                            presetId: val as DefaultInstrumentId,
-                            customSampleId: undefined,
-                            customBuffer: undefined,
-                            customName: undefined,
-                          });
-                        }
-                      }}
-                      className="w-full bg-[#151519] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 cursor-pointer focus:outline-none focus:border-white/25"
-                    >
-                      {r.customSamples.length > 0 && (
-                        <optgroup label="★ Mis Audios Propios Subidos">
-                          {r.customSamples.map((cs) => (
-                            <option key={cs.id} value={`custom:${cs.id}`}>
-                              ★ {cs.name} ({cs.durationSec.toFixed(2)}s)
+                    {/* Unified Selector: Predetermined 1400 Samples Drum Kit + User Uploaded + Studio Presets + Prev/Next Stepper */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={isLoadingThisRole}
+                        onClick={() => void r.stepDrumKit1400Sample(role, -1)}
+                        className="p-1.5 rounded-lg bg-[#16161B] hover:bg-[#24242C] border border-white/[0.08] text-zinc-400 hover:text-white cursor-pointer disabled:opacity-40 shrink-0"
+                        title="Sonido anterior en 1400 Samples Drum Kit"
+                      >
+                        <ChevronLeft size={13} />
+                      </button>
+
+                      <select
+                        value={selectVal}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val.startsWith('kit1400:')) {
+                            void r.selectDrumKit1400Sample(val.slice(8), role, {
+                              audition: true,
+                              saveToSupabase: true,
+                            });
+                          } else if (val.startsWith('custom:')) {
+                            r.assignCustomSampleToSlot(val.slice(7), role);
+                          } else {
+                            r.updateDrumSlot(role, {
+                              sourceType: 'preset',
+                              presetId: val as DefaultInstrumentId,
+                              kit1400Id: undefined,
+                              customSampleId: undefined,
+                              customBuffer: undefined,
+                              customName: undefined,
+                            });
+                          }
+                        }}
+                        className="flex-1 min-w-0 bg-[#151519] border border-white/[0.08] rounded-lg px-2 py-1.5 text-xs text-zinc-100 cursor-pointer focus:outline-none focus:border-white/25"
+                      >
+                        {slot.kit1400Id &&
+                          !kit1400Pack.featured.some((e) => e.id === slot.kit1400Id) &&
+                          !primaryRest.some((e) => e.id === slot.kit1400Id) &&
+                          !secondaryRest.some((e) => e.id === slot.kit1400Id) && (
+                            <optgroup label="★ Muestra 1400 Drum Kit Seleccionada">
+                              <option value={`kit1400:${slot.kit1400Id}`}>
+                                ★ {slot.customName || slot.kit1400Id.replace(/^dk1400:/, '')}
+                              </option>
+                            </optgroup>
+                          )}
+
+                        <optgroup label="★ 1400 Samples Drum Kit — Destacados">
+                          {kit1400Pack.featured.map((item) => (
+                            <option key={item.id} value={`kit1400:${item.id}`}>
+                              {item.label}
                             </option>
                           ))}
                         </optgroup>
-                      )}
-                      <optgroup label="Estudio Predeterminados">
-                        {presets.map((pr) => (
-                          <option key={pr.id} value={pr.id}>
-                            {pr.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    </select>
+
+                        {primaryRest.length > 0 && (
+                          <optgroup
+                            label={`📁 1400 Samples Drum Kit — ${kit1400Pack.primaryFolder} (${kit1400Pack.primaryEntries.length})`}
+                          >
+                            {primaryRest.map((item) => (
+                              <option key={item.id} value={`kit1400:${item.id}`}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+
+                        {kit1400Pack.secondaryFolder && secondaryRest.length > 0 && (
+                          <optgroup
+                            label={`📁 1400 Samples Drum Kit — ${kit1400Pack.secondaryFolder} (${
+                              kit1400Pack.secondaryEntries?.length ?? 0
+                            })`}
+                          >
+                            {secondaryRest.map((item) => (
+                              <option key={item.id} value={`kit1400:${item.id}`}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+
+                        {userSamplesForRole.length > 0 && (
+                          <optgroup label="★ Mis Audios Propios (Esta Pieza)">
+                            {userSamplesForRole.map((cs) => (
+                              <option key={cs.id} value={`custom:${cs.id}`}>
+                                ★ {cs.name} ({cs.durationSec.toFixed(2)}s)
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+
+                        {userSamplesOther.length > 0 && (
+                          <optgroup label="Mis Otros Audios Subidos">
+                            {userSamplesOther.map((cs) => (
+                              <option key={cs.id} value={`custom:${cs.id}`}>
+                                {cs.name} ({cs.durationSec.toFixed(2)}s)
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+
+                        <optgroup label="Estudio Sintetizados">
+                          {presets.map((pr) => (
+                            <option key={pr.id} value={pr.id}>
+                              {pr.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      </select>
+
+                      <button
+                        type="button"
+                        disabled={isLoadingThisRole}
+                        onClick={() => void r.stepDrumKit1400Sample(role, 1)}
+                        className="p-1.5 rounded-lg bg-[#16161B] hover:bg-[#24242C] border border-white/[0.08] text-zinc-400 hover:text-white cursor-pointer disabled:opacity-40 shrink-0"
+                        title="Siguiente sonido en 1400 Samples Drum Kit"
+                      >
+                        <ChevronRight size={13} />
+                      </button>
+                    </div>
 
                     {slot.sourceType !== 'preset' && (
                       <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[10px] flex items-center justify-between gap-2">
-                        <span className="truncate">
-                          Propio: {slot.customName}
+                        <span className="truncate flex items-center gap-1.5">
+                          <span>
+                            {slot.sourceType === 'kit-1400' ? '1400 Kit:' : 'Propio:'}{' '}
+                            {slot.customName}
+                          </span>
+                          {isSyncedInCloud && (
+                            <span title="Guardado en Supabase Cloud" className="text-emerald-300 inline-flex items-center">
+                              <Cloud size={10} />
+                            </span>
+                          )}
                         </span>
                         <span className="text-[9.5px] font-mono text-emerald-200/75 shrink-0">
                           {((slot.customPeakOffsetSec ?? 0) * 1000).toFixed(1)}ms
@@ -3135,6 +3376,25 @@ onClick={() => applyHorizontalZoom(presetZ)}
           </div>
         </div>
       </div>
+      <DrumKit1400BrowserModal
+        isOpen={kit1400ModalState.open}
+        onClose={() => setKit1400ModalState((prev) => ({ ...prev, open: false }))}
+        mode="replacer"
+        initialRole={kit1400ModalState.role}
+        initialFolder={kit1400ModalState.folder}
+        activeKit1400ByRole={activeKit1400ByRole}
+        dynamicManifest={r.kit1400DynamicManifest}
+        syncedSampleIds={syncedSampleIds}
+        supabaseSyncStatus={r.supabaseDrumSyncStatus}
+        onAuditionSample={r.auditionDrumKit1400Sample}
+        onSelectForRole={(entryId, role) =>
+          r.selectDrumKit1400Sample(entryId, role, {
+            audition: true,
+            saveToSupabase: true,
+          })
+        }
+        onSyncToSupabase={r.syncCurrentDrumKitToSupabase}
+      />
     </div>
   );
 };

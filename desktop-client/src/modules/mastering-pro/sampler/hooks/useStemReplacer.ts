@@ -53,12 +53,25 @@ import {
   isBassPresetId,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
+import {
+  DEFAULT_DRUM_KIT_1400_BY_ROLE,
+  getDrumKit1400EntryById,
+  getDrumKit1400ForRole,
+  type DrumKit1400Folder,
+  type DrumKit1400SampleEntry,
+} from '../engine/DrumKit1400Catalog';
 import { arraysToAudioBuffer } from '../engine/SampleBufferOps';
 import {
   addSampleToSongFolder,
+  fetchCloudDrumKitSamples,
   fetchSongsWithStemsForSampler,
+  getCachedSupabaseSampleUrl,
+  loadDrumReplacerSelectionFromSupabase,
+  saveDrumReplacerSelectionToSupabase,
+  uploadDrumKitSampleToSupabase,
 } from '../services/supabaseSamplerService';
 import type {
+  CloudDrumKitSampleRecord,
   CustomReplacementSampleItem,
   CustomSampleCategory,
   DefaultInstrumentId,
@@ -76,6 +89,7 @@ import type {
   StemNoteEvent,
   StemQuantizeMode,
   StemReplaceMixOptions,
+  SupabaseDrumSyncStatus,
 } from '../types/sampler.types';
 import SamplerAnalysisWorker from '../workers/samplerAnalysis.worker.ts?worker';
 import type { WaveformPyramid } from '../workers/waveformPeaks.worker';
@@ -260,6 +274,23 @@ export function useStemReplacer() {
   });
 
   const [customSamples, setCustomSamples] = useState<CustomReplacementSampleItem[]>([]);
+  const customSamplesRef = useRef<CustomReplacementSampleItem[]>(customSamples);
+  customSamplesRef.current = customSamples;
+  const drumSlotsRef = useRef(drumSlots);
+  drumSlotsRef.current = drumSlots;
+  const melodicSlotRef = useRef(melodicSlot);
+  melodicSlotRef.current = melodicSlot;
+
+  const [kit1400DynamicManifest, setKit1400DynamicManifest] = useState<
+    Partial<Record<DrumKit1400Folder, string[]>>
+  >({});
+  const [cloudDrumSamples, setCloudDrumSamples] = useState<CloudDrumKitSampleRecord[]>([]);
+  const [supabaseDrumSyncStatus, setSupabaseDrumSyncStatus] =
+    useState<SupabaseDrumSyncStatus>('idle');
+  const [loadingKit1400Role, setLoadingKit1400Role] = useState<
+    DrumPieceRole | 'melodic' | null
+  >(null);
+  const kit1400BufferCacheRef = useRef<Map<string, CustomReplacementSampleItem>>(new Map());
   const [isLoadingStem, setIsLoadingStem] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isTranscribingAi, setIsTranscribingAi] = useState<boolean>(false);
@@ -294,6 +325,15 @@ export function useStemReplacer() {
   const playOffsetRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const sessionRestoredRef = useRef<boolean>(false);
+  const autoSyncDrumKitRef = useRef<
+    | ((opts: {
+        showStatus?: boolean;
+        overrideSlots?: Record<DrumPieceRole, ReplacementSlotConfig>;
+        overrideSamples?: CustomReplacementSampleItem[];
+        overrideMelodic?: ReplacementSlotConfig;
+      }) => Promise<boolean>)
+    | null
+  >(null);
 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecRef = useRef<MediaRecorder | null>(null);
@@ -331,21 +371,129 @@ export function useStemReplacer() {
     }
   }, [selectedSongId]);
 
+  const fetchAndPrepareKit1400Item = useCallback(
+    async (
+      entryId: string,
+      ctxOverride?: AudioContext,
+      cloudUrlOverride?: string
+    ): Promise<CustomReplacementSampleItem | null> => {
+      const cached = kit1400BufferCacheRef.current.get(entryId);
+      if (cached) return cached;
+
+      const existingCustom = customSamplesRef.current.find((s) => s.kit1400Id === entryId);
+      if (existingCustom) {
+        kit1400BufferCacheRef.current.set(entryId, existingCustom);
+        return existingCustom;
+      }
+
+      const entry: DrumKit1400SampleEntry | undefined = getDrumKit1400EntryById(entryId);
+      const candidateUrls = [
+        entry?.localApiUrl,
+        entry?.hasBundledFallback ? entry.bundledPublicUrl : undefined,
+        cloudUrlOverride,
+        getCachedSupabaseSampleUrl(entryId),
+      ].filter((u): u is string => Boolean(u));
+
+      if (candidateUrls.length === 0) return null;
+
+      const ctx = ctxOverride ?? ensureCtx();
+      for (const url of candidateUrls) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('text/html') || ct.includes('application/json')) continue;
+          const arr = await res.arrayBuffer();
+          if (arr.byteLength < 64) continue;
+          const decoded = await ctx.decodeAudioData(arr.slice(0));
+          const prepared = prepareCustomReplacementSample(decoded, { normalize: true });
+          const cloudUrl = url.startsWith('http')
+            ? url
+            : cloudUrlOverride || getCachedSupabaseSampleUrl(entryId);
+          const item: CustomReplacementSampleItem = {
+            id: `kit1400-${entryId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+            name: entry?.fileName || entryId.replace(/^dk1400:[^/]+\//, ''),
+            category: entry?.category ?? 'kick',
+            sourceType: 'kit-1400',
+            kit1400Id: entryId,
+            cloudUrl,
+            supabaseSynced: Boolean(cloudUrl),
+            buffer: prepared.trimmedBuffer,
+            durationSec: prepared.trimmedBuffer.duration,
+            peakOffsetSec: prepared.peakOffsetSec,
+            detectedRootMidi: prepared.detectedRootMidi,
+            detectedNoteName: prepared.detectedNoteName,
+            waveformPreview: prepared.waveformPreview,
+            createdAt: new Date().toISOString(),
+          };
+          kit1400BufferCacheRef.current.set(entryId, item);
+          return item;
+        } catch {
+          // try next candidate URL
+        }
+      }
+      return null;
+    },
+    [ensureCtx]
+  );
+
   useEffect(() => {
     void refreshSongs();
     let cancelled = false;
+
+    // Discover any newly added WAVs in "../1400 Samples Drum Kit" when local server is active
+    void fetch('/api/drum-kit-1400/manifest')
+      .then(async (r) => {
+        if (!r.ok) return;
+        const ct = (r.headers.get('content-type') || '').toLowerCase();
+        if (!ct.includes('application/json')) return;
+        const data = (await r.json()) as {
+          available?: boolean;
+          folders?: Partial<Record<DrumKit1400Folder, string[]>>;
+        };
+        if (!cancelled && data?.available && data.folders) {
+          setKit1400DynamicManifest(data.folders);
+        }
+      })
+      .catch(() => {
+        // static build or offline: static catalog of 1400 samples remains ready
+      });
+
     void (async () => {
       try {
         if (typeof AudioContext === 'undefined') return;
         const ctx = ensureCtx();
-        const [savedSamples, savedSession] = await Promise.all([
+        const [savedSamples, savedSession, cloudSelection, cloudSamplesList] = await Promise.all([
           loadAllCustomReplacementSamplesFromIdb(ctx),
           loadReplacerSessionFromIdb(ACTIVE_REPLACER_SESSION_KEY),
+          loadDrumReplacerSelectionFromSupabase().catch(() => null),
+          fetchCloudDrumKitSamples().catch(() => [] as CloudDrumKitSampleRecord[]),
         ]);
         if (cancelled) return;
-        if (savedSamples.length > 0) {
-          setCustomSamples(savedSamples);
+
+        if (cloudSamplesList.length > 0) {
+          setCloudDrumSamples(cloudSamplesList);
         }
+        const cloudUrlById = new Map<string, string>(
+          cloudSamplesList
+            .filter((c) => Boolean(c.id && c.publicUrl))
+            .map((c) => [c.id, c.publicUrl])
+        );
+
+        const mergedSamplesMap = new Map<string, CustomReplacementSampleItem>();
+        for (const s of savedSamples) {
+          const knownCloudUrl =
+            s.cloudUrl ?? (s.kit1400Id ? cloudUrlById.get(s.kit1400Id) : undefined);
+          const hydrated =
+            knownCloudUrl && !s.supabaseSynced
+              ? { ...s, cloudUrl: knownCloudUrl, supabaseSynced: true }
+              : s;
+          mergedSamplesMap.set(hydrated.id, hydrated);
+          if (hydrated.kit1400Id) {
+            kit1400BufferCacheRef.current.set(hydrated.kit1400Id, hydrated);
+          }
+        }
+
         if (savedSession) {
           setStemMode(savedSession.mode);
           setQuantizeMode(savedSession.quantizeMode);
@@ -360,39 +508,184 @@ export function useStemReplacer() {
             ...prev,
             ...savedSession.mixOptions,
           }));
+        }
 
-          const sampleMap = new Map(savedSamples.map((s) => [s.id, s]));
-          if (savedSession.drumSlots) {
-            setDrumSlots((prev) => {
-              const next = { ...prev };
-              (['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]).forEach((role) => {
-                const sSlot = savedSession.drumSlots[role];
-                if (!sSlot) return;
-                const linkedSample = sSlot.customSampleId ? sampleMap.get(sSlot.customSampleId) : undefined;
-                next[role] = {
-                  ...prev[role],
-                  ...sSlot,
-                  customBuffer: linkedSample?.buffer,
-                  sourceType:
-                    sSlot.sourceType !== 'preset' && !linkedSample ? 'preset' : sSlot.sourceType,
-                };
-              });
-              return next;
-            });
+        const effectiveSavedDrumSlots =
+          savedSession?.drumSlots ?? cloudSelection?.drumSlots ?? null;
+        const defaultsAlreadyInit = (() => {
+          try {
+            return localStorage.getItem('tandao_kit1400_defaults_initialized_v1') === '1';
+          } catch {
+            return false;
           }
-          if (savedSession.melodicSlot) {
-            const linkedMel = savedSession.melodicSlot.customSampleId
-              ? sampleMap.get(savedSession.melodicSlot.customSampleId)
+        })();
+
+        const resolvedDrumPatch: Partial<Record<DrumPieceRole, ReplacementSlotConfig>> = {};
+        const baseDefaults = createDefaultDrumSlots();
+
+        for (const role of ['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]) {
+          const sSlot = effectiveSavedDrumSlots?.[role];
+          const defaultKit1400Id = DEFAULT_DRUM_KIT_1400_BY_ROLE[role];
+
+          if (sSlot && sSlot.sourceType !== 'preset') {
+            let linkedSample = sSlot.customSampleId
+              ? mergedSamplesMap.get(sSlot.customSampleId)
               : undefined;
-            setMelodicSlot((prev) => ({
+
+            if (!linkedSample && sSlot.kit1400Id) {
+              const loaded = await fetchAndPrepareKit1400Item(
+                sSlot.kit1400Id,
+                ctx,
+                sSlot.cloudUrl ?? cloudUrlById.get(sSlot.kit1400Id)
+              );
+              if (loaded) {
+                linkedSample = loaded;
+                mergedSamplesMap.set(loaded.id, loaded);
+              }
+            } else if (!linkedSample && sSlot.cloudUrl) {
+              try {
+                const res = await fetch(sSlot.cloudUrl);
+                if (res.ok) {
+                  const arr = await res.arrayBuffer();
+                  const dec = await ctx.decodeAudioData(arr.slice(0));
+                  const prep = prepareCustomReplacementSample(dec, { normalize: true });
+                  linkedSample = {
+                    id: sSlot.customSampleId || `cloud-${role}-${Date.now()}`,
+                    name: sSlot.customName || `${role}.wav`,
+                    category: role,
+                    sourceType: 'cloud',
+                    cloudUrl: sSlot.cloudUrl,
+                    supabaseSynced: true,
+                    buffer: prep.trimmedBuffer,
+                    durationSec: prep.trimmedBuffer.duration,
+                    peakOffsetSec: prep.peakOffsetSec,
+                    detectedRootMidi: prep.detectedRootMidi,
+                    detectedNoteName: prep.detectedNoteName,
+                    waveformPreview: prep.waveformPreview,
+                    createdAt: new Date().toISOString(),
+                  };
+                  mergedSamplesMap.set(linkedSample.id, linkedSample);
+                }
+              } catch {
+                // fallback handled below
+              }
+            }
+
+            if (linkedSample) {
+              resolvedDrumPatch[role] = {
+                ...baseDefaults[role],
+                ...sSlot,
+                customSampleId: linkedSample.id,
+                customName: linkedSample.name,
+                customBuffer: linkedSample.buffer,
+                kit1400Id: linkedSample.kit1400Id ?? sSlot.kit1400Id,
+                cloudUrl: linkedSample.cloudUrl ?? sSlot.cloudUrl,
+              };
+              continue;
+            }
+          }
+
+          // Predetermined default loading from "1400 Samples Drum Kit" for Kick, Snare & Hi-Hat
+          // on fresh startup (or one-time upgrade when slot was still on legacy synth preset)
+          if (defaultKit1400Id && (!sSlot || !defaultsAlreadyInit)) {
+            const defItem = await fetchAndPrepareKit1400Item(defaultKit1400Id, ctx);
+            if (defItem) {
+              mergedSamplesMap.set(defItem.id, defItem);
+              void saveCustomReplacementSampleToIdb(defItem);
+              resolvedDrumPatch[role] = {
+                ...baseDefaults[role],
+                ...(sSlot ? { gainDb: sSlot.gainDb, pitchSemis: sSlot.pitchSemis, enabled: sSlot.enabled } : {}),
+                enabled: sSlot?.enabled ?? true,
+                sourceType: 'kit-1400',
+                kit1400Id: defItem.kit1400Id,
+                cloudUrl: defItem.cloudUrl,
+                customSampleId: defItem.id,
+                customName: defItem.name,
+                customBuffer: defItem.buffer,
+                customRootMidi: defItem.detectedRootMidi,
+                customPeakOffsetSec: defItem.peakOffsetSec,
+                normalizeCustom: true,
+              };
+              continue;
+            }
+          }
+
+          if (sSlot) {
+            resolvedDrumPatch[role] = {
+              ...baseDefaults[role],
+              ...sSlot,
+              sourceType: 'preset',
+              customBuffer: undefined,
+            };
+          }
+        }
+
+        try {
+          localStorage.setItem('tandao_kit1400_defaults_initialized_v1', '1');
+        } catch {
+          // ignore
+        }
+
+        if (!cancelled) {
+          const allMergedSamples = Array.from(mergedSamplesMap.values());
+          if (allMergedSamples.length > 0) {
+            setCustomSamples(allMergedSamples);
+          }
+          const finalDrums: Record<DrumPieceRole, ReplacementSlotConfig> = {
+            ...baseDefaults,
+            ...resolvedDrumPatch,
+          };
+          if (Object.keys(resolvedDrumPatch).length > 0) {
+            setDrumSlots((prev) => ({
               ...prev,
-              ...savedSession.melodicSlot,
+              ...resolvedDrumPatch,
+            }));
+          }
+
+          const effectiveMelodic = savedSession?.melodicSlot ?? cloudSelection?.melodicSlot;
+          let finalMelodic: ReplacementSlotConfig = melodicSlotRef.current;
+          if (effectiveMelodic) {
+            const linkedMel = effectiveMelodic.customSampleId
+              ? mergedSamplesMap.get(effectiveMelodic.customSampleId)
+              : undefined;
+            finalMelodic = {
+              ...melodicSlotRef.current,
+              ...effectiveMelodic,
               customBuffer: linkedMel?.buffer,
               sourceType:
-                savedSession.melodicSlot.sourceType !== 'preset' && !linkedMel
+                effectiveMelodic.sourceType !== 'preset' && !linkedMel
                   ? 'preset'
-                  : savedSession.melodicSlot.sourceType,
+                  : effectiveMelodic.sourceType,
+            };
+            setMelodicSlot((prev) => ({
+              ...prev,
+              ...effectiveMelodic,
+              customBuffer: linkedMel?.buffer,
+              sourceType:
+                effectiveMelodic.sourceType !== 'preset' && !linkedMel
+                  ? 'preset'
+                  : effectiveMelodic.sourceType,
             }));
+          }
+
+          const hasPendingSlotCloudSync =
+            !cloudSelection ||
+            (['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]).some((role) => {
+              const sl = finalDrums[role];
+              if (!sl || sl.sourceType === 'preset') return false;
+              const linked = sl.customSampleId ? mergedSamplesMap.get(sl.customSampleId) : undefined;
+              return !sl.cloudUrl || (linked && !linked.supabaseSynced);
+            });
+
+          if (hasPendingSlotCloudSync && Object.keys(resolvedDrumPatch).length > 0) {
+            void autoSyncDrumKitRef.current?.({
+              showStatus: false,
+              overrideSlots: finalDrums,
+              overrideSamples: allMergedSamples,
+              overrideMelodic: finalMelodic,
+            });
+          } else if (cloudSelection) {
+            setSupabaseDrumSyncStatus('synced');
           }
         }
         sessionRestoredRef.current = true;
@@ -2066,13 +2359,293 @@ export function useStemReplacer() {
     [melodicSlot, stemMode, bassFocusMode, applyBassFocusChange]
   );
 
+  // Syncs a sample + active drum slot configuration to Supabase Storage & DB (non-blocking, offline-resilient)
+  const persistSelectionAndSampleToSupabase = useCallback(
+    async (
+      sampleToUpload?: CustomReplacementSampleItem,
+      overrideSlots?: Record<DrumPieceRole, ReplacementSlotConfig>,
+      overrideMelodic?: ReplacementSlotConfig,
+      showSuccessStatus = false
+    ): Promise<boolean> => {
+      setSupabaseDrumSyncStatus('syncing');
+      try {
+        let uploadedRecord: CloudDrumKitSampleRecord | null = null;
+        if (sampleToUpload && !sampleToUpload.supabaseSynced) {
+          uploadedRecord = await uploadDrumKitSampleToSupabase({ sample: sampleToUpload });
+          const updatedSample: CustomReplacementSampleItem = {
+            ...sampleToUpload,
+            cloudUrl: uploadedRecord.publicUrl,
+            supabaseSynced: true,
+          };
+          if (updatedSample.kit1400Id) {
+            kit1400BufferCacheRef.current.set(updatedSample.kit1400Id, updatedSample);
+          }
+          setCustomSamples((prev) =>
+            prev.map((s) => (s.id === updatedSample.id ? updatedSample : s))
+          );
+          void saveCustomReplacementSampleToIdb(updatedSample);
+          setCloudDrumSamples((prev) => {
+            const without = prev.filter((r) => r.id !== uploadedRecord!.id);
+            return [uploadedRecord!, ...without];
+          });
+        }
+
+        const activeDrums = overrideSlots ?? drumSlotsRef.current;
+        const activeMelodic = overrideMelodic ?? melodicSlotRef.current;
+        const stripBuf = (
+          sl: ReplacementSlotConfig
+        ): Omit<ReplacementSlotConfig, 'customBuffer'> => {
+          const { customBuffer: _cb, ...rest } = sl;
+          if (
+            uploadedRecord &&
+            (sl.customSampleId === sampleToUpload?.id || sl.kit1400Id === uploadedRecord.id)
+          ) {
+            rest.cloudUrl = uploadedRecord.publicUrl;
+          }
+          return rest;
+        };
+
+        await saveDrumReplacerSelectionToSupabase({
+          name: 'Selección Activa Sample Lab (1400 Drum Kit)',
+          drumSlots: {
+            kick: stripBuf(activeDrums.kick),
+            snare: stripBuf(activeDrums.snare),
+            hat: stripBuf(activeDrums.hat),
+            crash: stripBuf(activeDrums.crash),
+            tom: stripBuf(activeDrums.tom),
+          },
+          melodicSlot: stripBuf(activeMelodic),
+        });
+
+        setSupabaseDrumSyncStatus('synced');
+        if (showSuccessStatus) {
+          setStatusMessage(
+            '☁ Sonidos seleccionados y configuración de piezas guardados exitosamente en Supabase.'
+          );
+        }
+        return true;
+      } catch {
+        setSupabaseDrumSyncStatus('pending-offline');
+        if (showSuccessStatus) {
+          setStatusMessage(
+            'Guardado localmente en Sample Lab · Pendiente de sincronizar con Supabase cuando haya conexión activa.'
+          );
+        }
+        return false;
+      }
+    },
+    []
+  );
+
+  // Syncs all currently assigned custom / 1400 Drum Kit samples and active slot configuration to Supabase
+  const runSyncCurrentDrumKitToSupabase = useCallback(
+    async (opts?: {
+      showStatus?: boolean;
+      overrideSlots?: Record<DrumPieceRole, ReplacementSlotConfig>;
+      overrideSamples?: CustomReplacementSampleItem[];
+      overrideMelodic?: ReplacementSlotConfig;
+    }): Promise<boolean> => {
+      const showStatus = opts?.showStatus ?? true;
+      setSupabaseDrumSyncStatus('syncing');
+      try {
+        const currentDrums = { ...(opts?.overrideSlots ?? drumSlotsRef.current) };
+        const allCustom = opts?.overrideSamples ?? customSamplesRef.current;
+
+        for (const role of ['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]) {
+          const sl = currentDrums[role];
+          if (sl.sourceType === 'preset') continue;
+          const linked =
+            allCustom.find((s) => s.id === sl.customSampleId) ??
+            (sl.kit1400Id ? kit1400BufferCacheRef.current.get(sl.kit1400Id) : undefined);
+          if (linked && (!linked.supabaseSynced || !sl.cloudUrl)) {
+            const rec = await uploadDrumKitSampleToSupabase({ sample: linked });
+            const syncedItem: CustomReplacementSampleItem = {
+              ...linked,
+              cloudUrl: rec.publicUrl,
+              supabaseSynced: true,
+            };
+            if (syncedItem.kit1400Id) {
+              kit1400BufferCacheRef.current.set(syncedItem.kit1400Id, syncedItem);
+            }
+            setCustomSamples((prev) =>
+              prev.map((s) => (s.id === syncedItem.id ? syncedItem : s))
+            );
+            void saveCustomReplacementSampleToIdb(syncedItem);
+            currentDrums[role] = { ...sl, cloudUrl: rec.publicUrl };
+          }
+        }
+
+        setDrumSlots(currentDrums);
+        return await persistSelectionAndSampleToSupabase(
+          undefined,
+          currentDrums,
+          opts?.overrideMelodic ?? melodicSlotRef.current,
+          showStatus
+        );
+      } catch {
+        setSupabaseDrumSyncStatus('pending-offline');
+        if (showStatus) {
+          setStatusMessage(
+            'Muestras guardadas en memoria local · No se pudo conectar al servidor Supabase en este instante.'
+          );
+        }
+        return false;
+      }
+    },
+    [persistSelectionAndSampleToSupabase]
+  );
+
+  autoSyncDrumKitRef.current = runSyncCurrentDrumKitToSupabase;
+
+  // Explicit 1-click full sync of all currently assigned custom / 1400 Drum Kit samples to Supabase
+  const syncCurrentDrumKitToSupabase = useCallback(
+    async (): Promise<boolean> => runSyncCurrentDrumKitToSupabase({ showStatus: true }),
+    [runSyncCurrentDrumKitToSupabase]
+  );
+
+  // Select any sound from "1400 Samples Drum Kit" -> decode, align transient, assign to piece, and save to Supabase!
+  const selectDrumKit1400Sample = useCallback(
+    async (
+      entryId: string,
+      target: DrumPieceRole | 'melodic',
+      opts?: { audition?: boolean; saveToSupabase?: boolean }
+    ): Promise<CustomReplacementSampleItem | null> => {
+      setLoadingKit1400Role(target);
+      try {
+        const cloudMatch = cloudDrumSamples.find((c) => c.id === entryId);
+        const item = await fetchAndPrepareKit1400Item(entryId, undefined, cloudMatch?.publicUrl);
+        if (!item) {
+          setStatusMessage(`No se pudo cargar la muestra "${entryId}" de 1400 Samples Drum Kit.`);
+          return null;
+        }
+
+        setCustomSamples((prev) => {
+          const filtered = prev.filter((s) => s.id !== item.id && s.kit1400Id !== entryId);
+          return [item, ...filtered];
+        });
+        void saveCustomReplacementSampleToIdb(item);
+
+        const patch: Partial<ReplacementSlotConfig> = {
+          enabled: true,
+          sourceType: 'kit-1400',
+          kit1400Id: entryId,
+          cloudUrl: item.cloudUrl,
+          customSampleId: item.id,
+          customName: item.name,
+          customBuffer: item.buffer,
+          customRootMidi: item.detectedRootMidi,
+          customPeakOffsetSec: item.peakOffsetSec,
+          normalizeCustom: true,
+        };
+
+        if (target === 'melodic') {
+          const nextMel = { ...melodicSlotRef.current, ...patch };
+          setMelodicSlot(nextMel);
+          if (opts?.saveToSupabase !== false) {
+            void persistSelectionAndSampleToSupabase(item, drumSlotsRef.current, nextMel, false);
+          }
+        } else {
+          const nextDrums = {
+            ...drumSlotsRef.current,
+            [target]: { ...drumSlotsRef.current[target], ...patch },
+          };
+          setDrumSlots(nextDrums);
+          if (opts?.saveToSupabase !== false) {
+            void persistSelectionAndSampleToSupabase(item, nextDrums, melodicSlotRef.current, false);
+          }
+        }
+
+        if (opts?.audition !== false) {
+          const ctx = ensureCtx();
+          const src = ctx.createBufferSource();
+          src.buffer = item.buffer;
+          const slotGain =
+            target === 'melodic'
+              ? melodicSlotRef.current.gainDb
+              : drumSlotsRef.current[target].gainDb;
+          const slotPitch =
+            target === 'melodic'
+              ? melodicSlotRef.current.pitchSemis
+              : drumSlotsRef.current[target].pitchSemis;
+          src.playbackRate.value = Math.pow(2, slotPitch / 12);
+          const g = ctx.createGain();
+          g.gain.value = Math.pow(10, slotGain / 20);
+          src.connect(g);
+          g.connect(ctx.destination);
+          src.start();
+        }
+
+        setStatusMessage(
+          `★ "${item.name}" seleccionada de 1400 Samples Drum Kit para ${target.toUpperCase()} y sincronizando con Supabase.`
+        );
+        return item;
+      } finally {
+        setLoadingKit1400Role(null);
+      }
+    },
+    [cloudDrumSamples, fetchAndPrepareKit1400Item, persistSelectionAndSampleToSupabase, ensureCtx]
+  );
+
+  // Audition any sample from "1400 Samples Drum Kit" without changing slot assignment yet
+  const auditionDrumKit1400Sample = useCallback(
+    async (entryId: string) => {
+      const cloudMatch = cloudDrumSamples.find((c) => c.id === entryId);
+      const item = await fetchAndPrepareKit1400Item(entryId, undefined, cloudMatch?.publicUrl);
+      if (!item) return;
+      const ctx = ensureCtx();
+      const src = ctx.createBufferSource();
+      src.buffer = item.buffer;
+      src.connect(ctx.destination);
+      src.start();
+    },
+    [cloudDrumSamples, fetchAndPrepareKit1400Item, ensureCtx]
+  );
+
+  // Load raw AudioBuffer from "1400 Samples Drum Kit" (e.g. for assigning straight to 16 Pads!)
+  const loadDrumKit1400ForPad = useCallback(
+    async (
+      entryId: string
+    ): Promise<{ buffer: AudioBuffer; name: string; entryId: string } | null> => {
+      const cloudMatch = cloudDrumSamples.find((c) => c.id === entryId);
+      const item = await fetchAndPrepareKit1400Item(entryId, undefined, cloudMatch?.publicUrl);
+      if (!item) return null;
+      void persistSelectionAndSampleToSupabase(item, undefined, undefined, false);
+      return { buffer: item.buffer, name: item.name, entryId };
+    },
+    [cloudDrumSamples, fetchAndPrepareKit1400Item, persistSelectionAndSampleToSupabase]
+  );
+
+  // Step Prev/Next (-1 / +1) through the piece's corresponding folder in "1400 Samples Drum Kit"
+  const stepDrumKit1400Sample = useCallback(
+    async (role: DrumPieceRole, direction: -1 | 1) => {
+      const rolePack = getDrumKit1400ForRole(role, kit1400DynamicManifest);
+      const allForRole = [
+        ...rolePack.primaryEntries,
+        ...(rolePack.secondaryEntries ?? []),
+      ];
+      if (allForRole.length === 0) return;
+
+      const curId = drumSlotsRef.current[role].kit1400Id;
+      const curIdx = curId ? allForRole.findIndex((e) => e.id === curId) : -1;
+      const nextIdx =
+        curIdx < 0
+          ? 0
+          : (curIdx + direction + allForRole.length) % allForRole.length;
+      await selectDrumKit1400Sample(allForRole[nextIdx].id, role, {
+        audition: true,
+        saveToSupabase: true,
+      });
+    },
+    [kit1400DynamicManifest, selectDrumKit1400Sample]
+  );
+
   // Register a decoded sample in the persistent Custom Sample Bank and optionally assign to a slot
   const registerCustomSample = useCallback(
     (
       rawBuffer: AudioBuffer,
       label: string,
       category: CustomSampleCategory,
-      sourceType: 'file' | 'recorded' | 'pad' | 'cloud',
+      sourceType: 'file' | 'recorded' | 'pad' | 'cloud' | 'kit-1400',
       assignTarget?: DrumPieceRole | 'melodic'
     ): CustomReplacementSampleItem => {
       const prepared = prepareCustomReplacementSample(rawBuffer, { normalize: true });
@@ -2098,6 +2671,7 @@ export function useStemReplacer() {
         const patch: Partial<ReplacementSlotConfig> = {
           enabled: true,
           sourceType: slotSource,
+          kit1400Id: undefined,
           customSampleId: item.id,
           customName: item.name,
           customBuffer: item.buffer,
@@ -2106,17 +2680,30 @@ export function useStemReplacer() {
           normalizeCustom: true,
         };
         if (assignTarget === 'melodic') {
-          setMelodicSlot((prev) => ({ ...prev, ...patch }));
+          const nextMel = { ...melodicSlotRef.current, ...patch };
+          setMelodicSlot(nextMel);
+          void persistSelectionAndSampleToSupabase(item, drumSlotsRef.current, nextMel, false);
         } else {
-          setDrumSlots((prev) => ({
-            ...prev,
-            [assignTarget]: { ...prev[assignTarget], ...patch },
-          }));
+          const nextDrums = {
+            ...drumSlotsRef.current,
+            [assignTarget]: { ...drumSlotsRef.current[assignTarget], ...patch },
+          };
+          setDrumSlots(nextDrums);
+          void persistSelectionAndSampleToSupabase(item, nextDrums, melodicSlotRef.current, false);
         }
+      } else {
+        void uploadDrumKitSampleToSupabase({ sample: item })
+          .then((rec) => {
+            const synced = { ...item, cloudUrl: rec.publicUrl, supabaseSynced: true };
+            setCustomSamples((prev) => prev.map((s) => (s.id === item.id ? synced : s)));
+            void saveCustomReplacementSampleToIdb(synced);
+            setSupabaseDrumSyncStatus('synced');
+          })
+          .catch(() => setSupabaseDrumSyncStatus('pending-offline'));
       }
       return item;
     },
-    []
+    [persistSelectionAndSampleToSupabase]
   );
 
   // Apply custom decoded sample buffer (recorded, uploaded, pad, or cropped hit)
@@ -2242,6 +2829,8 @@ export function useStemReplacer() {
       const patch: Partial<ReplacementSlotConfig> = {
         enabled: true,
         sourceType: slotSource,
+        kit1400Id: item.kit1400Id,
+        cloudUrl: item.cloudUrl,
         customSampleId: item.id,
         customName: item.name,
         customBuffer: item.buffer,
@@ -2250,21 +2839,25 @@ export function useStemReplacer() {
         normalizeCustom: true,
       };
       if (target === 'melodic') {
-        setMelodicSlot((prev) => ({ ...prev, ...patch }));
+        const nextMel = { ...melodicSlotRef.current, ...patch };
+        setMelodicSlot(nextMel);
+        void persistSelectionAndSampleToSupabase(item, drumSlotsRef.current, nextMel, false);
         setStatusMessage(
-          `Muestra propia "${item.name}" asignada al Timbre Tonal (Root ${item.detectedNoteName}).`
+          `Muestra "${item.name}" asignada al Timbre Tonal (Root ${item.detectedNoteName}) y sincronizada con Supabase.`
         );
       } else {
-        setDrumSlots((prev) => ({
-          ...prev,
-          [target]: { ...prev[target], ...patch },
-        }));
+        const nextDrums = {
+          ...drumSlotsRef.current,
+          [target]: { ...drumSlotsRef.current[target], ...patch },
+        };
+        setDrumSlots(nextDrums);
+        void persistSelectionAndSampleToSupabase(item, nextDrums, melodicSlotRef.current, false);
         setStatusMessage(
-          `Muestra propia "${item.name}" asignada a ${target.toUpperCase()}.`
+          `Muestra "${item.name}" asignada a ${target.toUpperCase()} y sincronizada con Supabase.`
         );
       }
     },
-    [customSamples]
+    [customSamples, persistSelectionAndSampleToSupabase]
   );
 
   const auditionCustomSample = useCallback(
@@ -2311,19 +2904,32 @@ export function useStemReplacer() {
     );
   }, []);
 
-  const resetAllSlotsToPresets = useCallback(() => {
-    setDrumSlots(createDefaultDrumSlots());
+  const resetAllSlotsToPresets = useCallback(async () => {
+    const base = createDefaultDrumSlots();
+    setDrumSlots(base);
     setMelodicSlot((prev) => ({
       ...prev,
       sourceType: 'preset',
+      kit1400Id: undefined,
       customSampleId: undefined,
       customName: undefined,
       customBuffer: undefined,
       gainDb: 0,
       pitchSemis: 0,
     }));
-    setStatusMessage('Piezas y timbre restablecidos a predeterminados de estudio.');
-  }, []);
+
+    // Re-apply predetermined defaults from "1400 Samples Drum Kit" (Kick_NATURAL, Snare NATURAL, Hat 12)
+    for (const role of ['kick', 'snare', 'hat'] as DrumPieceRole[]) {
+      const defId = DEFAULT_DRUM_KIT_1400_BY_ROLE[role];
+      if (defId) {
+        await selectDrumKit1400Sample(defId, role, { audition: false, saveToSupabase: false });
+      }
+    }
+    void syncCurrentDrumKitToSupabase();
+    setStatusMessage(
+      'Piezas restablecidas a muestras predeterminadas de 1400 Samples Drum Kit (Kick NATURAL · Snare NATURAL · Hat 12).'
+    );
+  }, [selectDrumKit1400Sample, syncCurrentDrumKitToSupabase]);
 
   // Microphone recording directly into a replacement slot!
   const toggleMicRecordingForSlot = useCallback(
@@ -3309,6 +3915,15 @@ export function useStemReplacer() {
     toggleSoloDrumRole,
     melodicSlot,
     customSamples,
+    kit1400DynamicManifest,
+    cloudDrumSamples,
+    supabaseDrumSyncStatus,
+    loadingKit1400Role,
+    selectDrumKit1400Sample,
+    stepDrumKit1400Sample,
+    auditionDrumKit1400Sample,
+    loadDrumKit1400ForPad,
+    syncCurrentDrumKitToSupabase,
     mixOptions,
     setMixOptions,
     applyMixPreset,

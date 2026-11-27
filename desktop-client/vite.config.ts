@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -284,12 +286,135 @@ function createLocalReplicateApiPlugin(env: Record<string, string>): Plugin {
   };
 }
 
+function resolveDrumKit1400Root(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), "..", "1400 Samples Drum Kit"),
+    path.resolve(process.cwd(), "1400 Samples Drum Kit"),
+    "C:\\Users\\usuario\\Downloads\\PROYECTOS_GITHUB_2026\\tandao_live_hub\\1400 Samples Drum Kit",
+    "C:\\Users\\usuario\\Downloads\\tandao_live_hub\\1400 Samples Drum Kit",
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // continue checking next candidate
+    }
+  }
+  return null;
+}
+
+function attachDrumKit1400Middleware(middlewares: any) {
+  middlewares.use((req: any, res: any, next: () => void) => {
+    const rawUrl = (req.url || "").split("?")[0];
+    if (!rawUrl.startsWith("/api/drum-kit-1400/")) {
+      return next();
+    }
+
+    const kitRoot = resolveDrumKit1400Root();
+    if (!kitRoot) {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ available: false, error: "Carpeta 1400 Samples Drum Kit no encontrada localmente." }));
+      return;
+    }
+
+    if (rawUrl === "/api/drum-kit-1400/manifest") {
+      try {
+        const folders: Record<string, string[]> = {};
+        for (const entry of fs.readdirSync(kitRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const subDir = path.join(kitRoot, entry.name);
+          const files = fs
+            .readdirSync(subDir)
+            .filter((f) => /\.(wav|mp3|flac|ogg|aiff|aif)$/i.test(f));
+          folders[entry.name] = files;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Cache-Control", "no-cache");
+        res.end(JSON.stringify({ available: true, rootPath: kitRoot, folders }));
+      } catch (err: any) {
+        res.statusCode = 500;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ available: false, error: err?.message || "Error leyendo manifest" }));
+      }
+      return;
+    }
+
+    const relPart = rawUrl.slice("/api/drum-kit-1400/".length);
+    const segments = relPart.split("/").filter(Boolean).map((s: string) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    });
+
+    if (segments.length < 2 || segments.some((s: string) => s === ".." || s.includes("\\") || s.includes("/"))) {
+      res.statusCode = 400;
+      res.end("Ruta inválida");
+      return;
+    }
+
+    const resolvedRoot = path.resolve(kitRoot);
+    const targetFile = path.resolve(resolvedRoot, ...segments);
+    if (!targetFile.startsWith(resolvedRoot + path.sep)) {
+      res.statusCode = 403;
+      res.end("Acceso denegado");
+      return;
+    }
+
+    if (!fs.existsSync(targetFile) || !fs.statSync(targetFile).isFile()) {
+      res.statusCode = 404;
+      res.end("Sample no encontrado");
+      return;
+    }
+
+    const stat = fs.statSync(targetFile);
+    const ext = path.extname(targetFile).toLowerCase();
+    const mime =
+      ext === ".mp3"
+        ? "audio/mpeg"
+        : ext === ".flac"
+        ? "audio/flac"
+        : ext === ".ogg"
+        ? "audio/ogg"
+        : "audio/wav";
+
+    res.statusCode = 200;
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Length", String(stat.size));
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    fs.createReadStream(targetFile).pipe(res);
+  });
+}
+
+function createLocalDrumKit1400Plugin(): Plugin {
+  return {
+    name: "tandao-local-drum-kit-1400",
+    configureServer(server) {
+      attachDrumKit1400Middleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachDrumKit1400Middleware(server.middlewares);
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => {
   // @ts-expect-error process is a nodejs global
   const env = loadEnv(mode, process.cwd(), "");
   return {
-    plugins: [react(), tailwindcss(), createLocalReplicateApiPlugin(env)],
+    plugins: [
+      react(),
+      tailwindcss(),
+      createLocalDrumKit1400Plugin(),
+      createLocalReplicateApiPlugin(env),
+    ],
 
     build: {
       rollupOptions: {

@@ -512,6 +512,19 @@ export function useSamplerEngine() {
     [registerLoadedAudioBuffer, runPreImportForSampler]
   );
 
+  const loadExternalBufferToPad = useCallback(
+    (buffer: AudioBuffer, title: string, padIndex: number) => {
+      registerLoadedAudioBuffer(
+        buffer,
+        title,
+        'file',
+        { fileName: title, stemRole: 'drum-kit-1400' },
+        padIndex
+      );
+    },
+    [registerLoadedAudioBuffer]
+  );
+
   const loadAudioFile = async (file: File) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -1380,6 +1393,7 @@ export function useSamplerEngine() {
     loadAudioFileToPad,
     loadAudioFromUrl,
     loadExternalBufferForSampling,
+    loadExternalBufferToPad,
     generateDemoSource,
     auditionStudioPreset,
     loadStudioPresetToPad,

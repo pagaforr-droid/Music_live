@@ -5,6 +5,7 @@ import {
   CloudUpload,
   Download,
   FolderArchive,
+  FolderOpen,
   Grid,
   HardDrive,
   Layers,
@@ -50,6 +51,7 @@ import { useSamplerEngine } from '../hooks/useSamplerEngine';
 import { useSamplerKeyboard } from '../hooks/useSamplerKeyboard';
 import { useStemReplacer } from '../hooks/useStemReplacer';
 import { midiNoteToName } from '../engine/PitchDetector';
+import { DrumKit1400BrowserModal } from './DrumKit1400BrowserModal';
 import { KitLibraryModal } from './KitLibraryModal';
 import { PadGrid } from './PadGrid';
 import { PadInspector } from './PadInspector';
@@ -77,6 +79,7 @@ export const SampleLabPanel: React.FC = () => {
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
   const [isSupabaseOpen, setIsSupabaseOpen] = useState<boolean>(false);
   const [isKitLibraryOpen, setIsKitLibraryOpen] = useState<boolean>(false);
+  const [isKit1400PadsOpen, setIsKit1400PadsOpen] = useState<boolean>(false);
   const pcUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load Supabase project tracks so the user can pull any Stem/Song directly into Sample Lab
@@ -655,18 +658,30 @@ export const SampleLabPanel: React.FC = () => {
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            s.loadProBassPackToPads();
-            setChromaticBaseMidi(36);
-          }}
-          className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.1] text-zinc-200 font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
-          title="Carga los 11 bajos profesionales (SH-101, Juno-106, Jupiter-8, Monark, Astra, 90s Pad, Auto-Wah, Sub-Octava...) directo en Pads 1–11"
-        >
-          <Grid size={13} className="text-orange-400" />
-          <span>Cargar Pack {BASS_PRESET_CATALOG.length} Bajos Pro</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsKit1400PadsOpen(true)}
+            className="px-3 py-1.5 rounded-xl bg-orange-500/15 hover:bg-orange-500/25 border border-orange-400/40 text-orange-200 font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+            title="Explorar 1400 Samples Drum Kit (Kicks, Snares, Hats, Claps) y cargarlos en tus 16 Pads"
+          >
+            <FolderOpen size={13} className="text-orange-400" />
+            <span>1400 Samples Drum Kit → Pads</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              s.loadProBassPackToPads();
+              setChromaticBaseMidi(36);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.1] text-zinc-200 font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+            title="Carga los 11 bajos profesionales (SH-101, Juno-106, Jupiter-8, Monark, Astra, 90s Pad, Auto-Wah, Sub-Octava...) directo en Pads 1–11"
+          >
+            <Grid size={13} className="text-orange-400" />
+            <span>Cargar Pack {BASS_PRESET_CATALOG.length} Bajos Pro</span>
+          </button>
+        </div>
       </div>
 
       <SampleWaveformEditor
@@ -901,6 +916,24 @@ export const SampleLabPanel: React.FC = () => {
           const srcs = await loadCloudKitSources(rec, ctx);
           s.loadHydratedKit(rec.kit_json, srcs);
         }}
+      />
+      <DrumKit1400BrowserModal
+        isOpen={isKit1400PadsOpen}
+        onClose={() => setIsKit1400PadsOpen(false)}
+        mode="pad"
+        selectedPadIndex={s.selectedPadIndex}
+        padCount={16}
+        dynamicManifest={replacer.kit1400DynamicManifest}
+        supabaseSyncStatus={replacer.supabaseDrumSyncStatus}
+        onAuditionSample={replacer.auditionDrumKit1400Sample}
+        onSelectForPad={async (entryId, padIdx) => {
+          const loaded = await replacer.loadDrumKit1400ForPad(entryId);
+          if (loaded) {
+            s.loadExternalBufferToPad(loaded.buffer, loaded.name, padIdx);
+            s.triggerPad(padIdx, 0.92);
+          }
+        }}
+        onSyncToSupabase={replacer.syncCurrentDrumKitToSupabase}
       />
       </div>
     </div>

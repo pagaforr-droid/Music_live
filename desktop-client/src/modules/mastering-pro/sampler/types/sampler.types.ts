@@ -300,7 +300,10 @@ export interface CustomReplacementSampleItem {
   id: string;
   name: string;
   category: CustomSampleCategory;
-  sourceType: 'file' | 'recorded' | 'pad' | 'cloud';
+  sourceType: 'file' | 'recorded' | 'pad' | 'cloud' | 'kit-1400';
+  kit1400Id?: string;
+  cloudUrl?: string;
+  supabaseSynced?: boolean;
   buffer: AudioBuffer;
   durationSec: number;
   peakOffsetSec: number;
@@ -313,8 +316,10 @@ export interface CustomReplacementSampleItem {
 export interface ReplacementSlotConfig {
   roleOrTarget: DrumPieceRole | 'melodic';
   enabled: boolean;
-  sourceType: 'preset' | 'recorded' | 'file' | 'pad' | 'stem-crop';
+  sourceType: 'preset' | 'recorded' | 'file' | 'pad' | 'stem-crop' | 'kit-1400';
   presetId: DefaultInstrumentId;
+  kit1400Id?: string;
+  cloudUrl?: string;
   customSampleId?: string;
   customName?: string;
   customBuffer?: AudioBuffer;
@@ -323,6 +328,37 @@ export interface ReplacementSlotConfig {
   normalizeCustom?: boolean; // auto-normalize uploaded/recorded replacement sample to -1 dBFS
   gainDb: number; // -24..+12
   pitchSemis: number; // -12..+12
+}
+
+export type SupabaseDrumSyncStatus =
+  | 'idle'
+  | 'syncing'
+  | 'synced'
+  | 'pending-offline'
+  | 'error';
+
+export interface CloudDrumKitSampleRecord {
+  id: string;
+  folder: string;
+  fileName: string;
+  displayName: string;
+  category: CustomSampleCategory;
+  storageBucket: string;
+  storagePath: string;
+  publicUrl: string;
+  durationSec: number;
+  peakOffsetSec: number;
+  detectedRootMidi: number;
+  fileSizeBytes: number;
+  updatedAt: string;
+}
+
+export interface PersistedCloudDrumSelection {
+  id: string;
+  name: string;
+  drumSlots: Record<DrumPieceRole, Omit<ReplacementSlotConfig, 'customBuffer'>>;
+  melodicSlot?: Omit<ReplacementSlotConfig, 'customBuffer'>;
+  updatedAt: string;
 }
 
 export interface StemReplaceMixOptions {
