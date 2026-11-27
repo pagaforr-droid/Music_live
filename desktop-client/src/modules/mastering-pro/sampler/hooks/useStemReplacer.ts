@@ -22,6 +22,8 @@ import {
   analyzePolyphonicStemNotesFull,
   estimateBpmFromOnsets,
   inferStemModeFromName,
+  parsePitchClassToken,
+  quantizeDrumHitsToTempo,
   quantizeNoteEventsToTempo,
 } from '../engine/FullStemAnalyzer';
 import { midiNoteToName } from '../engine/PitchDetector';
@@ -37,16 +39,21 @@ import {
 import { buildMonoSliceFromBuffer } from '../engine/Slicer';
 import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
 import {
+  ACTIVE_REPLACER_SESSION_KEY,
   deleteCustomReplacementSampleFromIdb,
   loadAllCustomReplacementSamplesFromIdb,
+  loadReplacerSessionFromIdb,
   saveCustomReplacementSampleToIdb,
+  saveReplacerSessionToIdb,
 } from '../engine/KitStorage';
 import {
   classifyCustomSampleCategory,
+  getArticulatedDrumZone,
   getPresetAuditionBuffer,
   isBassPresetId,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
+import { arraysToAudioBuffer } from '../engine/SampleBufferOps';
 import {
   addSampleToSongFolder,
   fetchSongsWithStemsForSampler,
@@ -55,6 +62,8 @@ import type {
   CustomReplacementSampleItem,
   CustomSampleCategory,
   DefaultInstrumentId,
+  DetectedChordSegment,
+  DetectionSourceMode,
   DrumArticulation,
   DrumPieceRole,
   FullStemAnalysisResult,
@@ -64,6 +73,7 @@ import type {
   SongWithStemsFolder,
   StemAnalysisMode,
   StemDrumHitEvent,
+  StemNoteEvent,
   StemQuantizeMode,
   StemReplaceMixOptions,
 } from '../types/sampler.types';
@@ -145,6 +155,43 @@ function chooseDefaultMelodicPresetForName(stemName: string): DefaultInstrumentI
   return 'inst-piano-grand';
 }
 
+const PC_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+function buildChordSegmentsFromPrompterChords(
+  prompterChords: Array<{ timeSec: number; chord: string }> | undefined,
+  durationSec: number
+): DetectedChordSegment[] | undefined {
+  if (!prompterChords || prompterChords.length === 0) return undefined;
+  const valid = prompterChords
+    .filter((c) => c && typeof c.chord === 'string' && c.chord.trim().length > 0 && Number.isFinite(c.timeSec))
+    .sort((a, b) => a.timeSec - b.timeSec);
+  if (valid.length === 0) return undefined;
+
+  const segments: DetectedChordSegment[] = [];
+  for (let i = 0; i < valid.length; i++) {
+    const cur = valid[i];
+    const rootPc = parsePitchClassToken(cur.chord);
+    if (rootPc < 0) continue;
+    const startSec = Math.max(0, cur.timeSec);
+    const nextSec = i + 1 < valid.length ? valid[i + 1].timeSec : durationSec;
+    const endSec = Math.max(startSec + 0.1, Math.min(durationSec, nextSec));
+    const rootMidi = 28 + ((rootPc - 4 + 12) % 12); // E1..Eb2 sub-bass register
+    const isMinor = /^[A-G][#b]?m(?!aj)/i.test(cur.chord.trim());
+    segments.push({
+      id: `pc-${i}`,
+      startSec: Number(startSec.toFixed(4)),
+      endSec: Number(endSec.toFixed(4)),
+      chord: cur.chord.trim(),
+      rootPitchClass: rootPc,
+      rootName: PC_NAMES[rootPc] ?? 'C',
+      rootMidi,
+      chordMidis: [rootMidi, rootMidi + (isMinor ? 3 : 4), rootMidi + 7],
+      confidence: 0.96,
+    });
+  }
+  return segments.length > 0 ? segments : undefined;
+}
+
 export function useStemReplacer() {
   const [songs, setSongs] = useState<SongWithStemsFolder[]>([]);
   const [loadingSongs, setLoadingSongs] = useState<boolean>(false);
@@ -155,6 +202,24 @@ export function useStemReplacer() {
   const [replacedBuffer, setReplacedBuffer] = useState<AudioBuffer | null>(null);
   const [stemTitle, setStemTitle] = useState<string>('');
   const [waveformPyramid, setWaveformPyramid] = useState<WaveformPyramid | null>(null);
+
+  // Master Reference Audio Guide (for 100% accurate Drum, Bass & Chord detection while working on Solo Drums / Solo Bass)
+  const [masterReferenceBuffer, setMasterReferenceBuffer] = useState<AudioBuffer | null>(null);
+  const [masterReferenceTitle, setMasterReferenceTitle] = useState<string>('');
+  const [masterReferenceMemory, setMasterReferenceMemory] = useState<ImportedAudioMemoryAnalysis | null>(null);
+  const [isLoadingMasterRef, setIsLoadingMasterRef] = useState<boolean>(false);
+  const [detectionSourceMode, setDetectionSourceMode] = useState<DetectionSourceMode>('auto-hybrid');
+  const [autoUseSongMaster, setAutoUseSongMaster] = useState<boolean>(true);
+  const [listenWithMasterContext, setListenWithMasterContext] = useState<boolean>(false);
+  const [masterContextVolumePct, setMasterContextVolumePct] = useState<number>(42);
+
+  const masterRefBufferRef = useRef<AudioBuffer | null>(null);
+  const masterRefMonoRef = useRef<Float32Array | null>(null);
+  const masterRefTitleRef = useRef<string>('');
+  const masterRefMemoryRef = useRef<ImportedAudioMemoryAnalysis | null>(null);
+  const masterRefPolyRef = useRef<FullStemAnalysisResult | null>(null);
+  const detectionSourceModeRef = useRef<DetectionSourceMode>(detectionSourceMode);
+  detectionSourceModeRef.current = detectionSourceMode;
 
   const [stemMode, setStemMode] = useState<StemAnalysisMode>('drums');
   const [bassFocusMode, setBassFocusMode] = useState<boolean>(false);
@@ -168,6 +233,11 @@ export function useStemReplacer() {
   const importedMemoryRef = useRef<ImportedAudioMemoryAnalysis | null>(null);
   const importedPolyRef = useRef<FullStemAnalysisResult | null>(null);
   const polyAutoWeightAppliedRef = useRef<boolean>(false);
+
+  // Base unquantized events ref so changing quantizeMode never wipes manual MIDI edits or MT3 neural transcriptions
+  const baseDrumHitsRef = useRef<StemDrumHitEvent[] | null>(null);
+  const baseNoteEventsRef = useRef<StemNoteEvent[] | null>(null);
+  const hasManualMidiEditsRef = useRef<boolean>(false);
 
   const [drumSlots, setDrumSlots] = useState<Record<DrumPieceRole, ReplacementSlotConfig>>(
     () => createDefaultDrumSlots()
@@ -186,6 +256,7 @@ export function useStemReplacer() {
     roundRobinHumanize: true,
     sustainScale: 1.0,
     brightnessPct: 0,
+    bassCrossoverCleanLow: true,
   });
 
   const [customSamples, setCustomSamples] = useState<CustomReplacementSampleItem[]>([]);
@@ -215,11 +286,14 @@ export function useStemReplacer() {
   const ctxRef = useRef<AudioContext | null>(null);
   const origNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const repNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const masterCtxNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const origGainRef = useRef<GainNode | null>(null);
   const repGainRef = useRef<GainNode | null>(null);
+  const masterCtxGainRef = useRef<GainNode | null>(null);
   const playStartCtxRef = useRef<number>(0);
   const playOffsetRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
+  const sessionRestoredRef = useRef<boolean>(false);
 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecRef = useRef<MediaRecorder | null>(null);
@@ -264,12 +338,66 @@ export function useStemReplacer() {
       try {
         if (typeof AudioContext === 'undefined') return;
         const ctx = ensureCtx();
-        const saved = await loadAllCustomReplacementSamplesFromIdb(ctx);
-        if (!cancelled && saved.length > 0) {
-          setCustomSamples(saved);
+        const [savedSamples, savedSession] = await Promise.all([
+          loadAllCustomReplacementSamplesFromIdb(ctx),
+          loadReplacerSessionFromIdb(ACTIVE_REPLACER_SESSION_KEY),
+        ]);
+        if (cancelled) return;
+        if (savedSamples.length > 0) {
+          setCustomSamples(savedSamples);
         }
+        if (savedSession) {
+          setStemMode(savedSession.mode);
+          setQuantizeMode(savedSession.quantizeMode);
+          quantizeModeRef.current = savedSession.quantizeMode;
+          setSensitivity(savedSession.sensitivity);
+          setMaxPolyphony(savedSession.maxPolyphony);
+          setBassFocusMode(savedSession.bassFocusMode);
+          setDetectionSourceMode(savedSession.detectionSourceMode ?? 'auto-hybrid');
+          detectionSourceModeRef.current = savedSession.detectionSourceMode ?? 'auto-hybrid';
+          setAutoUseSongMaster(savedSession.autoUseSongMaster ?? true);
+          setMixOptions((prev) => ({
+            ...prev,
+            ...savedSession.mixOptions,
+          }));
+
+          const sampleMap = new Map(savedSamples.map((s) => [s.id, s]));
+          if (savedSession.drumSlots) {
+            setDrumSlots((prev) => {
+              const next = { ...prev };
+              (['kick', 'snare', 'hat', 'crash', 'tom'] as DrumPieceRole[]).forEach((role) => {
+                const sSlot = savedSession.drumSlots[role];
+                if (!sSlot) return;
+                const linkedSample = sSlot.customSampleId ? sampleMap.get(sSlot.customSampleId) : undefined;
+                next[role] = {
+                  ...prev[role],
+                  ...sSlot,
+                  customBuffer: linkedSample?.buffer,
+                  sourceType:
+                    sSlot.sourceType !== 'preset' && !linkedSample ? 'preset' : sSlot.sourceType,
+                };
+              });
+              return next;
+            });
+          }
+          if (savedSession.melodicSlot) {
+            const linkedMel = savedSession.melodicSlot.customSampleId
+              ? sampleMap.get(savedSession.melodicSlot.customSampleId)
+              : undefined;
+            setMelodicSlot((prev) => ({
+              ...prev,
+              ...savedSession.melodicSlot,
+              customBuffer: linkedMel?.buffer,
+              sourceType:
+                savedSession.melodicSlot.sourceType !== 'preset' && !linkedMel
+                  ? 'preset'
+                  : savedSession.melodicSlot.sourceType,
+            }));
+          }
+        }
+        sessionRestoredRef.current = true;
       } catch {
-        // ignore if audio/IDB unavailable
+        sessionRestoredRef.current = true;
       }
     })();
     return () => {
@@ -278,6 +406,7 @@ export function useStemReplacer() {
       try {
         origNodeRef.current?.stop();
         repNodeRef.current?.stop();
+        masterCtxNodeRef.current?.stop();
       } catch {
         // ignore
       }
@@ -287,6 +416,62 @@ export function useStemReplacer() {
       }
     };
   }, []);
+
+  // Auto-persist StemReplacer configuration and manual MIDI edits in IndexedDB
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const timer = setTimeout(() => {
+      const stripBuffer = (slot: ReplacementSlotConfig): Omit<ReplacementSlotConfig, 'customBuffer'> => {
+        const { customBuffer: _cb, ...rest } = slot;
+        return rest;
+      };
+      void saveReplacerSessionToIdb({
+        id: ACTIVE_REPLACER_SESSION_KEY,
+        mode: stemMode,
+        quantizeMode,
+        sensitivity,
+        maxPolyphony,
+        bassFocusMode,
+        detectionSourceMode,
+        autoUseSongMaster,
+        drumSlots: {
+          kick: stripBuffer(drumSlots.kick),
+          snare: stripBuffer(drumSlots.snare),
+          hat: stripBuffer(drumSlots.hat),
+          crash: stripBuffer(drumSlots.crash),
+          tom: stripBuffer(drumSlots.tom),
+        },
+        melodicSlot: stripBuffer(melodicSlot),
+        mixOptions,
+        selectedSongId,
+        selectedStemId,
+        manualAnalysisEdits:
+          analysis && importedMemoryRef.current
+            ? {
+                signature: importedMemoryRef.current.signature,
+                drumHits: analysis.drumHits,
+                noteEvents: analysis.noteEvents,
+              }
+            : undefined,
+        updatedAt: new Date().toISOString(),
+      });
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [
+    stemMode,
+    quantizeMode,
+    sensitivity,
+    maxPolyphony,
+    bassFocusMode,
+    detectionSourceMode,
+    autoUseSongMaster,
+    drumSlots,
+    melodicSlot,
+    mixOptions,
+    selectedSongId,
+    selectedStemId,
+    analysis,
+  ]);
 
   const selectedSong = useMemo(
     () => songs.find((s) => s.id === selectedSongId) ?? null,
@@ -310,13 +495,20 @@ export function useStemReplacer() {
         repNodeRef.current.stop();
         repNodeRef.current.disconnect();
       }
+      if (masterCtxNodeRef.current) {
+        masterCtxNodeRef.current.onended = null;
+        masterCtxNodeRef.current.stop();
+        masterCtxNodeRef.current.disconnect();
+      }
       origGainRef.current?.disconnect();
       repGainRef.current?.disconnect();
+      masterCtxGainRef.current?.disconnect();
     } catch {
       // ignore
     }
     origNodeRef.current = null;
     repNodeRef.current = null;
+    masterCtxNodeRef.current = null;
     setIsPlaying(false);
   }, []);
 
@@ -463,7 +655,7 @@ export function useStemReplacer() {
   );
 
   // Run full-track analysis (worker-backed so polyphonic 16384-pt FFT never blocks UI)
-  // Respects the Tempo & Chord progression already stored in importedMemory!
+  // Respects the Tempo & Chord progression stored in importedMemory AND Master Reference Audio when active!
   const runAnalysis = useCallback(
     async (
       buf: AudioBuffer,
@@ -474,18 +666,58 @@ export function useStemReplacer() {
       bassFocus = bassFocusMode,
       memoryOverride?: ImportedAudioMemoryAnalysis | null,
       polyOverride?: FullStemAnalysisResult | null,
-      quantizeOverride?: StemQuantizeMode
+      quantizeOverride?: StemQuantizeMode,
+      sourceModeOverride?: DetectionSourceMode
     ) => {
       setIsAnalyzing(true);
       try {
-        const activeMem = memoryOverride !== undefined ? memoryOverride : importedMemoryRef.current;
+        const stemMem = memoryOverride !== undefined ? memoryOverride : importedMemoryRef.current;
+        const activeSourceMode = sourceModeOverride ?? detectionSourceModeRef.current;
+        const masterMem =
+          activeSourceMode !== 'stem-only' ? masterRefMemoryRef.current : null;
+        const activeMasterMono =
+          activeSourceMode !== 'stem-only' && masterRefMonoRef.current
+            ? masterRefMonoRef.current
+            : undefined;
+        const activeMasterName =
+          activeSourceMode !== 'stem-only' && masterRefTitleRef.current
+            ? masterRefTitleRef.current
+            : undefined;
+
+        // Fuse Master Reference Musical Guide (Chords, Tonal Key, BPM, Beat Grid) with Stem Memory
+        const effectiveChords =
+          masterMem?.chords && masterMem.chords.length > 0
+            ? masterMem.chords
+            : stemMem?.chords;
+        const effectiveMusicalKey =
+          masterMem?.isTonal && masterMem.musicalKey
+            ? masterMem.musicalKey
+            : stemMem?.musicalKey;
+        const effectiveCamelotKey =
+          masterMem?.camelotKey ?? stemMem?.camelotKey;
+        const effectiveBpm =
+          masterMem?.bpm ?? stemMem?.bpm ?? bpmHint;
+        const effectiveLockedBpm =
+          masterMem?.bpm ?? stemMem?.bpm;
+        const effectiveBeatOffset =
+          masterMem?.beatOffsetSec ?? stemMem?.beatOffsetSec;
+        const effectiveBeatTimes =
+          masterMem?.beatTimes && masterMem.beatTimes.length >= 4
+            ? masterMem.beatTimes
+            : stemMem?.beatTimes;
+        const effectiveDownbeats =
+          masterMem?.downbeats && masterMem.downbeats.length >= 2
+            ? masterMem.downbeats
+            : stemMem?.downbeats;
+
         const activePoly =
           sens === 0.62 && poly === 5
             ? polyOverride !== undefined
               ? polyOverride
+              : activeSourceMode === 'master-only' && masterRefPolyRef.current
+              ? masterRefPolyRef.current
               : importedPolyRef.current
             : undefined;
-        const effectiveBpm = activeMem?.bpm ?? bpmHint;
         const qMode = quantizeOverride ?? quantizeModeRef.current;
 
         const mono = buildMonoSliceFromBuffer(buf, 0, buf.duration);
@@ -494,14 +726,17 @@ export function useStemReplacer() {
             return analyzeDrumStemFull(mono, buf.sampleRate, {
               sensitivity: sens,
               bpmHint: effectiveBpm,
-              lockedBpm: activeMem?.bpm,
-              musicalKey: activeMem?.musicalKey,
-              camelotKey: activeMem?.camelotKey,
-              detectedChords: activeMem?.chords,
-              beatOffsetSec: activeMem?.beatOffsetSec,
-              beatTimes: activeMem?.beatTimes,
-              downbeats: activeMem?.downbeats,
+              lockedBpm: effectiveLockedBpm,
+              musicalKey: effectiveMusicalKey,
+              camelotKey: effectiveCamelotKey,
+              detectedChords: effectiveChords,
+              beatOffsetSec: effectiveBeatOffset,
+              beatTimes: effectiveBeatTimes,
+              downbeats: effectiveDownbeats,
               quantizeMode: qMode,
+              masterMono: activeMasterMono,
+              detectionSourceMode: activeSourceMode,
+              masterReferenceName: activeMasterName,
             });
           }
           if (mode === 'polyphonic' && bassFocus) {
@@ -509,39 +744,45 @@ export function useStemReplacer() {
               sensitivity: sens,
               maxPolyphony: poly,
               bpmHint: effectiveBpm,
-              lockedBpm: activeMem?.bpm,
+              lockedBpm: effectiveLockedBpm,
               precomputedPoly: activePoly ?? undefined,
-              precomputedChords: activeMem?.chords,
-              musicalKey: activeMem?.musicalKey,
-              camelotKey: activeMem?.camelotKey,
-              beatOffsetSec: activeMem?.beatOffsetSec,
-              beatTimes: activeMem?.beatTimes,
-              downbeats: activeMem?.downbeats,
+              precomputedChords: effectiveChords,
+              musicalKey: effectiveMusicalKey,
+              camelotKey: effectiveCamelotKey,
+              beatOffsetSec: effectiveBeatOffset,
+              beatTimes: effectiveBeatTimes,
+              downbeats: effectiveDownbeats,
               quantizeMode: qMode,
+              masterMono: activeMasterMono,
+              detectionSourceMode: activeSourceMode,
+              masterReferenceName: activeMasterName,
             });
           }
           if (mode === 'monophonic') {
             return analyzeMonophonicStemNotesFull(mono, buf.sampleRate, {
               sensitivity: sens,
               bpmHint: effectiveBpm,
-              lockedBpm: activeMem?.bpm,
+              lockedBpm: effectiveLockedBpm,
               bassOnly: bassFocus,
-              musicalKey: activeMem?.musicalKey,
-              camelotKey: activeMem?.camelotKey,
-              detectedChords: activeMem?.chords,
-              beatOffsetSec: activeMem?.beatOffsetSec,
-              beatTimes: activeMem?.beatTimes,
-              downbeats: activeMem?.downbeats,
+              musicalKey: effectiveMusicalKey,
+              camelotKey: effectiveCamelotKey,
+              detectedChords: effectiveChords,
+              beatOffsetSec: effectiveBeatOffset,
+              beatTimes: effectiveBeatTimes,
+              downbeats: effectiveDownbeats,
               quantizeMode: qMode,
+              masterMono: activeMasterMono,
+              detectionSourceMode: activeSourceMode,
+              masterReferenceName: activeMasterName,
             });
           }
-          if (activePoly && !bassFocus) {
-            const targetBpm = activeMem?.bpm ?? activePoly.bpm;
-            const activeBeats = activeMem?.beatTimes ?? activePoly.beatTimes;
+          if (activePoly && !bassFocus && !activeMasterMono) {
+            const targetBpm = effectiveLockedBpm ?? activePoly.bpm;
+            const activeBeats = effectiveBeatTimes ?? activePoly.beatTimes;
             const qNotes = quantizeNoteEventsToTempo(
               activePoly.noteEvents,
               targetBpm,
-              activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec ?? 0,
+              effectiveBeatOffset ?? activePoly.beatOffsetSec ?? 0,
               buf.duration,
               qMode,
               false,
@@ -551,26 +792,30 @@ export function useStemReplacer() {
               ...activePoly,
               quantizeMode: qMode,
               bpm: targetBpm,
-              musicalKey: activeMem?.musicalKey ?? activePoly.musicalKey,
-              camelotKey: activeMem?.camelotKey ?? activePoly.camelotKey,
-              detectedChords: activeMem?.chords ?? activePoly.detectedChords,
-              beatOffsetSec: activeMem?.beatOffsetSec ?? activePoly.beatOffsetSec,
+              musicalKey: effectiveMusicalKey ?? activePoly.musicalKey,
+              camelotKey: effectiveCamelotKey ?? activePoly.camelotKey,
+              detectedChords: effectiveChords ?? activePoly.detectedChords,
+              beatOffsetSec: effectiveBeatOffset ?? activePoly.beatOffsetSec,
               beatTimes: activeBeats,
-              downbeats: activeMem?.downbeats ?? activePoly.downbeats,
+              downbeats: effectiveDownbeats ?? activePoly.downbeats,
               noteEvents: qNotes,
             };
           }
-          return analyzePolyphonicStemNotesFull(mono, buf.sampleRate, {
+          const polyTargetMono =
+            activeSourceMode === 'master-only' && activeMasterMono
+              ? activeMasterMono
+              : mono;
+          return analyzePolyphonicStemNotesFull(polyTargetMono, buf.sampleRate, {
             sensitivity: sens,
             maxPolyphony: poly,
             bpmHint: effectiveBpm,
-            lockedBpm: activeMem?.bpm,
-            musicalKey: activeMem?.musicalKey,
-            camelotKey: activeMem?.camelotKey,
-            detectedChords: activeMem?.chords,
-            beatOffsetSec: activeMem?.beatOffsetSec,
-            beatTimes: activeMem?.beatTimes,
-            downbeats: activeMem?.downbeats,
+            lockedBpm: effectiveLockedBpm,
+            musicalKey: effectiveMusicalKey,
+            camelotKey: effectiveCamelotKey,
+            detectedChords: effectiveChords,
+            beatOffsetSec: effectiveBeatOffset,
+            beatTimes: effectiveBeatTimes,
+            downbeats: effectiveDownbeats,
             quantizeMode: qMode,
           });
         };
@@ -592,6 +837,10 @@ export function useStemReplacer() {
 
             const reqId = Date.now() + Math.floor(Math.random() * 1000);
             const copy = new Float32Array(mono);
+            const masterCopy = activeMasterMono ? new Float32Array(activeMasterMono) : undefined;
+            const transfers: Transferable[] = [copy.buffer];
+            if (masterCopy) transfers.push(masterCopy.buffer);
+
             w.onmessage = (
               ev: MessageEvent<{ id: number; success: boolean; result?: FullStemAnalysisResult }>
             ) => {
@@ -614,43 +863,75 @@ export function useStemReplacer() {
                 kind: 'analyze-full-stem',
                 sourceId: 'stem',
                 mono: copy,
+                masterMono: masterCopy,
+                detectionSourceMode: activeSourceMode,
+                masterReferenceName: activeMasterName,
                 sampleRate: buf.sampleRate,
                 sensitivity: sens,
                 stemMode: mode,
                 bassFocus,
                 quantizeMode: qMode,
                 bpmHint: effectiveBpm,
-                lockedBpm: activeMem?.bpm,
+                lockedBpm: effectiveLockedBpm,
                 maxPolyphony: poly,
-                musicalKey: activeMem?.musicalKey,
-                camelotKey: activeMem?.camelotKey,
-                detectedChords: activeMem?.chords,
-                beatOffsetSec: activeMem?.beatOffsetSec,
-                beatTimes: activeMem?.beatTimes,
-                downbeats: activeMem?.downbeats,
+                musicalKey: effectiveMusicalKey,
+                camelotKey: effectiveCamelotKey,
+                detectedChords: effectiveChords,
+                beatOffsetSec: effectiveBeatOffset,
+                beatTimes: effectiveBeatTimes,
+                downbeats: effectiveDownbeats,
                 precomputedPoly: activePoly ?? undefined,
               },
-              [copy.buffer]
+              transfers
             );
           });
         } else {
           result = runSyncFallback();
         }
 
+        // Also synchronize importedMemory with Master Chords / Key when Master Reference is active
+        if (masterMem && stemMem && activeSourceMode !== 'stem-only') {
+          const mergedMem: ImportedAudioMemoryAnalysis = {
+            ...stemMem,
+            bpm: effectiveLockedBpm ?? stemMem.bpm,
+            musicalKey: effectiveMusicalKey ?? stemMem.musicalKey,
+            camelotKey: effectiveCamelotKey ?? stemMem.camelotKey,
+            isTonal: masterMem.isTonal || stemMem.isTonal,
+            chords: effectiveChords ?? stemMem.chords,
+            chordProgressionSummary:
+              masterMem.chords.length > 0
+                ? masterMem.chordProgressionSummary
+                : stemMem.chordProgressionSummary,
+            beatOffsetSec: effectiveBeatOffset ?? stemMem.beatOffsetSec,
+            beatTimes: effectiveBeatTimes ?? stemMem.beatTimes,
+            downbeats: effectiveDownbeats ?? stemMem.downbeats,
+          };
+          importedMemoryRef.current = mergedMem;
+          setImportedMemory(mergedMem);
+        }
+
+        baseDrumHitsRef.current = result.drumHits.map((h) => ({ ...h }));
+        baseNoteEventsRef.current = result.noteEvents.map((n) => ({ ...n }));
+        hasManualMidiEditsRef.current = false;
+
         setAnalysis(result);
         const rangeText = result.midiRange
           ? `${result.midiRange.minName} – ${result.midiRange.maxName}`
           : 'rango vacío';
         const keyTag =
-          activeMem?.isTonal && activeMem.musicalKey
-            ? ` · Tono ${activeMem.musicalKey}`
+          effectiveMusicalKey && !/^percusi/i.test(effectiveMusicalKey)
+            ? ` · Tono ${effectiveMusicalKey}`
+            : '';
+        const masterBadge =
+          activeMasterMono && activeMasterName
+            ? ` · 🎯 Guía Master (${activeSourceMode === 'master-only' ? '100% Master' : 'Fusión Master+Stem'})`
             : '';
         const summary =
           result.mode === 'drums'
-            ? `Detectado: ${result.bpm} BPM · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hi-Hat · ${result.counts.crash} Crash · ${result.counts.tom} Tom)`
+            ? `Detectado: ${result.bpm} BPM${keyTag}${masterBadge} · ${result.counts.total} golpes (${result.counts.kick} Kick · ${result.counts.snare} Snare · ${result.counts.hat} Hi-Hat · ${result.counts.crash} Crash · ${result.counts.tom} Tom)`
             : result.bassFocusApplied
-            ? `Solo Graves (${result.bpm} BPM${keyTag}): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
-            : `Detectado: ${result.bpm} BPM${keyTag} · ${result.counts.notes} notas (${rangeText})`;
+            ? `Solo Graves (${result.bpm} BPM${keyTag}${masterBadge}): ${result.counts.notes} notas de bajo (${rangeText}) siguiendo la progresión`
+            : `Detectado: ${result.bpm} BPM${keyTag}${masterBadge} · ${result.counts.notes} notas (${rangeText})`;
         setStatusMessage(summary);
       } finally {
         setIsAnalyzing(false);
@@ -701,6 +982,53 @@ export function useStemReplacer() {
     repGainRef.current.gain.setTargetAtTime(abMode === 'replaced' ? 1 : 0, now, 0.015);
   }, [abMode]);
 
+  // Smooth real-time Master Reference Context monitoring gain while playing in Laboratory
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx || !masterCtxGainRef.current) return;
+    const now = ctx.currentTime;
+    const targetGain = listenWithMasterContext
+      ? Math.max(0, Math.min(1.0, masterContextVolumePct / 100))
+      : 0;
+    masterCtxGainRef.current.gain.setTargetAtTime(targetGain, now, 0.018);
+  }, [listenWithMasterContext, masterContextVolumePct]);
+
+  // LIVE HOT-SWAP IN LABORATORY: When replacedBuffer updates (fader, pitch, preset, sample, solo, or MIDI hit edit)
+  // while playback is active, seamlessly swap repNodeRef at the exact playhead position with a 12ms micro-crossfade!
+  useEffect(() => {
+    if (!isPlaying || !replacedBuffer) return;
+    const ctx = ctxRef.current;
+    const repGain = repGainRef.current;
+    if (!ctx || !repGain) return;
+    if (repNodeRef.current?.buffer === replacedBuffer) return;
+
+    const now = ctx.currentTime;
+    const elapsed = Math.max(0, now - playStartCtxRef.current);
+    const curOffset = playOffsetRef.current + elapsed;
+    if (curOffset >= replacedBuffer.duration - 0.02) return;
+
+    const oldNode = repNodeRef.current;
+    const fadeSec = 0.012;
+
+    const newNode = ctx.createBufferSource();
+    newNode.buffer = replacedBuffer;
+    const xfGain = ctx.createGain();
+    xfGain.gain.setValueAtTime(0.0001, now);
+    xfGain.gain.linearRampToValueAtTime(1.0, now + fadeSec);
+    newNode.connect(xfGain);
+    xfGain.connect(repGain);
+    newNode.start(now, Math.max(0, curOffset));
+    repNodeRef.current = newNode;
+
+    if (oldNode) {
+      try {
+        oldNode.stop(now + fadeSec);
+      } catch {
+        // ignore if already stopped
+      }
+    }
+  }, [replacedBuffer, isPlaying]);
+
   const startPlaybackAt = useCallback(
     (startSec = currentTimeSec) => {
       if (!originalBuffer) return;
@@ -722,6 +1050,19 @@ export function useStemReplacer() {
       rNode.connect(rGain);
       rGain.connect(ctx.destination);
 
+      let mNode: AudioBufferSourceNode | null = null;
+      let mGain: GainNode | null = null;
+      if (masterRefBufferRef.current && offset < masterRefBufferRef.current.duration - 0.02) {
+        mNode = ctx.createBufferSource();
+        mNode.buffer = masterRefBufferRef.current;
+        mGain = ctx.createGain();
+        mGain.gain.value = listenWithMasterContext
+          ? Math.max(0, Math.min(1.0, masterContextVolumePct / 100))
+          : 0;
+        mNode.connect(mGain);
+        mGain.connect(ctx.destination);
+      }
+
       const t0 = ctx.currentTime + 0.02;
       playStartCtxRef.current = t0;
       playOffsetRef.current = offset;
@@ -735,11 +1076,14 @@ export function useStemReplacer() {
 
       oNode.start(t0, offset);
       rNode.start(t0, offset);
+      mNode?.start(t0, offset);
 
       origNodeRef.current = oNode;
       repNodeRef.current = rNode;
+      masterCtxNodeRef.current = mNode;
       origGainRef.current = oGain;
       repGainRef.current = rGain;
+      masterCtxGainRef.current = mGain;
       setIsPlaying(true);
 
       const updatePlayhead = () => {
@@ -752,7 +1096,16 @@ export function useStemReplacer() {
       };
       rafRef.current = requestAnimationFrame(updatePlayhead);
     },
-    [originalBuffer, replacedBuffer, abMode, currentTimeSec, ensureCtx, stopPlayback]
+    [
+      originalBuffer,
+      replacedBuffer,
+      abMode,
+      currentTimeSec,
+      listenWithMasterContext,
+      masterContextVolumePct,
+      ensureCtx,
+      stopPlayback,
+    ]
   );
 
   const togglePlayback = useCallback(() => {
@@ -776,6 +1129,240 @@ export function useStemReplacer() {
     [originalBuffer, isPlaying, startPlaybackAt]
   );
 
+  // Load and analyze a Master Reference Audio buffer to guide 100% accurate Drum, Bass & Chord detection
+  const applyMasterReferenceBuffer = useCallback(
+    async (
+      buf: AudioBuffer,
+      title: string,
+      song?: SongWithStemsFolder,
+      triggerReanalysis = true
+    ): Promise<PreImportMemoryEntry> => {
+      masterRefBufferRef.current = buf;
+      masterRefMonoRef.current = buildMonoSliceFromBuffer(buf, 0, buf.duration);
+      masterRefTitleRef.current = title;
+      setMasterReferenceBuffer(buf);
+      setMasterReferenceTitle(title);
+
+      const prevMem = importedMemoryRef.current;
+      const prevPoly = importedPolyRef.current;
+      const pre = await runPreImportAnalysis(
+        buf,
+        song
+          ? {
+              bpmHint: song.bpm,
+              timeSignature: song.timeSignature,
+              seedBeatTimes: song.beatTimes,
+              seedDownbeats: song.downbeats,
+              seedKey: song.musicalKey,
+            }
+          : undefined
+      );
+
+      // Enrich with authoritative Stem Studio prompterChords if available
+      const prompterSegs = buildChordSegmentsFromPrompterChords(
+        song?.prompterChords,
+        buf.duration
+      );
+      const finalMasterMem: ImportedAudioMemoryAnalysis = prompterSegs
+        ? {
+            ...pre.memory,
+            isTonal: true,
+            chords: prompterSegs,
+            chordProgressionSummary: prompterSegs
+              .slice(0, 8)
+              .map((c) => c.chord)
+              .join(' → '),
+          }
+        : pre.memory;
+
+      masterRefMemoryRef.current = finalMasterMem;
+      masterRefPolyRef.current = pre.polyResult;
+      setMasterReferenceMemory(finalMasterMem);
+
+      // Restore stem memory ref if a target stem was already loaded, or share Master memory
+      if (prevMem && originalBuffer) {
+        importedMemoryRef.current = {
+          ...prevMem,
+          bpm: finalMasterMem.bpm,
+          musicalKey: finalMasterMem.musicalKey,
+          camelotKey: finalMasterMem.camelotKey,
+          isTonal: finalMasterMem.isTonal || prevMem.isTonal,
+          chords: finalMasterMem.chords,
+          chordProgressionSummary: finalMasterMem.chordProgressionSummary,
+          beatOffsetSec: finalMasterMem.beatOffsetSec,
+          beatTimes: finalMasterMem.beatTimes,
+          downbeats: finalMasterMem.downbeats,
+        };
+        importedPolyRef.current = prevPoly;
+        setImportedMemory(importedMemoryRef.current);
+      } else {
+        importedMemoryRef.current = finalMasterMem;
+        setImportedMemory(finalMasterMem);
+      }
+
+      if (detectionSourceModeRef.current === 'stem-only') {
+        setDetectionSourceMode('auto-hybrid');
+        detectionSourceModeRef.current = 'auto-hybrid';
+      }
+
+      if (triggerReanalysis && originalBuffer) {
+        await runAnalysis(
+          originalBuffer,
+          stemMode,
+          sensitivity,
+          maxPolyphony,
+          finalMasterMem.bpm,
+          bassFocusMode,
+          importedMemoryRef.current,
+          importedPolyRef.current,
+          quantizeModeRef.current,
+          detectionSourceModeRef.current
+        );
+      } else {
+        setStatusMessage(
+          `🎯 Audio Master Guía cargado: "${title}" (${finalMasterMem.bpm} BPM · Tono ${
+            finalMasterMem.musicalKey || 'Detectado'
+          } · ${finalMasterMem.chords.length} bloques de acordes listos para guiar Batería y Bajo).`
+        );
+      }
+
+      return { memory: finalMasterMem, polyResult: pre.polyResult };
+    },
+    [
+      runPreImportAnalysis,
+      originalBuffer,
+      runAnalysis,
+      stemMode,
+      sensitivity,
+      maxPolyphony,
+      bassFocusMode,
+    ]
+  );
+
+  // Upload a local Master Audio file from PC to serve as Detection Guide for Drums, Bass & Chords
+  const loadLocalMasterReferenceFile = useCallback(
+    async (file: File) => {
+      setIsLoadingMasterRef(true);
+      try {
+        const ctx = ensureCtx();
+        setStatusMessage(`Decodificando Audio Master Guía "${file.name}"...`);
+        const raw = await file.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(raw.slice(0));
+        const cleanTitle = file.name.replace(/\.[^.]+$/, '');
+        setStatusMessage(
+          `Analizando Acordes, Tempo, Kick, Snare, Hi-Hat, Crash y Bajo en el Master "${cleanTitle}"...`
+        );
+        await applyMasterReferenceBuffer(decoded, cleanTitle, selectedSong ?? undefined, true);
+      } catch (err) {
+        setStatusMessage(
+          err instanceof Error
+            ? `Error cargando Audio Master Guía: ${err.message}`
+            : 'No se pudo decodificar el archivo Master de referencia.'
+        );
+      } finally {
+        setIsLoadingMasterRef(false);
+      }
+    },
+    [ensureCtx, applyMasterReferenceBuffer, selectedSong]
+  );
+
+  // Load the current Song's ★ Master stem from Supabase as the Detection Guide
+  const loadSongMasterAsReference = useCallback(
+    async (songOverride?: SongWithStemsFolder, triggerReanalysis = true): Promise<boolean> => {
+      const targetSong = songOverride ?? selectedSong;
+      if (!targetSong) {
+        setStatusMessage('Selecciona una canción primero o sube un archivo Master desde tu PC.');
+        return false;
+      }
+      const masterStem =
+        targetSong.stems.find((s) => s.isMaster) ??
+        targetSong.stems.find((s) => /\b(master|mezcla|mix|full)\b/i.test(s.name));
+      if (!masterStem) {
+        setStatusMessage(
+          `La canción "${targetSong.title}" no tiene pista ★ Master en la nube. Puedes subir el Master desde tu PC con el botón "+ Subir Audio Master".`
+        );
+        return false;
+      }
+
+      setIsLoadingMasterRef(true);
+      try {
+        const ctx = ensureCtx();
+        setStatusMessage(`Descargando ★ Master de "${targetSong.title}" como Guía de Detección...`);
+        const res = await fetch(masterStem.fileUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const arr = await res.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(arr.slice(0));
+        await applyMasterReferenceBuffer(
+          decoded,
+          `${targetSong.title} — ★ ${masterStem.name}`,
+          targetSong,
+          triggerReanalysis
+        );
+        return true;
+      } catch (err) {
+        setStatusMessage(
+          err instanceof Error
+            ? `No se pudo cargar el Master de la canción: ${err.message}`
+            : 'Error descargando el Master de la canción.'
+        );
+        return false;
+      } finally {
+        setIsLoadingMasterRef(false);
+      }
+    },
+    [selectedSong, ensureCtx, applyMasterReferenceBuffer]
+  );
+
+  const clearMasterReference = useCallback(async () => {
+    masterRefBufferRef.current = null;
+    masterRefMonoRef.current = null;
+    masterRefTitleRef.current = '';
+    masterRefMemoryRef.current = null;
+    masterRefPolyRef.current = null;
+    setMasterReferenceBuffer(null);
+    setMasterReferenceTitle('');
+    setMasterReferenceMemory(null);
+    setListenWithMasterContext(false);
+    if (originalBuffer) {
+      await runAnalysis(
+        originalBuffer,
+        stemMode,
+        sensitivity,
+        maxPolyphony,
+        selectedSong?.bpm,
+        bassFocusMode,
+        importedMemoryRef.current,
+        importedPolyRef.current,
+        quantizeModeRef.current,
+        'stem-only'
+      );
+    } else {
+      setStatusMessage('Guía de Audio Master desactivada. Detección operando sobre el Stem individual.');
+    }
+  }, [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, selectedSong?.bpm, bassFocusMode]);
+
+  const changeDetectionSourceMode = useCallback(
+    async (nextMode: DetectionSourceMode) => {
+      setDetectionSourceMode(nextMode);
+      detectionSourceModeRef.current = nextMode;
+      if (originalBuffer) {
+        await runAnalysis(
+          originalBuffer,
+          stemMode,
+          sensitivity,
+          maxPolyphony,
+          importedMemoryRef.current?.bpm ?? selectedSong?.bpm,
+          bassFocusMode,
+          importedMemoryRef.current,
+          importedPolyRef.current,
+          quantizeModeRef.current,
+          nextMode
+        );
+      }
+    },
+    [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, selectedSong?.bpm, bassFocusMode]
+  );
+
   // Load 1 stem from Supabase song folder
   const loadSongStem = useCallback(
     async (stem: SongStemEntry, song?: SongWithStemsFolder) => {
@@ -797,6 +1384,30 @@ export function useStemReplacer() {
         setOriginalBuffer(decoded);
         setCurrentTimeSec(0);
 
+        // If autoUseSongMaster is active and we are loading an isolated stem (Drums/Bass/etc.),
+        // auto-load the song's ★ Master in parallel as our Detection Guide!
+        if (autoUseSongMaster && song && !stem.isMaster) {
+          const masterEntry =
+            song.stems.find((s) => s.isMaster) ??
+            song.stems.find((s) => /\b(master|mezcla|mix|full)\b/i.test(s.name));
+          const expectedMasterTitle = masterEntry ? `${song.title} — ★ ${masterEntry.name}` : '';
+          if (masterEntry && masterRefTitleRef.current !== expectedMasterTitle) {
+            try {
+              setStatusMessage(
+                `Cargando ★ Master de "${song.title}" como Guía de Detección para ${stem.name}...`
+              );
+              const mRes = await fetch(masterEntry.fileUrl);
+              if (mRes.ok) {
+                const mArr = await mRes.arrayBuffer();
+                const mDecoded = await ctx.decodeAudioData(mArr.slice(0));
+                await applyMasterReferenceBuffer(mDecoded, expectedMasterTitle, song, false);
+              }
+            } catch {
+              // continue gracefully with stem analysis if Master fetch fails
+            }
+          }
+        }
+
         const inferredMode = stem.inferredMode ?? inferStemModeFromName(stem.name);
         setStatusMessage('Detectando tempo, grilla Stem Studio y acordes en memoria...');
         const pre = await runPreImportAnalysis(
@@ -808,12 +1419,28 @@ export function useStemReplacer() {
                 seedBeatTimes: song.beatTimes,
                 seedDownbeats: song.downbeats,
                 seedKey:
-                  inferredMode === 'drums' && !stem.isMaster
+                  inferredMode === 'drums' && !stem.isMaster && !masterRefMemoryRef.current
                     ? 'Percusión (Sin tono)'
                     : song.musicalKey,
               }
             : undefined
         );
+
+        // Inject authoritative Stem Studio prompterChords if available
+        const prompterSegs = buildChordSegmentsFromPrompterChords(
+          song?.prompterChords,
+          decoded.duration
+        );
+        if (prompterSegs && pre.memory.chords.length === 0) {
+          pre.memory.isTonal = true;
+          pre.memory.chords = prompterSegs;
+          pre.memory.chordProgressionSummary = prompterSegs
+            .slice(0, 8)
+            .map((c) => c.chord)
+            .join(' → ');
+          importedMemoryRef.current = pre.memory;
+          setImportedMemory({ ...pre.memory });
+        }
 
         setStemMode(inferredMode);
         const chosenPreset = chooseDefaultMelodicPresetForName(stem.name);
@@ -846,7 +1473,16 @@ export function useStemReplacer() {
         setIsLoadingStem(false);
       }
     },
-    [stopPlayback, ensureCtx, runPreImportAnalysis, runAnalysis, sensitivity, maxPolyphony]
+    [
+      stopPlayback,
+      ensureCtx,
+      autoUseSongMaster,
+      applyMasterReferenceBuffer,
+      runPreImportAnalysis,
+      runAnalysis,
+      sensitivity,
+      maxPolyphony,
+    ]
   );
 
   // Load local audio file directly as stem
@@ -1173,10 +1809,116 @@ export function useStemReplacer() {
     bassFocusMode,
   ]);
 
+  // Auto re-analyze when sensitivity or maxPolyphony sliders are adjusted on an already loaded stem
+  const prevSensRef = useRef<number>(sensitivity);
+  const prevPolyRef = useRef<number>(maxPolyphony);
+  useEffect(() => {
+    if (prevSensRef.current === sensitivity && prevPolyRef.current === maxPolyphony) {
+      return;
+    }
+    prevSensRef.current = sensitivity;
+    prevPolyRef.current = maxPolyphony;
+    if (!originalBuffer || isLoadingStem) return;
+    const timer = setTimeout(() => {
+      void runAnalysis(
+        originalBuffer,
+        stemMode,
+        sensitivity,
+        maxPolyphony,
+        importedMemoryRef.current?.bpm ?? selectedSong?.bpm,
+        bassFocusMode
+      );
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [
+    sensitivity,
+    maxPolyphony,
+    originalBuffer,
+    isLoadingStem,
+    runAnalysis,
+    stemMode,
+    selectedSong?.bpm,
+    bassFocusMode,
+  ]);
+
   const changeQuantizeModeAndReanalyze = useCallback(
     async (nextMode: StemQuantizeMode) => {
       setQuantizeMode(nextMode);
       quantizeModeRef.current = nextMode;
+      // Non-destructive quantization: preserve manual MIDI edits and Replicate MT3 transcriptions!
+      if (analysis && originalBuffer && (baseDrumHitsRef.current || baseNoteEventsRef.current)) {
+        const targetBpm =
+          masterRefMemoryRef.current?.bpm ??
+          importedMemoryRef.current?.bpm ??
+          analysis.bpm;
+        const beatOffset =
+          masterRefMemoryRef.current?.beatOffsetSec ??
+          importedMemoryRef.current?.beatOffsetSec ??
+          analysis.beatOffsetSec ??
+          0;
+        const beatTimes =
+          masterRefMemoryRef.current?.beatTimes ??
+          importedMemoryRef.current?.beatTimes ??
+          analysis.beatTimes;
+
+        if (analysis.mode === 'drums' && baseDrumHitsRef.current) {
+          const qHits =
+            nextMode === 'off'
+              ? baseDrumHitsRef.current.map((h) => ({ ...h }))
+              : quantizeDrumHitsToTempo(
+                  baseDrumHitsRef.current,
+                  targetBpm,
+                  beatOffset,
+                  originalBuffer.duration,
+                  nextMode,
+                  beatTimes
+                );
+          const counts = {
+            total: qHits.length,
+            kick: qHits.filter((h) => h.role === 'kick').length,
+            snare: qHits.filter((h) => h.role === 'snare').length,
+            hat: qHits.filter((h) => h.role === 'hat').length,
+            crash: qHits.filter((h) => h.role === 'crash').length,
+            tom: qHits.filter((h) => h.role === 'tom').length,
+            notes: 0,
+          };
+          setAnalysis({
+            ...analysis,
+            quantizeMode: nextMode,
+            drumHits: qHits,
+            counts,
+          });
+          return;
+        }
+
+        if (analysis.mode !== 'drums' && baseNoteEventsRef.current) {
+          const strictMono = analysis.mode === 'monophonic' || Boolean(analysis.bassFocusApplied);
+          const qNotes =
+            nextMode === 'off'
+              ? baseNoteEventsRef.current.map((n) => ({ ...n }))
+              : quantizeNoteEventsToTempo(
+                  baseNoteEventsRef.current,
+                  targetBpm,
+                  beatOffset,
+                  originalBuffer.duration,
+                  nextMode,
+                  strictMono,
+                  beatTimes
+                );
+          setAnalysis({
+            ...analysis,
+            quantizeMode: nextMode,
+            noteEvents: qNotes,
+            counts: {
+              ...analysis.counts,
+              total: qNotes.length,
+              notes: qNotes.length,
+            },
+          });
+          return;
+        }
+      }
+
       if (originalBuffer) {
         await runAnalysis(
           originalBuffer,
@@ -1191,7 +1933,16 @@ export function useStemReplacer() {
         );
       }
     },
-    [originalBuffer, runAnalysis, stemMode, sensitivity, maxPolyphony, selectedSong?.bpm, bassFocusMode]
+    [
+      analysis,
+      originalBuffer,
+      runAnalysis,
+      stemMode,
+      sensitivity,
+      maxPolyphony,
+      selectedSong?.bpm,
+      bassFocusMode,
+    ]
   );
 
   const updateImportedTempo = useCallback(
@@ -1652,10 +2403,28 @@ export function useStemReplacer() {
     [ensureCtx]
   );
 
+  // Guarantees a 100% up-to-date rendered AudioBuffer prior to PC Export or Cloud Save
+  // (Eliminates the 140ms debounce race condition and prevents an active SOLO lane from leaking into the exported full stem)
+  const renderFreshFullStemBuffer = useCallback((): AudioBuffer | null => {
+    if (!originalBuffer) return null;
+    if (!analysis) return replacedBuffer ?? originalBuffer;
+    const fresh = renderFullStemReplacement({
+      originalBuffer,
+      analysis,
+      drumSlots,
+      melodicSlot,
+      mix: mixOptions,
+    });
+    if (!soloDrumRole) {
+      setReplacedBuffer(fresh);
+    }
+    return fresh;
+  }, [originalBuffer, analysis, drumSlots, melodicSlot, mixOptions, soloDrumRole, replacedBuffer]);
+
   // Export exact-length 24-bit WAV or MP3 320kbps directly to PC
   const downloadReplacedAudio = useCallback(
     async (format: 'wav' | 'mp3' = 'wav', customFileName?: string) => {
-      const targetBuffer = replacedBuffer ?? originalBuffer;
+      const targetBuffer = renderFreshFullStemBuffer();
       if (!targetBuffer) return;
       setIsExportingPc(true);
       try {
@@ -1682,7 +2451,7 @@ export function useStemReplacer() {
         setIsExportingPc(false);
       }
     },
-    [replacedBuffer, originalBuffer, analysis, stemTitle]
+    [renderFreshFullStemBuffer, analysis, stemTitle]
   );
 
   const downloadReplacedWav24 = useCallback(
@@ -1695,14 +2464,15 @@ export function useStemReplacer() {
   // Save directly back into the Song Folder ("Carpeta de la Canción") in Supabase!
   const saveReplacedStemToSong = useCallback(
     async (customStemName?: string) => {
-      if (!replacedBuffer || !selectedSong) {
+      const targetBuffer = renderFreshFullStemBuffer();
+      if (!targetBuffer || !selectedSong) {
         throw new Error('Selecciona una canción destino y procesa un stem primero.');
       }
       setIsSavingCloud(true);
       try {
         const nameToSave =
           (customStemName || `${stemTitle || 'Stem'} (Sampled Pro)`).trim();
-        const wavBlob = await encodeBufferToWav24WithMetadata(replacedBuffer, {
+        const wavBlob = await encodeBufferToWav24WithMetadata(targetBuffer, {
           rootMidiNote: analysis?.midiRange?.minMidi ?? 60,
         });
         const res = await addSampleToSongFolder({
@@ -1710,13 +2480,13 @@ export function useStemReplacer() {
           bandId: selectedSong.bandId,
           sampleName: nameToSave,
           wavBlob,
-          durationSec: replacedBuffer.duration,
+          durationSec: targetBuffer.duration,
           bpm: analysis?.bpm ?? selectedSong.bpm,
           rootNote: analysis?.midiRange?.minMidi ?? 60,
           originKind: 'stem-replaced',
         });
         setStatusMessage(
-          `Stem "${res.stemName}" guardado en la carpeta "${selectedSong.title}" (${replacedBuffer.duration.toFixed(
+          `Stem "${res.stemName}" guardado en la carpeta "${selectedSong.title}" (${targetBuffer.duration.toFixed(
             2
           )}s exactos, listo para Stem Studio y Live Concert).`
         );
@@ -1725,7 +2495,7 @@ export function useStemReplacer() {
         setIsSavingCloud(false);
       }
     },
-    [replacedBuffer, selectedSong, stemTitle, analysis, refreshSongs]
+    [renderFreshFullStemBuffer, selectedSong, stemTitle, analysis, refreshSongs]
   );
 
   const applyMixPreset = useCallback(
@@ -1986,6 +2756,7 @@ export function useStemReplacer() {
             sourceEngine: 'replicate-mt3',
             includeAcousticFallback: true,
           });
+          baseDrumHitsRef.current = fused.drumHits.map((h) => ({ ...h }));
           setAnalysis(fused);
           setStatusMessage(
             `IA Replicate MT3 + MIDI completado: ${fused.bpm} BPM · ${fused.counts.total} golpes MIDI (${fused.counts.kick} Kick · ${fused.counts.snare} Snare · ${fused.counts.tom} Toms · ${fused.counts.hat} Hi-Hat · ${fused.counts.crash} Crash/Ride).`
@@ -2010,6 +2781,7 @@ export function useStemReplacer() {
               detectedChords: activeMem?.chords,
               sourceEngine: 'replicate-mt3',
             });
+            baseNoteEventsRef.current = melodicRes.noteEvents.map((n) => ({ ...n }));
             setAnalysis(melodicRes);
             setStatusMessage(
               `IA Replicate MT3 MIDI Melódico completado: ${melodicRes.bpm} BPM · ${melodicRes.counts.notes} notas MIDI transcritas.`
@@ -2091,6 +2863,7 @@ export function useStemReplacer() {
               sourceEngine: 'midi-import',
               includeAcousticFallback: false,
             });
+            baseDrumHitsRef.current = fused.drumHits.map((h) => ({ ...h }));
             setAnalysis(fused);
             setStatusMessage(
               `MIDI "${file.name}" importado y sincronizado: ${fused.counts.total} golpes (${fused.counts.kick} Kick · ${fused.counts.snare} Snare · ${fused.counts.tom} Toms · ${fused.counts.hat} Hi-Hat · ${fused.counts.crash} Crash).`
@@ -2114,6 +2887,7 @@ export function useStemReplacer() {
               detectedChords: activeMem?.chords,
               sourceEngine: 'midi-import',
             });
+            baseNoteEventsRef.current = melodicRes.noteEvents.map((n) => ({ ...n }));
             setAnalysis(melodicRes);
             setStatusMessage(
               `MIDI "${file.name}" importado: ${melodicRes.counts.notes} notas listas para reemplazo.`
@@ -2156,19 +2930,36 @@ export function useStemReplacer() {
     [originalBuffer, stemMode, sensitivity, selectedSong?.bpm, ensureCtx]
   );
 
-  // Audition a single drum hit with its exact assigned replacement sample, velocity & multi-tom pitch offset
+  // Audition a single drum hit with its exact assigned replacement sample, 9-lane GM articulation, velocity & multi-tom pitch offset
   const auditionDrumHit = useCallback(
     (hit: StemDrumHitEvent) => {
       const slot = drumSlots[hit.role];
       if (!slot) return;
       const ctx = ensureCtx();
-      const buf =
-        slot.sourceType !== 'preset' && slot.customBuffer
-          ? slot.customBuffer
-          : getPresetAuditionBuffer(ctx, slot.presetId);
+      let buf: AudioBuffer;
+      if (slot.sourceType !== 'preset' && slot.customBuffer) {
+        buf = slot.customBuffer;
+      } else {
+        const zone = getArticulatedDrumZone(
+          slot.presetId,
+          hit.role,
+          hit.articulation,
+          ctx.sampleRate
+        );
+        buf = arraysToAudioBuffer(ctx, zone.left, zone.right, ctx.sampleRate);
+      }
       const src = ctx.createBufferSource();
       src.buffer = buf;
-      const pitchSemis = slot.pitchSemis + (hit.pitchOffsetSemis ?? 0);
+      const hitSemiOffset =
+        slot.sourceType !== 'preset' && slot.customBuffer
+          ? (hit.pitchOffsetSemis ?? 0)
+          : hit.role === 'tom' &&
+            (hit.articulation === 'high-tom' ||
+              hit.articulation === 'mid-tom' ||
+              hit.articulation === 'floor-tom')
+          ? 0
+          : (hit.pitchOffsetSemis ?? 0);
+      const pitchSemis = slot.pitchSemis + hitSemiOffset;
       src.playbackRate.value = Math.pow(2, pitchSemis / 12);
       const g = ctx.createGain();
       g.gain.value =
@@ -2209,6 +3000,8 @@ export function useStemReplacer() {
       const nextHits = [...analysis.drumHits, newHit].sort(
         (a, b) => a.timeSec - b.timeSec
       );
+      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      hasManualMidiEditsRef.current = true;
 
       const counts = {
         total: nextHits.length,
@@ -2302,6 +3095,8 @@ export function useStemReplacer() {
         tom: nextHits.filter((h) => h.role === 'tom').length,
         notes: analysis.counts.notes,
       };
+      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
         drumHits: nextHits,
@@ -2316,6 +3111,8 @@ export function useStemReplacer() {
     (hitId: string) => {
       if (!analysis || analysis.mode !== 'drums') return;
       const nextHits = analysis.drumHits.filter((h) => h.id !== hitId);
+      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      hasManualMidiEditsRef.current = true;
       const counts = {
         total: nextHits.length,
         kick: nextHits.filter((h) => h.role === 'kick').length,
@@ -2384,6 +3181,8 @@ export function useStemReplacer() {
       const nextNotes = [...analysis.noteEvents, newNote].sort(
         (a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote
       );
+      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      hasManualMidiEditsRef.current = true;
       let minM = 127;
       let maxM = 0;
       for (const n of nextNotes) {
@@ -2439,6 +3238,8 @@ export function useStemReplacer() {
           };
         })
         .sort((a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote);
+      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
         noteEvents: nextNotes,
@@ -2452,6 +3253,8 @@ export function useStemReplacer() {
     (noteId: string) => {
       if (!analysis || analysis.mode === 'drums') return;
       const nextNotes = analysis.noteEvents.filter((n) => n.id !== noteId);
+      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
         noteEvents: nextNotes,
@@ -2473,6 +3276,21 @@ export function useStemReplacer() {
     replacedBuffer,
     stemTitle,
     waveformPyramid,
+    masterReferenceBuffer,
+    masterReferenceTitle,
+    masterReferenceMemory,
+    isLoadingMasterRef,
+    detectionSourceMode,
+    changeDetectionSourceMode,
+    autoUseSongMaster,
+    setAutoUseSongMaster,
+    listenWithMasterContext,
+    setListenWithMasterContext,
+    masterContextVolumePct,
+    setMasterContextVolumePct,
+    loadLocalMasterReferenceFile,
+    loadSongMasterAsReference,
+    clearMasterReference,
     stemMode,
     bassFocusMode,
     toggleBassFocusMode,

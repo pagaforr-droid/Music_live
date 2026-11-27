@@ -1,7 +1,12 @@
 import { applyTruePeakLookaheadLimiterOffline } from '../../dsp-core/LookaheadLimiterCore';
 import { buildCrossfadedLoopArrays } from './LoopCrossfade';
 import { normalizeStereoInPlace } from './SampleBufferOps';
-import { getPresetZones, type ZoneSampleBuffer } from './StudioSampleBank';
+import {
+  getArticulatedDrumZone,
+  getPresetZones,
+  isBassPresetId,
+  type ZoneSampleBuffer,
+} from './StudioSampleBank';
 import type {
   DrumPieceRole,
   FullStemAnalysisResult,
@@ -148,11 +153,31 @@ export function renderFullStemReplacement(params: {
     for (let hIdx = 0; hIdx < analysis.drumHits.length; hIdx++) {
       const hit = analysis.drumHits[hIdx];
       const slot = drumSlots[hit.role];
-      const zone = zoneCache.get(hit.role);
-      if (!slot || !slot.enabled || !zone) continue;
+      const baseZone = zoneCache.get(hit.role);
+      if (!slot || !slot.enabled || !baseZone) continue;
+
+      // Resolve articulation-specific zone for preset slots so all 9 GM lanes sound distinct
+      const zone: ZoneSampleBuffer & { sampleRate: number } =
+        slot.sourceType === 'preset' || !slot.customBuffer
+          ? {
+              ...getArticulatedDrumZone(slot.presetId, hit.role, hit.articulation, sr),
+              sampleRate: sr,
+            }
+          : baseZone;
 
       const srRatio = zone.sampleRate / sr;
-      let semiShift = slot.pitchSemis + (hit.role === 'tom' ? (hit.pitchOffsetSemis ?? 0) : 0);
+      // For preset toms, getArticulatedDrumZone already selects the High/Mid/Floor Tom root buffer,
+      // while custom samples or explicit per-hit offsets use hit.pitchOffsetSemis
+      const hitSemiOffset =
+        slot.sourceType !== 'preset' && slot.customBuffer
+          ? (hit.pitchOffsetSemis ?? 0)
+          : hit.role === 'tom' &&
+            (hit.articulation === 'high-tom' ||
+              hit.articulation === 'mid-tom' ||
+              hit.articulation === 'floor-tom')
+          ? 0
+          : (hit.pitchOffsetSemis ?? 0);
+      let semiShift = slot.pitchSemis + hitSemiOffset;
       let ampScale = Math.pow(10, slot.gainDb / 20) * (0.24 + 0.76 * hit.velocity);
       let panSkew = 0;
 
@@ -206,7 +231,19 @@ export function renderFullStemReplacement(params: {
 
       const srcLen = zone.left.length;
       const maxOutFrames = Math.floor((srcLen - 1) / rate);
-      const renderLen = Math.min(totalLen - startOut, maxOutFrames);
+      let renderLen = Math.min(totalLen - startOut, maxOutFrames);
+      // When using a long custom Hi-Hat or Snare sample, shape closed/pedal/rim articulations naturally
+      let customArticulationDecayRate = 0;
+      if (slot.sourceType !== 'preset' && slot.customBuffer) {
+        if (hit.role === 'hat' && (hit.articulation === 'closed' || hit.articulation === 'pedal')) {
+          const maxClosedFrames = Math.round(sr * (hit.articulation === 'pedal' ? 0.085 : 0.125));
+          renderLen = Math.min(renderLen, maxClosedFrames);
+          customArticulationDecayRate = hit.articulation === 'pedal' ? 32 : 22;
+        } else if (hit.role === 'snare' && hit.articulation === 'rim') {
+          renderLen = Math.min(renderLen, Math.round(sr * 0.15));
+          customArticulationDecayRate = 20;
+        }
+      }
       const startsHot = Math.max(Math.abs(zone.left[0] ?? 0), Math.abs(zone.right[0] ?? 0)) > 0.015;
       const attackSamples = startsHot ? Math.max(4, Math.round(sr * 0.00015)) : 0;
 
@@ -238,6 +275,10 @@ export function renderFullStemReplacement(params: {
       for (let i = 0; i < renderLen; i++) {
         const srcPos = i * rate;
         const atk = attackSamples > 0 && i < attackSamples ? i / attackSamples : 1.0;
+        const artEnv =
+          customArticulationDecayRate > 0
+            ? Math.exp(-(i / sr) * customArticulationDecayRate)
+            : 1.0;
         let sL: number;
         let sR: number;
         if (Math.abs(rate - 1.0) < 1e-4) {
@@ -254,8 +295,8 @@ export function renderFullStemReplacement(params: {
           sL = vLpL;
           sR = vLpR;
         }
-        targetL[startOut + i] += sL * gainL * atk;
-        targetR[startOut + i] += sR * gainR * atk;
+        targetL[startOut + i] += sL * gainL * atk * artEnv;
+        targetR[startOut + i] += sR * gainR * atk * artEnv;
       }
 
       if (hit.role === 'hat') {
@@ -278,14 +319,21 @@ export function renderFullStemReplacement(params: {
           }));
 
     const slotGain = Math.pow(10, melodicSlot.gainDb / 20);
+    const isMonoBassTrack =
+      analysis.mode === 'monophonic' ||
+      Boolean(analysis.bassFocusApplied) ||
+      isBassPresetId(melodicSlot.presetId);
     // Reduce gain slightly in polyphonic mode so 4-5 note chords stay headroom-balanced; keep full level for Bass-Focus monophonic progression
     const polyScale =
       analysis.mode === 'polyphonic' && !analysis.bassFocusApplied ? 0.42 : 0.78;
-    const attackSamples = Math.max(32, Math.round(sr * 0.005)); // 5ms click-free attack
-    const baseReleaseSec = analysis.mode === 'monophonic' ? 0.08 : 0.16;
+    const attackSamples = Math.max(24, Math.round(sr * (isMonoBassTrack ? 0.0035 : 0.005)));
+    const baseReleaseSec = isMonoBassTrack ? 0.055 : 0.16;
+    const monoChokeFadeSamples = Math.max(24, Math.round(sr * 0.006)); // 6ms click-free legato bass choke
 
-    for (let nIdx = 0; nIdx < analysis.noteEvents.length; nIdx++) {
-      const ev = analysis.noteEvents[nIdx];
+    const sortedNotes = [...analysis.noteEvents].sort((a, b) => a.startSec - b.startSec);
+
+    for (let nIdx = 0; nIdx < sortedNotes.length; nIdx++) {
+      const ev = sortedNotes[nIdx];
       const zone = pickNearestZone(zones, ev.midiNote + melodicSlot.pitchSemis);
       const srRatio = (zone.sampleRate ?? sr) / sr;
       const semiDiff = ev.midiNote + melodicSlot.pitchSemis - zone.rootMidi;
@@ -294,12 +342,36 @@ export function renderFullStemReplacement(params: {
       const startOut = Math.max(0, Math.round(ev.startSec * sr));
       if (startOut >= totalLen) continue;
 
-      const holdSec = Math.max(0.04, ev.durationSec * mix.sustainScale);
+      const holdSec = Math.max(0.035, ev.durationSec * mix.sustainScale);
       const relSec = baseReleaseSec * mix.sustainScale;
-      const holdSamples = Math.round(holdSec * sr);
-      const relSamples = Math.round(relSec * sr);
+      let holdSamples = Math.round(holdSec * sr);
+      let relSamples = Math.round(relSec * sr);
+
+      // Mono Choke: prevent consecutive bass/monophonic notes from overlapping and creating low-end mud
+      if (isMonoBassTrack && nIdx + 1 < sortedNotes.length) {
+        const nextStartOut = Math.max(startOut + attackSamples, Math.round(sortedNotes[nIdx + 1].startSec * sr));
+        const maxAllowedSpan = Math.max(attackSamples + monoChokeFadeSamples, nextStartOut - startOut + monoChokeFadeSamples);
+        if (holdSamples + relSamples > maxAllowedSpan) {
+          holdSamples = Math.max(attackSamples, nextStartOut - startOut);
+          relSamples = monoChokeFadeSamples;
+        }
+      }
+
       const noteOutSamples = Math.min(totalLen - startOut, holdSamples + relSamples);
       const noteAmp = slotGain * polyScale * (0.28 + 0.72 * ev.velocity);
+
+      // Mark active bass region on duckEnv so crossover low-end clean can duck muddy <185Hz original bass
+      if (isMonoBassTrack) {
+        for (let k = 0; k < noteOutSamples && startOut + k < totalLen; k++) {
+          const kEnv =
+            k < attackSamples
+              ? k / attackSamples
+              : k > holdSamples
+              ? Math.cos(Math.min(1, (k - holdSamples) / Math.max(1, relSamples)) * Math.PI * 0.5)
+              : 1.0;
+          duckEnv[startOut + k] = Math.min(duckEnv[startOut + k], Math.max(0.08, 1 - 0.88 * kEnv));
+        }
+      }
 
       const srcLen = zone.left.length;
       const loopStart = zone.loopStartSample ?? Math.floor(srcLen * 0.3);
@@ -363,6 +435,13 @@ export function renderFullStemReplacement(params: {
   const gRep = Math.max(0, Math.min(1.5, mix.replacementPct / 100));
 
   // When blending drums over a full mix (originalPct >= 25), duck only <260Hz low-punch so vocals/guitars don't pump
+  const useBassCrossoverClean =
+    analysis.mode !== 'drums' &&
+    (Boolean(analysis.bassFocusApplied) || isBassPresetId(melodicSlot.presetId)) &&
+    mix.bassCrossoverCleanLow !== false &&
+    mix.originalPct > 2 &&
+    mix.replacementPct >= 20;
+
   if (analysis.mode === 'drums' && mix.originalPct >= 25 && mix.duckOriginalTransients) {
     const lowAlpha = (2 * Math.PI * 260) / (sr + 2 * Math.PI * 260);
     let lpL = 0;
@@ -377,10 +456,28 @@ export function renderFullStemReplacement(params: {
       outL[i] = duckedOrigL * gOrig + repL[i] * gRep;
       outR[i] = duckedOrigR * gOrig + repR[i] * gRep;
     }
+  } else if (useBassCrossoverClean) {
+    // Bass Crossover Split: clean muddy <185Hz sub from original stem during active bass notes while keeping >185Hz string/finger articulation
+    const xoverAlpha = (2 * Math.PI * 185) / (sr + 2 * Math.PI * 185);
+    let lpL = 0;
+    let lpR = 0;
+    for (let i = 0; i < totalLen; i++) {
+      const oL = origL[i];
+      const oR = origR[i];
+      lpL += xoverAlpha * (oL - lpL);
+      lpR += xoverAlpha * (oR - lpR);
+      const hiOrigL = oL - lpL;
+      const hiOrigR = oR - lpR;
+      const cleanOrigL = lpL * duckEnv[i] + hiOrigL;
+      const cleanOrigR = lpR * duckEnv[i] + hiOrigR;
+      outL[i] = cleanOrigL * gOrig + repL[i] * gRep;
+      outR[i] = cleanOrigR * gOrig + repR[i] * gRep;
+    }
   } else {
     for (let i = 0; i < totalLen; i++) {
-      outL[i] = origL[i] * gOrig * duckEnv[i] + repL[i] * gRep;
-      outR[i] = origR[i] * gOrig * duckEnv[i] + repR[i] * gRep;
+      const d = analysis.mode === 'drums' ? duckEnv[i] : 1.0;
+      outL[i] = origL[i] * gOrig * d + repL[i] * gRep;
+      outR[i] = origR[i] * gOrig * d + repR[i] * gRep;
     }
   }
 

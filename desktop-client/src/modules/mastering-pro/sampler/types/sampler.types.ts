@@ -191,6 +191,7 @@ export interface SongFolderItem {
 export type StemAnalysisMode = 'drums' | 'monophonic' | 'polyphonic';
 
 export type StemQuantizeMode = 'off' | 'soft' | 'grid-16' | 'grid-8';
+export type DetectionSourceMode = 'auto-hybrid' | 'master-only' | 'stem-only';
 export type DrumPieceRole = 'kick' | 'snare' | 'hat' | 'crash' | 'tom';
 
 export type DefaultDrumPresetId =
@@ -267,6 +268,8 @@ export interface StemNoteEvent {
 export interface FullStemAnalysisResult {
   mode: StemAnalysisMode;
   analysisEngine?: 'local-dsp' | 'replicate-mt3' | 'midi-import';
+  detectionSourceUsed?: 'stem-only' | 'master-guided-hybrid' | 'master-only';
+  masterReferenceName?: string;
   bassFocusApplied?: boolean;
   quantizeMode?: StemQuantizeMode;
   bpm: number;
@@ -329,6 +332,29 @@ export interface StemReplaceMixOptions {
   roundRobinHumanize: boolean;
   sustainScale: number; // 0.6..1.8 for melodic sustain/release feel
   brightnessPct: number; // -50..+50 tilt
+  bassCrossoverCleanLow?: boolean; // cleans <185Hz mud from original stem when blending new sub/synth bass
+}
+
+export interface PersistedStemReplacerSession {
+  id: string;
+  mode: StemAnalysisMode;
+  quantizeMode: StemQuantizeMode;
+  sensitivity: number;
+  maxPolyphony: number;
+  bassFocusMode: boolean;
+  detectionSourceMode: DetectionSourceMode;
+  autoUseSongMaster: boolean;
+  drumSlots: Record<DrumPieceRole, Omit<ReplacementSlotConfig, 'customBuffer'>>;
+  melodicSlot: Omit<ReplacementSlotConfig, 'customBuffer'>;
+  mixOptions: StemReplaceMixOptions;
+  selectedSongId: string;
+  selectedStemId: string;
+  manualAnalysisEdits?: {
+    signature: string;
+    drumHits: StemDrumHitEvent[];
+    noteEvents: StemNoteEvent[];
+  };
+  updatedAt: string;
 }
 
 export interface SongStemEntry {

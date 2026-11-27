@@ -11,6 +11,7 @@ import type {
   DefaultDrumPresetId,
   DefaultInstrumentId,
   DefaultMelodicPresetId,
+  DrumArticulation,
   DrumPieceRole,
 } from '../types/sampler.types';
 
@@ -507,6 +508,99 @@ export function getPresetZones(
   }
   presetCache.set(key, zones);
   return zones;
+}
+
+const rimshotCache = new Map<number, ZoneSampleBuffer>();
+
+function getRimshotZone(sr: number): ZoneSampleBuffer {
+  const cached = rimshotCache.get(sr);
+  if (cached) return cached;
+  const dur = 0.14;
+  const len = Math.floor(sr * dur);
+  const L = new Float32Array(len);
+  const R = new Float32Array(len);
+  const rand = createPrng(0x7a31c923);
+  let p1 = 0;
+  let p2 = 0;
+  let p3 = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / sr;
+    p1 += (2 * Math.PI * (435 + 45 * Math.exp(-t * 90))) / sr;
+    p2 += (2 * Math.PI * (872 + 70 * Math.exp(-t * 110))) / sr;
+    p3 += (2 * Math.PI * 2140) / sr;
+    const wood =
+      (0.55 * Math.sin(p1) + 0.32 * Math.sin(p2) + 0.13 * Math.sin(p3)) *
+      Math.exp(-t * 36);
+    const click = (rand() * 0.55 + Math.sin(2 * Math.PI * 3100 * t) * 0.45) * Math.exp(-t * 340) * 0.65;
+    const fade = i > len - 120 ? (len - i) / 120 : 1;
+    const s = Math.tanh((wood + click) * 1.25) * fade;
+    L[i] = s * 0.96;
+    R[i] = s * 1.04;
+  }
+  normalizeStereoInPlace(L, R, -1.2);
+  const zone: ZoneSampleBuffer = {
+    rootMidi: 37,
+    left: L,
+    right: R,
+    peakOffsetSamples: findPeakOffsetSample(L, R, sr, 0.015),
+  };
+  rimshotCache.set(sr, zone);
+  return zone;
+}
+
+/**
+ * Returns the authentic synthesized drum zone matching the specific 9-lane GM articulation
+ * (Closed Hat 42, Pedal Hat 44, Open Hat 46, Crash 49, Ride 51, Rimshot 37, Snare 38, High/Mid/Floor Tom 50/47/43).
+ */
+export function getArticulatedDrumZone(
+  basePresetId: DefaultInstrumentId,
+  role: DrumPieceRole,
+  articulation: DrumArticulation | undefined,
+  sampleRate = 48000
+): ZoneSampleBuffer {
+  if (role === 'hat') {
+    if (articulation === 'open') {
+      return getPresetZones('drum-hat-open', sampleRate)[0];
+    }
+    if (articulation === 'pedal') {
+      return getPresetZones('drum-hat-tight', sampleRate)[0];
+    }
+    // Closed hat: if user had selected drum-hat-open on slot, still play crisp closed hat on closed GM 42 hits
+    const closedPreset: DefaultDrumPresetId =
+      basePresetId === 'drum-hat-tight' ? 'drum-hat-tight' : 'drum-hat-crisp';
+    return getPresetZones(closedPreset, sampleRate)[0];
+  }
+
+  if (role === 'crash') {
+    if (articulation === 'ride') {
+      return getPresetZones('drum-crash-ride', sampleRate)[0];
+    }
+    const crashPreset: DefaultDrumPresetId =
+      basePresetId === 'drum-crash-warm' ? 'drum-crash-warm' : 'drum-crash-bright';
+    return getPresetZones(crashPreset, sampleRate)[0];
+  }
+
+  if (role === 'snare') {
+    if (articulation === 'rim') {
+      return getRimshotZone(sampleRate);
+    }
+    return getPresetZones(basePresetId, sampleRate)[0];
+  }
+
+  if (role === 'tom') {
+    if (articulation === 'high-tom') {
+      return getPresetZones('drum-tom-rack', sampleRate)[0];
+    }
+    if (articulation === 'floor-tom') {
+      return getPresetZones('drum-tom-floor', sampleRate)[0];
+    }
+    if (articulation === 'mid-tom') {
+      return getPresetZones('drum-tom-deep', sampleRate)[0];
+    }
+    return getPresetZones(basePresetId, sampleRate)[0];
+  }
+
+  return getPresetZones(basePresetId, sampleRate)[0];
 }
 
 export function getPresetAuditionBuffer(

@@ -10,6 +10,7 @@ import {
 import { analyzeImportedAudioFirst } from '../engine/PreImportAnalyzer';
 import type {
   DetectedChordSegment,
+  DetectionSourceMode,
   FullStemAnalysisResult,
   StemAnalysisMode,
   StemQuantizeMode,
@@ -20,6 +21,10 @@ export interface SamplerAnalysisRequest {
   kind: 'slice-transients' | 'detect-pitch' | 'analyze-full-stem' | 'pre-analyze-audio';
   sourceId: string;
   mono: Float32Array;
+  masterMono?: Float32Array;
+  detectionSourceMode?: DetectionSourceMode;
+  masterReferenceName?: string;
+  isMasterInput?: boolean;
   sampleRate: number;
   rangeStartSec?: number;
   rangeEndSec?: number;
@@ -94,6 +99,10 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               beatTimes: req.beatTimes,
               downbeats: req.downbeats,
               quantizeMode: qMode,
+              masterMono: req.masterMono,
+              detectionSourceMode: req.detectionSourceMode,
+              masterReferenceName: req.masterReferenceName,
+              isMasterInput: req.isMasterInput,
             })
           : mode === 'polyphonic' && bassFocus
           ? analyzeBassProgressionFull(req.mono, req.sampleRate, {
@@ -109,6 +118,9 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               beatTimes: req.beatTimes,
               downbeats: req.downbeats,
               quantizeMode: qMode,
+              masterMono: req.masterMono,
+              detectionSourceMode: req.detectionSourceMode,
+              masterReferenceName: req.masterReferenceName,
             })
           : mode === 'monophonic'
           ? analyzeMonophonicStemNotesFull(req.mono, req.sampleRate, {
@@ -123,6 +135,9 @@ self.onmessage = (ev: MessageEvent<SamplerAnalysisRequest>) => {
               beatTimes: req.beatTimes,
               downbeats: req.downbeats,
               quantizeMode: qMode,
+              masterMono: req.masterMono,
+              detectionSourceMode: req.detectionSourceMode,
+              masterReferenceName: req.masterReferenceName,
             })
           : req.precomputedPoly && !bassFocus
           ? (() => {

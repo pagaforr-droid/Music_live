@@ -23,6 +23,7 @@ import { assignSlicesToPads, sliceByBpmGrid } from '../engine/Slicer';
 import { renderFullStemReplacement } from '../engine/StemReplacerEngine';
 import {
   classifyCustomSampleCategory,
+  getArticulatedDrumZone,
   inferReplacementCategoryFromName,
   prepareCustomReplacementSample,
 } from '../engine/StudioSampleBank';
@@ -866,5 +867,172 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
       .filter((h) => h.role === 'tom')
       .map((h) => h.midiNote);
     expect(correctedTomNotes).toEqual([50, 47, 43, 43]);
+  });
+
+  it('rescues muffled Snares, dropped Hi-Hats, Kicks & Crashes on badly AI-separated Drum stems using Master Reference Audio Guide', () => {
+    const sr = 48000;
+    const bpm = 120;
+    const beatSec = 60 / bpm;
+    const eighthSec = beatSec * 0.5;
+    const len = Math.floor((16 * eighthSec + 0.5) * sr);
+    const damagedDrumStem = new Float32Array(len);
+    const masterTrack = new Float32Array(len);
+
+    let seed = 0x44556677;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    // Synthesize 2 bars:
+    // In damagedDrumStem (bad AI stem split): Snare wire crack (>2kHz) is 92% carved out, and Hi-Hats are 90% erased!
+    // In masterTrack: Full Kick, Snare (shell + wire crack), 8th-note Hi-Hats, Downbeat Crash + Chords/Bass are intact.
+    for (let e = 0; e < 16; e++) {
+      const s0 = Math.floor(e * eighthSec * sr);
+      const isKick = e % 4 === 0;
+      const isSnare = e % 4 === 2;
+      const isCrash = e === 0 || e === 8;
+
+      if (isKick) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.22) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (49 + 96 * Math.exp(-t * 36))) / sr;
+          const kVal = Math.sin(ph) * Math.exp(-t * 14) * 0.72;
+          damagedDrumStem[s0 + i] += kVal * 0.45;
+          masterTrack[s0 + i] += kVal;
+        }
+      }
+      if (isSnare) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.2) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (196 + 65 * Math.exp(-t * 48))) / sr;
+          const shell = Math.sin(ph) * Math.exp(-t * 22) * 0.45;
+          const wire =
+            (rnd() * Math.exp(-t * 18) * 0.5 +
+              Math.sin(2 * Math.PI * 2550 * t) * Math.exp(-t * 230) * 0.35);
+          // Damaged stem only has dull muffled shell (wire was carved out by vocal separator)
+          damagedDrumStem[s0 + i] += (shell + wire * 0.08) * 0.48;
+          masterTrack[s0 + i] += (shell + wire) * 0.65;
+        }
+      }
+      if (!isCrash) {
+        let prev = 0;
+        for (let i = 0; i < Math.floor(sr * 0.065) && s0 + i < len; i++) {
+          const t = i / sr;
+          const n = rnd();
+          const hp = n - 0.86 * prev;
+          prev = n;
+          const hVal = hp * Math.exp(-t * 68) * 0.28;
+          damagedDrumStem[s0 + i] += hVal * 0.08; // almost completely lost in bad stem
+          masterTrack[s0 + i] += hVal;
+        }
+      } else {
+        for (let i = 0; i < Math.floor(sr * 0.55) && s0 + i < len; i++) {
+          const t = i / sr;
+          const cVal =
+            (Math.sin(2 * Math.PI * 3400 * t) * 0.25 +
+              Math.sin(2 * Math.PI * 5200 * t) * 0.22 +
+              rnd() * 0.55) *
+            Math.exp(-t * 3.8) *
+            0.38;
+          damagedDrumStem[s0 + i] += cVal * 0.12;
+          masterTrack[s0 + i] += cVal;
+        }
+      }
+    }
+
+    const guidedRes = analyzeDrumStemFull(damagedDrumStem, sr, {
+      sensitivity: 0.65,
+      lockedBpm: bpm,
+      masterMono: masterTrack,
+      detectionSourceMode: 'auto-hybrid',
+      masterReferenceName: 'Master_Referencia.wav',
+      quantizeMode: 'soft',
+    });
+
+    expect(guidedRes.detectionSourceUsed).toBe('master-guided-hybrid');
+    expect(guidedRes.masterReferenceName).toBe('Master_Referencia.wav');
+    expect(guidedRes.counts.kick).toBeGreaterThanOrEqual(4);
+    expect(guidedRes.counts.snare).toBeGreaterThanOrEqual(4);
+    expect(guidedRes.counts.hat).toBeGreaterThanOrEqual(10);
+    expect(guidedRes.counts.crash).toBeGreaterThanOrEqual(1);
+  });
+
+  it('masks Kick bleed in Bass detection, locks sub-octave fundamentals without +12st jumps, rescues dropped bass notes from Master, and renders distinct 9-GM articulations', () => {
+    const sr = 48000;
+    const bpm = 120;
+    const beatSec = 60 / bpm;
+    const len = Math.floor((4 * beatSec + 0.3) * sr);
+    const bassStemWithHole = new Float32Array(len);
+    const masterWithKickAndBass = new Float32Array(len);
+
+    // 4 beats of A1 (55 Hz, MIDI 33) where 2nd harmonic (110 Hz) is stronger than 55 Hz fundamental.
+    // On Beat 2 (idx=2), the AI-separated bassStemWithHole has a complete dropout hole, while masterWithKickAndBass has the note + a Kick drum impact!
+    for (let b = 0; b < 4; b++) {
+      const s0 = Math.floor(b * beatSec * sr);
+      const noteLen = Math.floor(beatSec * 0.85 * sr);
+      const f0 = 55.0; // A1 = MIDI 33
+
+      // Add a strong Kick drum transient at the start of every beat in Master
+      let kPh = 0;
+      for (let i = 0; i < Math.floor(sr * 0.16) && s0 + i < len; i++) {
+        const t = i / sr;
+        kPh += (2 * Math.PI * (46 + 115 * Math.exp(-t * 42))) / sr;
+        const click = Math.sin(2 * Math.PI * 2900 * t) * Math.exp(-t * 260) * 0.35;
+        masterWithKickAndBass[s0 + i] += (Math.sin(kPh) * Math.exp(-t * 16) + click) * 0.65;
+      }
+
+      for (let i = 0; i < noteLen && s0 + i < len; i++) {
+        const t = i / sr;
+        const env = Math.min(1, t / 0.008) * Math.exp(-t * 1.4);
+        // 2nd harmonic (110 Hz) is 1.5x louder than fundamental (55 Hz), plus 3rd harmonic (165 Hz)
+        const bassSample =
+          (Math.sin(2 * Math.PI * f0 * t) * 0.42 +
+            Math.sin(2 * Math.PI * (f0 * 2) * t) * 0.64 +
+            Math.sin(2 * Math.PI * (f0 * 3) * t) * 0.26) *
+          env *
+          0.6;
+        if (b !== 2) {
+          bassStemWithHole[s0 + i] += bassSample;
+        }
+        masterWithKickAndBass[s0 + i] += bassSample;
+      }
+    }
+
+    const bassRes = analyzeMonophonicStemNotesFull(bassStemWithHole, sr, {
+      sensitivity: 0.65,
+      lockedBpm: bpm,
+      bassOnly: true,
+      musicalKey: 'Am',
+      masterMono: masterWithKickAndBass,
+      detectionSourceMode: 'auto-hybrid',
+      quantizeMode: 'soft',
+    });
+
+    expect(bassRes.detectionSourceUsed).toBe('master-guided-hybrid');
+    // Should rescue all 4 beats (including beat 2 hole) in the true A1 sub-octave (MIDI 33), NOT jumping +12st to A2 (45)!
+    expect(bassRes.noteEvents.length).toBeGreaterThanOrEqual(3);
+    expect(bassRes.noteEvents.every((n) => n.midiNote === 33)).toBe(true);
+
+    // Verify 9-GM Articulation zones are distinct (Closed vs Open Hat, Snare vs Rimshot, Crash vs Ride, High/Mid/Floor Tom)
+    const closedHat = getArticulatedDrumZone('drum-hat-crisp', 'hat', 'closed', sr);
+    const openHat = getArticulatedDrumZone('drum-hat-crisp', 'hat', 'open', sr);
+    const pedalHat = getArticulatedDrumZone('drum-hat-crisp', 'hat', 'pedal', sr);
+    const snareCenter = getArticulatedDrumZone('drum-snare-studio', 'snare', 'closed', sr);
+    const snareRim = getArticulatedDrumZone('drum-snare-studio', 'snare', 'rim', sr);
+    const crashCym = getArticulatedDrumZone('drum-crash-bright', 'crash', 'crash', sr);
+    const rideCym = getArticulatedDrumZone('drum-crash-bright', 'crash', 'ride', sr);
+    const highTom = getArticulatedDrumZone('drum-tom-deep', 'tom', 'high-tom', sr);
+    const floorTom = getArticulatedDrumZone('drum-tom-deep', 'tom', 'floor-tom', sr);
+
+    expect(openHat.left.length).toBeGreaterThan(closedHat.left.length * 1.5);
+    expect(closedHat.left.length).toBeGreaterThan(pedalHat.left.length);
+    expect(snareRim.rootMidi).toBe(37);
+    expect(snareCenter.rootMidi).toBe(38);
+    expect(crashCym.left.length).not.toBe(rideCym.left.length);
+    expect(highTom.rootMidi).toBe(50);
+    expect(floorTom.rootMidi).toBe(43);
   });
 });

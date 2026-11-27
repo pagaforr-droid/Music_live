@@ -6,6 +6,7 @@ import {
 import { detectPitchYin, midiNoteToName } from './PitchDetector';
 import type {
   DetectedChordSegment,
+  DetectionSourceMode,
   DrumArticulation,
   DrumPieceRole,
   FullStemAnalysisResult,
@@ -785,38 +786,189 @@ function computePercentileFloat(arr: Float32Array, pct: number): number {
 }
 
 /**
+ * Evaluates Kick Drum beater pitch-chirp & sub-impulse signature at sampleIdx:
+ * A real Kick Drum has a rapid downward pitch sweep in the first 18ms (beater impact ~105-190Hz)
+ * settling into a 40-72Hz sub fundamental during +20..+75ms, unlike a steady-pitch Bass guitar note.
+ */
+function evaluateKickChirpSignature(
+  sampleIdx: number,
+  sampleRate: number,
+  lowBodySig: Float32Array,
+  subKickSig: Float32Array
+): { isKickChirp: boolean; earlyFreqHz: number; lateFreqHz: number; subCrest: number } {
+  const totalLen = lowBodySig.length;
+  const eStart = Math.max(0, sampleIdx);
+  const eEnd = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.020));
+  const lStart = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.020));
+  const lEnd = Math.min(totalLen, sampleIdx + Math.round(sampleRate * 0.078));
+
+  if (lEnd - lStart < Math.round(sampleRate * 0.025)) {
+    return { isKickChirp: false, earlyFreqHz: 60, lateFreqHz: 60, subCrest: 1 };
+  }
+
+  let earlyZc = 0;
+  for (let i = eStart + 1; i < eEnd; i++) {
+    if ((lowBodySig[i - 1] <= 0 && lowBodySig[i] > 0) || (lowBodySig[i - 1] >= 0 && lowBodySig[i] < 0)) {
+      earlyZc++;
+    }
+  }
+  const earlyDur = Math.max(0.005, (eEnd - eStart) / sampleRate);
+  const earlyFreqHz = (earlyZc * 0.5) / earlyDur;
+
+  const latePeriods: number[] = [];
+  let prevCross = -1;
+  let subPeak = 0;
+  let subSq = 0;
+  for (let i = lStart + 1; i < lEnd; i++) {
+    const sv = Math.abs(subKickSig[i]);
+    if (sv > subPeak) subPeak = sv;
+    subSq += sv * sv;
+    if (lowBodySig[i - 1] <= 0 && lowBodySig[i] > 0) {
+      if (prevCross >= 0) {
+        const p = i - prevCross;
+        const f = sampleRate / Math.max(1, p);
+        if (f >= 34 && f <= 160) latePeriods.push(p);
+      }
+      prevCross = i;
+    }
+  }
+  const subRms = Math.sqrt(subSq / Math.max(1, lEnd - lStart));
+  const subCrest = subPeak / Math.max(1e-5, subRms);
+  let lateFreqHz = 58;
+  if (latePeriods.length > 0) {
+    latePeriods.sort((a, b) => a - b);
+    lateFreqHz = sampleRate / Math.max(1, latePeriods[Math.floor(latePeriods.length / 2)]);
+  }
+
+  const isKickChirp =
+    lateFreqHz <= 74 &&
+    (earlyFreqHz >= lateFreqHz * 1.15 || subCrest >= 1.62);
+
+  return { isKickChirp, earlyFreqHz, lateFreqHz, subCrest };
+}
+
+/**
  * Analyzes an ENTIRE Drum stem (clean or dirty AI-separated stem) OR Full Song Mix without slice limits,
- * isolating Kick / Snare / Hi-Hat / Crash / Tom percussive transients via 5-Band Butterworth decomposition
+ * isolating Kick / Snare / Hi-Hat / Crash / Tom percussive transients via 6-Band Butterworth decomposition
+ * + Optional Master-Guided Hybrid Fusion (rescuing smeared/dropped Kick, Snare, Hi-Hat & Crash hits from the Master)
  * + Pre/Post Delta-Spectrum subtraction (canceling sustained bass/guitars/vocals/bleed)
- * + Continuous HF Tail Wash profiling (separating Crash cymbals from short Hi-Hats and Snares).
+ * + Continuous HF Tail Wash profiling (separating Crash/Ride cymbals from Closed/Open Hi-Hats and Snares).
  */
 export function analyzeDrumStemFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minIntervalMs?: number; bpmHint?: number; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode } = {}
+  options: {
+    sensitivity?: number;
+    minIntervalMs?: number;
+    bpmHint?: number;
+    lockedBpm?: number;
+    musicalKey?: string;
+    camelotKey?: string;
+    detectedChords?: DetectedChordSegment[];
+    beatOffsetSec?: number;
+    beatTimes?: number[];
+    downbeats?: number[];
+    quantizeMode?: StemQuantizeMode;
+    masterMono?: Float32Array;
+    detectionSourceMode?: DetectionSourceMode;
+    masterReferenceName?: string;
+    isMasterInput?: boolean;
+  } = {}
 ): FullStemAnalysisResult {
   const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
   const minIntervalMs = options.minIntervalMs ?? 60;
   const durationSec = mono.length / sampleRate;
+  const sourceMode: DetectionSourceMode = options.detectionSourceMode ?? 'auto-hybrid';
+  const hasMasterRef = Boolean(
+    options.masterMono &&
+      options.masterMono.length > 256 &&
+      sourceMode !== 'stem-only'
+  );
+
+  // Build effective analysis waveform:
+  // - 'master-only': analyze the Master directly (rescuing severely damaged stems 100% from Master)
+  // - 'auto-hybrid': transient-enhanced fusion of Stem + Master (keeps Stem isolation while restoring Master transient snap, Snare wire crack, Hi-Hat ticks & Crash wash)
+  // - 'stem-only': analyze the target stem buffer alone
+  let workMono = mono;
+  let stemConfirmMono: Float32Array | null = null;
+  let detectionSourceUsed: FullStemAnalysisResult['detectionSourceUsed'] = 'stem-only';
+
+  if (hasMasterRef && options.masterMono) {
+    const mMono = options.masterMono;
+    const len = mono.length;
+    if (sourceMode === 'master-only') {
+      if (mMono.length === len) {
+        workMono = mMono;
+      } else {
+        workMono = new Float32Array(len);
+        workMono.set(mMono.subarray(0, Math.min(len, mMono.length)));
+      }
+      stemConfirmMono = mono;
+      detectionSourceUsed = 'master-only';
+    } else {
+      // 'auto-hybrid': normalize RMS levels and fuse Stem (62% body weight) + Master (38% intact transient/HF definition)
+      // while keeping stemConfirmMono to verify drum presence and reject pure vocal consonants from the Master
+      let sumStem = 0;
+      let sumMaster = 0;
+      const cmpLen = Math.min(len, mMono.length);
+      const step = Math.max(1, Math.floor(cmpLen / 16384));
+      for (let i = 0; i < cmpLen; i += step) {
+        sumStem += mono[i] * mono[i];
+        sumMaster += mMono[i] * mMono[i];
+      }
+      const rmsStem = Math.sqrt(sumStem / Math.max(1, Math.floor(cmpLen / step)));
+      const rmsMaster = Math.sqrt(sumMaster / Math.max(1, Math.floor(cmpLen / step)));
+      const masterScale = rmsMaster > 1e-5 && rmsStem > 1e-5 ? Math.min(2.2, Math.max(0.35, rmsStem / rmsMaster)) : 1.0;
+
+      workMono = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        const mv = i < mMono.length ? mMono[i] * masterScale : 0;
+        workMono[i] = mono[i] * 0.62 + mv * 0.38;
+      }
+      stemConfirmMono = mono;
+      detectionSourceUsed = 'master-guided-hybrid';
+    }
+  }
+
   const isFullMix = Boolean(
-    (options.detectedChords && options.detectedChords.length > 0) ||
-    (options.musicalKey && !/^percusi/i.test(options.musicalKey))
+    options.isMasterInput ||
+      detectionSourceUsed === 'master-only' ||
+      (!stemConfirmMono &&
+        ((options.detectedChords && options.detectedChords.length > 0) ||
+          (options.musicalKey && !/^percusi/i.test(options.musicalKey))))
   );
 
   // 1. 6-Band Butterworth isolation for accurate drum peak timing & transient separation (resistant to dirty stem bleed)
-  const subKickSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 76, 1);
-  const kickSig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 132, 1);
-  const lowBodySig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 340, 1);
-  const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 80, 340, 1);
-  const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 155, 360, 1);
-  const crackSig = applyBiquadBandPassOrLp(mono, sampleRate, 1850, 6200, 1);
-  const cymbalSig = applyBiquadBandPassOrLp(mono, sampleRate, 2800, 11800, 1);
-  const hatSig = applyBiquadBandPassOrLp(mono, sampleRate, 5800, null, 1);
+  const subKickSig = applyBiquadBandPassOrLp(workMono, sampleRate, 28, 76, 1);
+  const kickSig = applyBiquadBandPassOrLp(workMono, sampleRate, 32, 132, 1);
+  const lowBodySig = applyBiquadBandPassOrLp(workMono, sampleRate, 32, 340, 1);
+  const tomSig = applyBiquadBandPassOrLp(workMono, sampleRate, 80, 340, 1);
+  const shellSig = applyBiquadBandPassOrLp(workMono, sampleRate, 155, 360, 1);
+  const crackSig = applyBiquadBandPassOrLp(workMono, sampleRate, 1850, 6500, 1);
+  const cymbalSig = applyBiquadBandPassOrLp(workMono, sampleRate, 2800, 12200, 1);
+  const hatSig = applyBiquadBandPassOrLp(workMono, sampleRate, 6000, null, 1);
 
-  // 500Hz (2ms) band RMS envelopes smoothed with cycle-spanning windows (eliminates 50Hz bass zero-crossing ripple!)
+  // Optional Stem confirmation envelope (when using Master-Guided Hybrid or Master-Only with a target Drum Stem loaded)
   const envHz = 500;
   const envHop = Math.max(1, Math.round(sampleRate / envHz));
-  const numEnv = Math.max(1, Math.floor(mono.length / envHop));
+  const numEnv = Math.max(1, Math.floor(workMono.length / envHop));
+  let envStemConfirm: Float32Array | null = null;
+  let refStemConfirm = 1e-4;
+  if (stemConfirmMono && stemConfirmMono.length > 256) {
+    envStemConfirm = new Float32Array(numEnv);
+    for (let f = 0; f < numEnv; f++) {
+      const st = f * envHop;
+      const en = Math.min(stemConfirmMono.length, st + envHop * 4);
+      let sq = 0;
+      for (let i = st; i < en; i++) {
+        sq += stemConfirmMono[i] * stemConfirmMono[i];
+      }
+      envStemConfirm[f] = Math.sqrt(sq / Math.max(1, en - st));
+    }
+    refStemConfirm = computePercentileFloat(envStemConfirm, 0.90);
+  }
+
+  // 500Hz (2ms) band RMS envelopes smoothed with cycle-spanning windows (eliminates 50Hz bass zero-crossing ripple!)
   const psK = new Float64Array(numEnv + 1);
   const psT = new Float64Array(numEnv + 1);
   const psS = new Float64Array(numEnv + 1);
@@ -826,7 +978,7 @@ export function analyzeDrumStemFull(
 
   for (let f = 0; f < numEnv; f++) {
     const st = f * envHop;
-    const en = Math.min(mono.length, st + envHop);
+    const en = Math.min(workMono.length, st + envHop);
     const inv = 1 / Math.max(1, en - st);
     let sqK = 0, sqT = 0, sqS = 0, sqC = 0, sqY = 0, sqH = 0;
     for (let i = st; i < en; i++) {
@@ -877,7 +1029,7 @@ export function analyzeDrumStemFull(
   const refHatEnv = computePercentileFloat(envHat, 0.92);
 
   // 2. Collect onset candidates from Spectral Flux + ALL causal drum band step impulses
-  const res = detectOnsetsSpectralFlux(mono, sampleRate, {
+  const res = detectOnsetsSpectralFlux(workMono, sampleRate, {
     sensitivity,
     minIntervalMs,
     snapToZeroCrossing: false,
@@ -937,7 +1089,7 @@ export function analyzeDrumStemFull(
   collectBandPeaks(envHat, refHatEnv, isFullMix ? 1.62 : 1.44, 0.068);
   collectBandPeaks(envCymbal, refCymbalEnv, 1.58, 0.14);
   if (!isFullMix) {
-    collectBandPeaks(envShell, refShellEnv, 1.58, 0.095);
+    collectBandPeaks(envShell, refShellEnv, 1.52, 0.095);
     collectBandPeaks(envTom, refTomEnv, 1.44, 0.085);
   }
 
@@ -1068,10 +1220,10 @@ export function analyzeDrumStemFull(
     const cymHoldRatio = cymHold25 / cymPeakRef;
 
     // Post-onset FFT [sampleIdx - 16 .. +1008] vs strictly pre-onset FFT [sampleIdx - 1024 - 5ms .. sampleIdx - 5ms]
-    const postStart = Math.max(0, Math.min(mono.length - fftSize, sampleIdx - 16));
+    const postStart = Math.max(0, Math.min(workMono.length - fftSize, sampleIdx - 16));
     rePost.fill(0); imPost.fill(0);
-    for (let k = 0; k < fftSize && postStart + k < mono.length; k++) {
-      rePost[k] = mono[postStart + k] * win[k];
+    for (let k = 0; k < fftSize && postStart + k < workMono.length; k++) {
+      rePost[k] = workMono[postStart + k] * win[k];
     }
     fftInPlace(rePost, imPost);
 
@@ -1080,7 +1232,7 @@ export function analyzeDrumStemFull(
       const preStart = sampleIdx - fftSize - preGapSamples;
       rePre.fill(0); imPre.fill(0);
       for (let k = 0; k < fftSize; k++) {
-        rePre[k] = mono[preStart + k] * win[k];
+        rePre[k] = workMono[preStart + k] * win[k];
       }
       fftInPlace(rePre, imPre);
     }
@@ -1141,10 +1293,22 @@ export function analyzeDrumStemFull(
     const hatStrength = hSt.step / Math.max(1e-4, refHatEnv);
 
     const hasSnareWireNoise =
-      crackStrength >= 0.27 &&
-      cSt.ratio >= 1.36 &&
-      crackFlatness >= 0.092 &&
-      (rCrack >= 0.12 || crackStrength > tomStrength * 0.58);
+      crackStrength >= 0.22 &&
+      cSt.ratio >= 1.28 &&
+      crackFlatness >= 0.082 &&
+      (rCrack >= 0.10 || crackStrength > tomStrength * 0.52 || shellStrength >= 0.26);
+
+    // Evaluate Kick pitch-chirp signature (150Hz beater -> 50Hz sub body) to distinguish Kicks from Bass notes
+    const kickChirp =
+      kickStrength >= 0.22 && kSt.ratio >= 1.32
+        ? evaluateKickChirpSignature(sampleIdx, sampleRate, lowBodySig, subKickSig)
+        : { isKickChirp: false, earlyFreqHz: 60, lateFreqHz: 60, subCrest: 1 };
+
+    // When Master-Guided Hybrid is used, check if the target Drum Stem has any percussive confirmation
+    // (or if the Master hit itself is an unmistakable high-crest drum transient that was dropped by AI stem splitting)
+    const stemConfirmLevel = envStemConfirm
+      ? envStemConfirm[Math.min(envStemConfirm.length - 1, envIdx)] / Math.max(1e-5, refStemConfirm)
+      : 1.0;
 
     // Evaluate pitched Tom resonance (Floor Tom 76-121Hz, Mid Tom 122-167Hz, High Tom 168-270Hz)
     // Always evaluated regardless of isFullMix so Tom fills are never misclassified as Kick Drums!
@@ -1173,62 +1337,86 @@ export function analyzeDrumStemFull(
     // Dirty stem & Full-mix gating: reject intro pads, solo bass plucks, vocal syllables, and non-percussive bleed!
     if (isFullMix) {
       const hasKickPulse =
-        kickStrength >= 0.36 - sensitivity * 0.12 &&
-        kSt.ratio >= 1.5 &&
-        dSubKick > totalDelta * 0.08 &&
-        (kTailDrop >= 1.32 || sSt.ratio >= 1.48 || cSt.ratio >= 1.48);
+        kickStrength >= 0.32 - sensitivity * 0.12 &&
+        kSt.ratio >= 1.42 &&
+        dSubKick > totalDelta * 0.07 &&
+        (kickChirp.isKickChirp || kTailDrop >= 1.28 || sSt.ratio >= 1.45 || cSt.ratio >= 1.42);
       const hasSnarePulse =
-        crackStrength >= 0.30 - sensitivity * 0.10 &&
-        cSt.ratio >= 1.42 &&
-        crackFlatness >= 0.095 &&
-        (shellStrength >= 0.24 || (dSnareMid + dTomBody > dHat * 0.7 && rKick < 0.25));
+        (crackStrength >= 0.26 - sensitivity * 0.10 &&
+          cSt.ratio >= 1.35 &&
+          crackFlatness >= 0.088 &&
+          (shellStrength >= 0.20 || (dSnareMid + dTomBody > dHat * 0.62 && rKick < 0.28))) ||
+        // Rescue hollow/muffled snares when confirmed by drum stem energy
+        (stemConfirmLevel >= 0.22 &&
+          shellStrength >= 0.28 &&
+          sSt.ratio >= 1.45 &&
+          crackStrength >= 0.16 &&
+          !tomInfo.isPitchedTom);
       const hasHatOrCrashPulse =
-        (hatStrength >= 0.34 - sensitivity * 0.12 && hSt.ratio >= 1.48 && rHat >= 0.20) ||
-        (cymbalStrength >= 0.42 - sensitivity * 0.12 && ySt.ratio >= 1.55 && rCrackHat >= 0.28 && crackFlatness >= 0.11 && cymHoldRatio >= 0.24);
+        (hatStrength >= 0.28 - sensitivity * 0.11 && hSt.ratio >= 1.40 && (rHat >= 0.16 || stemConfirmLevel >= 0.18)) ||
+        (cymbalStrength >= 0.36 - sensitivity * 0.12 && ySt.ratio >= 1.48 && rCrackHat >= 0.25 && crackFlatness >= 0.095 && cymHoldRatio >= 0.21);
       const hasTomPulse =
-        (tomInfo.isPitchedTom && Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.42) ||
-        (shellStrength >= 0.38 && sSt.ratio >= 1.72 && rTom >= 0.36 && crackFlatness < 0.095);
+        (tomInfo.isPitchedTom && Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.38) ||
+        (shellStrength >= 0.36 && sSt.ratio >= 1.65 && rTom >= 0.34 && crackFlatness < 0.095);
       if (!hasKickPulse && !hasSnarePulse && !hasHatOrCrashPulse && !hasTomPulse) {
         continue;
       }
     } else {
-      // Dirty isolated drum stem bleed filter: ignore slow non-percussive bleed fluctuations
+      // Dirty isolated drum stem / Hybrid Master+Stem bleed filter:
       const maxBandRatio = Math.max(kSt.ratio, tSt.ratio, sSt.ratio, cSt.ratio, ySt.ratio, hSt.ratio);
       const maxBandStrength = Math.max(kickStrength, tomStrength, shellStrength, crackStrength, cymbalStrength, hatStrength);
-      if (maxBandRatio < 1.24 || maxBandStrength < 0.16 - sensitivity * 0.08) {
+      if (maxBandRatio < 1.22 || maxBandStrength < 0.15 - sensitivity * 0.08) {
+        continue;
+      }
+      // In Hybrid mode, if the target drum stem is completely silent (< 6% of reference) AND the Master hit lacks high percussive step ratio, reject vocal consonant bleed
+      if (
+        detectionSourceUsed === 'master-guided-hybrid' &&
+        stemConfirmLevel < 0.06 &&
+        maxBandRatio < 1.65 &&
+        !kickChirp.isKickChirp
+      ) {
         continue;
       }
       // Reject sustained bass guitar bleed (high low-end with flat tail and zero beater/shell attack)
-      if (!tomInfo.isPitchedTom && rKick > 0.65 && kTailDrop < 1.12 && kSt.ratio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
+      if (!tomInfo.isPitchedTom && !kickChirp.isKickChirp && rKick > 0.65 && kTailDrop < 1.12 && kSt.ratio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
         continue;
       }
     }
 
     // Detect Crash Cymbal signature:
-    // Strong 2.8..12kHz metallic transient + continuous long sustain wash across +44..+180ms (cymHoldRatio >= 0.20 & cymTailRatio >= 0.28)
+    // Strong 2.8..12kHz metallic transient + continuous long sustain wash across +44..+180ms (cymHoldRatio >= 0.19 & cymTailRatio >= 0.26)
     const isCrashCandidate =
-      timeSec - lastCrashSec >= 0.34 &&
-      Math.max(cymbalStrength, hatStrength) >= 0.32 - sensitivity * 0.10 &&
-      Math.max(ySt.ratio, hSt.ratio) >= 1.42 &&
-      cymHoldRatio >= 0.20 &&
-      cymTailRatio >= 0.28 &&
-      ySt.post >= refCymbalEnv * 0.28 &&
-      cymTailAvg >= refCymbalEnv * 0.12 &&
-      (!isFullMix || crackFlatness >= 0.08);
+      timeSec - lastCrashSec >= 0.32 &&
+      Math.max(cymbalStrength, hatStrength) >= 0.30 - sensitivity * 0.10 &&
+      Math.max(ySt.ratio, hSt.ratio) >= 1.38 &&
+      cymHoldRatio >= 0.19 &&
+      cymTailRatio >= 0.26 &&
+      ySt.post >= refCymbalEnv * 0.25 &&
+      cymTailAvg >= refCymbalEnv * 0.11 &&
+      (!isFullMix || crackFlatness >= 0.075);
 
     let role: DrumPieceRole = 'snare';
     const strongKickRise =
-      kickStrength >= 0.32 &&
-      kSt.ratio >= 1.45 &&
-      dSubKick > totalDelta * 0.075 &&
+      kickStrength >= 0.29 &&
+      kSt.ratio >= 1.40 &&
+      dSubKick > totalDelta * 0.07 &&
       !tomInfo.isPitchedTom &&
-      (!isFullMix || kTailDrop >= 1.30 || cSt.ratio >= 1.45);
+      (kickChirp.isKickChirp || !isFullMix || kTailDrop >= 1.26 || cSt.ratio >= 1.40);
+    // Rescue muffled snares from AI stem separation (where vocal carving weakened >2kHz wire crack but left 160-350Hz shell + broadband burst)
+    const hollowStemSnare =
+      !tomInfo.isPitchedTom &&
+      shellStrength >= 0.26 &&
+      sSt.ratio >= 1.40 &&
+      (crackStrength >= 0.15 || cSt.ratio >= 1.20) &&
+      (crackFlatness >= 0.068 || rSnareMid + rCrack >= 0.22) &&
+      sSt.post > kSt.post * 0.72;
     const strongSnareCrack =
-      crackStrength >= 0.27 &&
-      cSt.ratio >= 1.36 &&
-      crackFlatness >= 0.092 &&
-      !tomInfo.isPitchedTom &&
-      (shellStrength >= 0.20 || dSnareMid + dTomBody > dHat * 0.68 || rCrack >= 0.20);
+      (crackStrength >= 0.23 &&
+        cSt.ratio >= 1.30 &&
+        crackFlatness >= 0.082 &&
+        !tomInfo.isPitchedTom &&
+        (shellStrength >= 0.17 || dSnareMid + dTomBody > dHat * 0.62 || rCrack >= 0.18)) ||
+      hollowStemSnare;
 
     // Standalone Crash vs Snare distinction:
     // A standalone Crash lacks a dominant decaying 180-320Hz snare shell thump OR its HF cymbal wash outlasts snare wire decay
@@ -1243,16 +1431,16 @@ export function analyzeDrumStemFull(
       role = 'crash';
     } else if (tomInfo.isPitchedTom && !isCrashCandidate) {
       role = 'tom';
-    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.14 && rSnareMid + rCrack > rKick && shellStrength >= 0.16 && !tomInfo.isPitchedTom)) {
+    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.13 && rSnareMid + rCrack > rKick && shellStrength >= 0.15 && !tomInfo.isPitchedTom)) {
       role = 'snare';
     } else if (rTom > 0.35 && rKick < 0.24 && rCrackHat < 0.24 && shellStrength >= 0.34) {
       role = 'tom';
     } else if (isCrashCandidate) {
       role = 'crash';
-    } else if (hatStrength >= 0.22 && (rHat >= 0.15 || hSt.ratio >= 1.38)) {
+    } else if (hatStrength >= 0.20 && (rHat >= 0.14 || hSt.ratio >= 1.34)) {
       role = 'hat';
     } else {
-      role = kickStrength > Math.max(crackStrength, hatStrength) * 1.2 ? 'kick' : 'hat';
+      role = kickStrength > Math.max(crackStrength, hatStrength) * 1.15 ? 'kick' : 'hat';
     }
 
     // Measure exact band-filtered transient peak inside [sampleIdx - 2ms .. sampleIdx + 22ms]
@@ -1267,7 +1455,7 @@ export function analyzeDrumStemFull(
         ? tomSig
         : crackSig;
     const pSearchStart = Math.max(0, sampleIdx - Math.round(sampleRate * 0.002));
-    const pSearchEnd = Math.min(mono.length, sampleIdx + Math.round(sampleRate * 0.022));
+    const pSearchEnd = Math.min(workMono.length, sampleIdx + Math.round(sampleRate * 0.022));
     let peakIdx = sampleIdx;
     let bandPeakAmp = 0;
     let monoPeakAmp = 0;
@@ -1277,7 +1465,7 @@ export function analyzeDrumStemFull(
         bandPeakAmp = ba;
         peakIdx = k;
       }
-      const ma = Math.abs(mono[k]);
+      const ma = Math.abs(workMono[k]);
       if (ma > monoPeakAmp) monoPeakAmp = ma;
     }
 
@@ -1411,15 +1599,14 @@ export function analyzeDrumStemFull(
       });
     }
 
-    // Co-occurring Simultaneous Hi-Hat detection on Kick / Snare beats (polyphonic drum stems):
+    // Co-occurring Simultaneous Hi-Hat detection on Kick / Snare beats (works on Drum stems, Hybrid Master+Stem, and Master mixes):
     if (
-      !isFullMix &&
       !emittedCoCrash &&
       (role === 'kick' || role === 'snare') &&
-      hatStrength >= (role === 'kick' ? 0.26 : 0.42) &&
-      hSt.ratio >= (role === 'kick' ? 1.40 : 1.56) &&
-      hSt.post >= refHatEnv * 0.24 &&
-      (role === 'kick' || dHat > dCrack * 0.42)
+      hatStrength >= (role === 'kick' ? (isFullMix ? 0.30 : 0.24) : (isFullMix ? 0.45 : 0.38)) &&
+      hSt.ratio >= (role === 'kick' ? (isFullMix ? 1.46 : 1.36) : (isFullMix ? 1.60 : 1.50)) &&
+      hSt.post >= refHatEnv * 0.22 &&
+      (role === 'kick' || dHat > dCrack * 0.38)
     ) {
       let hatPeakIdx = sampleIdx;
       let hatPeakAmp = 0;
@@ -1510,6 +1697,8 @@ export function analyzeDrumStemFull(
 
   return {
     mode: 'drums',
+    detectionSourceUsed,
+    masterReferenceName: options.masterReferenceName,
     quantizeMode: qMode,
     bpm,
     musicalKey: options.musicalKey,
@@ -1539,19 +1728,188 @@ function getMedianNumber(vals: number[]): number {
 }
 
 /**
+ * Surgically attenuates short 0..30ms Kick Drum beater/sub transient spikes inside a Bass signal
+ * while leaving sustained 70..600ms Bass notes untouched.
+ * Prevents Kick drum bleed (in dirty AI-separated bass stems or Master tracks) from triggering false
+ * low bass notes or pulling YIN / FFT pitch away from the true bass note on downbeats.
+ */
+function maskKickTransientsFromBassSignal(
+  bassSig: Float32Array,
+  sampleRate: number,
+  kickRefMono: Float32Array
+): Float32Array {
+  const len = bassSig.length;
+  if (len < 1024) return bassSig;
+  const out = new Float32Array(len);
+  out.set(bassSig);
+
+  const subKick = applyBiquadBandPassOrLp(kickRefMono, sampleRate, 28, 76, 1);
+  const lowBody = applyBiquadBandPassOrLp(kickRefMono, sampleRate, 32, 340, 1);
+  const clickBand = applyBiquadBandPassOrLp(kickRefMono, sampleRate, 1850, 6200, 1);
+
+  const hop = Math.max(1, Math.round(sampleRate * 0.004)); // 4ms frame
+  const numF = Math.floor(Math.min(len, kickRefMono.length) / hop);
+  if (numF < 16) return out;
+
+  const subEnv = new Float32Array(numF);
+  const clickEnv = new Float32Array(numF);
+  for (let f = 0; f < numF; f++) {
+    const st = f * hop;
+    const en = Math.min(kickRefMono.length, st + hop);
+    let sqS = 0;
+    let sqC = 0;
+    for (let i = st; i < en; i++) {
+      sqS += subKick[i] * subKick[i];
+      sqC += clickBand[i] * clickBand[i];
+    }
+    const inv = 1 / Math.max(1, en - st);
+    subEnv[f] = Math.sqrt(sqS * inv);
+    clickEnv[f] = Math.sqrt(sqC * inv);
+  }
+
+  const refSub = computePercentileFloat(subEnv, 0.92);
+  const refClick = computePercentileFloat(clickEnv, 0.92);
+  const minGapF = Math.max(1, Math.round(0.11 / 0.004));
+  let lastKickF = -minGapF;
+
+  for (let f = 4; f < numF - 18; f++) {
+    if (f - lastKickF < minGapF) continue;
+    const preSub = Math.min(subEnv[f - 4], subEnv[f - 3], subEnv[f - 2]);
+    const postSub = Math.max(subEnv[f], subEnv[f + 1], subEnv[f + 2]);
+    if (postSub < refSub * 0.30 || postSub / Math.max(1e-5, preSub) < 1.55) continue;
+
+    // Compare immediate Kick spike [0..+24ms] vs post-kick bass sustain [+44ms..+72ms]
+    let sustainSum = 0;
+    for (let k = f + 11; k <= f + 18; k++) sustainSum += subEnv[k];
+    const sustainSub = sustainSum / 8;
+
+    const sampleIdx = f * hop;
+    const chirp = evaluateKickChirpSignature(sampleIdx, sampleRate, lowBody, subKick);
+    const hasBeaterClick =
+      Math.max(clickEnv[f], clickEnv[f + 1]) >= refClick * 0.22 &&
+      Math.max(clickEnv[f], clickEnv[f + 1]) > Math.min(clickEnv[f - 3], clickEnv[f - 2]) * 1.45;
+
+    if ((chirp.isKickChirp || hasBeaterClick) && postSub > sustainSub * 1.25) {
+      // Duck the 30ms Kick transient spike down toward the sustained bass level
+      const maskStart = Math.max(0, sampleIdx - Math.round(sampleRate * 0.003));
+      const maskLen = Math.round(sampleRate * 0.032);
+      const targetGain = Math.max(0.12, Math.min(0.65, sustainSub / Math.max(1e-5, postSub)));
+      for (let k = 0; k < maskLen && maskStart + k < len; k++) {
+        const w = Math.sin((k / maskLen) * Math.PI);
+        const g = 1 - (1 - targetGain) * w;
+        out[maskStart + k] *= g;
+      }
+      lastKickF = f;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Checks whether a detected bass pitch in MIDI 40..55 (E2..G3) is actually the 2nd harmonic
+ * of a sub-octave fundamental MIDI - 12 (28..43, E1..G2) by measuring normalized autocorrelation
+ * at the double period tauSub = sr / (f0 / 2).
+ */
+function checkBassSubOctaveFundamental(
+  slice: Float32Array,
+  sampleRate: number,
+  detectedMidi: number
+): number {
+  if (detectedMidi < 40 || detectedMidi > 55) return detectedMidi;
+  const subMidi = detectedMidi - 12;
+  const subHz = 440 * Math.pow(2, (subMidi - 69) / 12);
+  const tauSub = Math.round(sampleRate / subHz);
+  if (tauSub <= 8 || tauSub * 2 >= slice.length) return detectedMidi;
+
+  let numSub = 0;
+  let denA = 0;
+  let denB = 0;
+  const lim = slice.length - tauSub;
+  for (let i = 0; i < lim; i += 2) {
+    const a = slice[i];
+    const b = slice[i + tauSub];
+    numSub += a * b;
+    denA += a * a;
+    denB += b * b;
+  }
+  const corrSub = numSub / Math.max(1e-9, Math.sqrt(denA * denB));
+  // If the full sub-period waveform repeats with high positive correlation (>= 0.68), the true fundamental is the sub-octave!
+  if (corrSub >= 0.68) {
+    return subMidi;
+  }
+  return detectedMidi;
+}
+
+/**
  * Analyzes an entire monophonic melodic/bass stem (Bass, Solo Synth, Lead, Vocal)
- * using onset segmentation + sliding YIN fundamental tracking with median glitch rejection.
+ * using onset segmentation + sliding YIN fundamental tracking with median glitch rejection,
+ * Kick-bleed transient masking, Sub-Harmonic octave stabilization, and optional Master-Guided gap rescue.
  */
 export function analyzeMonophonicStemNotesFull(
   mono: Float32Array,
   sampleRate: number,
-  options: { sensitivity?: number; minNoteMs?: number; bpmHint?: number; bassOnly?: boolean; lockedBpm?: number; musicalKey?: string; camelotKey?: string; detectedChords?: DetectedChordSegment[]; beatOffsetSec?: number; beatTimes?: number[]; downbeats?: number[]; quantizeMode?: StemQuantizeMode } = {}
+  options: {
+    sensitivity?: number;
+    minNoteMs?: number;
+    bpmHint?: number;
+    bassOnly?: boolean;
+    lockedBpm?: number;
+    musicalKey?: string;
+    camelotKey?: string;
+    detectedChords?: DetectedChordSegment[];
+    beatOffsetSec?: number;
+    beatTimes?: number[];
+    downbeats?: number[];
+    quantizeMode?: StemQuantizeMode;
+    masterMono?: Float32Array;
+    detectionSourceMode?: DetectionSourceMode;
+    masterReferenceName?: string;
+  } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = options.sensitivity ?? 0.62;
   const minNoteSec = (options.minNoteMs ?? 45) / 1000;
   const bassOnly = Boolean(options.bassOnly);
-  const analysisSig = bassOnly ? filterBassIsolationBand(mono, sampleRate) : mono;
+  const sourceMode: DetectionSourceMode = options.detectionSourceMode ?? 'auto-hybrid';
+  const hasMasterRef = Boolean(
+    options.masterMono &&
+      options.masterMono.length > 256 &&
+      sourceMode !== 'stem-only'
+  );
+
+  let detectionSourceUsed: FullStemAnalysisResult['detectionSourceUsed'] = 'stem-only';
+  let baseMono = mono;
+  let masterBassHelper: Float32Array | null = null;
+
+  if (hasMasterRef && options.masterMono) {
+    const mMono = options.masterMono;
+    if (sourceMode === 'master-only') {
+      baseMono = new Float32Array(mono.length);
+      baseMono.set(mMono.subarray(0, Math.min(mono.length, mMono.length)));
+      detectionSourceUsed = 'master-only';
+    } else {
+      detectionSourceUsed = 'master-guided-hybrid';
+      // Build a Kick-masked 30-210Hz Master Bass helper buffer to rescue dropped notes or octave ambiguities in dirty Bass stems
+      const mClamped = new Float32Array(mono.length);
+      mClamped.set(mMono.subarray(0, Math.min(mono.length, mMono.length)));
+      const mLow = filterBassIsolationBand(mClamped, sampleRate);
+      masterBassHelper = maskKickTransientsFromBassSignal(mLow, sampleRate, mClamped);
+    }
+  }
+
+  const rawFiltered =
+    bassOnly || detectionSourceUsed === 'master-only'
+      ? filterBassIsolationBand(baseMono, sampleRate)
+      : baseMono;
+  const analysisSig =
+    bassOnly || detectionSourceUsed !== 'stem-only'
+      ? maskKickTransientsFromBassSignal(
+          rawFiltered,
+          sampleRate,
+          hasMasterRef && options.masterMono ? options.masterMono : baseMono
+        )
+      : rawFiltered;
 
   const onsetsRes = detectOnsetsSpectralFlux(analysisSig, sampleRate, {
     sensitivity,
@@ -1581,17 +1939,56 @@ export function analyzeMonophonicStemNotesFull(
   const rmsGate = globalPeakRms * 0.045;
   const rawMidi = new Int16Array(numFrames).fill(-1);
   const rawConf = new Float32Array(numFrames);
-  const maxYinHz = bassOnly ? 240 : 1400;
-  const maxAllowedMidi = bassOnly ? 55 : 96; // Clamp to G3 in bassOnly mode
+  const maxYinHz = bassOnly || detectionSourceUsed === 'master-only' ? 240 : 1400;
+  const maxAllowedMidi = bassOnly || detectionSourceUsed === 'master-only' ? 55 : 96; // Clamp to G3 in bassOnly mode
+
+  let masterHelperPeakRms = 1e-6;
+  if (masterBassHelper) {
+    for (let f = 0; f < numFrames; f++) {
+      const off = f * hop;
+      let sumSq = 0;
+      for (let i = 0; i < winLen && off + i < masterBassHelper.length; i += 2) {
+        const v = masterBassHelper[off + i];
+        sumSq += v * v;
+      }
+      const r = Math.sqrt(sumSq / (winLen / 2));
+      if (r > masterHelperPeakRms) masterHelperPeakRms = r;
+    }
+  }
 
   for (let f = 0; f < numFrames; f++) {
-    if (frameRms[f] < rmsGate) continue;
     const off = f * hop;
-    const slice = analysisSig.subarray(off, off + winLen);
-    const est = detectPitchYin(slice, sampleRate, 35, maxYinHz);
-    if (est.confidence >= 0.48 && est.midiNote >= 24 && est.midiNote <= maxAllowedMidi) {
-      rawMidi[f] = est.midiNote;
-      rawConf[f] = est.confidence;
+    if (frameRms[f] >= rmsGate) {
+      const slice = analysisSig.subarray(off, off + winLen);
+      const est = detectPitchYin(slice, sampleRate, 35, maxYinHz);
+      if (est.confidence >= 0.48 && est.midiNote >= 24 && est.midiNote <= maxAllowedMidi) {
+        const correctedMidi =
+          bassOnly || est.midiNote <= 52
+            ? checkBassSubOctaveFundamental(slice, sampleRate, est.midiNote)
+            : est.midiNote;
+        rawMidi[f] = correctedMidi;
+        rawConf[f] = est.confidence;
+        continue;
+      }
+    }
+
+    // Master-Guided Bass Gap Rescue: when an AI-separated Bass stem has a dropout hole,
+    // recover the missing bass pitch from the Kick-masked Master low band if present
+    if (masterBassHelper && off + winLen <= masterBassHelper.length) {
+      const mSlice = masterBassHelper.subarray(off, off + winLen);
+      let sumSq = 0;
+      for (let i = 0; i < winLen; i += 4) sumSq += mSlice[i] * mSlice[i];
+      const mRms = Math.sqrt(sumSq / (winLen / 4));
+      if (mRms >= masterHelperPeakRms * 0.14) {
+        const mEst = detectPitchYin(mSlice, sampleRate, 35, 220);
+        if (mEst.confidence >= 0.56 && mEst.midiNote >= 26 && mEst.midiNote <= 52) {
+          rawMidi[f] = checkBassSubOctaveFundamental(mSlice, sampleRate, mEst.midiNote);
+          rawConf[f] = mEst.confidence * 0.92;
+          if (frameRms[f] < rmsGate) {
+            frameRms[f] = Math.max(frameRms[f], globalPeakRms * 0.24 * (mRms / masterHelperPeakRms));
+          }
+        }
+      }
     }
   }
 
@@ -1721,6 +2118,8 @@ export function analyzeMonophonicStemNotesFull(
 
   return {
     mode: 'monophonic',
+    detectionSourceUsed,
+    masterReferenceName: options.masterReferenceName,
     bassFocusApplied: bassOnly || undefined,
     quantizeMode: qMode,
     bpm,
@@ -2320,15 +2719,42 @@ export function analyzeBassProgressionFull(
     beatTimes?: number[];
     downbeats?: number[];
     quantizeMode?: StemQuantizeMode;
+    masterMono?: Float32Array;
+    detectionSourceMode?: DetectionSourceMode;
+    masterReferenceName?: string;
   } = {}
 ): FullStemAnalysisResult {
   const durationSec = mono.length / sampleRate;
   const sensitivity = Math.max(0.1, Math.min(1.0, options.sensitivity ?? 0.62));
+  const sourceMode: DetectionSourceMode = options.detectionSourceMode ?? 'auto-hybrid';
+  const hasMasterRef = Boolean(
+    options.masterMono &&
+      options.masterMono.length > 256 &&
+      sourceMode !== 'stem-only'
+  );
+  let detectionSourceUsed: FullStemAnalysisResult['detectionSourceUsed'] = 'stem-only';
+  let workMono = mono;
+  if (hasMasterRef && options.masterMono) {
+    const mMono = options.masterMono;
+    if (sourceMode === 'master-only') {
+      workMono = new Float32Array(mono.length);
+      workMono.set(mMono.subarray(0, Math.min(mono.length, mMono.length)));
+      detectionSourceUsed = 'master-only';
+    } else {
+      workMono = new Float32Array(mono.length);
+      const cmpLen = Math.min(mono.length, mMono.length);
+      for (let i = 0; i < mono.length; i++) {
+        const mv = i < cmpLen ? mMono[i] : 0;
+        workMono[i] = mono[i] * 0.65 + mv * 0.35;
+      }
+      detectionSourceUsed = 'master-guided-hybrid';
+    }
+  }
 
   // 1. Reuse pre-analyzed polyphonic notes + chords stored in memory when available
   const poly =
     options.precomputedPoly ??
-    analyzePolyphonicStemNotesFull(mono, sampleRate, {
+    analyzePolyphonicStemNotesFull(workMono, sampleRate, {
       sensitivity,
       maxPolyphony: options.maxPolyphony ?? 5,
       bpmHint: options.bpmHint,
@@ -2343,9 +2769,14 @@ export function analyzeBassProgressionFull(
     });
   const storedChords = options.precomputedChords ?? [];
 
-  // 2. Isolate 30-210 Hz bass band and analyze frame-by-frame low fundamentals
-  const lowBand = filterBassIsolationBand(mono, sampleRate);
-  const fullOnsets = detectOnsetsSpectralFlux(mono, sampleRate, {
+  // 2. Isolate 30-210 Hz bass band (with surgical Kick transient masking) and analyze frame-by-frame low fundamentals
+  const rawLowBand = filterBassIsolationBand(workMono, sampleRate);
+  const lowBand = maskKickTransientsFromBassSignal(
+    rawLowBand,
+    sampleRate,
+    hasMasterRef && options.masterMono ? options.masterMono : workMono
+  );
+  const fullOnsets = detectOnsetsSpectralFlux(workMono, sampleRate, {
     sensitivity,
     minIntervalMs: 75,
     snapToZeroCrossing: false,
@@ -2452,11 +2883,13 @@ export function analyzeBassProgressionFull(
     for (let m = 28; m <= 50; m++) {
       const f0 = 440 * Math.pow(2, (m - 69) / 12);
       const amp1 = findPeak(f0);
-      if (amp1 < floor) continue;
       const amp2 = f0 * 2 <= 350 ? findPeak(f0 * 2) : 0;
-      // Reject sub-octave artifacts when 2nd harmonic dwarfs fundamental below 62Hz
-      if (f0 < 62 && amp1 < amp2 * 0.35) continue;
-      const score = amp1 + amp2 * 0.45;
+      const amp3 = f0 * 3 <= 365 ? findPeak(f0 * 3) : 0;
+      // Allow real E1..B1 electric/acoustic bass notes whose 2nd & 3rd harmonics confirm the phantom fundamental
+      const hasHarmonicSeriesSupport = amp1 >= floor * 0.55 && amp2 >= floor && amp3 >= amp2 * 0.16;
+      if (amp1 < floor && !hasHarmonicSeriesSupport) continue;
+      if (f0 < 62 && amp1 < amp2 * 0.22 && !hasHarmonicSeriesSupport) continue;
+      const score = amp1 + amp2 * 0.45 + amp3 * 0.28;
       if (score > bestScore) {
         bestScore = score;
         bestMidi = m;
@@ -2734,6 +3167,8 @@ export function analyzeBassProgressionFull(
 
   return {
     mode: poly.mode,
+    detectionSourceUsed,
+    masterReferenceName: options.masterReferenceName,
     bassFocusApplied: true,
     quantizeMode: qMode,
     bpm: resolvedBpm,

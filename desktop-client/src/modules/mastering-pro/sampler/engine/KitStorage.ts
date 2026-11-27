@@ -2,6 +2,7 @@ import { encodeAudioBufferToWav24Bit } from '../../engine/Wav24BitEncoder';
 import type {
   CustomReplacementSampleItem,
   CustomSampleCategory,
+  PersistedStemReplacerSession,
   SampleKit,
   SampleSource,
   SerializedSampleSource,
@@ -9,16 +10,19 @@ import type {
 
 /**
  * Temporary Local Persistence in IndexedDB ('tandao_sample_lab_v1').
- * Stores full 24-bit WAV source blobs, kit state, and user-uploaded custom replacement samples
- * safely (avoiding localStorage 5MB limit) so loaded audio survives page refreshes.
+ * Stores full 24-bit WAV source blobs, kit state, StemReplacer session state,
+ * and user-uploaded custom replacement samples safely (avoiding localStorage 5MB limit)
+ * so loaded audio and configurations survive page refreshes and tab switches.
  */
 
 const DB_NAME = 'tandao_sample_lab_v1';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_KITS = 'kits';
 const STORE_SOURCES = 'source_blobs';
 const STORE_CUSTOM_SAMPLES = 'custom_replacement_samples';
+const STORE_REPLACER_SESSIONS = 'replacer_sessions';
 const ACTIVE_KIT_KEY = '__active_temp_kit__';
+export const ACTIVE_REPLACER_SESSION_KEY = '__active_replacer_session__';
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -37,6 +41,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_CUSTOM_SAMPLES)) {
         db.createObjectStore(STORE_CUSTOM_SAMPLES, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_REPLACER_SESSIONS)) {
+        db.createObjectStore(STORE_REPLACER_SESSIONS, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -273,5 +280,40 @@ export async function deleteCustomReplacementSampleFromIdb(id: string): Promise<
     db.close();
   } catch {
     // ignore
+  }
+}
+
+export async function saveReplacerSessionToIdb(
+  session: PersistedStemReplacerSession
+): Promise<void> {
+  try {
+    const db = await openDb();
+    await txRun(db, STORE_REPLACER_SESSIONS, 'readwrite', (s) =>
+      s.put({
+        ...session,
+        updatedAt: new Date().toISOString(),
+      })
+    );
+    db.close();
+  } catch {
+    // Graceful no-op if IndexedDB is unavailable
+  }
+}
+
+export async function loadReplacerSessionFromIdb(
+  sessionId = ACTIVE_REPLACER_SESSION_KEY
+): Promise<PersistedStemReplacerSession | null> {
+  try {
+    const db = await openDb();
+    const record = await txRun<PersistedStemReplacerSession | undefined>(
+      db,
+      STORE_REPLACER_SESSIONS,
+      'readonly',
+      (s) => s.get(sessionId)
+    );
+    db.close();
+    return record ?? null;
+  } catch {
+    return null;
   }
 }

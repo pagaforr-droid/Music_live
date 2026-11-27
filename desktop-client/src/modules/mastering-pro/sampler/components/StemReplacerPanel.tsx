@@ -41,6 +41,7 @@ import type { useStemReplacer } from '../hooks/useStemReplacer';
 import type {
   CustomSampleCategory,
   DefaultInstrumentId,
+  DetectionSourceMode,
   DrumPieceRole,
   ImportedAudioMemoryAnalysis,
   SamplePad,
@@ -98,6 +99,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 }) => {
   const r = replacer;
   const stemFileInputRef = useRef<HTMLInputElement | null>(null);
+  const masterRefFileInputRef = useRef<HTMLInputElement | null>(null);
   const slotFileInputRef = useRef<HTMLInputElement | null>(null);
   const bankBatchFileInputRef = useRef<HTMLInputElement | null>(null);
   const midiFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,7 +114,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [showCloudSamplePicker, setShowCloudSamplePicker] = useState(false);
   const [cloudTargetRole, setCloudTargetRole] = useState<CustomSampleCategory>('kick');
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
-  const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | 'master-ref' | null>(null);
   const [showBeatGrid, setShowBeatGrid] = useState(true);
   const [showMidiRoll, setShowMidiRoll] = useState(true);
   const [editorSizeMode, setEditorSizeMode] = useState<'compact' | 'large' | 'fullscreen'>('large');
@@ -638,6 +640,17 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         }}
       />
       <input
+        ref={masterRefFileInputRef}
+        type="file"
+        accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,.aiff,.aif,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void r.loadLocalMasterReferenceFile(f);
+          e.target.value = '';
+        }}
+      />
+      <input
         ref={slotFileInputRef}
         type="file"
         accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.webm,audio/*"
@@ -893,6 +906,152 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               )}
             </div>
           ) : null}
+        </div>
+      </div>
+
+      {/* MASTER REFERENCE AUDIO GUIDE FOR 100% ACCURATE DRUMS, BASS & CHORDS DETECTION */}
+      <div
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault();
+            setDragOverTarget('master-ref');
+          }
+        }}
+        onDragLeave={() => setDragOverTarget((prev) => (prev === 'master-ref' ? null : prev))}
+        onDrop={(e) => {
+          const f = e.dataTransfer.files?.[0];
+          setDragOverTarget(null);
+          if (f) {
+            e.preventDefault();
+            void r.loadLocalMasterReferenceFile(f);
+          }
+        }}
+        className={`rounded-2xl border p-3.5 flex flex-col gap-2.5 shadow-lg transition-all font-mono text-xs ${
+          dragOverTarget === 'master-ref'
+            ? 'bg-amber-500/15 border-amber-400 shadow-[0_0_24px_rgba(245,158,11,0.25)]'
+            : r.masterReferenceBuffer
+            ? 'bg-gradient-to-r from-slate-900/95 via-amber-950/20 to-slate-900/95 border-amber-500/50'
+            : 'bg-slate-900/95 border-slate-800/90'
+        }`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-500/50 text-amber-300 font-black text-[10.5px]">
+              ★ AUDIO MASTER GUÍA
+            </span>
+            <span className="font-bold text-white text-xs">
+              Ayuda de Detección 100% Precisa (Kick, Snare/Snake, Hi-Hat, Crash, Bajo y Acordes)
+            </span>
+            {r.masterReferenceBuffer && (
+              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
+                ● GUÍA MASTER ACTIVA
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              disabled={r.isLoadingMasterRef}
+              onClick={() => masterRefFileInputRef.current?.click()}
+              className="px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-black flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-all"
+              title="Sube el audio Master (canción completa) desde tu PC para que el sistema identifique al 100% Batería, Bajo y Acordes y trabaje luego sobre tu archivo Solo Drums o Solo Bass"
+            >
+              {r.isLoadingMasterRef ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Upload size={12} />
+              )}
+              <span>
+                {r.masterReferenceBuffer ? 'Cambiar Audio Master (PC)' : '+ Agregar Audio Master (PC)'}
+              </span>
+            </button>
+
+            {r.selectedSong &&
+              r.selectedSong.stems.some(
+                (s) => s.isMaster || /\b(master|mezcla|mix|full)\b/i.test(s.name)
+              ) && (
+                <button
+                  type="button"
+                  disabled={r.isLoadingMasterRef}
+                  onClick={() => void r.loadSongMasterAsReference()}
+                  className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                  title="Vincular la pista ★ Master guardada en esta canción como Guía de Detección"
+                >
+                  <Sparkles size={11} />
+                  <span>Usar ★ Master de la Canción</span>
+                </button>
+              )}
+
+            <label
+              className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-950 border border-slate-800 text-[10.5px] text-slate-300 cursor-pointer"
+              title="Al elegir un stem (Drums o Bass) de una canción que tiene pista Master, vincula automáticamente el Master como guía de detección"
+            >
+              <input
+                type="checkbox"
+                checked={r.autoUseSongMaster}
+                onChange={(e) => r.setAutoUseSongMaster(e.target.checked)}
+                className="accent-amber-400"
+              />
+              <span>Auto-vincular Master de canción</span>
+            </label>
+
+            {r.masterReferenceBuffer && (
+              <button
+                type="button"
+                onClick={() => void r.clearMasterReference()}
+                className="px-2 py-1 rounded-xl bg-slate-950 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 text-[10.5px] cursor-pointer"
+                title="Quitar el Audio Master Guía y detectar únicamente desde el stem cargado"
+              >
+                Quitar Guía
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+          {r.masterReferenceBuffer ? (
+            <div className="flex flex-wrap items-center gap-2 text-slate-200">
+              <span className="text-amber-300 font-bold">
+                Guía cargada: {r.masterReferenceTitle}
+              </span>
+              <span className="text-slate-400">
+                ({formatTime(r.masterReferenceBuffer.duration)} ·{' '}
+                {r.masterReferenceMemory?.bpm ?? r.analysis?.bpm ?? 120} BPM · Tono{' '}
+                {r.masterReferenceMemory?.musicalKey || 'Detectado'} ·{' '}
+                {r.masterReferenceMemory?.chords.length ?? 0} acordes extraídos del Master)
+              </span>
+              <span className="text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-md">
+                ✓ El sistema detecta en el Master y reemplaza/exporta SOLO sobre tu Stem ({r.stemTitle || 'Drums / Bass'})
+              </span>
+            </div>
+          ) : (
+            <span className="text-[11px] text-slate-400">
+              💡 <strong className="text-amber-300">¿Tu stem de Batería o Bajo salió sucio o perdió golpes por separación IA?</strong> Agrega aquí el <strong className="text-white">Audio Master</strong>: el sistema identificará al 100% Kick, Snare/Snake, Hi-Hat, Crash, Bajo y Acordes desde el Master y trabajará luego sobre tu archivo de Solo Drums o Solo Bass.
+            </span>
+          )}
+
+          {r.masterReferenceBuffer && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10.5px] text-slate-400">Modo Guía:</span>
+              <select
+                value={r.detectionSourceMode}
+                onChange={(e) =>
+                  void r.changeDetectionSourceMode(e.target.value as DetectionSourceMode)
+                }
+                className="bg-slate-950 border border-amber-500/50 rounded-lg px-2 py-1 text-[11px] text-amber-300 font-bold cursor-pointer"
+                title="Elige cómo el Audio Master guía la detección sobre tu Stem de Batería o Bajo"
+              >
+                <option value="auto-hybrid">
+                  Fusión Master + Stem (Recomendado · Rescata ataques y filtra voz)
+                </option>
+                <option value="master-only">
+                  100% desde Master (Rescate total si el Stem está muy roto)
+                </option>
+                <option value="stem-only">Solo Stem Actual (Ignorar Master)</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1515,6 +1674,52 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 <span>B: Sampleado Mejorado</span>
               </button>
             </div>
+
+            {/* Optional Master Context Audition in Laboratory (never mixed into export) */}
+            {r.masterReferenceBuffer && (
+              <div className="flex items-center gap-1.5 bg-slate-950 border border-amber-500/40 rounded-xl px-2.5 py-1 text-[11px] font-mono">
+                <label
+                  className="flex items-center gap-1.5 cursor-pointer text-amber-300 font-bold"
+                  title="Escucha en el Laboratorio cómo empasta tu nuevo Stem de Batería o Bajo junto con el Master de referencia (el Master NO se incluye al exportar)"
+                >
+                  <input
+                    type="checkbox"
+                    checked={r.listenWithMasterContext}
+                    onChange={(e) => r.setListenWithMasterContext(e.target.checked)}
+                    className="accent-amber-400"
+                  />
+                  <span>🎧 Probar con Master</span>
+                </label>
+                {r.listenWithMasterContext && (
+                  <>
+                    <input
+                      type="range"
+                      min={10}
+                      max={90}
+                      step={5}
+                      value={r.masterContextVolumePct}
+                      onChange={(e) => r.setMasterContextVolumePct(Number(e.target.value))}
+                      className="w-14 accent-amber-400 h-1 cursor-pointer"
+                      title="Volumen de referencia del Master en el Laboratorio"
+                    />
+                    <span className="text-[10px] text-amber-200 tabular-nums">
+                      {r.masterContextVolumePct}%
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+
+            {r.soloDrumRole && (
+              <button
+                type="button"
+                onClick={() => r.toggleSoloDrumRole(r.soloDrumRole!)}
+                className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500 text-amber-300 text-[10.5px] font-mono font-bold cursor-pointer"
+                title="Haz clic para desactivar SOLO y escuchar todo el kit (al exportar siempre se exporta el kit completo)"
+              >
+                SOLO ACTIVO: {r.soloDrumRole.toUpperCase()} (Clic para Todo)
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
@@ -2441,6 +2646,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     Híbrido 70/55
                   </button>
                 </div>
+                <label
+                  className="flex items-center gap-2 cursor-pointer pt-1 text-[10.5px] text-slate-300"
+                  title="Filtra el sub-grave sucio (<185 Hz) del stem original cuando el nuevo bajo está sonando, conservando el ataque real de cuerdas/dedos (>185 Hz) del bajo original sin barro"
+                >
+                  <input
+                    type="checkbox"
+                    checked={r.mixOptions.bassCrossoverCleanLow !== false}
+                    onChange={(e) =>
+                      r.setMixOptions((p) => ({
+                        ...p,
+                        bassCrossoverCleanLow: e.target.checked,
+                      }))
+                    }
+                    className="accent-[#00E5FF]"
+                  />
+                  <span>Crossover Bajo: Limpiar sub-grave sucio (&lt;185 Hz) al mezclar</span>
+                </label>
               </div>
             )}
 
