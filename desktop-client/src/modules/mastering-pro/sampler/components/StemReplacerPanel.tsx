@@ -13,7 +13,6 @@ import {
   Loader2,
   Maximize2,
   Mic,
-  Minimize2,
   Music2,
   Pause,
   Play,
@@ -66,11 +65,11 @@ interface StemReplacerPanelProps {
 }
 
 const DRUM_ROLES: Array<{ role: DrumPieceRole; label: string; shortLabel: string; gmNotes: string; color: string }> = [
-  { role: 'kick', label: 'Kick (Bombo)', shortLabel: 'KICK', gmNotes: 'GM 36', color: '#FF6B00' },
-  { role: 'snare', label: 'Snare / Snake (Caja)', shortLabel: 'SNARE', gmNotes: 'GM 38/37', color: '#00E5FF' },
-  { role: 'tom', label: 'Toms (High / Mid / Floor)', shortLabel: 'TOMS', gmNotes: 'GM 50/47/43', color: '#10B981' },
-  { role: 'hat', label: 'Hi-Hats (Cerrado / Abierto)', shortLabel: 'HI-HAT', gmNotes: 'GM 42/46', color: '#F59E0B' },
-  { role: 'crash', label: 'Crash / Ride (Platillos)', shortLabel: 'CRASH', gmNotes: 'GM 49/51', color: '#EC4899' },
+  { role: 'kick', label: 'Kick (Bombo)', shortLabel: 'KICK', gmNotes: 'GM 36', color: '#FB923C' },
+  { role: 'snare', label: 'Snare / Snake (Caja)', shortLabel: 'SNARE', gmNotes: 'GM 38/37', color: '#22D3EE' },
+  { role: 'tom', label: 'Toms (High / Mid / Floor)', shortLabel: 'TOMS', gmNotes: 'GM 50/47/43', color: '#34D399' },
+  { role: 'hat', label: 'Hi-Hats (Cerrado / Abierto)', shortLabel: 'HI-HAT', gmNotes: 'GM 42/46', color: '#FBBF24' },
+  { role: 'crash', label: 'Crash / Ride (Platillos)', shortLabel: 'CRASH', gmNotes: 'GM 49/51', color: '#F472B6' },
 ];
 
 const MODE_LABELS: Array<{ id: StemAnalysisMode; label: string; hint: string }> = [
@@ -80,12 +79,12 @@ const MODE_LABELS: Array<{ id: StemAnalysisMode; label: string; hint: string }> 
 ];
 
 const CATEGORY_BADGES: Record<CustomSampleCategory, { label: string; color: string }> = {
-  kick: { label: 'KICK', color: '#FF6B00' },
-  snare: { label: 'SNARE', color: '#00E5FF' },
-  hat: { label: 'HI-HAT', color: '#F59E0B' },
-  crash: { label: 'CRASH', color: '#EC4899' },
-  tom: { label: 'TOMS', color: '#10B981' },
-  melodic: { label: 'TONAL', color: '#A855F7' },
+  kick: { label: 'KICK', color: '#FB923C' },
+  snare: { label: 'SNARE', color: '#22D3EE' },
+  hat: { label: 'HI-HAT', color: '#FBBF24' },
+  crash: { label: 'CRASH', color: '#F472B6' },
+  tom: { label: 'TOMS', color: '#34D399' },
+  melodic: { label: 'TONAL', color: '#A78BFA' },
 };
 
 const formatTime = (sec: number) => {
@@ -297,11 +296,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = '#040711';
+    ctx.fillStyle = '#0A0A0C';
     ctx.fillRect(0, 0, w, h);
 
     const midY = h / 2;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, midY);
@@ -309,11 +308,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     ctx.stroke();
 
     if (!r.originalBuffer || duration <= 0) {
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.65)';
-      ctx.font = '12px monospace';
+      ctx.fillStyle = 'rgba(161, 161, 170, 0.72)';
+      ctx.font = '12px Inter, system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(
-        '1. Elige una Canción arriba → 2. Selecciona 1 Stem (ej. Batería, Piano, Guitarra, Bajo)',
+        '1. Elige una Canción arriba → 2. Selecciona 1 Stem (Batería, Piano, Guitarra, Bajo)',
         w / 2,
         midY + 4
       );
@@ -323,7 +322,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
     const secToX = (sec: number) => ((sec - viewStartSec) / viewSpanSec) * w;
 
-    // 1. Draw waveform from pyramid
+    // 1. Draw waveform from pyramid (Image 3 minimalist matte studio bar style)
     const sr = r.originalBuffer.sampleRate;
     const s0 = Math.max(0, Math.floor(viewStartSec * sr));
     const s1 = Math.min(r.originalBuffer.length, Math.ceil(viewEndSec * sr));
@@ -331,7 +330,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     const samplesPerPx = visibleSamples / w;
 
     ctx.fillStyle =
-      r.abMode === 'replaced' ? 'rgba(0, 229, 255, 0.35)' : 'rgba(148, 163, 184, 0.45)';
+      r.abMode === 'replaced' ? 'rgba(228, 228, 231, 0.44)' : 'rgba(161, 161, 170, 0.36)';
     const level =
       r.waveformPyramid?.levels
         .slice()
@@ -384,9 +383,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         const x = secToX(bt);
         const isDownbeat = dbs ? downSet.has(Math.round(bt * 20)) : idx % 4 === 0;
         ctx.strokeStyle = isDownbeat
-          ? 'rgba(0, 229, 255, 0.44)'
-          : 'rgba(0, 229, 255, 0.14)';
-        ctx.lineWidth = isDownbeat ? 1.4 : 1;
+          ? 'rgba(255, 255, 255, 0.16)'
+          : 'rgba(255, 255, 255, 0.055)';
+        ctx.lineWidth = isDownbeat ? 1.2 : 1;
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, h);
@@ -396,7 +395,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           const barNum = dbs
             ? Math.max(1, dbs.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
             : Math.floor(idx / 4) + 1;
-          ctx.fillStyle = 'rgba(0, 229, 255, 0.88)';
+          ctx.fillStyle = 'rgba(212, 212, 216, 0.75)';
           ctx.font = 'bold 9px monospace';
           ctx.fillText(`C${barNum}`, x + 3, 11);
           lastBarLabelX = x;
@@ -411,7 +410,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           const cx1 = secToX(ch.endSec);
           if (cx1 < 0 || cx0 > w) continue;
           if (cx0 >= 0 && cx0 <= w) {
-            ctx.strokeStyle = 'rgba(167, 139, 250, 0.5)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
             ctx.setLineDash([3, 3]);
             ctx.beginPath();
             ctx.moveTo(cx0, 0);
@@ -421,9 +420,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           }
           if (cx0 - lastChordX >= 30 && cx1 - cx0 >= 18 && cx0 >= -4 && cx0 < w - 24) {
             const boxW = Math.min(48, Math.max(20, ch.chord.length * 7 + 8));
-            ctx.fillStyle = 'rgba(109, 40, 217, 0.85)';
+            ctx.fillStyle = 'rgba(39, 39, 42, 0.92)';
             ctx.fillRect(Math.max(2, cx0 + 2), 14, boxW, 13);
-            ctx.fillStyle = '#EDE9FE';
+            ctx.fillStyle = '#E4E4E7';
             ctx.font = 'bold 9px monospace';
             ctx.fillText(ch.chord, Math.max(5, cx0 + 5), 24);
             lastChordX = cx0;
@@ -436,11 +435,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     if (r.analysis) {
       if (r.analysis.mode === 'drums') {
         const colorMap: Record<DrumPieceRole, string> = {
-          kick: '#FF6B00',
-          snare: '#00E5FF',
-          hat: '#F59E0B',
-          crash: '#EC4899',
-          tom: '#10B981',
+          kick: '#FB923C',
+          snare: '#22D3EE',
+          hat: '#FBBF24',
+          crash: '#F472B6',
+          tom: '#34D399',
         };
         for (const hit of r.analysis.drumHits) {
           if (hit.peakTimeSec < viewStartSec || hit.peakTimeSec > viewEndSec) continue;
@@ -804,7 +803,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             uploadTargetRef.current = target;
             slotFileInputRef.current?.click();
           }}
-          className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/55 text-[10px] font-mono font-bold text-[#00E5FF] flex items-center gap-1 cursor-pointer transition-all"
+          className="px-2.5 py-1 rounded-lg bg-[#1C1C21] hover:bg-[#27272E] border border-white/[0.1] text-[10.5px] font-medium text-zinc-100 flex items-center gap-1 cursor-pointer transition-all"
           title="Subir tu propio audio de reemplazo (WAV, MP3, FLAC, OGG, M4A)"
         >
           <Upload size={11} />
@@ -814,14 +813,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         <button
           type="button"
           onClick={() => void r.toggleMicRecordingForSlot(target)}
-          className={`px-2 py-1 rounded-lg border text-[10px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all ${
+          className={`px-2 py-1 rounded-lg border text-[10.5px] font-medium flex items-center gap-1 cursor-pointer transition-all ${
             isRec
               ? 'bg-rose-500 border-rose-400 text-white animate-pulse'
-              : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-rose-300'
+              : 'bg-[#17171B] hover:bg-[#222228] border-white/[0.08] text-zinc-300 hover:text-rose-300'
           }`}
           title="Grabar muestra directamente desde tu micrófono o interfaz"
         >
-          {isRec ? <Square size={10} className="fill-current" /> : <Mic size={11} />}
+          {isRec ? <Square size={10} className="fill-current" /> : <Mic size={11} className="text-rose-400" />}
           <span>{isRec ? 'Detener Mic' : 'Grabar Mic'}</span>
         </button>
 
@@ -837,7 +836,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               }
               e.target.value = '';
             }}
-            className="bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[10px] font-mono text-amber-300 cursor-pointer"
+            className="bg-[#0B0B0D] border border-white/[0.08] rounded-lg px-2 py-1 text-[10.5px] text-amber-300 cursor-pointer"
           >
             <option value="" disabled>
               Usar Pad...
@@ -853,7 +852,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         {slot.sourceType !== 'preset' && (
           <>
             <label
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[9.5px] font-mono text-emerald-300 cursor-pointer"
+              className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#17171B] border border-white/[0.08] text-[10px] text-emerald-300 cursor-pointer"
               title="Normalizar automáticamente tu muestra propia a -1.0 dBFS"
             >
               <input
@@ -890,7 +889,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   });
                 }
               }}
-              className="px-1.5 py-1 rounded bg-slate-800 text-[10px] font-mono text-slate-400 hover:text-white cursor-pointer"
+              className="px-2 py-1 rounded-lg bg-[#1C1C21] hover:bg-[#27272E] text-[10px] text-zinc-400 hover:text-white cursor-pointer"
               title="Volver a muestra predeterminada de estudio"
             >
               Volver a Predet.
@@ -966,20 +965,20 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       />
 
       {/* STEP 1: SONG FOLDER -> 1 STEM SELECTION */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-        {/* Song Folder Selector */}
-        <div className="lg:col-span-5 rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 flex flex-col gap-2.5 shadow-lg">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
+        {/* Song Folder Selector (Image 3 matte sidebar list feel) */}
+        <div className="lg:col-span-5 rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <FolderOpen size={15} className="text-[#FF6B00]" />
-              <span className="text-xs font-mono font-bold uppercase text-white">
+              <FolderOpen size={15} className="text-orange-400" />
+              <span className="text-xs font-semibold tracking-tight text-zinc-100">
                 1. Elige Canción (Carpeta)
               </span>
             </div>
             <button
               type="button"
               onClick={() => void r.refreshSongs()}
-              className="p-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-400 hover:text-white cursor-pointer"
+              className="p-1.5 rounded-lg bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-400 hover:text-white cursor-pointer transition-colors"
               title="Actualizar lista de canciones"
             >
               <RefreshCw size={12} className={r.loadingSongs ? 'animate-spin' : ''} />
@@ -991,12 +990,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             value={songSearch}
             onChange={(e) => setSongSearch(e.target.value)}
             placeholder="Buscar canción..."
-            className="w-full px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white focus:outline-none focus:border-[#00E5FF]"
+            className="w-full px-3 py-1.5 rounded-xl bg-[#0B0B0D] border border-white/[0.08] text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/25"
           />
 
-          <div className="max-h-40 overflow-y-auto studio-scrollbar-thin space-y-1 pr-1">
+          <div className="max-h-40 overflow-y-auto studio-scrollbar-thin space-y-1.5 pr-1">
             {filteredSongs.length === 0 ? (
-              <div className="text-[11px] font-mono text-slate-500 py-4 text-center">
+              <div className="text-xs text-zinc-500 py-4 text-center">
                 {r.loadingSongs
                   ? 'Cargando carpetas desde Supabase...'
                   : 'Sin canciones encontradas. Puedes cargar un stem local o usar una Demo.'}
@@ -1009,15 +1008,15 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     key={song.id}
                     type="button"
                     onClick={() => r.setSelectedSongId(song.id)}
-                    className={`w-full px-2.5 py-1.5 rounded-xl border text-left font-mono text-xs flex items-center justify-between cursor-pointer transition-all ${
+                    className={`w-full px-3 py-2 rounded-xl border text-left text-xs flex items-center justify-between cursor-pointer transition-all ${
                       active
-                        ? 'bg-[#FF6B00]/15 border-[#FF6B00] text-white font-bold'
-                        : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:border-slate-700'
+                        ? 'bg-[#1D1D23] border-white/[0.22] text-white font-medium'
+                        : 'bg-[#0E0E11] border-white/[0.06] text-zinc-300 hover:bg-[#17171C] hover:border-white/[0.12]'
                     }`}
                   >
                     <span className="truncate">{song.title}</span>
-                    <span className="text-[10px] text-slate-400 shrink-0 ml-2">
-                      {song.bpm ? `${song.bpm}bpm · ` : ''}
+                    <span className="text-[10.5px] font-mono text-zinc-500 shrink-0 ml-2">
+                      {song.bpm ? `${song.bpm} bpm · ` : ''}
                       {song.stems.length} stems
                     </span>
                   </button>
@@ -1044,18 +1043,20 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               void r.loadLocalStemFile(f);
             }
           }}
-          className={`lg:col-span-7 rounded-2xl border p-3.5 flex flex-col justify-between gap-2.5 shadow-lg transition-all ${
+          className={`lg:col-span-7 rounded-2xl border p-4 flex flex-col justify-between gap-3 transition-all ${
             dragOverTarget === 'stem-local'
-              ? 'bg-[#00E5FF]/10 border-[#00E5FF] shadow-[0_0_24px_rgba(0,229,255,0.22)]'
-              : 'bg-slate-900/95 border-slate-800/90'
+              ? 'bg-white/[0.05] border-white/30'
+              : 'bg-[#121215] border-white/[0.08]'
           }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Layers size={15} className="text-[#00E5FF]" />
-              <span className="text-xs font-mono font-bold uppercase text-white">
+              <Layers size={15} className="text-zinc-300" />
+              <span className="text-xs font-semibold tracking-tight text-zinc-100">
                 2. Selecciona 1 Stem a Samplear{' '}
-                {r.selectedSong ? `(${r.selectedSong.title})` : ''}
+                {r.selectedSong ? (
+                  <span className="text-zinc-400 font-normal">({r.selectedSong.title})</span>
+                ) : null}
               </span>
             </div>
 
@@ -1063,7 +1064,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => stemFileInputRef.current?.click()}
-                className="px-2.5 py-1 rounded-lg bg-[#00E5FF] hover:bg-cyan-300 text-slate-950 text-[11px] font-mono font-bold flex items-center gap-1 cursor-pointer"
+                className="px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
                 title="Sube un archivo WAV, MP3, FLAC, OGG o M4A directo desde tu PC para samplear y exportar"
               >
                 <Upload size={12} />
@@ -1072,21 +1073,21 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => void r.loadDemoStem('drums')}
-                className="px-2 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] font-mono text-[#FF6B00] cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-[10.5px] font-medium text-orange-300 cursor-pointer transition-colors"
               >
                 Demo Batería
               </button>
               <button
                 type="button"
                 onClick={() => void r.loadDemoStem('monophonic')}
-                className="px-2 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] font-mono text-emerald-400 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-[10.5px] font-medium text-emerald-300 cursor-pointer transition-colors"
               >
                 Demo Bajo
               </button>
               <button
                 type="button"
                 onClick={() => void r.loadDemoStem('polyphonic')}
-                className="px-2 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] font-mono text-[#00E5FF] cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-[10.5px] font-medium text-zinc-200 cursor-pointer transition-colors"
               >
                 Demo Piano/Guitarra
               </button>
@@ -1094,12 +1095,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
 
           {r.originalBuffer && !r.selectedStemId && (
-            <div className="rounded-xl bg-[#00E5FF]/10 border border-[#00E5FF]/45 p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+            <div className="rounded-xl bg-[#18181D] border border-white/[0.12] p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="min-w-0">
-                <div className="font-bold text-white truncate">
-                  Archivo Local PC: {r.stemTitle || 'Audio cargado'}
+                <div className="font-semibold text-zinc-100 truncate">
+                  {r.stemTitle || 'Audio cargado'}
                 </div>
-                <div className="text-[10px] text-[#00E5FF]">
+                <div className="text-[11px] font-mono text-zinc-400">
                   {formatTime(r.originalBuffer.duration)} · {Math.round(r.originalBuffer.sampleRate / 1000)} kHz ·{' '}
                   {r.analysis ? `${r.analysis.bpm} BPM` : 'Analizando...'}
                 </div>
@@ -1115,7 +1116,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                         r.importedMemory
                       )
                     }
-                    className="px-2.5 py-1 rounded-lg bg-[#FF6B00] hover:brightness-110 text-slate-950 text-[10.5px] font-black cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold cursor-pointer"
                     title="Abrir este audio en el Creador 16 Pads para cortar slices, aplicar efectos y exportar"
                   >
                     Cortar en 16 Pads →
@@ -1124,7 +1125,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => stemFileInputRef.current?.click()}
-                  className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-[10.5px] text-slate-200 hover:text-white cursor-pointer"
+                  className="px-2.5 py-1 rounded-lg bg-[#24242B] hover:bg-[#2E2E36] border border-white/[0.08] text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                 >
                   Cambiar Archivo
                 </button>
@@ -1142,21 +1143,21 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     type="button"
                     disabled={r.isLoadingStem}
                     onClick={() => void r.loadSongStem(st, r.selectedSong ?? undefined)}
-                    className={`p-2.5 rounded-xl border text-left font-mono transition-all cursor-pointer flex flex-col justify-between gap-1 disabled:opacity-50 ${
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1 disabled:opacity-50 ${
                       isSelected
-                        ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-white shadow-[0_0_16px_rgba(0,229,255,0.2)]'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-600'
+                        ? 'bg-[#222229] border-white/[0.24] text-white'
+                        : 'bg-[#0E0E11] border-white/[0.06] text-zinc-300 hover:bg-[#17171C] hover:border-white/[0.12]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-xs font-bold truncate">{st.name}</span>
+                      <span className="text-xs font-medium truncate">{st.name}</span>
                       {st.isMaster && (
-                        <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/25">
                           MASTER
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500">
                       <span>
                         {st.inferredMode === 'drums'
                           ? 'Golpes Batería'
@@ -1171,9 +1172,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               })}
             </div>
           ) : !r.originalBuffer ? (
-            <div className="rounded-xl bg-slate-950/70 border border-dashed border-slate-800 p-4 text-center text-xs font-mono text-slate-400">
+            <div className="rounded-xl bg-[#0B0B0D] border border-dashed border-white/[0.1] p-5 text-center text-xs text-zinc-500">
               {r.isLoadingStem ? (
-                <span className="inline-flex items-center gap-2 text-[#00E5FF]">
+                <span className="inline-flex items-center gap-2 text-zinc-200">
                   <Loader2 size={14} className="animate-spin" /> Decodificando audio del PC / stem...
                 </span>
               ) : (
@@ -1201,25 +1202,25 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             void r.loadLocalMasterReferenceFile(f);
           }
         }}
-        className={`rounded-2xl border p-3.5 flex flex-col gap-2.5 shadow-lg transition-all font-mono text-xs ${
+        className={`rounded-2xl border p-4 flex flex-col gap-2.5 transition-all text-xs ${
           dragOverTarget === 'master-ref'
-            ? 'bg-amber-500/15 border-amber-400 shadow-[0_0_24px_rgba(245,158,11,0.25)]'
+            ? 'bg-amber-500/10 border-amber-400/50'
             : r.masterReferenceBuffer
-            ? 'bg-gradient-to-r from-slate-900/95 via-amber-950/20 to-slate-900/95 border-amber-500/50'
-            : 'bg-slate-900/95 border-slate-800/90'
+            ? 'bg-[#141315] border-amber-500/25'
+            : 'bg-[#121215] border-white/[0.08]'
         }`}
       >
         <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-500/50 text-amber-300 font-black text-[10.5px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-semibold text-[10px]">
               ★ AUDIO MASTER GUÍA
             </span>
-            <span className="font-bold text-white text-xs">
-              Ayuda de Detección 100% Precisa (Kick, Snare/Snake, Hi-Hat, Crash, Bajo y Acordes)
+            <span className="font-medium text-zinc-100 text-xs">
+              Detección de Alta Precisión (Kick, Snare, Hi-Hat, Crash, Bajo y Acordes)
             </span>
             {r.masterReferenceBuffer && (
-              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
-                ● GUÍA MASTER ACTIVA
+              <span className="px-2 py-0.5 rounded-md bg-emerald-500/12 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono font-medium">
+                ● Activa
               </span>
             )}
           </div>
@@ -1229,13 +1230,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               disabled={r.isLoadingMasterRef}
               onClick={() => masterRefFileInputRef.current?.click()}
-              className="px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-black flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-all"
+              className="px-3 py-1.5 rounded-xl bg-[#222228] hover:bg-[#2D2D35] border border-white/[0.12] text-zinc-100 text-[11px] font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
               title="Sube el audio Master (canción completa) desde tu PC para que el sistema identifique al 100% Batería, Bajo y Acordes y trabaje luego sobre tu archivo Solo Drums o Solo Bass"
             >
               {r.isLoadingMasterRef ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : (
-                <Upload size={12} />
+                <Upload size={12} className="text-amber-400" />
               )}
               <span>
                 {r.masterReferenceBuffer ? 'Cambiar Audio Master (PC)' : '+ Agregar Audio Master (PC)'}
@@ -1250,16 +1251,16 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   type="button"
                   disabled={r.isLoadingMasterRef}
                   onClick={() => void r.loadSongMasterAsReference()}
-                  className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                  className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-amber-500/30 text-amber-300 text-[11px] font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40"
                   title="Vincular la pista ★ Master guardada en esta canción como Guía de Detección"
                 >
                   <Sparkles size={11} />
-                  <span>Usar ★ Master de la Canción</span>
+                  <span>Usar Master de Canción</span>
                 </button>
               )}
 
             <label
-              className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-950 border border-slate-800 text-[10.5px] text-slate-300 cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0B0B0D] border border-white/[0.07] text-[11px] text-zinc-400 cursor-pointer"
               title="Al elegir un stem (Drums o Bass) de una canción que tiene pista Master, vincula automáticamente el Master como guía de detección"
             >
               <input
@@ -1268,14 +1269,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onChange={(e) => r.setAutoUseSongMaster(e.target.checked)}
                 className="accent-amber-400"
               />
-              <span>Auto-vincular Master de canción</span>
+              <span>Auto-vincular Master</span>
             </label>
 
             {r.masterReferenceBuffer && (
               <button
                 type="button"
                 onClick={() => void r.clearMasterReference()}
-                className="px-2 py-1 rounded-xl bg-slate-950 hover:bg-rose-500/20 border border-slate-700 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 text-[10.5px] cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-rose-500/15 border border-white/[0.08] hover:border-rose-500/35 text-zinc-400 hover:text-rose-300 text-[11px] cursor-pointer"
                 title="Quitar el Audio Master Guía y detectar únicamente desde el stem cargado"
               >
                 Quitar Guía
@@ -1284,44 +1285,45 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.06] text-[11px]">
           {r.masterReferenceBuffer ? (
-            <div className="flex flex-wrap items-center gap-2 text-slate-200">
-              <span className="text-amber-300 font-bold">
-                Guía cargada: {r.masterReferenceTitle}
+            <div className="flex flex-wrap items-center gap-2 text-zinc-300">
+              <span className="text-zinc-100 font-medium">
+                {r.masterReferenceTitle}
               </span>
-              <span className="text-slate-400">
-                ({formatTime(r.masterReferenceBuffer.duration)} ·{' '}
-                {r.masterReferenceMemory?.bpm ?? r.analysis?.bpm ?? 120} BPM · Tono{' '}
+              <span className="text-zinc-500 font-mono">
+                {formatTime(r.masterReferenceBuffer.duration)} ·{' '}
+                {r.masterReferenceMemory?.bpm ?? r.analysis?.bpm ?? 120} BPM ·{' '}
                 {r.masterReferenceMemory?.musicalKey || 'Detectado'} ·{' '}
-                {r.masterReferenceMemory?.chords.length ?? 0} acordes extraídos del Master)
+                {r.masterReferenceMemory?.chords.length ?? 0} acordes
               </span>
-              <span className="text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-md">
-                ✓ El sistema detecta en el Master y reemplaza/exporta SOLO sobre tu Stem ({r.stemTitle || 'Drums / Bass'})
+              <span className="text-[10.5px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                ✓ Detecta en Master · Exporta solo tu Stem ({r.stemTitle || 'Drums / Bass'})
               </span>
             </div>
           ) : (
-            <span className="text-[11px] text-slate-400">
-              💡 <strong className="text-amber-300">¿Tu stem de Batería o Bajo salió sucio o perdió golpes por separación IA?</strong> Agrega aquí el <strong className="text-white">Audio Master</strong>: el sistema identificará al 100% Kick, Snare/Snake, Hi-Hat, Crash, Bajo y Acordes desde el Master y trabajará luego sobre tu archivo de Solo Drums o Solo Bass.
+            <span className="text-[11px] text-zinc-500">
+              ¿Tu stem de Batería o Bajo salió sucio o perdió golpes por separación IA? Agrega aquí el{' '}
+              <strong className="text-zinc-300 font-medium">Audio Master</strong> para detectar con precisión y trabajar sobre tu stem aislado.
             </span>
           )}
 
           {r.masterReferenceBuffer && (
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10.5px] text-slate-400">Modo Guía:</span>
+              <span className="text-[10.5px] text-zinc-500">Modo Guía:</span>
               <select
                 value={r.detectionSourceMode}
                 onChange={(e) =>
                   void r.changeDetectionSourceMode(e.target.value as DetectionSourceMode)
                 }
-                className="bg-slate-950 border border-amber-500/50 rounded-lg px-2 py-1 text-[11px] text-amber-300 font-bold cursor-pointer"
+                className="bg-[#0B0B0D] border border-white/[0.1] rounded-lg px-2 py-1 text-[11px] text-zinc-200 font-medium cursor-pointer"
                 title="Elige cómo el Audio Master guía la detección sobre tu Stem de Batería o Bajo"
               >
                 <option value="auto-hybrid">
-                  Fusión Master + Stem (Recomendado · Rescata ataques y filtra voz)
+                  Fusión Master + Stem (Recomendado)
                 </option>
                 <option value="master-only">
-                  100% desde Master (Rescate total si el Stem está muy roto)
+                  100% desde Master (Rescate total)
                 </option>
                 <option value="stem-only">Solo Stem Actual (Ignorar Master)</option>
               </select>
@@ -1332,12 +1334,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
       {/* STATUS & PROGRESS BANNER */}
       {(r.statusMessage || r.isAnalyzing || r.isLoadingStem || r.isTranscribingAi) && (
-        <div className="rounded-xl bg-slate-900/90 border border-[#00E5FF]/35 px-3 py-2 text-xs font-mono text-[#00E5FF] flex items-center justify-between gap-2">
+        <div className="rounded-xl bg-[#141418] border border-white/[0.1] px-3.5 py-2 text-xs text-zinc-200 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {(r.isAnalyzing || r.isLoadingStem || r.isRendering || r.isTranscribingAi) && (
-              <Loader2 size={14} className="animate-spin shrink-0" />
+              <Loader2 size={14} className="animate-spin shrink-0 text-zinc-300" />
             )}
-            <span>
+            <span className="font-mono text-[11.5px]">
               {r.isLoadingStem
                 ? 'Cargando stem...'
                 : r.isTranscribingAi
@@ -1351,7 +1353,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             <button
               type="button"
               onClick={() => r.setStatusMessage(null)}
-              className="text-slate-500 hover:text-white cursor-pointer"
+              className="text-zinc-500 hover:text-white cursor-pointer"
             >
               ✕
             </button>
@@ -1361,12 +1363,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
       {/* STORED PRE-IMPORT TEMPO & CHORDS MEMORY STRIP */}
       {r.importedMemory && (
-        <div className="rounded-xl bg-slate-950/95 border border-violet-500/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono shadow-sm">
+        <div className="rounded-2xl bg-[#121215] border border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-violet-300 font-bold mr-1">
-              Tempo & Memoria:{' '}
+            <span className="text-zinc-400 font-medium mr-1">
+              Tempo & Armonía
             </span>
-            <div className="inline-flex items-center gap-1 bg-slate-900 border border-[#00E5FF]/50 rounded-lg px-1.5 py-0.5">
+            <div className="inline-flex items-center gap-1 bg-[#0B0B0D] border border-white/[0.1] rounded-lg px-2 py-0.5 font-mono">
               <input
                 type="number"
                 min={40}
@@ -1385,47 +1387,49 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.currentTarget.blur();
                 }}
-                className="w-14 bg-transparent text-[#00E5FF] font-bold text-center focus:outline-none"
+                className="w-12 bg-transparent text-zinc-100 font-semibold text-center focus:outline-none"
                 title="BPM del stem (editable manualmente)"
               />
-              <span className="text-[10px] text-[#00E5FF] font-bold">BPM</span>
+              <span className="text-[10px] text-zinc-500">BPM</span>
+            </div>
+            <div className="inline-flex items-center bg-[#0B0B0D] border border-white/[0.07] rounded-lg p-0.5 font-mono text-[10px]">
+              <button
+                type="button"
+                onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm - 1)}
+                className="px-1.5 py-0.5 rounded hover:bg-[#222228] text-zinc-400 hover:text-white cursor-pointer"
+                title="Restar 1 BPM"
+              >
+                −1
+              </button>
+              <button
+                type="button"
+                onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm + 1)}
+                className="px-1.5 py-0.5 rounded hover:bg-[#222228] text-zinc-400 hover:text-white cursor-pointer"
+                title="Sumar 1 BPM"
+              >
+                +1
+              </button>
+              <button
+                type="button"
+                onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm * 0.5)}
+                className="px-1.5 py-0.5 rounded hover:bg-[#222228] text-zinc-400 hover:text-white cursor-pointer"
+                title="Mitad del tempo (÷2)"
+              >
+                ÷2
+              </button>
+              <button
+                type="button"
+                onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm * 2)}
+                className="px-1.5 py-0.5 rounded hover:bg-[#222228] text-zinc-400 hover:text-white cursor-pointer"
+                title="Doble tempo (×2)"
+              >
+                ×2
+              </button>
             </div>
             <button
               type="button"
-              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm - 1)}
-              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
-              title="Restar 1 BPM"
-            >
-              -1
-            </button>
-            <button
-              type="button"
-              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm + 1)}
-              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
-              title="Sumar 1 BPM"
-            >
-              +1
-            </button>
-            <button
-              type="button"
-              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm * 0.5)}
-              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
-              title="Mitad del tempo (÷2)"
-            >
-              ÷2
-            </button>
-            <button
-              type="button"
-              onClick={() => void r.updateImportedTempo(r.importedMemory!.bpm * 2)}
-              className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-300 cursor-pointer"
-              title="Doble tempo (×2)"
-            >
-              ×2
-            </button>
-            <button
-              type="button"
               onClick={handleTapTempo}
-              className="px-2 py-0.5 rounded bg-[#FF6B00]/15 hover:bg-[#FF6B00]/30 border border-[#FF6B00]/50 text-[#FF6B00] text-[10px] font-bold cursor-pointer"
+              className="px-2.5 py-1 rounded-lg bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-orange-300 text-[10.5px] font-medium cursor-pointer"
               title="Pulsa 3 o más veces al ritmo de la batería para fijar el tempo"
             >
               Tap BPM
@@ -1434,38 +1438,37 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               disabled={!r.originalBuffer || r.isAnalyzing}
               onClick={() => void r.reDetectTempoFromDrums()}
-              className="px-2 py-0.5 rounded bg-[#00E5FF]/15 hover:bg-[#00E5FF]/30 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-bold cursor-pointer disabled:opacity-40"
+              className="px-2.5 py-1 rounded-lg bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-200 text-[10.5px] font-medium cursor-pointer disabled:opacity-40"
               title="Aísla los golpes de Bombo y Caja eliminando suciedad/sangrado para recalcular el BPM exacto"
             >
-              Re-Detectar Tempo Batería
-            </button>{' '}
-            <span className="px-2 py-0.5 rounded bg-slate-900 border border-emerald-500/45 text-emerald-300 font-bold">
-              Tono:{' '}
+              Re-Detectar Tempo
+            </button>
+            <span className="px-2 py-0.5 rounded-md bg-[#1A1A1F] border border-white/[0.07] text-zinc-200 font-mono text-[10.5px]">
               {!r.importedMemory.isTonal ||
               r.importedMemory.musicalKey.endsWith('m') ||
               r.importedMemory.musicalKey.toLowerCase().includes('major')
                 ? r.importedMemory.musicalKey
                 : `${r.importedMemory.musicalKey} major`}
-            </span>{' '}
+            </span>
             {r.importedMemory.camelotKey && (
-              <span className="px-2 py-0.5 rounded bg-slate-900 border border-amber-500/45 text-amber-300 font-bold">
-                Camelot: {r.importedMemory.camelotKey}
+              <span className="px-2 py-0.5 rounded-md bg-[#1A1A1F] border border-white/[0.07] text-zinc-400 font-mono text-[10.5px]">
+                {r.importedMemory.camelotKey}
               </span>
-            )}{' '}
+            )}
             {(r.importedMemory.downbeats?.length ?? 0) > 0 && (
-              <span className="px-2 py-0.5 rounded bg-slate-900 border border-cyan-500/35 text-cyan-200 font-bold">
-                Grilla: {r.importedMemory.downbeats!.length} comp.
+              <span className="px-2 py-0.5 rounded-md bg-[#1A1A1F] border border-white/[0.07] text-zinc-400 font-mono text-[10.5px]">
+                {r.importedMemory.downbeats!.length} comp.
               </span>
-            )}{' '}
+            )}
             {r.importedMemory.chords.length > 0 ? (
               <>
-                <span className="text-slate-400 ml-1">Acordes: </span>
+                <span className="text-zinc-500 ml-1">Acordes:</span>
                 {r.importedMemory.chords.slice(0, 16).map((ch) => (
                   <button
                     key={ch.id}
                     type="button"
                     onClick={() => r.seekToSec(ch.startSec)}
-                    className="px-2 py-0.5 rounded bg-violet-500/15 hover:bg-violet-500/35 border border-violet-500/50 text-violet-200 font-bold cursor-pointer transition-colors"
+                    className="px-2 py-0.5 rounded-md bg-[#1B1B22] hover:bg-[#282832] border border-white/[0.08] text-zinc-200 font-mono text-[10.5px] cursor-pointer transition-colors"
                     title={`Ir a ${ch.chord} (${ch.startSec.toFixed(2)}s–${ch.endSec.toFixed(2)}s · Sub ${ch.rootName})`}
                   >
                     {ch.chord}
@@ -1473,12 +1476,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 ))}
               </>
             ) : (
-              <span className="text-slate-400">· {r.importedMemory.chordProgressionSummary}</span>
+              <span className="text-zinc-500">· {r.importedMemory.chordProgressionSummary}</span>
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 text-[10.5px]">
-            <span className="text-slate-400">Cuantizar al Tempo:</span>
+          <div className="flex items-center gap-1.5 text-[11px]">
+            <span className="text-zinc-500">Cuantizar:</span>
             <select
               value={r.quantizeMode}
               onChange={(e) =>
@@ -1486,7 +1489,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   e.target.value as 'off' | 'soft' | 'grid-16' | 'grid-8'
                 )
               }
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-0.5 text-[#00E5FF] font-bold cursor-pointer"
+              className="bg-[#0B0B0D] border border-white/[0.08] rounded-lg px-2 py-1 text-zinc-200 font-medium cursor-pointer"
               title="Alinea el sampleo de golpes/notas al tempo y fase detectados en memoria"
             >
               <option value="soft">Suave (Auto-Sync)</option>
@@ -1499,52 +1502,15 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       )}
 
       {/* STEP 2: FULL-STEM ANALYSIS CONTROLS + REPLICATE AI MIDI + LARGE STUDIO WORKSTATION EDITOR */}
-      <div
-        className={
-          editorSizeMode === 'fullscreen'
-            ? 'fixed inset-0 z-50 bg-[#030611]/98 backdrop-blur-xl p-3 md:p-4 overflow-y-auto studio-scrollbar flex flex-col gap-2.5'
-            : 'rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3.5 transition-[padding,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]'
-        }
-      >
-        {editorSizeMode === 'fullscreen' && (
-          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800/90">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#FF6B00] to-[#00E5FF] flex items-center justify-center text-slate-950 font-black">
-                <Disc3 size={17} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm md:text-base font-mono font-black tracking-tight text-white">
-                    WORKSTATION DE EDICIÓN DE BATERÍA & PARTES MIDI
-                  </h2>
-                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-mono font-bold">
-                    MODO ESTUDIO PANTALLA COMPLETA
-                  </span>
-                </div>
-                <p className="text-[11px] font-mono text-slate-400">
-                  {r.stemTitle || 'Pista activa'} · Edita cada Kick, Snare, Tom (High/Mid/Floor), Hi-Hat y Crash con precisión sub-milisegundo · Pulsa ESC para volver
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setEditorSizeMode('large')}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-[#00E5FF]/60 text-[#00E5FF] text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition-[transform,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95"
-            >
-              <Minimize2 size={13} />
-              <span>Salir de Pantalla Completa (ESC)</span>
-            </button>
-          </div>
-        )}
-
+      <div className="rounded-2xl bg-[#121215] border border-white/[0.08] p-4 shadow-[0_14px_40px_rgba(0,0,0,0.45)] flex flex-col gap-3.5">
         {/* REPLICATE AI NEURAL AUDIO-TO-MIDI & BEAT BAR */}
-        <div className="shrink-0 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-[#00E5FF]/45 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-[11px] font-mono shadow-md">
+        <div className="rounded-xl bg-[#0C0C0F] border border-white/[0.07] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-[11px]">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               disabled={!r.originalBuffer || r.isTranscribingAi || r.isLoadingStem}
               onClick={() => void r.runReplicateAiMidiTranscription()}
-              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-[0_0_18px_rgba(0,229,255,0.28)] disabled:opacity-40 transition-[transform,filter] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95"
+              className="px-3.5 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-all"
               title="Ejecuta Google Magenta MT3 (Audio → General MIDI Canal 10) + Harmonix All-In-One Beat AI en GPU NVIDIA A100 de Replicate y fusiona con picos acústicos 48kHz"
             >
               {r.isTranscribingAi ? (
@@ -1554,21 +1520,21 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               )}
               <span>
                 {r.isTranscribingAi
-                  ? 'Procesando MIDI con IA Replicate...'
-                  : '✨ IA Replicate: Reconocer Batería → MIDI + Tempo (MT3)'}
+                  ? 'Procesando MIDI con IA...'
+                  : 'IA Replicate: Batería → MIDI + Tempo (MT3)'}
               </span>
             </button>
 
             {r.stemMode === 'drums' && (
               <label
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-700 text-[10.5px] text-slate-200 cursor-pointer hover:border-[#00E5FF]/50"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#16161B] border border-white/[0.07] text-[11px] text-zinc-300 cursor-pointer hover:border-white/[0.15]"
                 title="Si subiste una canción completa o mezcla muy sucia, Demucs v4 aísla la batería primero en Replicate antes de convertir cada golpe a MIDI con MT3"
               >
                 <input
                   type="checkbox"
                   checked={r.isolateDrumsWithDemucs}
                   onChange={(e) => r.setIsolateDrumsWithDemucs(e.target.checked)}
-                  className="accent-[#00E5FF]"
+                  className="accent-zinc-100"
                 />
                 <span>Aislar Batería 1° (Demucs IA)</span>
               </label>
@@ -1576,19 +1542,19 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
             {r.analysis?.analysisEngine && (
               <span
-                className={`px-2 py-0.5 rounded-lg border text-[10px] font-bold ${
+                className={`px-2.5 py-0.5 rounded-lg border text-[10.5px] font-mono ${
                   r.analysis.analysisEngine === 'replicate-mt3'
-                    ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                    ? 'bg-emerald-500/12 border-emerald-500/30 text-emerald-300'
                     : r.analysis.analysisEngine === 'midi-import'
-                    ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
-                    : 'bg-slate-950 border-slate-700 text-slate-300'
+                    ? 'bg-amber-500/12 border-amber-500/30 text-amber-300'
+                    : 'bg-[#17171C] border-white/[0.08] text-zinc-400'
                 }`}
               >
                 {r.analysis.analysisEngine === 'replicate-mt3'
-                  ? '✓ Motor: IA Replicate MT3 MIDI + Acústico 48kHz'
+                  ? '✓ Motor: IA Replicate MT3 + 48kHz'
                   : r.analysis.analysisEngine === 'midi-import'
-                  ? '✓ Motor: Archivo MIDI (.mid) Sincronizado'
-                  : '⚡ Motor: DSP Polifónico 6-Bandas → MIDI'}
+                  ? '✓ Motor: Archivo MIDI (.mid)'
+                  : '⚡ Motor: DSP 6-Bandas → MIDI'}
               </span>
             )}
           </div>
@@ -1598,40 +1564,40 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               disabled={!r.analysis}
               onClick={() => r.exportCurrentMidiFile(saveStemName || r.stemTitle)}
-              className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+              className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-200 font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
               title="Descargar archivo MIDI estándar (.mid) con Kick (36), Snare (38), Toms (43/47/50), Hi-Hat (42/46) y Crash (49)"
             >
               <Download size={12} />
-              <span>Exportar MIDI (.mid)</span>
+              <span>Exportar MIDI</span>
             </button>
 
             <button
               type="button"
               onClick={() => midiFileInputRef.current?.click()}
-              className="px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-slate-800 border border-amber-500/50 text-amber-300 font-bold flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-200 font-medium flex items-center gap-1 cursor-pointer transition-colors"
               title="Importar un archivo .mid desde tu PC para disparar tus muestras propias de reemplazo"
             >
               <Upload size={12} />
-              <span>Importar MIDI (.mid)</span>
+              <span>Importar MIDI</span>
             </button>
 
             <button
               type="button"
               onClick={() => setShowReplicateTokenBar((v) => !v)}
-              className="px-2 py-1 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white cursor-pointer text-[10px]"
+              className="px-2.5 py-1.5 rounded-xl bg-[#16161B] hover:bg-[#222228] border border-white/[0.07] text-zinc-400 hover:text-white cursor-pointer text-[10.5px]"
               title="Configurar o verificar tu API Token de Replicate (r8_...)"
             >
               {r.replicateApiKey || import.meta.env.VITE_REPLICATE_API_TOKEN
-                ? '🔑 Replicate: Conectado'
-                : '🔑 Configurar Replicate'}
+                ? 'Replicate: Conectado'
+                : 'Configurar Replicate'}
             </button>
           </div>
         </div>
 
         {showReplicateTokenBar && (
-          <div className="shrink-0 rounded-xl bg-slate-950 border border-[#00E5FF]/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-            <span className="text-slate-300">
-              Token Replicate API (<code className="text-[#00E5FF]">r8_...</code> · o configurado en{' '}
+          <div className="rounded-xl bg-[#0B0B0D] border border-white/[0.1] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="text-zinc-400">
+              Token Replicate API (<code className="text-zinc-200">r8_...</code> · o en{' '}
               <code className="text-emerald-300">.env</code>):
             </span>
             <div className="flex items-center gap-2 flex-1 max-w-md">
@@ -1641,10 +1607,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onChange={(e) => setTokenDraft(e.target.value)}
                 placeholder={
                   import.meta.env.VITE_REPLICATE_API_TOKEN
-                    ? 'Usando VITE_REPLICATE_API_TOKEN de .env (opcional sobreescribir)...'
+                    ? 'Usando VITE_REPLICATE_API_TOKEN de .env (opcional)...'
                     : 'Pega tu token r8_...'
                 }
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white focus:border-[#00E5FF] focus:outline-none"
+                className="flex-1 bg-[#141418] border border-white/[0.1] rounded-lg px-2.5 py-1 text-xs text-white focus:border-white/25 focus:outline-none"
               />
               <button
                 type="button"
@@ -1652,7 +1618,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   r.saveReplicateApiKey(tokenDraft);
                   setShowReplicateTokenBar(false);
                 }}
-                className="px-2.5 py-1 rounded-lg bg-[#00E5FF] text-slate-950 font-bold cursor-pointer"
+                className="px-3 py-1 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-semibold cursor-pointer"
               >
                 Guardar
               </button>
@@ -1660,8 +1626,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           </div>
         )}
 
-        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-slate-800">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
+          <div className="flex flex-wrap items-center gap-1 bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-1">
             {MODE_LABELS.map((m) => {
               const active = r.stemMode === m.id;
               return (
@@ -1669,10 +1635,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   key={m.id}
                   type="button"
                   onClick={() => void r.changeStemModeAndReanalyze(m.id)}
-                  className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-mono font-bold cursor-pointer transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                  className={`px-3 py-1 rounded-lg text-[11px] font-medium cursor-pointer transition-all ${
                     active
-                      ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950'
-                      : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-white'
+                      ? 'bg-[#26262E] text-white font-semibold shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
                   }`}
                   title={m.hint}
                 >
@@ -1682,14 +1648,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             })}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
-            {/* Workspace Size Selector (Compacta / Grande XL / Pantalla Completa DAW) */}
-            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-0.5">
-              <span className="px-2 text-[10px] text-slate-400 hidden sm:inline">Ambiente:</span>
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            {/* Workspace Size Selector (Compacto / Grande XL / Pantalla Completa MIDI) */}
+            <div className="flex items-center bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-0.5">
+              <span className="px-2 text-[10.5px] text-zinc-500 hidden sm:inline">Vista:</span>
               {(
                 [
                   { id: 'compact', label: 'Compacto' },
-                  { id: 'large', label: 'Grande XL' },
+                  { id: 'large', label: 'Grande' },
                   { id: 'fullscreen', label: 'Pantalla Completa' },
                 ] as const
               ).map((sz) => {
@@ -1698,13 +1664,18 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     key={sz.id}
                     type="button"
-                    onClick={() => setEditorSizeMode(sz.id)}
-                    className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold flex items-center gap-1 cursor-pointer transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                    onClick={() => {
+                      if (sz.id === 'fullscreen') {
+                        setShowMidiRoll(true);
+                      }
+                      setEditorSizeMode(sz.id);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[10.5px] font-medium flex items-center gap-1 cursor-pointer transition-all ${
                       active
-                        ? 'bg-[#00E5FF] text-slate-950 shadow-sm'
-                        : 'text-slate-300 hover:text-white'
+                        ? 'bg-zinc-100 text-zinc-950 font-semibold shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-100'
                     }`}
-                    title={`Cambiar tamaño del ambiente de edición a ${sz.label}`}
+                    title={`Cambiar vista del editor MIDI a ${sz.label}`}
                   >
                     {sz.id === 'fullscreen' && <Maximize2 size={10} />}
                     <span>{sz.label}</span>
@@ -1713,8 +1684,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               })}
             </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1">
-              <span className="text-slate-400">Sensibilidad:</span>
+            <div className="flex items-center gap-1.5 bg-[#0B0B0D] border border-white/[0.07] rounded-xl px-2.5 py-1">
+              <span className="text-zinc-500">Sensibilidad:</span>
               <input
                 type="range"
                 min={0.2}
@@ -1722,21 +1693,21 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 step={0.05}
                 value={r.sensitivity}
                 onChange={(e) => r.setSensitivity(Number(e.target.value))}
-                className="w-16 accent-[#FF6B00] h-1 cursor-pointer"
+                className="w-16 accent-zinc-200 h-1 cursor-pointer"
               />
-              <span className="text-[#FF6B00] tabular-nums">{Math.round(r.sensitivity * 100)}%</span>
+              <span className="text-zinc-200 font-mono tabular-nums">{Math.round(r.sensitivity * 100)}%</span>
             </div>
 
             {r.stemMode === 'polyphonic' && (
-              <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl px-2 py-1">
-                <span className="text-slate-400">Polifonía máx:</span>
+              <div className="flex items-center gap-1 bg-[#0B0B0D] border border-white/[0.07] rounded-xl px-2.5 py-1">
+                <span className="text-zinc-500">Polifonía:</span>
                 <select
                   value={r.maxPolyphony}
                   onChange={(e) => r.setMaxPolyphony(Number(e.target.value))}
-                  className="bg-transparent text-white font-bold focus:outline-none"
+                  className="bg-transparent text-zinc-100 font-medium focus:outline-none"
                 >
                   {[2, 3, 4, 5, 6].map((n) => (
-                    <option key={n} value={n} className="bg-slate-950">
+                    <option key={n} value={n} className="bg-[#121215]">
                       {n} notas
                     </option>
                   ))}
@@ -1747,12 +1718,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             <button
               type="button"
               onClick={() => setShowMidiRoll((v) => !v)}
-              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer transition-all ${
+              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-medium cursor-pointer transition-all ${
                 showMidiRoll
-                  ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300'
-                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                  ? 'bg-[#222228] border-white/[0.16] text-zinc-100'
+                  : 'bg-[#0B0B0D] border-white/[0.07] text-zinc-500 hover:text-zinc-200'
               }`}
-              title="Mostrar/ocultar Editor MIDI con Scroll Avanzado Horizontal y Vertical (Batería 5/9 Pistas o Piano Roll Melódico)"
+              title="Mostrar/ocultar Editor MIDI con Scroll Avanzado Horizontal y Vertical"
             >
               Editor MIDI {showMidiRoll ? 'ON' : 'OFF'}
             </button>
@@ -1760,12 +1731,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             <button
               type="button"
               onClick={() => setShowBeatGrid((v) => !v)}
-              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer transition-all ${
+              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-medium cursor-pointer transition-all ${
                 showBeatGrid
-                  ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 text-[#00E5FF]'
-                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                  ? 'bg-[#222228] border-white/[0.16] text-zinc-100'
+                  : 'bg-[#0B0B0D] border-white/[0.07] text-zinc-500 hover:text-zinc-200'
               }`}
-              title="Mostrar/ocultar grilla musical de compases, pulsos y acordes sobre la forma de onda y pistas MIDI"
+              title="Mostrar/ocultar grilla musical de compases, pulsos y acordes"
             >
               Grilla {showBeatGrid ? 'ON' : 'OFF'}
             </button>
@@ -1774,7 +1745,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               type="button"
               disabled={!r.originalBuffer || r.isAnalyzing}
               onClick={() => void r.reanalyzeCurrentStem()}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+              className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.1] text-zinc-200 font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40"
             >
               <Activity size={12} />
               <span>Re-Analizar</span>
@@ -1783,14 +1754,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         </div>
 
         {/* Interactive Waveform & Detected Hits/Notes Overlay + Dedicated Horizontal Scrollbar */}
-        <div className="shrink-0 w-full rounded-xl overflow-hidden border border-slate-800 bg-[#040711] flex flex-col">
+        <div className="shrink-0 w-full rounded-xl overflow-hidden border border-white/[0.08] bg-[#0A0A0C] flex flex-col">
           <div
-            className={`relative w-full transition-[height] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-              editorSizeMode === 'fullscreen'
-                ? 'h-36 md:h-44'
-                : editorSizeMode === 'large'
-                ? 'h-52'
-                : 'h-40'
+            className={`relative w-full transition-[height] duration-200 ${
+              editorSizeMode === 'large' ? 'h-48' : 'h-36'
             }`}
           >
             <canvas
@@ -1809,30 +1776,30 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               title="Haz clic para saltar al segundo exacto · Arrastra para moverte cuando haya zoom · Rueda para Zoom · Shift+Rueda para Scroll Horizontal"
             />
             {r.analysis && (
-              <div className="absolute top-2.5 right-2.5 flex flex-wrap gap-1.5 pointer-events-none text-[10.5px] font-mono tabular-nums">
-                <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-slate-700 text-white font-bold shadow">
+              <div className="absolute top-2.5 right-2.5 flex flex-wrap gap-1.5 pointer-events-none text-[10px] font-mono tabular-nums">
+                <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-white/[0.1] text-zinc-200 font-medium">
                   {r.analysis.bpm} BPM · {r.analysis.durationSec.toFixed(2)}s
                 </span>
                 {r.analysis.mode === 'drums' ? (
                   <>
-                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#FF6B00]/60 text-[#FF6B00] font-bold">
-                      KICK: {r.analysis.counts.kick}
+                    <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-orange-400/35 text-orange-300 font-medium">
+                      KICK {r.analysis.counts.kick}
                     </span>
-                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-[#00E5FF]/60 text-[#00E5FF] font-bold">
-                      SNARE: {r.analysis.counts.snare}
+                    <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-cyan-400/35 text-cyan-300 font-medium">
+                      SNARE {r.analysis.counts.snare}
                     </span>
-                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/60 text-emerald-400 font-bold">
-                      TOMS: {r.analysis.counts.tom}
+                    <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-emerald-400/35 text-emerald-300 font-medium">
+                      TOMS {r.analysis.counts.tom}
                     </span>
-                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-amber-500/60 text-amber-400 font-bold">
-                      HI-HAT: {r.analysis.counts.hat}
+                    <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-amber-400/35 text-amber-300 font-medium">
+                      HAT {r.analysis.counts.hat}
                     </span>
-                    <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-pink-500/60 text-pink-400 font-bold">
-                      CRASH: {r.analysis.counts.crash}
+                    <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-pink-400/35 text-pink-300 font-medium">
+                      CRASH {r.analysis.counts.crash}
                     </span>
                   </>
                 ) : (
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/92 border border-emerald-500/50 text-emerald-300 font-bold">
+                  <span className="px-2 py-0.5 rounded-md bg-[#09090B]/90 border border-emerald-500/30 text-emerald-300 font-medium">
                     {r.analysis.counts.notes} notas{' '}
                     {r.analysis.midiRange
                       ? `(${r.analysis.midiRange.minName}–${r.analysis.midiRange.maxName})`
@@ -1842,6 +1809,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </div>
             )}
           </div>
+
 
           {/* Dedicated Always-Visible Horizontal Scrollbar for Waveform ("Batería (Golpes + MIDI)" / Melódico / Polifónico) */}
           {duration > 0 && (
@@ -1921,7 +1889,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           )}
         </div>
 
-        {/* LARGE MIDI WORKSTATION WITH ADVANCED HORIZONTAL & VERTICAL SCROLL + MINIMAP (DRUMS 5/9-GM & MELODIC PIANO ROLL) */}
+        {/* LARGE MIDI WORKSTATION WITH ADVANCED HORIZONTAL & VERTICAL SCROLL + MINIMAP + FULLSCREEN PORTAL */}
         {showMidiRoll && r.analysis && duration > 0 && (
           <MidiTimelineWorkstation
             replacer={r}
@@ -1949,16 +1917,16 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         )}
 
         {/* Playback Transport + Phase-Locked A/B Comparison + Zoom */}
-        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
               disabled={!r.originalBuffer}
               onClick={r.togglePlayback}
-              className={`px-3.5 py-1.5 rounded-xl font-mono text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-all duration-200 ${
+              className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 cursor-pointer disabled:opacity-40 transition-all duration-150 ${
                 r.isPlaying
-                  ? 'bg-[#FF6B00] text-slate-950'
-                  : 'bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/60 text-[#FF6B00]'
+                  ? 'bg-zinc-100 text-zinc-950 shadow-md'
+                  : 'bg-[#24242A] hover:bg-[#313139] border border-white/[0.12] text-zinc-100'
               }`}
             >
               {r.isPlaying ? (
@@ -1969,19 +1937,20 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <span>{r.isPlaying ? 'Detener' : 'Escuchar Pista'}</span>
             </button>
 
-            <span className="text-xs font-mono text-slate-300 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 tabular-nums">
-              {formatTime(r.currentTimeSec)} / {formatTime(duration)}
+            <span className="text-xs font-mono text-zinc-300 px-2.5 py-1 rounded-xl bg-[#0B0B0D] border border-white/[0.07] tabular-nums">
+              {formatTime(r.currentTimeSec)} <span className="text-zinc-600">/</span>{' '}
+              {formatTime(duration)}
             </span>
 
             {/* Real-time A/B Toggle */}
-            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-0.5 text-xs font-mono">
+            <div className="flex items-center bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-0.5 text-xs">
               <button
                 type="button"
                 onClick={() => r.setAbMode('original')}
-                className={`px-3 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                className={`px-3 py-1 rounded-lg font-medium cursor-pointer transition-colors ${
                   r.abMode === 'original'
-                    ? 'bg-slate-700 text-white'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-[#26262E] text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 A: Stem Original
@@ -1989,10 +1958,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => r.setAbMode('replaced')}
-                className={`px-3 py-1 rounded-lg font-bold cursor-pointer transition-colors flex items-center gap-1 ${
+                className={`px-3 py-1 rounded-lg font-medium cursor-pointer transition-colors flex items-center gap-1 ${
                   r.abMode === 'replaced'
-                    ? 'bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-zinc-100 text-zinc-950 font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 <Sparkles size={11} />
@@ -2002,9 +1971,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
             {/* Optional Master Context Audition in Laboratory (never mixed into export) */}
             {r.masterReferenceBuffer && (
-              <div className="flex items-center gap-1.5 bg-slate-950 border border-amber-500/40 rounded-xl px-2.5 py-1 text-[11px] font-mono">
+              <div className="flex items-center gap-2 bg-[#17171C] border border-white/[0.08] rounded-xl px-2.5 py-1 text-[11px]">
                 <label
-                  className="flex items-center gap-1.5 cursor-pointer text-amber-300 font-bold"
+                  className="flex items-center gap-1.5 cursor-pointer text-amber-300/90 font-medium"
                   title="Escucha en el Laboratorio cómo empasta tu nuevo Stem de Batería o Bajo junto con el Master de referencia (el Master NO se incluye al exportar)"
                 >
                   <input
@@ -2013,7 +1982,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) => r.setListenWithMasterContext(e.target.checked)}
                     className="accent-amber-400"
                   />
-                  <span>🎧 Probar con Master</span>
+                  <span>Probar con Master</span>
                 </label>
                 {r.listenWithMasterContext && (
                   <>
@@ -2027,7 +1996,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                       className="w-14 accent-amber-400 h-1 cursor-pointer"
                       title="Volumen de referencia del Master en el Laboratorio"
                     />
-                    <span className="text-[10px] text-amber-200 tabular-nums">
+                    <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
                       {r.masterContextVolumePct}%
                     </span>
                   </>
@@ -2039,28 +2008,28 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => r.toggleSoloDrumRole(r.soloDrumRole!)}
-                className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-500 text-amber-300 text-[10.5px] font-mono font-bold cursor-pointer"
+                className="px-2.5 py-1 rounded-xl bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[11px] font-medium cursor-pointer"
                 title="Haz clic para desactivar SOLO y escuchar todo el kit (al exportar siempre se exporta el kit completo)"
               >
-                SOLO ACTIVO: {r.soloDrumRole.toUpperCase()} (Clic para Todo)
+                SOLO: {r.soloDrumRole.toUpperCase()} (Clic para Todo)
               </button>
             )}
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
+          <div className="flex items-center gap-1 bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-1 text-xs font-mono">
             <button
               type="button"
-              onClick={() => applyHorizontalZoom(zoom / 1.5)}
-              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+onClick={() => applyHorizontalZoom(zoom / 1.5)}
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title="Alejar zoom"
             >
               <ZoomOut size={13} />
             </button>
-            <span className="px-1.5 text-[#00E5FF] font-bold tabular-nums">{zoom.toFixed(1)}x</span>
+            <span className="px-1.5 text-zinc-200 font-semibold tabular-nums">{zoom.toFixed(1)}x</span>
             <button
               type="button"
-              onClick={() => applyHorizontalZoom(zoom * 1.5)}
-              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+onClick={() => applyHorizontalZoom(zoom * 1.5)}
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title="Acercar zoom"
             >
               <ZoomIn size={13} />
@@ -2069,11 +2038,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 key={presetZ}
                 type="button"
-                onClick={() => applyHorizontalZoom(presetZ)}
-                className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
+onClick={() => applyHorizontalZoom(presetZ)}
+                className={`px-1.5 py-0.5 rounded-md text-[10px] cursor-pointer transition-colors ${
                   Math.abs(zoom - presetZ) < 0.25
-                    ? 'bg-[#00E5FF] text-slate-950 font-bold'
-                    : 'bg-slate-900 text-slate-400 hover:text-white'
+                    ? 'bg-zinc-100 text-zinc-950 font-bold'
+                    : 'bg-[#17171B] text-zinc-400 hover:text-white'
                 }`}
                 title={`Zoom rápido ${presetZ}x para editar golpes con mayor separación`}
               >
@@ -2087,7 +2056,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   setZoom(1);
                   setScrollNorm(0);
                 }}
-                className="px-1.5 py-0.5 rounded bg-slate-900 text-[10px] text-slate-300 hover:text-white cursor-pointer"
+                className="px-1.5 py-0.5 rounded-md bg-[#17171B] text-[10px] text-zinc-300 hover:text-white cursor-pointer"
                 title="Restablecer zoom 1x"
               >
                 1x
@@ -2098,29 +2067,29 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       </div>
 
       {/* STEP 3 & 4: REPLACEMENT SAMPLE SLOTS + MIX & SUPABASE SAVE */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-3.5">
-        {/* Replacement Sample Selector (Drums 4 Slots OR Guitar/Piano/Bass Slot) */}
-        <div className="xl:col-span-8 rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-lg flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        {/* Replacement Sample Selector (Drums 5 Slots OR Guitar/Piano/Bass Slot) */}
+        <div className="xl:col-span-8 rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
             <div className="flex items-center gap-2">
               {r.stemMode === 'drums' ? (
-                <Disc3 size={16} className="text-[#FF6B00]" />
+                <Disc3 size={16} className="text-orange-400" />
               ) : (
-                <Guitar size={16} className="text-[#00E5FF]" />
+                <Guitar size={16} className="text-zinc-300" />
               )}
-              <h3 className="text-xs font-mono font-bold uppercase text-white">
+              <h3 className="text-xs font-semibold tracking-tight text-zinc-100">
                 {r.stemMode === 'drums'
-                  ? '3. Elige o Sube Tus Muestras de Reemplazo por Pieza'
-                  : '3. Elige o Sube Tu Propio Instrumento / Muestra para Reemplazar Conservando Notas'}
+                  ? '3. Muestras de Reemplazo por Pieza'
+                  : '3. Instrumento / Muestra de Reemplazo (Conservando Notas)'}
               </h3>
             </div>
 
             {/* Professional Custom Sample Upload & Library Action Bar */}
-            <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-mono">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => bankBatchFileInputRef.current?.click()}
-                className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#00E5FF] to-emerald-400 hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+                className="px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
                 title="Sube 1 o varios audios propios (WAV, MP3, FLAC, OGG, M4A) a tu Banco y asígnalos automáticamente"
               >
                 <Upload size={12} />
@@ -2130,10 +2099,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => setShowCustomBank((v) => !v)}
-                className={`px-2.5 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                className={`px-2.5 py-1.5 rounded-xl border font-medium flex items-center gap-1.5 cursor-pointer transition-all ${
                   showCustomBank
-                    ? 'bg-[#FF6B00]/15 border-[#FF6B00] text-[#FF6B00]'
-                    : 'bg-slate-950 border-slate-700 text-slate-200 hover:border-[#00E5FF]/50'
+                    ? 'bg-[#222228] border-white/[0.2] text-white'
+                    : 'bg-[#17171C] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                 }`}
               >
                 <FolderArchive size={12} />
@@ -2144,10 +2113,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowCloudSamplePicker((v) => !v)}
-                  className={`px-2.5 py-1.5 rounded-xl border font-bold flex items-center gap-1 cursor-pointer transition-all ${
+                  className={`px-2.5 py-1.5 rounded-xl border font-medium flex items-center gap-1 cursor-pointer transition-all ${
                     showCloudSamplePicker
-                      ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                      : 'bg-slate-950 border-slate-700 text-slate-300 hover:text-white'
+                      ? 'bg-[#222228] border-white/[0.2] text-white'
+                      : 'bg-[#17171C] border-white/[0.08] text-zinc-300 hover:text-white'
                   }`}
                   title="Importar una muestra o stem desde tus carpetas de Supabase como audio de reemplazo"
                 >
@@ -2161,7 +2130,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 <button
                   type="button"
                   onClick={r.resetAllSlotsToPresets}
-                  className="px-2 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-xl bg-[#17171C] hover:bg-[#222228] border border-white/[0.08] text-zinc-400 hover:text-white cursor-pointer"
                   title="Volver todas las piezas a muestras predeterminadas de estudio"
                 >
                   Restablecer Predet.
@@ -2172,17 +2141,17 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
           {/* Cloud Song Stem -> Custom Sample Quick Importer */}
           {showCloudSamplePicker && (
-            <div className="rounded-xl bg-slate-950 border border-[#00E5FF]/40 p-3 flex flex-col gap-2 text-xs font-mono">
+            <div className="rounded-xl bg-[#0B0B0D] border border-white/[0.1] p-3 flex flex-col gap-2 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[#00E5FF] font-bold">
+                <span className="text-zinc-200 font-medium">
                   Importar Audio de Reemplazo desde Tus Canciones (Supabase)
                 </span>
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-slate-400">Asignar a:</span>
+                  <span className="text-[10.5px] text-zinc-500">Asignar a:</span>
                   <select
                     value={cloudTargetRole}
                     onChange={(e) => setCloudTargetRole(e.target.value as CustomSampleCategory)}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white"
+                    className="bg-[#16161B] border border-white/[0.1] rounded-lg px-2 py-1 text-[11px] text-zinc-100"
                   >
                     <option value="kick">Kick (Bombo)</option>
                     <option value="snare">Snare / Snake (Caja)</option>
@@ -2194,7 +2163,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowCloudSamplePicker(false)}
-                    className="text-slate-400 hover:text-white cursor-pointer"
+                    className="text-zinc-500 hover:text-white cursor-pointer"
                   >
                     <X size={14} />
                   </button>
@@ -2216,12 +2185,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                         setShowCloudSamplePicker(false);
                         setShowCustomBank(true);
                       }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-[#00E5FF] text-left flex items-center justify-between gap-1 cursor-pointer"
+                      className="px-2.5 py-1.5 rounded-lg bg-[#141418] hover:bg-[#1E1E24] border border-white/[0.07] hover:border-white/[0.18] text-left flex items-center justify-between gap-1 cursor-pointer"
                     >
-                      <span className="truncate text-[10.5px] text-slate-200">
+                      <span className="truncate text-[11px] text-zinc-200">
                         {song.title} · {st.name}
                       </span>
-                      <Upload size={11} className="text-[#00E5FF] shrink-0" />
+                      <Upload size={11} className="text-zinc-400 shrink-0" />
                     </button>
                   ))
                 )}
@@ -2247,26 +2216,26 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   );
                 }
               }}
-              className={`rounded-xl border p-3 flex flex-col gap-2.5 text-xs font-mono transition-all ${
+              className={`rounded-xl border p-3.5 flex flex-col gap-2.5 text-xs transition-all ${
                 dragOverTarget === 'bank'
-                  ? 'bg-[#00E5FF]/10 border-[#00E5FF]'
-                  : 'bg-slate-950/90 border-slate-800'
+                  ? 'bg-white/[0.05] border-white/30'
+                  : 'bg-[#0C0C0F] border-white/[0.07]'
               }`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <FolderArchive size={14} className="text-[#FF6B00]" />
-                  <span className="font-bold text-white text-[11px]">
-                    BANCO DE TUS AUDIOS DE REEMPLAZO ({r.customSamples.length})
+                  <FolderArchive size={14} className="text-orange-400" />
+                  <span className="font-semibold text-zinc-100 text-[11.5px]">
+                    Banco de Tus Audios ({r.customSamples.length})
                   </span>
-                  <span className="text-[10px] text-slate-400 hidden sm:inline">
-                    · Arrastra archivos WAV/MP3/FLAC aquí o asígnalos directo a cualquier pieza
+                  <span className="text-[10.5px] text-zinc-500 hidden sm:inline">
+                    · Arrastra WAV/MP3/FLAC aquí o asígnalos directo a cualquier pieza
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => bankBatchFileInputRef.current?.click()}
-                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1 rounded-lg bg-[#1C1C22] hover:bg-[#26262E] border border-white/[0.1] text-zinc-200 text-[10.5px] font-medium flex items-center gap-1 cursor-pointer"
                 >
                   <Upload size={11} />
                   <span>+ Añadir Más Audios</span>
@@ -2274,9 +2243,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </div>
 
               {r.customSamples.length === 0 ? (
-                <div className="py-3 text-center text-[11px] text-slate-400 border border-dashed border-slate-800 rounded-lg">
+                <div className="py-4 text-center text-xs text-zinc-500 border border-dashed border-white/[0.09] rounded-xl">
                   Aún no has subido muestras propias. Pulsa{' '}
-                  <span className="text-[#00E5FF] font-bold">Subir Audios Propios</span> o arrastra tus WAVs aquí.
+                  <span className="text-zinc-200 font-medium">Subir Audios Propios</span> o arrastra tus WAVs aquí.
                 </div>
               ) : (
                 <div className="max-h-48 overflow-y-auto studio-scrollbar-thin space-y-1.5 pr-1">
@@ -2285,24 +2254,24 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     return (
                       <div
                         key={sample.id}
-                        className="rounded-lg bg-slate-900/90 border border-slate-800 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2"
+                        className="rounded-xl bg-[#141418] border border-white/[0.07] px-3 py-2 flex flex-wrap items-center justify-between gap-2"
                       >
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <button
                             type="button"
                             onClick={() => r.auditionCustomSample(sample.id)}
-                            className="p-1.5 rounded-lg bg-slate-950 hover:bg-[#00E5FF] text-[#00E5FF] hover:text-slate-950 border border-slate-700 cursor-pointer shrink-0 transition-colors"
+                            className="w-7 h-7 rounded-full bg-[#24242A] hover:bg-zinc-100 text-zinc-100 hover:text-zinc-950 border border-white/[0.1] flex items-center justify-center cursor-pointer shrink-0 transition-colors"
                             title="Escuchar muestra"
                           >
-                            <Play size={10} className="fill-current" />
+                            <Play size={10} className="fill-current ml-0.5" />
                           </button>
 
-                          {/* Mini Peak Waveform Preview */}
-                          <div className="hidden sm:flex items-center gap-[1.5px] h-5 w-16 shrink-0 bg-slate-950 rounded px-1 border border-slate-800/80">
+                          {/* Mini Peak Waveform Preview (Image 3 fine vertical bars) */}
+                          <div className="hidden sm:flex items-center gap-[1.5px] h-5 w-16 shrink-0 bg-[#0B0B0D] rounded-md px-1.5 border border-white/[0.06]">
                             {(sample.waveformPreview || []).slice(0, 18).map((pk, idx) => (
                               <span
                                 key={idx}
-                                className="w-[2px] rounded-full bg-[#00E5FF]/80"
+                                className="w-[1.5px] rounded-full bg-zinc-400/80"
                                 style={{ height: `${Math.max(15, Math.round(pk * 100))}%` }}
                               />
                             ))}
@@ -2311,16 +2280,16 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span
-                                className="text-[9px] px-1.5 py-0.2 rounded font-bold text-slate-950 shrink-0"
+                                className="text-[9px] font-mono px-1.5 py-0.5 rounded font-bold text-zinc-950 shrink-0"
                                 style={{ backgroundColor: badge.color }}
                               >
                                 {badge.label}
                               </span>
-                              <span className="text-[11px] font-bold text-white truncate">
+                              <span className="text-xs font-medium text-zinc-100 truncate">
                                 {sample.name}
                               </span>
                             </div>
-                            <div className="text-[9.5px] text-slate-400">
+                            <div className="text-[10px] font-mono text-zinc-500">
                               {sample.durationSec.toFixed(2)}s · Pico{' '}
                               {(sample.peakOffsetSec * 1000).toFixed(1)}ms · Root{' '}
                               {sample.detectedNoteName}
@@ -2341,13 +2310,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                                   onClick={() => r.assignCustomSampleToSlot(sample.id, role)}
                                   style={
                                     isAssigned
-                                      ? { backgroundColor: color, borderColor: color, color: '#020617' }
+                                      ? { backgroundColor: color, borderColor: color, color: '#09090B' }
                                       : undefined
                                   }
-                                  className={`px-1.5 py-0.5 rounded border text-[9.5px] font-bold cursor-pointer transition-all ${
+                                  className={`px-1.5 py-0.5 rounded-md border text-[9.5px] font-mono font-bold cursor-pointer transition-all ${
                                     isAssigned
                                       ? ''
-                                      : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-[#00E5FF] hover:text-white'
+                                      : 'bg-[#0E0E11] border-white/[0.08] text-zinc-400 hover:border-white/25 hover:text-white'
                                   }`}
                                   title={`Usar en ${label}`}
                                 >
@@ -2359,11 +2328,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                             <button
                               type="button"
                               onClick={() => r.assignCustomSampleToSlot(sample.id, 'melodic')}
-                              className={`px-2 py-1 rounded border text-[10px] font-bold cursor-pointer ${
+                              className={`px-2.5 py-1 rounded-lg border text-[10.5px] font-medium cursor-pointer ${
                                 r.melodicSlot.sourceType !== 'preset' &&
                                 r.melodicSlot.customSampleId === sample.id
-                                  ? 'bg-[#00E5FF] border-[#00E5FF] text-slate-950'
-                                  : 'bg-slate-950 border-slate-700 text-[#00E5FF] hover:bg-[#00E5FF]/15'
+                                  ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                                  : 'bg-[#1A1A20] border-white/[0.1] text-zinc-200 hover:bg-[#24242C]'
                               }`}
                             >
                               {r.melodicSlot.sourceType !== 'preset' &&
@@ -2376,7 +2345,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           <button
                             type="button"
                             onClick={() => r.deleteCustomSample(sample.id)}
-                            className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-500 hover:text-rose-400 hover:border-rose-500/40 cursor-pointer"
+                            className="p-1.5 rounded-lg bg-[#0E0E11] border border-white/[0.07] text-zinc-500 hover:text-rose-400 hover:border-rose-500/35 cursor-pointer"
                             title="Eliminar del banco"
                           >
                             <Trash2 size={11} />
@@ -2393,16 +2362,16 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
           {r.stemMode === 'drums' ? (
             <div className="flex flex-col gap-3">
               {/* Quick Clean Audio Upload Strip for Detected Drum Pieces in Tempo */}
-              <div className="rounded-xl bg-slate-950/95 border border-[#00E5FF]/35 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+              <div className="rounded-xl bg-[#0C0C0F] border border-white/[0.07] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-                  <span className="text-white font-bold">
+                  <span className="text-zinc-200 font-medium">
                     {r.analysis
                       ? `Detectados en ${r.analysis.bpm} BPM:`
-                      : 'Sube tu Audio Limpio para cada golpe:'}
+                      : 'Sube tu audio limpio por pieza:'}
                   </span>
-                  <span className="text-slate-400">
-                    Sube un audio limpio por pieza (Kick, Snare, Hi-Hat, Crash) para reemplazar cada golpe con realismo:
+                  <span className="text-zinc-500">
+                    Carga un sample limpio por pieza para reemplazar cada golpe:
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -2417,8 +2386,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           uploadTargetRef.current = role;
                           slotFileInputRef.current?.click();
                         }}
-                        style={{ borderColor: `${color}88` }}
-                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all"
+                        style={{ borderColor: `${color}55` }}
+                        className="px-2 py-1 rounded-lg bg-[#16161B] hover:bg-[#222229] border text-[10.5px] font-medium flex items-center gap-1 cursor-pointer transition-all"
                         title={`Subir audio limpio para reemplazar los ${count} golpes de ${label}`}
                       >
                         <Upload size={10} style={{ color }} />
@@ -2426,7 +2395,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           {hasCustom ? '✓ ' : '+ '}
                           {role === 'hat' ? 'Hi-Hat' : role === 'snare' ? 'Snare' : role === 'crash' ? 'Crash' : role === 'kick' ? 'Kick' : 'Tom'}
                         </span>
-                        <span className="text-slate-400">({count})</span>
+                        <span className="text-zinc-500 font-mono">({count})</span>
                       </button>
                     );
                   })}
@@ -2458,35 +2427,35 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                       const f = e.dataTransfer.files?.[0];
                       if (f) void r.loadCustomFileForSlot(role, f);
                     }}
-                    className={`rounded-xl bg-slate-950/90 border p-3 flex flex-col gap-2.5 text-xs font-mono transition-all ${
+                    className={`rounded-xl bg-[#0D0D10] border p-3.5 flex flex-col gap-2.5 text-xs transition-all ${
                       isDragOver
-                        ? 'border-[#00E5FF] bg-[#00E5FF]/10 shadow-[0_0_20px_rgba(0,229,255,0.22)]'
+                        ? 'border-white/35 bg-white/[0.04]'
                         : slot.enabled
-                        ? 'border-slate-700'
-                        : 'border-slate-800/60 opacity-55'
+                        ? 'border-white/[0.08] hover:border-white/[0.14]'
+                        : 'border-white/[0.04] opacity-50'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <label className="flex items-center gap-2 cursor-pointer font-bold text-white">
+                      <label className="flex items-center gap-2 cursor-pointer font-semibold text-zinc-100">
                         <input
                           type="checkbox"
                           checked={slot.enabled}
                           onChange={(e) => r.updateDrumSlot(role, { enabled: e.target.checked })}
-                          className="accent-[#FF6B00]"
+                          className="accent-zinc-100"
                         />
                         <span
-                          className="w-2.5 h-2.5 rounded-full"
+                          className="w-2 h-2 rounded-full"
                           style={{ backgroundColor: color }}
                         />
-                        <span>{label}</span>
+                        <span className="truncate">{label}</span>
                       </label>
 
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-400">{hitCount} hits</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] font-mono text-zinc-500">{hitCount}</span>
                         <button
                           type="button"
                           onClick={() => r.auditionSlotSample(slot)}
-                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[#00E5FF] text-[10px] flex items-center gap-1 cursor-pointer"
+                          className="px-2 py-0.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] border border-white/[0.08] text-zinc-200 text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
                         >
                           <Volume2 size={10} />
                           Probar
@@ -2511,7 +2480,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           });
                         }
                       }}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white cursor-pointer"
+                      className="w-full bg-[#151519] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 cursor-pointer focus:outline-none focus:border-white/25"
                     >
                       {r.customSamples.length > 0 && (
                         <optgroup label="★ Mis Audios Propios Subidos">
@@ -2532,23 +2501,23 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     </select>
 
                     {slot.sourceType !== 'preset' && (
-                      <div className="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] flex items-center justify-between gap-2">
+                      <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[10px] flex items-center justify-between gap-2">
                         <span className="truncate">
-                          Audio Propio: {slot.customName}
+                          Propio: {slot.customName}
                         </span>
-                        <span className="text-[9.5px] text-emerald-200/80 shrink-0">
-                          Pico {((slot.customPeakOffsetSec ?? 0) * 1000).toFixed(1)}ms
+                        <span className="text-[9.5px] font-mono text-emerald-200/75 shrink-0">
+                          {((slot.customPeakOffsetSec ?? 0) * 1000).toFixed(1)}ms
                         </span>
                       </div>
                     )}
 
                     {renderCustomSourceControls(role, slot)}
 
-                    <div className="grid grid-cols-2 gap-2 pt-1 text-[10px] text-slate-400">
+                    <div className="grid grid-cols-2 gap-2.5 pt-1 text-[10.5px] text-zinc-500">
                       <div>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between mb-0.5">
                           <span>Nivel</span>
-                          <span className="text-white">
+                          <span className="text-zinc-200 font-mono">
                             {slot.gainDb > 0 ? '+' : ''}
                             {slot.gainDb}dB
                           </span>
@@ -2562,13 +2531,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           onChange={(e) =>
                             r.updateDrumSlot(role, { gainDb: Number(e.target.value) })
                           }
-                          className="w-full accent-[#FF6B00] h-1 cursor-pointer"
+                          className="w-full accent-zinc-200 h-1 cursor-pointer"
                         />
                       </div>
                       <div>
-                        <div className="flex justify-between">
+                        <div className="flex justify-between mb-0.5">
                           <span>Afinación</span>
-                          <span className="text-white">
+                          <span className="text-zinc-200 font-mono">
                             {slot.pitchSemis > 0 ? '+' : ''}
                             {slot.pitchSemis} st
                           </span>
@@ -2582,7 +2551,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           onChange={(e) =>
                             r.updateDrumSlot(role, { pitchSemis: Number(e.target.value) })
                           }
-                          className="w-full accent-[#00E5FF] h-1 cursor-pointer"
+                          className="w-full accent-zinc-200 h-1 cursor-pointer"
                         />
                       </div>
                     </div>
@@ -2604,32 +2573,32 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 const f = e.dataTransfer.files?.[0];
                 if (f) void r.loadCustomFileForSlot('melodic', f);
               }}
-              className={`rounded-xl bg-slate-950/90 border p-3.5 flex flex-col gap-3 text-xs font-mono transition-all ${
+              className={`rounded-xl bg-[#0D0D10] border p-3.5 flex flex-col gap-3 text-xs transition-all ${
                 dragOverTarget === 'melodic'
-                  ? 'border-[#00E5FF] bg-[#00E5FF]/10'
-                  : 'border-slate-800'
+                  ? 'border-white/35 bg-white/[0.04]'
+                  : 'border-white/[0.08]'
               }`}
             >
               {/* Top Custom Upload / Selection Card for Melodic & Polyphonic */}
-              <div className="rounded-xl bg-slate-900/90 border border-slate-700/80 p-3 flex flex-col gap-2.5">
+              <div className="rounded-xl bg-[#141418] border border-white/[0.07] p-3 flex flex-col gap-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <Music2 size={14} className="text-[#00E5FF]" />
-                    <span className="font-bold text-white">
+                    <Music2 size={14} className="text-zinc-300" />
+                    <span className="font-medium text-zinc-100">
                       Tu Audio Propio o Timbre de Estudio (Se transpone a cada nota)
                     </span>
                   </div>
                   <button
                     type="button"
                     onClick={() => r.auditionSlotSample(r.melodicSlot)}
-                    className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-[#222228] hover:bg-[#2D2D35] border border-white/[0.1] text-zinc-100 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
                   >
                     <Volume2 size={12} />
                     <span>
                       {r.melodicSlot.sourceType === 'preset' &&
                       isBassPresetId(r.melodicSlot.presetId)
-                        ? 'Probar Muestra (C2 Bass)'
-                        : 'Probar Muestra (C4)'}
+                        ? 'Probar (C2 Bass)'
+                        : 'Probar (C4)'}
                     </span>
                   </button>
                 </div>
@@ -2649,7 +2618,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           r.assignCustomSampleToSlot(e.target.value, 'melodic');
                         }
                       }}
-                      className="bg-slate-950 border border-[#00E5FF]/40 rounded-lg px-2 py-1 text-[11px] text-white cursor-pointer max-w-[240px]"
+                      className="bg-[#0B0B0D] border border-white/[0.1] rounded-lg px-2 py-1 text-[11px] text-zinc-100 cursor-pointer max-w-[240px]"
                     >
                       <option value="" disabled>
                         Elegir de Mis Audios ({r.customSamples.length})...
@@ -2665,9 +2634,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </div>
 
               {r.melodicSlot.sourceType === 'preset' ? (
-                <div className="flex flex-col gap-2">
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
-                    <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
+                    <div className="flex flex-wrap items-center gap-1 bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-0.5">
                       {(
                         [
                           { id: 'all', label: `Todos (${MELODIC_PRESET_CATALOG.length})` },
@@ -2684,10 +2653,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           key={cat.id}
                           type="button"
                           onClick={() => setMelodicCategoryFilter(cat.id)}
-                          className={`px-2.5 py-1 rounded-lg border font-bold cursor-pointer transition-all ${
+                          className={`px-2.5 py-1 rounded-lg font-medium cursor-pointer transition-all ${
                             melodicCategoryFilter === cat.id
-                              ? 'bg-[#00E5FF] border-[#00E5FF] text-slate-950'
-                              : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
+                              ? 'bg-zinc-100 text-zinc-950 font-semibold'
+                              : 'text-zinc-400 hover:text-zinc-200'
                           }`}
                         >
                           {cat.label}
@@ -2697,10 +2666,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     <button
                       type="button"
                       onClick={r.toggleBassFocusMode}
-                      className={`px-2.5 py-1 rounded-lg border font-bold cursor-pointer transition-all ${
+                      className={`px-2.5 py-1 rounded-xl border font-medium cursor-pointer transition-all ${
                         r.bassFocusMode
-                          ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950 shadow-[0_0_12px_rgba(255,107,0,0.3)]'
-                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-[#FF6B00]/50'
+                          ? 'bg-orange-500/20 border-orange-400/50 text-orange-300'
+                          : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-zinc-200'
                       }`}
                       title="Extrae únicamente los graves (30–210 Hz) y la nota raíz de la progresión de acordes para dar peso sin tocar notas agudas"
                     >
@@ -2709,10 +2678,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   </div>
 
                   {r.bassFocusMode && (
-                    <div className="px-2.5 py-1.5 rounded-lg bg-[#FF6B00]/10 border border-[#FF6B00]/40 text-[10px] text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                    <div className="px-3 py-2 rounded-xl bg-orange-500/10 border border-orange-500/25 text-[11px] text-orange-200/90 flex flex-wrap items-center justify-between gap-2">
                       <span>
-                        <strong className="text-[#FF6B00]">Modo Solo Graves Activo:</strong>{' '}
-                        Analizando los bajos y la raíz armónica de los acordes de tu audio para sumar peso subgrave sin invadir medios/agudos.
+                        <strong className="text-orange-300 font-semibold">Modo Solo Graves Activo:</strong>{' '}
+                        Analizando los bajos y la raíz armónica de los acordes para sumar peso subgrave sin invadir medios/agudos.
                       </span>
                     </div>
                   )}
@@ -2732,25 +2701,25 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                           }
                           className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
                             active
-                              ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-white shadow-[0_0_14px_rgba(0,229,255,0.18)]'
-                              : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:border-slate-700'
+                              ? 'bg-[#222229] border-white/[0.24] text-white'
+                              : 'bg-[#141418] border-white/[0.06] text-zinc-300 hover:bg-[#1A1A20] hover:border-white/[0.12]'
                           }`}
                         >
                           <div className="flex items-center justify-between gap-1.5">
-                            <div className="font-bold text-xs truncate">{pr.label}</div>
+                            <div className="font-semibold text-xs truncate">{pr.label}</div>
                             {pr.badge && (
                               <span
-                                className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold shrink-0 ${
                                   isBass
-                                    ? 'bg-[#FF6B00]/20 text-[#FF6B00] border border-[#FF6B00]/40'
-                                    : 'bg-slate-800 text-[#00E5FF] border border-slate-700'
+                                    ? 'bg-orange-500/15 text-orange-300 border border-orange-500/25'
+                                    : 'bg-white/[0.06] text-zinc-300 border border-white/[0.08]'
                                 }`}
                               >
                                 {pr.badge}
                               </span>
                             )}
                           </div>
-                          <div className="text-[10px] text-slate-400 mt-1 leading-snug">
+                          <div className="text-[10.5px] text-zinc-500 mt-1 leading-snug">
                             {pr.description}
                           </div>
                         </button>
@@ -2759,14 +2728,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="rounded-xl bg-emerald-500/15 border border-emerald-500/40 p-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/25 p-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="font-bold text-emerald-300">
+                    <div className="font-semibold text-emerald-300">
                       Muestra Propia Activa: {r.melodicSlot.customName}
                     </div>
-                    <div className="text-[10px] text-slate-300">
+                    <div className="text-[10.5px] text-zinc-400">
                       Nota raíz detectada (YIN):{' '}
-                      {midiNoteToName(r.melodicSlot.customRootMidi ?? 60)} — Loop sustain cruzado sin clics:
+                      {midiNoteToName(r.melodicSlot.customRootMidi ?? 60)} — Loop sustain cruzado sin clics
                     </div>
                   </div>
                   <select
@@ -2774,7 +2743,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) =>
                       r.updateMelodicSlot({ customRootMidi: Number(e.target.value) })
                     }
-                    className="bg-slate-900 border border-emerald-500/50 rounded-lg px-2 py-1 text-xs text-white"
+                    className="bg-[#0B0B0D] border border-white/[0.1] rounded-lg px-2 py-1 text-xs font-mono text-zinc-100"
                   >
                     {Array.from({ length: 49 }, (_, idx) => 36 + idx).map((m) => (
                       <option key={m} value={m}>
@@ -2785,11 +2754,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-[10.5px] text-slate-400">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-[10.5px] text-zinc-500">
                 <div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between mb-0.5">
                     <span>Nivel Muestra</span>
-                    <span className="text-white">{r.melodicSlot.gainDb} dB</span>
+                    <span className="text-zinc-200 font-mono">{r.melodicSlot.gainDb} dB</span>
                   </div>
                   <input
                     type="range"
@@ -2800,13 +2769,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) =>
                       r.updateMelodicSlot({ gainDb: Number(e.target.value) })
                     }
-                    className="w-full accent-[#00E5FF] h-1 cursor-pointer"
+                    className="w-full accent-zinc-200 h-1 cursor-pointer"
                   />
                 </div>
                 <div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between mb-0.5">
                     <span>Octava / Tono</span>
-                    <span className="text-[#FF6B00]">
+                    <span className="text-zinc-200 font-mono">
                       {r.melodicSlot.pitchSemis > 0 ? '+' : ''}
                       {r.melodicSlot.pitchSemis} st
                     </span>
@@ -2820,13 +2789,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) =>
                       r.updateMelodicSlot({ pitchSemis: Number(e.target.value) })
                     }
-                    className="w-full accent-[#FF6B00] h-1 cursor-pointer"
+                    className="w-full accent-zinc-200 h-1 cursor-pointer"
                   />
                 </div>
                 <div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between mb-0.5">
                     <span>Sustain Notas</span>
-                    <span className="text-emerald-400">{r.mixOptions.sustainScale.toFixed(1)}x</span>
+                    <span className="text-zinc-200 font-mono">{r.mixOptions.sustainScale.toFixed(1)}x</span>
                   </div>
                   <input
                     type="range"
@@ -2837,13 +2806,13 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) =>
                       r.setMixOptions((p) => ({ ...p, sustainScale: Number(e.target.value) }))
                     }
-                    className="w-full accent-emerald-400 h-1 cursor-pointer"
+                    className="w-full accent-zinc-200 h-1 cursor-pointer"
                   />
                 </div>
                 <div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between mb-0.5">
                     <span>Brillo Timbre</span>
-                    <span className="text-white">{r.mixOptions.brightnessPct}%</span>
+                    <span className="text-zinc-200 font-mono">{r.mixOptions.brightnessPct}%</span>
                   </div>
                   <input
                     type="range"
@@ -2854,7 +2823,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     onChange={(e) =>
                       r.setMixOptions((p) => ({ ...p, brightnessPct: Number(e.target.value) }))
                     }
-                    className="w-full accent-[#00E5FF] h-1 cursor-pointer"
+                    className="w-full accent-zinc-200 h-1 cursor-pointer"
                   />
                 </div>
               </div>
@@ -2863,8 +2832,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
           {/* Live Preview of Detected Notes/Chords */}
           {r.analysis && r.analysis.noteEvents.length > 0 && (
-            <div className="rounded-xl bg-slate-950 border border-slate-800 p-2.5 max-h-24 overflow-y-auto studio-scrollbar-thin flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-              <span className="text-slate-500 mr-1">
+            <div className="rounded-xl bg-[#0B0B0D] border border-white/[0.07] p-2.5 max-h-24 overflow-y-auto studio-scrollbar-thin flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+              <span className="text-zinc-500 mr-1">
                 Primeras notas detectadas
                 {r.analysis.bassFocusApplied ? ' (Solo Graves / Progresión)' : ''}:
               </span>
@@ -2872,7 +2841,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 <span
                   key={ev.id}
                   onClick={() => r.seekToSec(ev.startSec)}
-                  className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[#00E5FF] cursor-pointer hover:border-[#FF6B00]"
+                  className="px-1.5 py-0.5 rounded-md bg-[#16161B] border border-white/[0.08] text-zinc-200 cursor-pointer hover:border-white/25"
                   title={`${ev.startSec.toFixed(2)}s · duración ${ev.durationSec.toFixed(2)}s`}
                 >
                   {ev.noteName} ({ev.startSec.toFixed(1)}s)
@@ -2883,19 +2852,19 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
         </div>
 
         {/* Blend, Export & Save Directly Back to Song Folder */}
-        <div className="xl:col-span-4 rounded-2xl bg-slate-900/95 border border-slate-800/90 p-4 shadow-lg flex flex-col justify-between gap-3 text-xs font-mono">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <div className="xl:col-span-4 rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col justify-between gap-3.5 text-xs">
+          <div className="space-y-3.5">
+            <div className="flex items-center gap-2 border-b border-white/[0.06] pb-3">
               <Sliders size={15} className="text-emerald-400" />
-              <h3 className="font-bold uppercase text-white">
-                4. Mezcla & Guardar en Canción
+              <h3 className="font-semibold tracking-tight text-zinc-100">
+                4. Mezcla & Exportar
               </h3>
             </div>
 
             <div>
-              <div className="flex justify-between text-[11px] text-slate-300">
+              <div className="flex justify-between text-[11.5px] text-zinc-400 mb-1">
                 <span>Muestra Reemplazada</span>
-                <span className="text-[#00E5FF] font-bold">{r.mixOptions.replacementPct}%</span>
+                <span className="text-zinc-100 font-mono font-semibold">{r.mixOptions.replacementPct}%</span>
               </div>
               <input
                 type="range"
@@ -2906,14 +2875,14 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onChange={(e) =>
                   r.setMixOptions((p) => ({ ...p, replacementPct: Number(e.target.value) }))
                 }
-                className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-[11px] text-slate-300">
+              <div className="flex justify-between text-[11.5px] text-zinc-400 mb-1">
                 <span>Stem Original (Blend)</span>
-                <span className="text-[#FF6B00] font-bold">{r.mixOptions.originalPct}%</span>
+                <span className="text-zinc-100 font-mono font-semibold">{r.mixOptions.originalPct}%</span>
               </div>
               <input
                 type="range"
@@ -2924,25 +2893,25 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 onChange={(e) =>
                   r.setMixOptions((p) => ({ ...p, originalPct: Number(e.target.value) }))
                 }
-                className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-orange-400 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             {(r.stemMode === 'monophonic' || r.bassFocusMode) && (
-              <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
-                <div className="text-[10px] text-slate-400">
+              <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+                <div className="text-[10.5px] text-zinc-500">
                   {r.stemMode === 'polyphonic'
                     ? 'Peso Sub-Bass sobre la Canción:'
                     : 'Modos rápidos de Bajo / Empalme:'}
                 </div>
-                <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                <div className="grid grid-cols-3 gap-1.5 text-[10.5px]">
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('replace')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct === 0 && r.mixOptions.replacementPct === 100
-                        ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                   >
                     100% Synth
@@ -2950,10 +2919,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('layer-sub')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct >= 80 && r.mixOptions.replacementPct >= 50
-                        ? 'bg-[#FF6B00]/20 border-[#FF6B00] text-[#FF6B00]'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-[#FF6B00]/50'
+                        ? 'bg-orange-500/20 border-orange-400/50 text-orange-300'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                     title="Empalma Monark/Sub-Bass debajo de un bajo acústico o eléctrico"
                   >
@@ -2962,17 +2931,17 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('hybrid')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct > 0 && r.mixOptions.originalPct < 80
-                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                   >
                     Híbrido 70/55
                   </button>
                 </div>
                 <label
-                  className="flex items-center gap-2 cursor-pointer pt-1 text-[10.5px] text-slate-300"
+                  className="flex items-center gap-2 cursor-pointer pt-1 text-[11px] text-zinc-400 hover:text-zinc-200"
                   title="Filtra el sub-grave sucio (<185 Hz) del stem original cuando el nuevo bajo está sonando, conservando el ataque real de cuerdas/dedos (>185 Hz) del bajo original sin barro"
                 >
                   <input
@@ -2984,24 +2953,24 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                         bassCrossoverCleanLow: e.target.checked,
                       }))
                     }
-                    className="accent-[#00E5FF]"
+                    className="accent-zinc-100"
                   />
-                  <span>Crossover Bajo: Limpiar sub-grave sucio (&lt;185 Hz) al mezclar</span>
+                  <span>Crossover Bajo: Limpiar sub-grave sucio (&lt;185 Hz)</span>
                 </label>
               </div>
             )}
 
             {r.stemMode === 'drums' && (
-              <div className="space-y-2 pt-1.5 border-t border-slate-800/80 text-[11px] text-slate-300">
-                <div className="text-[10px] text-slate-400">Modo sobre Stem o Canción completa:</div>
-                <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+              <div className="space-y-2 pt-2 border-t border-white/[0.06] text-[11px] text-zinc-400">
+                <div className="text-[10.5px] text-zinc-500">Modo sobre Stem o Canción:</div>
+                <div className="grid grid-cols-3 gap-1.5 text-[10.5px]">
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('replace')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct === 0 && r.mixOptions.replacementPct === 100
-                        ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-[#00E5FF]'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                   >
                     100% Batería
@@ -3009,10 +2978,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('layer-drums')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct >= 80 && r.mixOptions.replacementPct >= 65
-                        ? 'bg-[#FF6B00]/20 border-[#FF6B00] text-[#FF6B00]'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-[#FF6B00]/50'
+                        ? 'bg-orange-500/20 border-orange-400/50 text-orange-300'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                     title="Agrega la nueva batería orgánica encima de tu canción completa respetando el tempo"
                   >
@@ -3021,34 +2990,34 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => r.applyMixPreset('hybrid')}
-                    className={`px-2 py-1.5 rounded-lg border font-bold cursor-pointer transition-all ${
+                    className={`px-2 py-1.5 rounded-xl border font-medium cursor-pointer transition-all ${
                       r.mixOptions.originalPct > 0 && r.mixOptions.originalPct < 80
-                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-[#0C0C0F] border-white/[0.08] text-zinc-300 hover:border-white/[0.16]'
                     }`}
                   >
                     Híbrido 70/55
                   </button>
                 </div>
-                <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                <label className="flex items-center gap-2 cursor-pointer pt-1 hover:text-zinc-200">
                   <input
                     type="checkbox"
                     checked={r.mixOptions.roundRobinHumanize}
                     onChange={(e) =>
                       r.setMixOptions((p) => ({ ...p, roundRobinHumanize: e.target.checked }))
                     }
-                    className="accent-[#00E5FF]"
+                    className="accent-zinc-100"
                   />
                   <span>Variación orgánica Round-Robin</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-2 cursor-pointer hover:text-zinc-200">
                   <input
                     type="checkbox"
                     checked={r.mixOptions.duckOriginalTransients}
                     onChange={(e) =>
                       r.setMixOptions((p) => ({ ...p, duckOriginalTransients: e.target.checked }))
                     }
-                    className="accent-[#FF6B00]"
+                    className="accent-orange-400"
                   />
                   <span>Limpiar transiente original al mezclar</span>
                 </label>
@@ -3056,9 +3025,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             )}
           </div>
 
-          <div className="space-y-2.5 pt-2 border-t border-slate-800">
+          <div className="space-y-2.5 pt-3 border-t border-white/[0.06]">
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">
+              <label className="text-[10.5px] text-zinc-500 block mb-1">
                 Nombre del Stem mejorado (misma duración exacta):
               </label>
               <input
@@ -3066,12 +3035,12 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 value={saveStemName}
                 onChange={(e) => setSaveStemName(e.target.value)}
                 placeholder="Batería (Sampled Pro)"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-[#00E5FF] focus:outline-none"
+                className="w-full bg-[#0B0B0D] border border-white/[0.08] rounded-xl px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:border-white/25 focus:outline-none"
               />
             </div>
 
             {saveFeedback && (
-              <div className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-[10.5px] text-emerald-300 flex items-center gap-1.5">
+              <div className="px-3 py-2 rounded-xl bg-emerald-500/12 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center gap-1.5">
                 <CheckCircle2 size={13} className="shrink-0" />
                 <span>{saveFeedback}</span>
               </div>
@@ -3082,18 +3051,18 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 type="button"
                 disabled={(!r.replacedBuffer && !r.originalBuffer) || r.isRendering || r.isExportingPc}
                 onClick={() => void r.downloadReplacedAudio('wav', saveStemName)}
-                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
+                className="py-2 px-2 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 font-medium flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px] transition-colors"
                 title="Exportar al PC en WAV 24-Bit sin compresión (48 kHz)"
               >
                 {r.isExportingPc ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-                <span>WAV 24-Bit</span>
+                <span>WAV 24</span>
               </button>
 
               <button
                 type="button"
                 disabled={(!r.replacedBuffer && !r.originalBuffer) || r.isRendering || r.isExportingPc}
                 onClick={() => void r.downloadReplacedAudio('mp3', saveStemName)}
-                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-[#FF6B00] font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
+                className="py-2 px-2 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 font-medium flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px] transition-colors"
                 title="Exportar al PC en MP3 320 kbps"
               >
                 {r.isExportingPc ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
@@ -3104,11 +3073,11 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                 type="button"
                 disabled={!r.analysis}
                 onClick={() => r.exportCurrentMidiFile(saveStemName || r.stemTitle)}
-                className="py-2 px-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-emerald-500/50 text-emerald-300 font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px]"
+                className="py-2 px-2 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 font-medium flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 text-[11px] transition-colors"
                 title="Exportar archivo MIDI estándar (.mid) con todos los golpes/notas detectados"
               >
                 <Download size={12} />
-                <span>MIDI (.mid)</span>
+                <span>MIDI</span>
               </button>
             </div>
 
@@ -3122,10 +3091,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     r.importedMemory
                   )
                 }
-                className="w-full py-1.5 px-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-amber-300 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer"
+                className="w-full py-2 px-3 rounded-xl bg-[#18181D] hover:bg-[#222229] border border-white/[0.08] text-zinc-300 hover:text-white font-medium text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
                 title="Enviar este audio a Creador 16 Pads para cortar por transientes/rejilla y exportar ZIP o slices"
               >
-                <Wand2 size={12} />
+                <Wand2 size={12} className="text-orange-400" />
                 <span>Cortar / Samplear en 16 Pads →</span>
               </button>
             )}
@@ -3146,7 +3115,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
                     )
                   );
               }}
-              className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-[#00E5FF] hover:brightness-110 text-slate-950 font-black flex items-center justify-center gap-1.5 cursor-pointer shadow-md disabled:opacity-40"
+              className="w-full py-2.5 px-3 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
             >
               {r.isSavingCloud ? (
                 <Loader2 size={14} className="animate-spin" />
@@ -3160,9 +3129,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
               </span>
             </button>
 
-            <p className="text-[10px] text-slate-500 leading-snug">
-              <Wand2 size={10} className="inline mr-1 text-[#FF6B00]" />
-              Duración bloqueada al sample original ({duration.toFixed(2)}s) para encajar cuadrado con los demás stems del tema.
+            <p className="text-[10.5px] text-zinc-500 leading-snug">
+              Duración bloqueada al sample original (<span className="font-mono text-zinc-400">{duration.toFixed(2)}s</span>) para encajar cuadrado con los demás stems del tema.
             </p>
           </div>
         </div>

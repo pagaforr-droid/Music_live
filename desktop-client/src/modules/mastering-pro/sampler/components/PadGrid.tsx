@@ -53,7 +53,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
   const targetPadRef = useRef<number>(selectedPadIndex);
 
   return (
-    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3">
+    <div className="rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3">
       <input
         ref={padFileInputRef}
         type="file"
@@ -67,10 +67,10 @@ export const PadGrid: React.FC<PadGridProps> = ({
           e.target.value = '';
         }}
       />
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
         <div className="flex items-center gap-2">
-          <Volume2 size={15} className="text-[#FF6B00]" />
-          <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-white">
+          <Volume2 size={15} className="text-orange-400" />
+          <h3 className="text-xs font-semibold tracking-tight text-zinc-100">
             Banco de 16 Pads (QWERTY / MIDI)
           </h3>
         </div>
@@ -83,7 +83,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
                 targetPadRef.current = selectedPadIndex;
                 padFileInputRef.current?.click();
               }}
-              className="px-2.5 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] text-[11px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all"
+              className="px-2.5 py-1 rounded-lg bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-all"
               title={`Subir audio propio directamente al Pad ${selectedPadIndex + 1}`}
             >
               <Upload size={12} />
@@ -93,10 +93,10 @@ export const PadGrid: React.FC<PadGridProps> = ({
           <button
             type="button"
             onClick={onToggleChromaticMode}
-            className={`px-2.5 py-1 rounded-lg border text-[11px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all ${
+            className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-all ${
               chromaticMode
-                ? 'bg-[#00E5FF] text-slate-950 border-[#00E5FF]'
-                : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-[#00E5FF]/50'
+                ? 'bg-zinc-100 text-zinc-950 border-zinc-100 font-semibold'
+                : 'bg-[#0B0B0D] text-zinc-400 border-white/[0.08] hover:text-zinc-100'
             }`}
           >
             <Keyboard size={12} />
@@ -156,41 +156,41 @@ export const PadGrid: React.FC<PadGridProps> = ({
                 }}
                 style={{
                   borderColor: isDragTarget
-                    ? '#00E5FF'
+                    ? '#FAFAFA'
                     : isSelected
                     ? pad.colorHex
                     : isActive
                     ? '#FFFFFF'
                     : undefined,
                   boxShadow: isActive
-                    ? `0 0 22px ${pad.colorHex}80`
+                    ? `0 0 18px ${pad.colorHex}66`
                     : isSelected
-                    ? `0 0 12px ${pad.colorHex}35`
+                    ? `0 0 10px ${pad.colorHex}28`
                     : undefined,
                 }}
-                className={`w-full h-20 rounded-xl border p-2 flex flex-col justify-between text-left transition-all cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-[#00E5FF] ${
+                className={`w-full h-20 rounded-xl border p-2 flex flex-col justify-between text-left transition-all cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-white/40 ${
                   reg
-                    ? 'bg-slate-950/95 border-slate-700 hover:bg-slate-900'
-                    : 'bg-slate-950/50 border-slate-800/70 opacity-65 hover:opacity-90'
+                    ? 'bg-[#0C0C0F] border-white/[0.1] hover:bg-[#17171C]'
+                    : 'bg-[#0A0A0D] border-white/[0.05] opacity-60 hover:opacity-90'
                 }`}
               >
                 <div className="flex items-center justify-between w-full">
                   <span
-                    className="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded text-slate-950"
+                    className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded text-zinc-950"
                     style={{ backgroundColor: pad.colorHex }}
                   >
                     {pad.keyboardKey}
                   </span>
-                  <span className="text-[9px] font-mono text-slate-400">
+                  <span className="text-[9px] font-mono text-zinc-500">
                     M{pad.midiNote}
                   </span>
                 </div>
 
-                <div className="truncate text-[11px] font-bold text-white leading-tight">
+                <div className="truncate text-[11px] font-semibold text-zinc-100 leading-tight">
                   {pad.label}
                 </div>
 
-                <div className="flex items-center justify-between text-[9px] font-mono text-slate-400">
+                <div className="flex items-center justify-between text-[9px] font-mono text-zinc-500">
                   <span>{durStr}</span>
                   <span>
                     {pad.params.playMode === 'loop'
@@ -203,7 +203,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
               </button>
 
               {contextMenuPad === pad.index && (
-                <div className="absolute z-30 top-full left-0 mt-1 w-52 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-1.5 flex flex-col gap-1 text-[11px] font-mono">
+                <div className="absolute z-30 top-full left-0 mt-1 w-52 rounded-xl bg-[#18181C] border border-white/[0.12] shadow-2xl p-1.5 flex flex-col gap-1 text-[11px]">
                   {onUploadFileToPad && (
                     <button
                       type="button"
@@ -212,7 +212,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
                         padFileInputRef.current?.click();
                         setContextMenuPad(null);
                       }}
-                      className="px-2 py-1 rounded hover:bg-slate-800 text-left text-[#00E5FF] font-bold flex items-center gap-1.5 cursor-pointer"
+                      className="px-2 py-1.5 rounded-lg hover:bg-white/[0.08] text-left text-zinc-100 font-medium flex items-center gap-1.5 cursor-pointer"
                     >
                       <Upload size={11} />
                       Subir Audio a este Pad
@@ -224,9 +224,9 @@ export const PadGrid: React.FC<PadGridProps> = ({
                       onCopyPadToNext(pad.index);
                       setContextMenuPad(null);
                     }}
-                    className="px-2 py-1 rounded hover:bg-slate-800 text-left text-slate-200 flex items-center gap-1.5 cursor-pointer"
+                    className="px-2 py-1.5 rounded-lg hover:bg-white/[0.08] text-left text-zinc-300 flex items-center gap-1.5 cursor-pointer"
                   >
-                    <Copy size={11} className="text-[#00E5FF]" />
+                    <Copy size={11} className="text-zinc-400" />
                     Duplicar al siguiente Pad
                   </button>
                   <button
@@ -235,7 +235,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
                       onSendPadToMasteringDrum(pad.index, 'kick');
                       setContextMenuPad(null);
                     }}
-                    className="px-2 py-1 rounded hover:bg-slate-800 text-left text-[#FF6B00] flex items-center gap-1.5 cursor-pointer"
+                    className="px-2 py-1.5 rounded-lg hover:bg-white/[0.08] text-left text-orange-300 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Drum size={11} />
                     Enviar como Kick a Mastering
@@ -246,7 +246,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
                       onSendPadToMasteringDrum(pad.index, 'snare');
                       setContextMenuPad(null);
                     }}
-                    className="px-2 py-1 rounded hover:bg-slate-800 text-left text-[#00E5FF] flex items-center gap-1.5 cursor-pointer"
+                    className="px-2 py-1.5 rounded-lg hover:bg-white/[0.08] text-left text-cyan-300 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Drum size={11} />
                     Enviar como Snare a Mastering
@@ -257,7 +257,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
                       onClearPad(pad.index);
                       setContextMenuPad(null);
                     }}
-                    className="px-2 py-1 rounded hover:bg-rose-500/20 text-left text-rose-400 flex items-center gap-1.5 cursor-pointer"
+                    className="px-2 py-1.5 rounded-lg hover:bg-rose-500/15 text-left text-rose-400 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Trash2 size={11} />
                     Limpiar Pad
@@ -271,24 +271,24 @@ export const PadGrid: React.FC<PadGridProps> = ({
 
       {/* Chromatic Keyboard Strip */}
       {chromaticMode && (
-        <div className="rounded-xl bg-slate-950 border border-[#00E5FF]/40 p-2.5 flex flex-col gap-2">
-          <div className="flex items-center justify-between text-[11px] font-mono">
-            <span className="text-[#00E5FF] font-bold">
-              TECLADO CROMÁTICO · Pad {selectedPadIndex + 1} (Base:{' '}
-              {midiNoteToName(chromaticBaseMidi)})
+        <div className="rounded-xl bg-[#0B0B0D] border border-white/[0.1] p-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-zinc-200 font-medium">
+              Teclado Cromático · Pad {selectedPadIndex + 1} (Base:{' '}
+              <span className="font-mono text-zinc-100">{midiNoteToName(chromaticBaseMidi)}</span>)
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 font-mono">
               <button
                 type="button"
                 onClick={() => onChangeChromaticOctave(-12)}
-                className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                className="px-2 py-0.5 rounded-md bg-[#18181C] border border-white/[0.08] text-zinc-300 hover:text-white cursor-pointer"
               >
                 -8va
               </button>
               <button
                 type="button"
                 onClick={() => onChangeChromaticOctave(12)}
-                className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                className="px-2 py-0.5 rounded-md bg-[#18181C] border border-white/[0.08] text-zinc-300 hover:text-white cursor-pointer"
               >
                 +8va
               </button>
@@ -307,8 +307,8 @@ export const PadGrid: React.FC<PadGridProps> = ({
                   onMouseUp={onReleaseChromaticNote}
                   className={`min-w-[30px] h-14 rounded-lg border text-[10px] font-mono font-bold flex flex-col justify-end items-center pb-1.5 cursor-pointer transition-transform active:scale-95 ${
                     black
-                      ? 'bg-slate-800 border-slate-600 text-[#00E5FF]'
-                      : 'bg-slate-100 border-slate-300 text-slate-950'
+                      ? 'bg-[#1A1A20] border-white/[0.12] text-zinc-200'
+                      : 'bg-zinc-200 border-zinc-300 text-zinc-950'
                   }`}
                 >
                   {midiNoteToName(midi)}

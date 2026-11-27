@@ -49,35 +49,35 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-xl rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-2xl flex flex-col gap-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full max-w-xl rounded-2xl bg-[#121215] border border-white/[0.1] p-5 shadow-2xl flex flex-col gap-4">
+        <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
           <div className="flex items-center gap-2">
-            <Download size={18} className="text-[#FF6B00]" />
-            <h3 className="text-sm font-mono font-bold uppercase text-white">
+            <Download size={17} className="text-zinc-300" />
+            <h3 className="text-sm font-semibold tracking-tight text-zinc-100">
               Exportar Muestras, Pack de Slices & Bounce
             </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white cursor-pointer"
+            className="text-zinc-500 hover:text-white cursor-pointer"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* Format Selector */}
-        <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-mono">
-          <span className="text-slate-300">Formato de Audio (48 kHz):</span>
+        <div className="flex items-center justify-between bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-3 text-xs">
+          <span className="text-zinc-400">Formato de Audio (48 kHz):</span>
           <div className="flex gap-1.5">
             <button
               type="button"
               onClick={() => setFormat('wav')}
-              className={`px-3 py-1 rounded-lg border font-bold cursor-pointer ${
+              className={`px-3 py-1 rounded-lg border font-medium cursor-pointer ${
                 format === 'wav'
-                  ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950'
-                  : 'bg-slate-900 border-slate-700 text-slate-300'
+                  ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                  : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-white'
               }`}
             >
               WAV 24-Bit (smpl/cue)
@@ -85,10 +85,10 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
             <button
               type="button"
               onClick={() => setFormat('mp3')}
-              className={`px-3 py-1 rounded-lg border font-bold cursor-pointer ${
+              className={`px-3 py-1 rounded-lg border font-medium cursor-pointer ${
                 format === 'mp3'
-                  ? 'bg-[#00E5FF] border-[#00E5FF] text-slate-950'
-                  : 'bg-slate-900 border-slate-700 text-slate-300'
+                  ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                  : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-white'
               }`}
             >
               MP3 320 kbps
@@ -97,7 +97,7 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
         </div>
 
         {err && (
-          <div className="px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-300">
+          <div className="px-3 py-2 rounded-xl bg-rose-500/12 border border-rose-500/35 text-xs text-rose-300">
             {err}
           </div>
         )}
@@ -108,13 +108,13 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
             type="button"
             disabled={!selectedPad.regionId || Boolean(busy)}
             onClick={() => void run('pad', () => onExportSinglePad(format))}
-            className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-[#FF6B00]/60 text-left flex flex-col gap-1 disabled:opacity-40 cursor-pointer"
+            className="p-3.5 rounded-xl bg-[#0D0D10] hover:bg-[#17171C] border border-white/[0.08] hover:border-white/[0.18] text-left flex flex-col gap-1 disabled:opacity-40 cursor-pointer transition-colors"
           >
-            <div className="font-bold text-[#FF6B00] flex items-center gap-1.5">
-              <Download size={14} />
+            <div className="font-semibold text-zinc-100 flex items-center gap-1.5">
+              <Download size={14} className="text-orange-400" />
               <span>Exportar Pad {selectedPad.index + 1}</span>
             </div>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-zinc-500">
               Renderiza "{selectedPad.label}" con ADSR, filtro, pitch, warp y FX.
             </p>
           </button>
@@ -124,13 +124,13 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
             type="button"
             disabled={!selectedRegion || Boolean(busy)}
             onClick={() => void run('region', () => onExportRegion(format))}
-            className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-[#00E5FF]/60 text-left flex flex-col gap-1 disabled:opacity-40 cursor-pointer"
+            className="p-3.5 rounded-xl bg-[#0D0D10] hover:bg-[#17171C] border border-white/[0.08] hover:border-white/[0.18] text-left flex flex-col gap-1 disabled:opacity-40 cursor-pointer transition-colors"
           >
-            <div className="font-bold text-[#00E5FF] flex items-center gap-1.5">
-              <Disc size={14} />
+            <div className="font-semibold text-zinc-100 flex items-center gap-1.5">
+              <Disc size={14} className="text-zinc-300" />
               <span>Exportar Región Cruda</span>
             </div>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-zinc-500">
               Recorte limpio con fades anti-clic ({selectedRegion?.name ?? 'Sin región'}).
             </p>
           </button>
@@ -140,14 +140,14 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
             type="button"
             disabled={regionsCount === 0 || Boolean(busy)}
             onClick={() => void run('zip', onExportSlicesZip)}
-            className="sm:col-span-2 p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/60 text-left flex items-center justify-between disabled:opacity-40 cursor-pointer"
+            className="sm:col-span-2 p-3.5 rounded-xl bg-[#0D0D10] hover:bg-[#17171C] border border-white/[0.08] hover:border-white/[0.18] text-left flex items-center justify-between disabled:opacity-40 cursor-pointer transition-colors"
           >
             <div>
-              <div className="font-bold text-emerald-400 flex items-center gap-1.5">
+              <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
                 <Archive size={14} />
                 <span>Exportar Pack Completo de Slices (.ZIP + kit.json)</span>
               </div>
-              <p className="text-[11px] text-slate-400 mt-0.5">
+              <p className="text-[11px] text-zinc-500 mt-0.5">
                 Empaqueta los {regionsCount} slices en WAV 24-bit con metadatos de nota raíz y manifiesto JSON.
               </p>
             </div>
@@ -156,17 +156,17 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
         </div>
 
         {/* 4. Sequencer Pattern Bounce */}
-        <div className="rounded-xl bg-slate-950 border border-slate-800 p-3.5 flex flex-col gap-3">
+        <div className="rounded-xl bg-[#0D0D10] border border-white/[0.08] p-3.5 flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-mono font-bold text-white">
-              BOUNCE OFFLINE DEL SECUENCIADOR
+            <span className="text-xs font-semibold text-zinc-100">
+              Bounce Offline del Secuenciador
             </span>
-            <div className="flex items-center gap-2 text-[11px] font-mono">
-              <span className="text-slate-400">Compases:</span>
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-zinc-500">Compases:</span>
               <select
                 value={bounceBars}
                 onChange={(e) => setBounceBars(Number(e.target.value))}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-white"
+                className="bg-[#16161B] border border-white/[0.08] rounded-lg px-2 py-0.5 text-zinc-100"
               >
                 {[1, 2, 4, 8].map((b) => (
                   <option key={b} value={b}>
@@ -174,12 +174,12 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
                   </option>
                 ))}
               </select>
-              <label className="flex items-center gap-1 text-slate-300 cursor-pointer">
+              <label className="flex items-center gap-1 text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={seamlessLoop}
                   onChange={(e) => setSeamlessLoop(e.target.checked)}
-                  className="accent-[#00E5FF]"
+                  className="accent-zinc-100"
                 />
                 <span>Loop exacto</span>
               </label>
@@ -195,7 +195,7 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
                   onExportPatternBounce(bounceBars, seamlessLoop, format)
                 )
               }
-              className="py-2 px-3 rounded-xl bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+              className="py-2 px-3 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
             >
               {busy === 'bounce' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               <span>Descargar Bounce ({format.toUpperCase()})</span>
@@ -207,7 +207,7 @@ export const SampleExportDialog: React.FC<SampleExportDialogProps> = ({
               onClick={() =>
                 void run('master', () => onSendBounceToMastering(bounceBars))
               }
-              className="py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-[#00E5FF]/50 text-[#00E5FF] font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+              className="py-2 px-3 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 font-medium text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
             >
               <ArrowUpRight size={14} />
               <span>Enviar Bounce a Mastering Pro</span>

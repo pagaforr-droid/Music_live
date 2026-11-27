@@ -45,7 +45,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
   };
 
   return (
-    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3">
+    <div className="rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3">
       <input
         ref={fileInputRef}
         type="file"
@@ -58,26 +58,26 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
         }}
       />
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
         <div className="flex flex-wrap items-center gap-2">
           <span
-            className="w-3 h-3 rounded-full"
+            className="w-2.5 h-2.5 rounded-full"
             style={{ backgroundColor: pad.colorHex }}
           />
           <input
             type="text"
             value={pad.label}
             onChange={(e) => onUpdateLabel(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs font-bold text-white focus:border-[#00E5FF] focus:outline-none w-36 sm:w-44"
+            className="bg-[#0B0B0D] border border-white/[0.08] rounded-lg px-2.5 py-1 text-xs font-semibold text-zinc-100 focus:border-white/25 focus:outline-none w-36 sm:w-44"
           />
-          <span className="text-[10px] font-mono text-slate-400">
+          <span className="text-[10.5px] font-mono text-zinc-500">
             Pad {pad.index + 1} ({pad.keyboardKey})
           </span>
           {onUploadFileToSelectedPad && (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="px-2 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 border border-[#00E5FF]/50 text-[#00E5FF] text-[10px] font-mono font-bold flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 rounded-lg bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-zinc-100 text-[10.5px] font-medium flex items-center gap-1 cursor-pointer"
               title="Subir tu propio audio para reemplazar este Pad"
             >
               <Upload size={11} />
@@ -86,7 +86,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
           )}
         </div>
 
-        <div className="flex flex-wrap gap-1 bg-slate-950 border border-slate-800 rounded-xl p-0.5">
+        <div className="flex flex-wrap gap-0.5 bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-0.5">
           {[
             { id: 'sample' as const, label: 'Sample', icon: Sliders },
             { id: 'amp' as const, label: 'ADSR', icon: Waves },
@@ -101,10 +101,10 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 key={t.id}
                 type="button"
                 onClick={() => setTab(t.id)}
-                className={`px-2 py-1 rounded-lg text-[10.5px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                className={`px-2.5 py-1 rounded-lg text-[10.5px] font-medium flex items-center gap-1 cursor-pointer transition-colors ${
                   active
-                    ? 'bg-[#FF6B00] text-slate-950'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-zinc-100 text-zinc-950 font-semibold'
+                    : 'text-zinc-400 hover:text-white'
                 }`}
               >
                 <Icon size={11} />
@@ -117,12 +117,12 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
       {/* TAB 1: SAMPLE / MODE / CHOKE / GAIN */}
       {tab === 'sample' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
-          <div className="space-y-2.5 bg-slate-950/90 border border-slate-800 rounded-xl p-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="space-y-3 bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5">
             <div>
-              <div className="flex justify-between text-[11px] text-slate-400">
+              <div className="flex justify-between text-[11px] text-zinc-400 mb-1">
                 <span>Ganancia Pad</span>
-                <span className="text-[#FF6B00] font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.gainDb > 0 ? '+' : ''}
                   {p.gainDb.toFixed(1)} dB
                 </span>
@@ -134,14 +134,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 step={0.5}
                 value={p.gainDb}
                 onChange={(e) => onUpdateParams({ gainDb: Number(e.target.value) })}
-                className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-[11px] text-slate-400">
+              <div className="flex justify-between text-[11px] text-zinc-400 mb-1">
                 <span>Paneo L/R</span>
-                <span className="text-[#00E5FF] font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.pan === 0 ? 'Centro' : p.pan < 0 ? `L${Math.round(Math.abs(p.pan) * 100)}` : `R${Math.round(p.pan * 100)}`}
                 </span>
               </div>
@@ -152,15 +152,15 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 step={0.02}
                 value={p.pan}
                 onChange={(e) => onUpdateParams({ pan: Number(e.target.value) })}
-                className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2.5">
               <div>
-                <div className="flex justify-between text-[10px] text-slate-400">
+                <div className="flex justify-between text-[10.5px] text-zinc-500 mb-0.5">
                   <span>Fade In</span>
-                  <span className="text-white">{p.fadeInMs}ms</span>
+                  <span className="text-zinc-200 font-mono">{p.fadeInMs}ms</span>
                 </div>
                 <input
                   type="range"
@@ -169,13 +169,13 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                   step={1}
                   value={p.fadeInMs}
                   onChange={(e) => onUpdateParams({ fadeInMs: Number(e.target.value) })}
-                  className="w-full accent-emerald-400 h-1 bg-slate-800 rounded cursor-pointer"
+                  className="w-full accent-zinc-200 h-1 bg-zinc-800 rounded cursor-pointer"
                 />
               </div>
               <div>
-                <div className="flex justify-between text-[10px] text-slate-400">
+                <div className="flex justify-between text-[10.5px] text-zinc-500 mb-0.5">
                   <span>Fade Out</span>
-                  <span className="text-white">{p.fadeOutMs}ms</span>
+                  <span className="text-zinc-200 font-mono">{p.fadeOutMs}ms</span>
                 </div>
                 <input
                   type="range"
@@ -184,15 +184,15 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                   step={1}
                   value={p.fadeOutMs}
                   onChange={(e) => onUpdateParams({ fadeOutMs: Number(e.target.value) })}
-                  className="w-full accent-emerald-400 h-1 bg-slate-800 rounded cursor-pointer"
+                  className="w-full accent-zinc-200 h-1 bg-zinc-800 rounded cursor-pointer"
                 />
               </div>
             </div>
           </div>
 
-          <div className="space-y-2.5 bg-slate-950/90 border border-slate-800 rounded-xl p-3">
+          <div className="space-y-3 bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5">
             <div>
-              <span className="text-[10px] text-slate-400 block mb-1">
+              <span className="text-[10.5px] text-zinc-500 block mb-1.5">
                 Modo de Disparo
               </span>
               <div className="grid grid-cols-3 gap-1">
@@ -201,10 +201,10 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     key={m}
                     type="button"
                     onClick={() => onUpdateParams({ playMode: m })}
-                    className={`py-1 rounded-lg border text-[10px] uppercase font-bold cursor-pointer ${
+                    className={`py-1 rounded-lg border text-[10px] font-mono uppercase font-semibold cursor-pointer ${
                       p.playMode === m
-                        ? 'bg-[#00E5FF] text-slate-950 border-[#00E5FF]'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                        ? 'bg-zinc-100 text-zinc-950 border-zinc-100'
+                        : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-zinc-200'
                     }`}
                   >
                     {m}
@@ -214,14 +214,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
             </div>
 
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-400">Choke Group</span>
+              <span className="text-[11px] text-zinc-400">Choke Group</span>
               <select
                 value={p.chokeGroup ?? 0}
                 onChange={(e) => {
                   const val = Number(e.target.value);
                   onUpdateParams({ chokeGroup: val === 0 ? null : val });
                 }}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white"
+                className="bg-[#16161B] border border-white/[0.08] rounded-lg px-2 py-1 text-[11px] text-zinc-100"
               >
                 <option value={0}>Ninguno</option>
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((g) => (
@@ -233,22 +233,22 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
             </div>
 
             <div className="flex items-center justify-between gap-3 pt-1">
-              <label className="flex items-center gap-1.5 text-[11px] text-slate-200 cursor-pointer">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={p.reverse}
                   onChange={(e) => onUpdateParams({ reverse: e.target.checked })}
-                  className="accent-[#FF6B00]"
+                  className="accent-zinc-100"
                 />
                 <span>Reverse</span>
               </label>
 
-              <label className="flex items-center gap-1.5 text-[11px] text-slate-200 cursor-pointer">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={p.normalize}
                   onChange={(e) => onUpdateParams({ normalize: e.target.checked })}
-                  className="accent-[#00E5FF]"
+                  className="accent-zinc-100"
                 />
                 <span>Normalizar (-1dB)</span>
               </label>
@@ -259,16 +259,16 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
       {/* TAB 2: AMP ADSR */}
       {tab === 'amp' && (
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-col gap-3">
-          <svg viewBox="0 0 202 60" className="w-full h-14 bg-slate-900/80 rounded-lg border border-slate-800">
+        <div className="bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5 flex flex-col gap-3">
+          <svg viewBox="0 0 202 60" className="w-full h-14 bg-[#09090B] rounded-lg border border-white/[0.06]">
             <polyline
-              fill="rgba(0,229,255,0.14)"
-              stroke="#00E5FF"
-              strokeWidth="2"
+              fill="rgba(228,228,231,0.10)"
+              stroke="#E4E4E7"
+              strokeWidth="1.8"
               points={buildAdsrPath(p.amp.attackMs, p.amp.decayMs, p.amp.sustain, p.amp.releaseMs)}
             />
           </svg>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px]">
             {[
               { label: 'Attack', val: `${p.amp.attackMs}ms`, min: 2, max: 1500, step: 2, cur: p.amp.attackMs, key: 'attackMs' as const },
               { label: 'Decay', val: `${p.amp.decayMs}ms`, min: 10, max: 2000, step: 10, cur: p.amp.decayMs, key: 'decayMs' as const },
@@ -276,9 +276,9 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
               { label: 'Release', val: `${p.amp.releaseMs}ms`, min: 5, max: 3000, step: 5, cur: p.amp.releaseMs, key: 'releaseMs' as const },
             ].map((item) => (
               <div key={item.key}>
-                <div className="flex justify-between text-slate-400">
+                <div className="flex justify-between text-zinc-500 mb-0.5">
                   <span>{item.label}</span>
-                  <span className="text-[#00E5FF] font-bold">{item.val}</span>
+                  <span className="text-zinc-100 font-mono font-semibold">{item.val}</span>
                 </div>
                 <input
                   type="range"
@@ -291,7 +291,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                       amp: { ...p.amp, [item.key]: Number(e.target.value) },
                     })
                   }
-                  className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+                  className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
                 />
               </div>
             ))}
@@ -301,17 +301,17 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
       {/* TAB 3: FILTER + FILTER ENV */}
       {tab === 'filter' && (
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-col gap-3 text-[11px] font-mono">
+        <div className="bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5 flex flex-col gap-3 text-[11px]">
           <div className="grid grid-cols-4 gap-1.5">
             {(['off', 'lowpass', 'highpass', 'bandpass'] as const).map((t) => (
               <button
                 key={t}
                 type="button"
                 onClick={() => onUpdateParams({ filter: { ...p.filter, type: t } })}
-                className={`py-1 rounded-lg border uppercase font-bold cursor-pointer ${
+                className={`py-1 rounded-lg border font-mono uppercase font-semibold cursor-pointer ${
                   p.filter.type === t
-                    ? 'bg-[#FF6B00] text-slate-950 border-[#FF6B00]'
-                    : 'bg-slate-900 border-slate-800 text-slate-400'
+                    ? 'bg-zinc-100 text-zinc-950 border-zinc-100'
+                    : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 {t}
@@ -321,9 +321,9 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Cutoff</span>
-                <span className="text-[#00E5FF] font-bold">{p.filter.cutoffHz}Hz</span>
+                <span className="text-zinc-100 font-mono font-semibold">{p.filter.cutoffHz}Hz</span>
               </div>
               <input
                 type="range"
@@ -336,14 +336,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     filter: { ...p.filter, cutoffHz: Number(e.target.value) },
                   })
                 }
-                className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Resonance Q</span>
-                <span className="text-[#FF6B00] font-bold">{p.filter.q.toFixed(1)}</span>
+                <span className="text-zinc-100 font-mono font-semibold">{p.filter.q.toFixed(1)}</span>
               </div>
               <input
                 type="range"
@@ -356,14 +356,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     filter: { ...p.filter, q: Number(e.target.value) },
                   })
                 }
-                className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Env Depth</span>
-                <span className="text-emerald-400 font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.filter.envAmountOct > 0 ? '+' : ''}
                   {p.filter.envAmountOct.toFixed(1)} Oct
                 </span>
@@ -379,7 +379,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     filter: { ...p.filter, envAmountOct: Number(e.target.value) },
                   })
                 }
-                className="w-full accent-emerald-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
           </div>
@@ -388,7 +388,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
       {/* TAB 4: PITCH / TIME-STRETCH WARP / PAULSTRETCH / TEXTURES */}
       {tab === 'warp' && (
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-col gap-3 text-[11px] font-mono">
+        <div className="bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5 flex flex-col gap-3 text-[11px]">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap gap-1">
               {(
@@ -407,10 +407,10 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                   onClick={() =>
                     onUpdateParams({ warp: { ...p.warp, mode: wm.id } })
                   }
-                  className={`px-2 py-1 rounded-lg border text-[10px] font-bold cursor-pointer ${
+                  className={`px-2 py-1 rounded-lg border text-[10.5px] font-medium cursor-pointer ${
                     p.warp.mode === wm.id
-                      ? 'bg-[#00E5FF] text-slate-950 border-[#00E5FF]'
-                      : 'bg-slate-900 border-slate-800 text-slate-400'
+                      ? 'bg-zinc-100 text-zinc-950 border-zinc-100 font-semibold'
+                      : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
                   {wm.label}
@@ -426,10 +426,10 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     warp: { ...p.warp, syncToBpm: !p.warp.syncToBpm },
                   })
                 }
-                className={`px-2 py-1 rounded-lg border text-[10px] font-bold cursor-pointer transition-colors ${
+                className={`px-2 py-1 rounded-lg border text-[10.5px] font-medium cursor-pointer transition-colors ${
                   p.warp.syncToBpm
-                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
-                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-[#16161B] border-white/[0.08] text-zinc-400 hover:text-white'
                 }`}
                 title="Adapta la velocidad/duración del audio al BPM del proyecto preservando el tono"
               >
@@ -442,7 +442,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
               <button
                 type="button"
                 onClick={onAutoTuneToRoot}
-                className="px-2 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 text-[10px] font-bold cursor-pointer"
+                className="px-2 py-1 rounded-lg bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-emerald-300 text-[10.5px] font-medium cursor-pointer"
               >
                 Auto-Afinar (YIN)
               </button>
@@ -451,9 +451,9 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Pitch (St)</span>
-                <span className="text-[#FF6B00] font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.pitchSemis > 0 ? '+' : ''}
                   {p.pitchSemis} st
                 </span>
@@ -465,14 +465,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 step={1}
                 value={p.pitchSemis}
                 onChange={(e) => onUpdateParams({ pitchSemis: Number(e.target.value) })}
-                className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Fine (Cents)</span>
-                <span className="text-[#00E5FF] font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.fineCents > 0 ? '+' : ''}
                   {p.fineCents}c
                 </span>
@@ -484,14 +484,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 step={1}
                 value={p.fineCents}
                 onChange={(e) => onUpdateParams({ fineCents: Number(e.target.value) })}
-                className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Time Stretch</span>
-                <span className="text-emerald-400 font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.warp.timeStretchRatio.toFixed(2)}x
                 </span>
               </div>
@@ -506,14 +506,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     warp: { ...p.warp, timeStretchRatio: Number(e.target.value) },
                   })
                 }
-                className="w-full accent-emerald-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
 
             <div>
-              <div className="flex justify-between text-slate-400">
+              <div className="flex justify-between text-zinc-500 mb-0.5">
                 <span>Pad Stretch</span>
-                <span className="text-purple-400 font-bold">
+                <span className="text-zinc-100 font-mono font-semibold">
                   {p.granular.stretchFactor.toFixed(0)}x
                 </span>
               </div>
@@ -528,14 +528,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                     granular: { ...p.granular, stretchFactor: Number(e.target.value) },
                   })
                 }
-                className="w-full accent-purple-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+                className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
               />
             </div>
           </div>
 
           {/* 1-Click Sound Design Texture Presets */}
-          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-800">
-            <span className="text-[10px] text-slate-500 mr-1">
+          <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-white/[0.06]">
+            <span className="text-[10.5px] text-zinc-500 mr-1">
               Presets de Textura:
             </span>
             {(
@@ -550,7 +550,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                 key={tp.id}
                 type="button"
                 onClick={() => onApplyTexturePreset(tp.id)}
-                className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-[#00E5FF] cursor-pointer"
+                className="px-2.5 py-1 rounded-lg bg-[#16161B] hover:bg-[#222229] border border-white/[0.08] text-[10.5px] text-zinc-200 cursor-pointer"
               >
                 {tp.label}
               </button>
@@ -561,11 +561,11 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
 
       {/* TAB 5: FX SENDS & VELOCITY */}
       {tab === 'fx' && (
-        <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px] font-mono">
+        <div className="bg-[#0C0C0F] border border-white/[0.07] rounded-xl p-3.5 grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px]">
           <div>
-            <div className="flex justify-between text-slate-400">
+            <div className="flex justify-between text-zinc-500 mb-0.5">
               <span>Send Studio Reverb</span>
-              <span className="text-[#00E5FF] font-bold">
+              <span className="text-zinc-100 font-mono font-semibold">
                 {Math.round(p.sends.reverb * 100)}%
               </span>
             </div>
@@ -580,14 +580,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                   sends: { ...p.sends, reverb: Number(e.target.value) },
                 })
               }
-              className="w-full accent-[#00E5FF] h-1.5 bg-slate-800 rounded cursor-pointer"
+              className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
             />
           </div>
 
           <div>
-            <div className="flex justify-between text-slate-400">
+            <div className="flex justify-between text-zinc-500 mb-0.5">
               <span>Send Ping-Pong Delay</span>
-              <span className="text-[#FF6B00] font-bold">
+              <span className="text-zinc-100 font-mono font-semibold">
                 {Math.round(p.sends.delay * 100)}%
               </span>
             </div>
@@ -602,14 +602,14 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
                   sends: { ...p.sends, delay: Number(e.target.value) },
                 })
               }
-              className="w-full accent-[#FF6B00] h-1.5 bg-slate-800 rounded cursor-pointer"
+              className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
             />
           </div>
 
           <div>
-            <div className="flex justify-between text-slate-400">
+            <div className="flex justify-between text-zinc-500 mb-0.5">
               <span>Velocity Sensitivity</span>
-              <span className="text-emerald-400 font-bold">
+              <span className="text-zinc-100 font-mono font-semibold">
                 {Math.round(p.velocitySens * 100)}%
               </span>
             </div>
@@ -622,7 +622,7 @@ export const PadInspector: React.FC<PadInspectorProps> = ({
               onChange={(e) =>
                 onUpdateParams({ velocitySens: Number(e.target.value) })
               }
-              className="w-full accent-emerald-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+              className="w-full accent-zinc-100 h-1.5 bg-zinc-800 rounded cursor-pointer"
             />
           </div>
         </div>

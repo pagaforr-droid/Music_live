@@ -95,12 +95,12 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // Studio background
-    ctx.fillStyle = '#040711';
+    // Studio background (Image 3 obsidian dark)
+    ctx.fillStyle = '#0A0A0C';
     ctx.fillRect(0, 0, w, h);
 
     const midY = h / 2;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, midY);
@@ -108,8 +108,8 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
     ctx.stroke();
 
     if (!source || duration <= 0) {
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.6)';
-      ctx.font = '12px monospace';
+      ctx.fillStyle = 'rgba(161, 161, 170, 0.65)';
+      ctx.font = '12px Inter, system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(
         'Arrastra un archivo WAV/MP3/FLAC o carga una pista de Mastering Pro / Proyecto',
@@ -136,9 +136,9 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             ? downSet.has(Math.round(bt * 20))
             : idx % 4 === 0;
           ctx.strokeStyle = isDown
-            ? 'rgba(0, 229, 255, 0.36)'
-            : 'rgba(0, 229, 255, 0.12)';
-          ctx.lineWidth = isDown ? 1.4 : 1;
+            ? 'rgba(255, 255, 255, 0.16)'
+            : 'rgba(255, 255, 255, 0.05)';
+          ctx.lineWidth = isDown ? 1.2 : 1;
           ctx.beginPath();
           ctx.moveTo(x, 0);
           ctx.lineTo(x, h);
@@ -147,7 +147,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             const barNum = downbeats
               ? Math.max(1, downbeats.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
               : Math.floor(idx / 4) + 1;
-            ctx.fillStyle = 'rgba(0, 229, 255, 0.72)';
+            ctx.fillStyle = 'rgba(212, 212, 216, 0.72)';
             ctx.font = 'bold 9px monospace';
             ctx.fillText(`C${barNum}`, x + 3, h - 6);
             lastBarX = x;
@@ -158,7 +158,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
         const beatSec = 60 / source.bpm;
         const offset = source.preAnalysis?.beatOffsetSec ?? 0;
         const firstBeat = offset + Math.floor((viewStartSec - offset) / beatSec) * beatSec;
-        ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
         ctx.beginPath();
         for (let t = firstBeat; t <= viewEndSec; t += beatSec) {
           if (t < viewStartSec) continue;
@@ -176,7 +176,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
         const cx0 = secToX(ch.startSec);
         const cx1 = secToX(ch.endSec);
         if (cx1 < 0 || cx0 > w) continue;
-        ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
         ctx.moveTo(cx0, 0);
@@ -185,9 +185,9 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
         ctx.setLineDash([]);
 
         if (cx1 - cx0 >= 28 && cx0 >= -10 && cx0 < w - 20) {
-          ctx.fillStyle = 'rgba(139, 92, 246, 0.85)';
+          ctx.fillStyle = 'rgba(39, 39, 42, 0.92)';
           ctx.fillRect(Math.max(2, cx0 + 3), 2, Math.min(54, Math.max(24, ch.chord.length * 8 + 10)), 14);
-          ctx.fillStyle = '#FFFFFF';
+          ctx.fillStyle = '#F4F4F5';
           ctx.font = 'bold 9px monospace';
           ctx.fillText(ch.chord, Math.max(6, cx0 + 7), 12);
         }
@@ -201,7 +201,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
     const visibleSamples = Math.max(1, endSample - startSample);
     const samplesPerPx = visibleSamples / w;
 
-    ctx.fillStyle = '#00E5FF';
+    ctx.fillStyle = 'rgba(228, 228, 231, 0.65)';
     const level =
       pyramid?.levels
         .slice()
@@ -394,17 +394,17 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
   };
 
   return (
-    <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 p-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.65)] flex flex-col gap-2.5">
+    <div className="rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={onToggleAudition}
             disabled={!selectedRegion}
-            className={`px-3 py-1.5 rounded-xl font-mono text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 ${
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 ${
               isAuditioning
-                ? 'bg-[#FF6B00] text-slate-950 shadow-[0_0_14px_rgba(255,107,0,0.45)]'
-                : 'bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-[#FF6B00]'
+                ? 'bg-zinc-100 text-zinc-950'
+                : 'bg-[#24242A] hover:bg-[#313139] border border-white/[0.12] text-zinc-100'
             }`}
           >
             {isAuditioning ? <Square size={12} className="fill-current" /> : <Play size={12} className="fill-current" />}
@@ -414,10 +414,10 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
           <button
             type="button"
             onClick={onToggleLoopAudition}
-            className={`px-2.5 py-1.5 rounded-xl font-mono text-xs border flex items-center gap-1 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs border flex items-center gap-1 transition-all cursor-pointer ${
               loopAudition
-                ? 'bg-[#00E5FF]/15 border-[#00E5FF]/60 text-[#00E5FF]'
-                : 'bg-slate-950 border-slate-800 text-slate-400'
+                ? 'bg-[#222228] border-white/[0.2] text-zinc-100 font-medium'
+                : 'bg-[#0B0B0D] border-white/[0.07] text-zinc-400 hover:text-zinc-200'
             }`}
             title="Activar bucle con crossfade sin clics (tecla L)"
           >
@@ -434,7 +434,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
                     (selectedRegion.startSec + selectedRegion.endSec) / 2
                   )
                 }
-                className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.08] text-xs text-zinc-200 flex items-center gap-1 cursor-pointer"
                 title="Dividir la región actual en 2 (o haz doble clic en la onda)"
               >
                 <Scissors size={12} className="text-emerald-400" />
@@ -445,7 +445,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
                 <button
                   type="button"
                   onClick={onAssignRegionToSelectedPad}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-[#FF6B00]/50 text-xs font-mono font-bold text-[#FF6B00] cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-xs font-medium text-orange-300 cursor-pointer"
                   title={`Asignar la región seleccionada al Pad ${selectedPadIndex + 1}`}
                 >
                   → Pad {selectedPadIndex + 1}
@@ -456,11 +456,11 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
                 <button
                   type="button"
                   onClick={onQuickExportRegion}
-                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/50 text-xs font-mono font-bold text-emerald-300 flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242C] border border-white/[0.1] text-xs font-medium text-emerald-300 flex items-center gap-1 cursor-pointer"
                   title="Exportar esta región sampleada como WAV 24-bit directo a tu PC"
                 >
                   <Download size={12} />
-                  <span>Exportar Corte al PC</span>
+                  <span>Exportar Corte</span>
                 </button>
               )}
             </>
@@ -469,34 +469,34 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
 
         <div className="flex items-center gap-2 text-[11px] font-mono">
           {source && (
-            <span className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300">
+            <span className="px-2.5 py-1 rounded-xl bg-[#0B0B0D] border border-white/[0.07] text-zinc-300">
               {source.bpm} BPM · Root {midiNoteToName(source.rootNote)}
-              {source.preAnalysis?.isTonal ? ` · Tono ${source.preAnalysis.musicalKey}` : ''}
+              {source.preAnalysis?.isTonal ? ` · ${source.preAnalysis.musicalKey}` : ''}
             </span>
           )}
           {selectedRegion && (
-            <span className="px-2 py-1 rounded bg-slate-950 border border-[#FF6B00]/40 text-[#FF6B00]">
+            <span className="px-2.5 py-1 rounded-xl bg-[#0B0B0D] border border-white/[0.07] text-zinc-300">
               {selectedRegion.startSec.toFixed(3)}s → {selectedRegion.endSec.toFixed(3)}s (
               {(selectedRegion.endSec - selectedRegion.startSec).toFixed(3)}s)
             </span>
           )}
 
-          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+          <div className="flex items-center bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-0.5">
             <button
               type="button"
               onClick={() => setZoom((z) => Math.max(1, z / 1.5))}
-              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title="Alejar zoom"
             >
               <ZoomOut size={13} />
             </button>
-            <span className="px-1.5 text-[10px] text-[#00E5FF]">
+            <span className="px-1.5 text-[10px] text-zinc-200">
               {zoom.toFixed(1)}x
             </span>
             <button
               type="button"
               onClick={() => setZoom((z) => Math.min(48, z * 1.5))}
-              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title="Acercar zoom"
             >
               <ZoomIn size={13} />
@@ -507,7 +507,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
                 setZoom(1);
                 setScrollNorm(0);
               }}
-              className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
               title="Ver pista completa"
             >
               <Maximize2 size={12} />
@@ -535,10 +535,10 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             setIsFileDragOver(false);
           }
         }}
-        className={`relative w-full h-44 rounded-xl overflow-hidden border bg-[#040711] transition-all ${
+        className={`relative w-full h-44 rounded-xl overflow-hidden border bg-[#0A0A0C] transition-all ${
           isFileDragOver
-            ? 'border-[#00E5FF] shadow-[0_0_24px_rgba(0,229,255,0.28)]'
-            : 'border-slate-800'
+            ? 'border-white/35'
+            : 'border-white/[0.07]'
         }`}
       >
         <canvas
@@ -561,7 +561,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             <button
               type="button"
               onClick={onClickUploadAudio}
-              className="pointer-events-auto px-3.5 py-1.5 rounded-xl bg-[#00E5FF]/15 hover:bg-[#00E5FF] border border-[#00E5FF]/60 text-[#00E5FF] hover:text-slate-950 text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer transition-all"
+              className="pointer-events-auto px-3.5 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
             >
               <Upload size={13} />
               <span>Subir Archivo del PC para Samplear</span>
@@ -572,12 +572,12 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
 
       {/* Horizontal Pan Scrollbar */}
       {duration > 0 && (
-        <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-2.5 py-1 text-[10px] font-mono">
+        <div className="flex items-center gap-2 bg-[#0B0B0D] border border-white/[0.07] rounded-xl px-2.5 py-1 text-[10px] font-mono">
           <button
             type="button"
             disabled={zoom <= 1.01}
             onClick={() => setScrollNorm((s) => Math.max(0, s - 0.12 / zoom))}
-            className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+            className="p-0.5 rounded bg-[#18181C] border border-white/[0.07] text-zinc-400 hover:text-white cursor-pointer disabled:opacity-30"
             title="Desplazar onda a la izquierda"
           >
             <ChevronLeft size={12} />
@@ -590,7 +590,7 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             disabled={zoom <= 1.01}
             value={Math.min(scrollNorm, Math.max(0, 1 - 1 / zoom))}
             onChange={(e) => setScrollNorm(Number(e.target.value))}
-            className="flex-1 accent-[#00E5FF] h-2 bg-slate-800 rounded-full cursor-pointer disabled:opacity-40"
+            className="flex-1 accent-zinc-200 h-1.5 bg-zinc-800 rounded-full cursor-pointer disabled:opacity-35"
             title="Barra de desplazamiento horizontal de la onda"
           />
           <button
@@ -599,12 +599,12 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
             onClick={() =>
               setScrollNorm((s) => Math.min(Math.max(0, 1 - 1 / zoom), s + 0.12 / zoom))
             }
-            className="p-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white cursor-pointer disabled:opacity-35"
+            className="p-0.5 rounded bg-[#18181C] border border-white/[0.07] text-zinc-400 hover:text-white cursor-pointer disabled:opacity-30"
             title="Desplazar onda a la derecha"
           >
             <ChevronRight size={12} />
           </button>
-          <span className="text-slate-400 shrink-0 tabular-nums">
+          <span className="text-zinc-500 shrink-0 tabular-nums">
             {viewStartSec.toFixed(1)}s–{Math.min(duration, viewEndSec).toFixed(1)}s
           </span>
         </div>
@@ -613,8 +613,8 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
       {/* Regions / Slices Strip (draggable onto Pads!) */}
       {regions.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1 max-h-24 overflow-y-auto studio-scrollbar-thin pr-1">
-          <span className="text-[10px] font-mono text-slate-500 mr-1">
-            SLICES ({regions.length}) — Arrastra sobre un Pad:
+          <span className="text-[10.5px] text-zinc-500 mr-1">
+            Slices ({regions.length}) — Arrastra sobre un Pad:
           </span>
           {regions.slice(0, 48).map((reg) => {
             const active = reg.id === selectedRegion?.id;
@@ -627,10 +627,10 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
                   e.dataTransfer.setData('text/sampler-region-id', reg.id);
                 }}
                 onClick={() => onSelectRegion(reg.id)}
-                className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border cursor-grab active:cursor-grabbing transition-all ${
+                className={`px-2 py-0.5 rounded-lg text-[10.5px] font-mono border cursor-grab active:cursor-grabbing transition-all ${
                   active
-                    ? 'bg-[#FF6B00] border-[#FF6B00] text-slate-950 font-bold'
-                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-[#00E5FF]/50'
+                    ? 'bg-zinc-100 border-zinc-100 text-zinc-950 font-semibold'
+                    : 'bg-[#0B0B0D] border-white/[0.08] text-zinc-300 hover:border-white/[0.2]'
                 }`}
               >
                 {reg.name}

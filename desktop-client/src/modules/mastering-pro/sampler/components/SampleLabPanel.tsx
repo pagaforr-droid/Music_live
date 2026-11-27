@@ -311,7 +311,13 @@ export const SampleLabPanel: React.FC = () => {
   };
 
   return (
-    <div className="w-full h-full overflow-y-auto overflow-x-auto studio-scrollbar bg-[#020617] text-slate-100 p-4 md:p-5">
+    <div
+      className="w-full h-full overflow-y-auto overflow-x-auto studio-scrollbar bg-[#09090B] text-zinc-100 p-4 md:p-5"
+      style={{
+        backgroundImage:
+          'radial-gradient(ellipse 80% 240px at 50% -60px, rgba(194, 65, 12, 0.14), transparent 72%)',
+      }}
+    >
       <input
         ref={pcUploadInputRef}
         type="file"
@@ -329,61 +335,61 @@ export const SampleLabPanel: React.FC = () => {
           e.target.value = '';
         }}
       />
-      <div className="max-w-[1640px] mx-auto flex flex-col gap-3.5 pb-12">
+      <div className="max-w-[1640px] mx-auto flex flex-col gap-4 pb-12">
       {/* Top Studio Header */}
-      <header className="rounded-2xl bg-slate-900/95 border border-slate-800/90 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_14px_40px_rgba(0,0,0,0.6)]">
+      <header className="rounded-2xl bg-[#121215]/95 border border-white/[0.08] px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_14px_40px_rgba(0,0,0,0.5)]">
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={() => navigate('/mastering')}
-            className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-mono flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
             title="Volver a Studio Mastering Pro"
           >
             <ArrowLeft size={13} />
-            <Sliders size={13} className="text-[#FF6B00]" />
+            <Sliders size={13} className="text-orange-400" />
             <span>Mastering Pro</span>
           </button>
 
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#FF6B00] to-[#00E5FF] flex items-center justify-center text-slate-950 shadow-md">
-              <Scissors size={16} />
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#1E1E24] border border-white/[0.1] flex items-center justify-center text-zinc-100">
+              <Scissors size={15} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-sm md:text-base font-black tracking-tight text-white">
-                  SAMPLE LAB
+                <h1 className="text-sm md:text-base font-semibold tracking-tight text-zinc-100">
+                  Sample Lab
                 </h1>
-                <span className="px-1.5 py-0.5 rounded bg-[#00E5FF]/15 text-[#00E5FF] text-[9px] font-mono font-bold border border-[#00E5FF]/30">
-                  PRO ENGINE 48kHz
+                <span className="px-2 py-0.5 rounded-md bg-white/[0.05] text-zinc-400 text-[10px] font-mono border border-white/[0.08]">
+                  48 kHz Engine
                 </span>
               </div>
-              <p className="text-[10px] font-mono text-slate-400">
-                Stem Replacer (Batería · Bajo · Guitarra/Piano+) · 16 Pads + Sequencer
+              <p className="text-[11px] text-zinc-500">
+                Stem Replacer (Batería · Bajo · Guitarra/Piano) · 16 Pads + Sequencer
               </p>
             </div>
           </div>
 
           {/* Primary Workspace Mode Switcher */}
-          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs font-mono">
+          <div className="flex items-center bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-1 text-xs">
             <button
               type="button"
               onClick={() => setWorkspaceMode('replacer')}
-              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+              className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 cursor-pointer transition-all ${
                 workspaceMode === 'replacer'
-                  ? 'bg-gradient-to-r from-[#FF6B00] to-[#00E5FF] text-slate-950 shadow'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-zinc-100 text-zinc-950 font-semibold shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               <Layers size={13} />
-              <span>Reemplazar Stem (Canción)</span>
+              <span>Reemplazar Stem</span>
             </button>
             <button
               type="button"
               onClick={() => setWorkspaceMode('pads')}
-              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+              className={`px-3 py-1.5 rounded-lg font-medium flex items-center gap-1.5 cursor-pointer transition-all ${
                 workspaceMode === 'pads'
-                  ? 'bg-[#FF6B00] text-slate-950 shadow'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-zinc-100 text-zinc-950 font-semibold shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
             >
               <Grid size={13} />
@@ -399,12 +405,12 @@ export const SampleLabPanel: React.FC = () => {
               value={s.kitName}
               onChange={(e) => s.setKitName(e.target.value)}
               placeholder="Nombre del Kit..."
-              className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-white w-40 md:w-48 focus:outline-none focus:border-[#00E5FF]"
+              className="px-3 py-1.5 rounded-xl bg-[#0B0B0D] border border-white/[0.08] text-xs text-zinc-100 placeholder:text-zinc-600 w-40 md:w-48 focus:outline-none focus:border-white/25"
             />
 
             {s.tempSavedAt && (
               <span
-                className="hidden xl:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400"
+                className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#0B0B0D] border border-white/[0.07] text-[10.5px] font-mono text-zinc-400"
                 title="Los cambios y audios se guardan automáticamente en IndexedDB local"
               >
                 <HardDrive size={11} className="text-emerald-400" />
@@ -415,7 +421,7 @@ export const SampleLabPanel: React.FC = () => {
             <button
               type="button"
               onClick={() => setIsKitLibraryOpen(true)}
-              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               <FolderArchive size={13} className="text-amber-400" />
               <span>Kits</span>
@@ -424,7 +430,7 @@ export const SampleLabPanel: React.FC = () => {
             <button
               type="button"
               onClick={() => pcUploadInputRef.current?.click()}
-              className="px-3 py-1.5 rounded-xl bg-[#00E5FF] hover:bg-cyan-300 text-slate-950 text-xs font-mono font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+              className="px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
               title="Subir archivo de audio desde tu PC para samplear y exportar"
             >
               <Upload size={13} />
@@ -435,20 +441,20 @@ export const SampleLabPanel: React.FC = () => {
               type="button"
               onClick={() => setIsExportOpen(true)}
               disabled={s.sources.length === 0}
-              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-[#00E5FF]/15 border border-[#00E5FF]/50 text-[#00E5FF] text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+              className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.1] text-zinc-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
             >
               <Download size={13} />
-              <span>Exportar al PC...</span>
+              <span>Exportar</span>
             </button>
 
             <button
               type="button"
               onClick={() => setIsSupabaseOpen(true)}
               disabled={s.sources.length === 0}
-              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-[#00E5FF] hover:brightness-110 text-slate-950 text-xs font-mono font-black flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-40"
+              className="px-3.5 py-1.5 rounded-xl bg-emerald-500/90 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
             >
               <CloudUpload size={14} />
-              <span>Guardar en Supabase</span>
+              <span>Guardar en Nube</span>
             </button>
           </div>
         )}
@@ -478,8 +484,8 @@ export const SampleLabPanel: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="flex flex-wrap items-center gap-1.5">
           {s.sources.length === 0 ? (
-            <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5">
-              <Music2 size={12} className="text-[#FF6B00]" />
+            <span className="text-xs text-zinc-400 flex items-center gap-1.5">
+              <Music2 size={13} className="text-zinc-500" />
               Carga un audio, elige una pista de Supabase, graba mic o crea un loop Demo para empezar.
             </span>
           ) : (
@@ -490,14 +496,14 @@ export const SampleLabPanel: React.FC = () => {
                   key={src.id}
                   type="button"
                   onClick={() => s.setActiveSourceId(src.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono flex items-center gap-1.5 border cursor-pointer transition-all ${
+                  className={`px-3 py-1 rounded-xl text-xs flex items-center gap-1.5 border cursor-pointer transition-all ${
                     active
-                      ? 'bg-[#FF6B00]/15 border-[#FF6B00] text-white font-bold'
-                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-[#222228] border-white/[0.2] text-white font-medium'
+                      : 'bg-[#121215] border-white/[0.07] text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
                   <span className="truncate max-w-[160px]">{src.name}</span>
-                  <span className="text-[9.5px] text-slate-400">
+                  <span className="text-[10px] font-mono text-zinc-500">
                     {src.bpm} BPM · {midiNoteToName(src.rootNote ?? 60)}
                   </span>
                 </button>
@@ -506,36 +512,36 @@ export const SampleLabPanel: React.FC = () => {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-[10.5px] font-mono">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
           {s.lastPitchEstimate && (
-            <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
+            <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 flex items-center gap-1">
               <Sparkles size={11} />
               Pitch: {s.lastPitchEstimate.noteName} ({s.lastPitchEstimate.freqHz} Hz)
             </span>
           )}
 
           {midi.supported && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-300">
-              <Usb size={12} className="text-[#00E5FF]" />
-              <span>MIDI:</span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#121215] border border-white/[0.08] text-zinc-300">
+              <Usb size={12} className="text-zinc-400" />
+              <span className="text-zinc-500">MIDI:</span>
               <select
                 value={midi.selectedInputId}
                 onChange={(e) => midi.setSelectedInputId(e.target.value)}
-                className="bg-transparent text-[10.5px] font-mono text-white focus:outline-none"
+                className="bg-transparent text-[11px] font-mono text-zinc-100 focus:outline-none"
               >
-                <option value="all" className="bg-slate-950">
+                <option value="all" className="bg-[#121215]">
                   {midi.inputs.length > 0
                     ? `Todos (${midi.inputs.length})`
                     : 'Sin teclado MIDI'}
                 </option>
                 {midi.inputs.map((inp) => (
-                  <option key={inp.id} value={inp.id} className="bg-slate-950">
+                  <option key={inp.id} value={inp.id} className="bg-[#121215]">
                     {inp.name}
                   </option>
                 ))}
               </select>
               {midi.lastMidiEvent && (
-                <span className="text-[#00E5FF] text-[9.5px]">
+                <span className="text-zinc-300 text-[10px]">
                   {midi.lastMidiEvent}
                 </span>
               )}
@@ -545,12 +551,12 @@ export const SampleLabPanel: React.FC = () => {
       </div>
 
       {s.statusMessage && (
-        <div className="rounded-xl bg-slate-900/90 border border-[#00E5FF]/35 px-3 py-1.5 text-[11px] font-mono text-[#00E5FF] flex items-center justify-between">
+        <div className="rounded-xl bg-[#141418] border border-white/[0.1] px-3.5 py-2 text-xs text-zinc-200 flex items-center justify-between">
           <span>{s.statusMessage}</span>
           <button
             type="button"
             onClick={() => s.setStatusMessage(null)}
-            className="text-slate-500 hover:text-white cursor-pointer ml-3"
+            className="text-zinc-500 hover:text-white cursor-pointer ml-3"
           >
             ✕
           </button>
@@ -593,11 +599,11 @@ export const SampleLabPanel: React.FC = () => {
       />
 
       {/* Studio Bass & Synth Instrument Generator for 16 Pads + Chromatic Keyboard */}
-      <div className="rounded-2xl bg-slate-900/95 border border-slate-800/90 px-3.5 py-2.5 shadow-lg flex flex-wrap items-center justify-between gap-2.5 text-xs font-mono">
+      <div className="rounded-2xl bg-[#121215] border border-white/[0.08] px-4 py-3 flex flex-wrap items-center justify-between gap-2.5 text-xs">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5 text-[#FF6B00] font-bold">
-            <Waves size={14} />
-            <span>Bajos Synth & Estudio → Pads:</span>
+          <div className="flex items-center gap-1.5 text-zinc-200 font-medium">
+            <Waves size={14} className="text-orange-400" />
+            <span>Bajos Synth & Estudio → Pads</span>
           </div>
 
           <select
@@ -605,7 +611,7 @@ export const SampleLabPanel: React.FC = () => {
             onChange={(e) =>
               setSelectedStudioPresetId(e.target.value as DefaultInstrumentId)
             }
-            className="bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white focus:border-[#00E5FF] focus:outline-none max-w-[260px] cursor-pointer"
+            className="bg-[#0B0B0D] border border-white/[0.08] rounded-xl px-2.5 py-1.5 text-xs text-zinc-100 focus:border-white/25 focus:outline-none max-w-[260px] cursor-pointer"
           >
             <optgroup label={`Bajos Profesionales (${BASS_PRESET_CATALOG.length})`}>
               {BASS_PRESET_CATALOG.map((bp) => (
@@ -627,7 +633,7 @@ export const SampleLabPanel: React.FC = () => {
           <button
             type="button"
             onClick={() => s.auditionStudioPreset(selectedStudioPresetId)}
-            className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-[#00E5FF] font-bold flex items-center gap-1 cursor-pointer"
+            className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.08] text-zinc-200 font-medium flex items-center gap-1 cursor-pointer transition-colors"
             title="Escuchar muestra de estudio antes de cargar"
           >
             <Volume2 size={13} />
@@ -642,7 +648,7 @@ export const SampleLabPanel: React.FC = () => {
                 setChromaticBaseMidi(36);
               }
             }}
-            className="px-3 py-1.5 rounded-xl bg-[#FF6B00] hover:brightness-110 text-slate-950 font-black flex items-center gap-1.5 cursor-pointer shadow-sm"
+            className="px-3 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
           >
             <Sparkles size={13} />
             <span>Cargar en Pad {s.selectedPadIndex + 1}</span>
@@ -655,10 +661,10 @@ export const SampleLabPanel: React.FC = () => {
             s.loadProBassPackToPads();
             setChromaticBaseMidi(36);
           }}
-          className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#FF6B00]/20 to-[#00E5FF]/20 hover:from-[#FF6B00]/30 hover:to-[#00E5FF]/30 border border-[#00E5FF]/50 text-[#00E5FF] font-bold flex items-center gap-1.5 cursor-pointer"
+          className="px-3 py-1.5 rounded-xl bg-[#1A1A1F] hover:bg-[#24242B] border border-white/[0.1] text-zinc-200 font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
           title="Carga los 11 bajos profesionales (SH-101, Juno-106, Jupiter-8, Monark, Astra, 90s Pad, Auto-Wah, Sub-Octava...) directo en Pads 1–11"
         >
-          <Grid size={13} />
+          <Grid size={13} className="text-orange-400" />
           <span>Cargar Pack {BASS_PRESET_CATALOG.length} Bajos Pro</span>
         </button>
       </div>
