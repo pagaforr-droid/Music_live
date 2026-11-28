@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Crosshair,
+  FastForward,
   Grid3X3,
   Hand,
   Headphones,
@@ -16,8 +17,12 @@ import {
   Pause,
   Pencil,
   Play,
+  Redo2,
+  Rewind,
+  SkipBack,
   Sparkles,
   Trash2,
+  Undo2,
   Upload,
   Volume2,
   ZoomIn,
@@ -62,6 +67,23 @@ const getLaneGridLineClass = (level: MidiGridLine['level']): string => {
       return 'border-l border-white/10';
   }
 };
+
+// Memoized grid overlay so 100+ white subdivision lines per lane are NEVER re-diffed during hit selection, drag, or 60fps playback
+const MemoizedLaneGridLines = React.memo<{ lines: MidiGridLine[]; laneKey: string }>(
+  ({ lines, laneKey }) => (
+    <>
+      {lines.map((gl, idx) => (
+        <div
+          key={`${laneKey}-g-${idx}`}
+          style={{ left: `${gl.leftPct}%` }}
+          className={`absolute top-0 bottom-0 pointer-events-none ${getLaneGridLineClass(
+            gl.level
+          )}`}
+        />
+      ))}
+    </>
+  )
+);
 
 interface DrumLaneDescriptor {
   id: string;
@@ -470,6 +492,36 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     [r.analysis?.noteEvents, selectedNoteId]
   );
 
+  // Pre-group drum hits by lane and melodic notes by pitch row so selection, drag, and 60fps playhead ticks are O(1)
+  const drumHitsByLaneId = useMemo(() => {
+    const map = new Map<string, StemDrumHitEvent[]>();
+    if (!isDrums || !r.analysis) return map;
+    for (const lane of activeDrumLanes) {
+      map.set(lane.id, []);
+    }
+    for (const hit of r.analysis.drumHits) {
+      for (const lane of activeDrumLanes) {
+        if (lane.matchHit(hit)) {
+          map.get(lane.id)!.push(hit);
+        }
+      }
+    }
+    return map;
+  }, [isDrums, r.analysis, activeDrumLanes]);
+
+  const melodicNotesByMidi = useMemo(() => {
+    const map = new Map<number, StemNoteEvent[]>();
+    if (isDrums || !r.analysis) return map;
+    for (const m of melodicRows) {
+      map.set(m, []);
+    }
+    for (const ev of r.analysis.noteEvents) {
+      const list = map.get(ev.midiNote);
+      if (list) list.push(ev);
+    }
+    return map;
+  }, [isDrums, r.analysis, melodicRows]);
+
   // Compute dynamic row/lane height from workspace mode + vertical zoom
   const baseLaneHeightPx = isDrums
     ? isFullscreen
@@ -736,21 +788,68 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     notifyManualHorizontalScroll,
   ]);
 
-  // Global keyboard shortcuts for MIDI scroll, Play/Pause in fullscreen & selected note deletion
+  // Global keyboard shortcuts for MIDI scroll, quick 1-key drum conversion (K/S/H/T/C), & selected note deletion
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target?.isContentEditable ||
+        (tag === 'INPUT' &&
+          (target as HTMLInputElement).type !== 'range' &&
+          (target as HTMLInputElement).type !== 'checkbox')
+      ) {
+        return;
+      }
       if (!r.analysis || duration <= 0) return;
 
-      if (e.code === 'Space' && isFullscreen) {
-        e.preventDefault();
-        r.togglePlayback();
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !isDrums && selectedNoteId) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !isDrums && selectedNoteId) {
         e.preventDefault();
         r.removeMelodicNote(selectedNoteId);
         setSelectedNoteId(null);
-      } else if (e.key === 'ArrowLeft' && !e.altKey && zoom > 1.01) {
+      } else if (
+        isDrums &&
+        selectedHit &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.repeat
+      ) {
+        const k = e.key.toLowerCase();
+        if (k === 'k') {
+          e.preventDefault();
+          r.updateDrumHit(selectedHit.id, { role: 'kick', midiNote: 36, articulation: 'closed' });
+          return;
+        }
+        if (k === 's') {
+          e.preventDefault();
+          r.updateDrumHit(selectedHit.id, { role: 'snare', midiNote: 38, articulation: 'closed' });
+          return;
+        }
+        if (k === 'h') {
+          e.preventDefault();
+          r.updateDrumHit(selectedHit.id, { role: 'hat', midiNote: 42, articulation: 'closed' });
+          return;
+        }
+        if (k === 't') {
+          e.preventDefault();
+          r.updateDrumHit(selectedHit.id, {
+            role: 'tom',
+            midiNote: tomInsertArticulation === 'high-tom' ? 50 : tomInsertArticulation === 'mid-tom' ? 47 : 43,
+            articulation: tomInsertArticulation,
+          });
+          return;
+        }
+        if (k === 'c') {
+          e.preventDefault();
+          r.updateDrumHit(selectedHit.id, { role: 'crash', midiNote: 49, articulation: 'crash' });
+          return;
+        }
+      }
+
+      if (e.key === 'ArrowLeft' && !e.altKey && zoom > 1.01) {
         e.preventDefault();
         const step = (e.shiftKey ? 0.28 : 0.1) / zoom;
         setScrollNorm((s) => clampScrollNorm(s - step));
@@ -780,8 +879,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     r,
     duration,
     isDrums,
-    isFullscreen,
+    selectedHit,
     selectedNoteId,
+    tomInsertArticulation,
     zoom,
     clampScrollNorm,
     setScrollNorm,
@@ -790,6 +890,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   ]);
 
   // Render High-DPI Horizontal MIDI Minimap Canvas (shows all drum hits or melodic notes across full song)
+  // Does not depend on r.currentTimeSec because TimelineHorizontalScrollbar renders the live playhead cursor
   useEffect(() => {
     const canvas = hMinimapCanvasRef.current;
     if (!canvas || !r.analysis || duration <= 0) return;
@@ -838,11 +939,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
         ctx.fillRect(x0, y - 1, bw, 2.2);
       }
     }
-    // Playhead marker on minimap
-    const px = (r.currentTimeSec / duration) * w;
-    ctx.fillStyle = '#FAFAFA';
-    ctx.fillRect(px - 0.75, 0, 1.5, h);
-  }, [r.analysis, r.currentTimeSec, duration, isDrums, editorSizeMode, minimapResizeTick]);
+  }, [r.analysis, duration, isDrums, editorSizeMode, minimapResizeTick]);
 
   // =========================================================================
   // DIRECT MOUSE DRAG-TO-MOVE (POSITION) & DRAG-TO-VOLUME (HEIGHT) FOR DRUM HITS
@@ -866,6 +963,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     if (laneRect.width < 10 || laneRect.height < 10) return;
 
     setSelectedHitId(hit.id);
+    if (initialMode === 'auto') {
+      r.auditionDrumHit(hit);
+    }
 
     hitDragSessionRef.current = {
       hitId: hit.id,
@@ -1048,6 +1148,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     if (laneRect.width < 10) return;
 
     setSelectedNoteId(ev.id);
+    if (mode === 'move') {
+      r.auditionMelodicNote(ev.midiNote, ev.velocity);
+    }
 
     noteDragSessionRef.current = {
       noteId: ev.id,
@@ -1357,6 +1460,93 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
               ● SOLO: {r.soloDrumRole.toUpperCase()} ✕
             </button>
           )}
+
+          {/* Direct Workstation Transport Strip: Go to Start · Rewind · Play/Pause (Space) · Fast-Forward */}
+          <div className="flex items-center bg-[#0B0B0D] border border-white/[0.1] rounded-xl p-0.5 gap-0.5">
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => {
+                r.seekToStart();
+                setScrollNorm(0);
+              }}
+              className="px-2 py-1 rounded-lg bg-[#16161B] hover:bg-[#26262E] text-zinc-200 hover:text-white flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Ir al inicio del audio (00:00.0 · Tecla Inicio)"
+            >
+              <SkipBack size={11} />
+              <span className="hidden xl:inline text-[10px] font-medium">Inicio</span>
+            </button>
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => r.rewindBySec()}
+              className="px-2 py-1 rounded-lg bg-[#16161B] hover:bg-[#26262E] text-zinc-200 hover:text-white flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Retroceder 1 compás / -4s"
+            >
+              <Rewind size={11} />
+              <span className="hidden xl:inline text-[10px] font-medium">Retroceso</span>
+            </button>
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={r.togglePlayback}
+              className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-all ${
+                r.isPlaying
+                  ? 'bg-zinc-100 text-zinc-950 shadow-sm'
+                  : 'bg-[#22222A] hover:bg-[#2E2E38] text-white'
+              }`}
+              title="Reproducir / Pausar audio (Barra Espaciadora)"
+            >
+              {r.isPlaying ? (
+                <Pause size={11} className="fill-current" />
+              ) : (
+                <Play size={11} className="fill-current" />
+              )}
+              <span className="text-[10px]">{r.isPlaying ? 'Pausa' : 'Play'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => r.forwardBySec()}
+              className="px-1.5 py-1 rounded-lg bg-[#16161B] hover:bg-[#26262E] text-zinc-300 hover:text-white flex items-center cursor-pointer disabled:opacity-40 transition-colors"
+              title="Adelantar 1 compás / +4s"
+            >
+              <FastForward size={11} />
+            </button>
+          </div>
+
+          {/* Instant Undo / Redo + 1-Click Ghost Snare Filter */}
+          <div className="flex items-center bg-[#0B0B0D] border border-white/[0.08] rounded-xl p-0.5 gap-0.5">
+            <button
+              type="button"
+              disabled={!r.canUndoMidi}
+              onClick={r.undoMidiEdit}
+              className="p-1 rounded-lg hover:bg-[#222228] text-zinc-300 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
+              title="Deshacer cambio MIDI (Ctrl+Z)"
+            >
+              <Undo2 size={12} />
+            </button>
+            <button
+              type="button"
+              disabled={!r.canRedoMidi}
+              onClick={r.redoMidiEdit}
+              className="p-1 rounded-lg hover:bg-[#222228] text-zinc-300 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
+              title="Rehacer cambio MIDI (Ctrl+Y)"
+            >
+              <Redo2 size={12} />
+            </button>
+            {isDrums && (
+              <button
+                type="button"
+                onClick={() => r.cleanWeakGhostHits(0.35, 'snare')}
+                className="px-2 py-0.5 rounded-lg bg-[#18181F] hover:bg-[#252530] text-cyan-300 hover:text-white text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                title="Elimina golpes débiles/fantasma de Snare (<35% volumen) producidos por sangrado o hi-hats"
+              >
+                <Sparkles size={10} />
+                <span className="hidden lg:inline">Limpiar Snare Débil</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Editing Tools + Vertical Zoom + Always-Visible Fullscreen Toggle */}
@@ -1666,7 +1856,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                 const isSolo = r.soloDrumRole === lane.role;
                 const isMutedByOtherSolo =
                   r.soloDrumRole !== null && r.soloDrumRole !== lane.role;
-                const laneAllHits = r.analysis!.drumHits.filter(lane.matchHit);
+                const laneAllHits = drumHitsByLaneId.get(lane.id) ?? [];
                 const visibleLaneHits = laneAllHits.filter((h) => {
                   const effPeak =
                     hitDragPreview && hitDragPreview.hitId === h.id
@@ -1840,15 +2030,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                       }`}
                     >
                       {/* High-Contrast Adaptive White Musical Grid (Bars, Beats, 1/8, 1/16, 1/32, 1/64) */}
-                      {activeGridLines.map((gl, idx) => (
-                        <div
-                          key={`${lane.id}-g-${idx}`}
-                          style={{ left: `${gl.leftPct}%` }}
-                          className={`absolute top-0 bottom-0 pointer-events-none ${getLaneGridLineClass(
-                            gl.level
-                          )}`}
-                        />
-                      ))}
+                      <MemoizedLaneGridLines lines={activeGridLines} laneKey={lane.id} />
 
                       {/* Velocity Reference Midline (50% white dashed guide) */}
                       {laneHeightPx >= 64 && (
@@ -1969,8 +2151,6 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                                 return;
                               }
                               setSelectedHitId(hit.id);
-                              r.seekToSec(hit.peakTimeSec);
-                              r.auditionDrumHit(hit);
                             }}
                             style={{
                               left: `${leftPct}%`,
@@ -2063,13 +2243,13 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
               {melodicRows.map((midiNote) => {
                 const black = isBlackKey(midiNote);
                 const isC = midiNote % 12 === 0;
-                const rowNotes = r.analysis!.noteEvents.filter((n) => {
+                const allRowNotes = melodicNotesByMidi.get(midiNote) ?? [];
+                const rowNotes = allRowNotes.filter((n) => {
                   const effStart =
                     noteDragPreview?.noteId === n.id ? noteDragPreview.startSec : n.startSec;
                   const effDur =
                     noteDragPreview?.noteId === n.id ? noteDragPreview.durationSec : n.durationSec;
                   return (
-                    n.midiNote === midiNote &&
                     effStart + effDur >= viewStartSec - 0.03 &&
                     effStart <= viewEndSec + 0.03
                   );
@@ -2161,15 +2341,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           : 'cursor-pointer'
                       }`}
                     >
-                      {activeGridLines.map((gl, idx) => (
-                        <div
-                          key={`pr-${midiNote}-g-${idx}`}
-                          style={{ left: `${gl.leftPct}%` }}
-                          className={`absolute top-0 bottom-0 pointer-events-none ${getLaneGridLineClass(
-                            gl.level
-                          )}`}
-                        />
-                      ))}
+                      <MemoizedLaneGridLines lines={activeGridLines} laneKey={`pr-${midiNote}`} />
 
                       {r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec && (
                         <div
@@ -2223,8 +2395,6 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                                 return;
                               }
                               setSelectedNoteId(ev.id);
-                              r.seekToSec(ev.startSec);
-                              r.auditionMelodicNote(ev.midiNote, ev.velocity);
                             }}
                             style={{
                               left: `${leftPct}%`,
@@ -2699,23 +2869,59 @@ onClick={handleToggleFollow}
       {/* DEDICATED FULLSCREEN TRANSPORT & A/B STUDIO DOCK */}
       {isFullscreen && (
         <div className="px-4 py-2.5 bg-[#121215] border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => {
+                r.seekToStart();
+                setScrollNorm(0);
+              }}
+              className="h-9 px-2.5 rounded-xl bg-[#1A1A20] hover:bg-[#272730] border border-white/[0.1] text-zinc-200 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Ir al inicio del audio (00:00.0 · Tecla Inicio)"
+            >
+              <SkipBack size={13} />
+              <span>Inicio</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => r.rewindBySec()}
+              className="h-9 px-2.5 rounded-xl bg-[#1A1A20] hover:bg-[#272730] border border-white/[0.1] text-zinc-200 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Retroceder 1 compás / -4s"
+            >
+              <Rewind size={13} />
+              <span>Retroceso</span>
+            </button>
+
             <button
               type="button"
               disabled={!r.originalBuffer}
               onClick={r.togglePlayback}
-              className={`w-9 h-9 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-40 transition-all ${
+              className={`h-9 px-4 rounded-full text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition-all ${
                 r.isPlaying
                   ? 'bg-zinc-100 text-zinc-950 shadow-md'
                   : 'bg-[#242429] hover:bg-[#32323A] border border-white/[0.12] text-zinc-100'
               }`}
-              title="Reproducir / Pausar (Espacio)"
+              title="Reproducir / Pausar (Barra Espaciadora)"
             >
               {r.isPlaying ? (
                 <Pause size={14} className="fill-current" />
               ) : (
-                <Play size={14} className="fill-current ml-0.5" />
+                <Play size={14} className="fill-current" />
               )}
+              <span>{r.isPlaying ? 'Pausar (Espacio)' : 'Play (Espacio)'}</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!r.originalBuffer}
+              onClick={() => r.forwardBySec()}
+              className="h-9 px-2.5 rounded-xl bg-[#1A1A20] hover:bg-[#272730] border border-white/[0.1] text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Adelantar 1 compás / +4s"
+            >
+              <FastForward size={13} />
             </button>
 
             <span className="text-xs font-mono text-zinc-300 px-2.5 py-1 rounded-lg bg-[#0B0B0D] border border-white/[0.07] tabular-nums">

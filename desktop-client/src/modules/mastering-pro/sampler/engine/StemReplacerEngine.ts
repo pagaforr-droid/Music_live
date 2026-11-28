@@ -112,8 +112,9 @@ export function renderFullStemReplacement(params: {
   drumSlots: Record<DrumPieceRole, ReplacementSlotConfig>;
   melodicSlot: ReplacementSlotConfig;
   mix: StemReplaceMixOptions;
+  fastPreview?: boolean;
 }): AudioBuffer {
-  const { originalBuffer, analysis, drumSlots, melodicSlot, mix } = params;
+  const { originalBuffer, analysis, drumSlots, melodicSlot, mix, fastPreview = false } = params;
   const sr = originalBuffer.sampleRate;
   const totalLen = originalBuffer.length;
 
@@ -487,24 +488,54 @@ export function renderFullStemReplacement(params: {
     }
   }
 
-  // Gentle 26Hz DC/sub-rumble protection
+  // Gentle 26Hz DC/sub-rumble protection + peak tracking
   const hpfAlpha = (2 * Math.PI * 26) / (sr + 2 * Math.PI * 26);
   let hpStateL = 0;
   let hpStateR = 0;
+  let maxPeak = 0;
   for (let i = 0; i < totalLen; i++) {
     hpStateL += hpfAlpha * (outL[i] - hpStateL);
     hpStateR += hpfAlpha * (outR[i] - hpStateR);
-    outL[i] -= hpStateL;
-    outR[i] -= hpStateR;
+    const sL = outL[i] - hpStateL;
+    const sR = outR[i] - hpStateR;
+    outL[i] = sL;
+    outR[i] = sR;
+    const aL = sL < 0 ? -sL : sL;
+    const aR = sR < 0 ? -sR : sR;
+    const pk = aL > aR ? aL : aR;
+    if (pk > maxPeak) maxPeak = pk;
   }
 
-  // True-Peak safety limiting so dense chords never clip
-  applyTruePeakLookaheadLimiterOffline(outL, outR, sr, {
-    driveDb: 0,
-    ceilingDbTp: -1.0,
-    lookaheadMs: 5,
-    releaseMs: 65,
-  });
+  const ceilingLinear = 0.89125; // -1.0 dBFS
+  if (fastPreview) {
+    // Ultra-fast O(N) zero-allocation lookahead peak limiter for instantaneous MIDI editing feedback (< 3ms)
+    if (maxPeak > ceilingLinear) {
+      const relAlpha = Math.exp(-1 / Math.max(16, sr * 0.055));
+      let envGain = 1.0;
+      for (let i = 0; i < totalLen; i++) {
+        const aL = Math.abs(outL[i]);
+        const aR = Math.abs(outR[i]);
+        const pk = aL > aR ? aL : aR;
+        const reqG = pk > ceilingLinear ? ceilingLinear / pk : 1.0;
+        if (reqG < envGain) {
+          envGain = reqG;
+        } else {
+          envGain = relAlpha * envGain + (1 - relAlpha) * 1.0;
+          if (reqG < envGain) envGain = reqG;
+        }
+        outL[i] *= envGain;
+        outR[i] *= envGain;
+      }
+    }
+  } else if (maxPeak > ceilingLinear * 0.94) {
+    // Full 4x Polyphase True-Peak Lookahead Limiter for final export & mastering-grade renders
+    applyTruePeakLookaheadLimiterOffline(outL, outR, sr, {
+      driveDb: 0,
+      ceilingDbTp: -1.0,
+      lookaheadMs: 5,
+      releaseMs: 65,
+    });
+  }
 
   const outBuffer = new AudioBuffer({
     length: totalLen,

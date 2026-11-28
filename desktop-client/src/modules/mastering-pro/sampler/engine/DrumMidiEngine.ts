@@ -539,9 +539,10 @@ export function fuseMidiWithAcousticDrumAudio(params: {
   });
 
   const subKickCoreSig = applyBiquadBandPassOrLp(mono, sampleRate, 28, 76, 1);
-  const subKickSig = applyBandFilter(mono, sampleRate, 28, 110);
+  const subKickSig = applyBandFilter(mono, sampleRate, 28, 115);
   const lowBodySig = applyBiquadBandPassOrLp(mono, sampleRate, 32, 340, 1);
   const tomSig = applyBiquadBandPassOrLp(mono, sampleRate, 80, 340, 1);
+  const shellSig = applyBiquadBandPassOrLp(mono, sampleRate, 165, 360, 1);
   const crackSig = applyBandFilter(mono, sampleRate, 1850, 6200);
   const snareSig = applyBandFilter(mono, sampleRate, 180, 5800);
   const cymbalSig = applyBandFilter(mono, sampleRate, 2800, 12000);
@@ -610,6 +611,54 @@ export function fuseMidiWithAcousticDrumAudio(params: {
         role = 'snare';
         midiNote = 38;
         subRoleLabel = 'Acoustic Snare (38)';
+        articulation = 'closed';
+        pitchOffsetSemis = 0;
+      }
+    }
+
+    // Bidirectional Acoustic Verification for Snare (37/38/39/40) <-> Kick (36) / Hi-Hat (42):
+    // Prevents MT3 or imported MIDI from emitting excess Snares on deep Sub-Kick hits or light Hi-Hat ticks!
+    if (role === 'snare') {
+      const subM = measureBandPeakAndRms(subKickCoreSig, hit.timeSec);
+      const kickM = measureBandPeakAndRms(subKickSig, hit.timeSec);
+      const shellM = measureBandPeakAndRms(shellSig, hit.timeSec);
+      const crackM = measureBandPeakAndRms(crackSig, hit.timeSec);
+      const hatM = measureBandPeakAndRms(hatSig, hit.timeSec);
+
+      const matchingAcousticKick = acousticAnalysis.drumHits.find(
+        (ah) =>
+          ah.role === 'kick' &&
+          (Math.abs(ah.peakTimeSec - hit.timeSec) < 0.036 ||
+            Math.abs(ah.timeSec - hit.timeSec) < 0.036)
+      );
+      const matchingAcousticSnare = acousticAnalysis.drumHits.find(
+        (ah) =>
+          ah.role === 'snare' &&
+          (Math.abs(ah.peakTimeSec - hit.timeSec) < 0.038 ||
+            Math.abs(ah.timeSec - hit.timeSec) < 0.038)
+      );
+
+      if (
+        !matchingAcousticSnare &&
+        ((matchingAcousticKick && kickM.rms >= shellM.rms * 0.72) ||
+          (subM.rms > shellM.rms * 1.15 && kickM.rms > crackM.rms * 0.85))
+      ) {
+        // Sub-bass Kick fundamental dominates with no Snare shell/wire confirmation -> Reclassify to Kick (36)!
+        role = 'kick';
+        midiNote = 36;
+        subRoleLabel = 'Kick Drum 1 (36)';
+        articulation = 'closed';
+        pitchOffsetSemis = 0;
+      } else if (
+        !matchingAcousticSnare &&
+        hatM.rms > shellM.rms * 1.75 &&
+        hatM.rms > crackM.rms * 0.92 &&
+        shellM.rms < 0.015
+      ) {
+        // Pure high-frequency metallic Hi-Hat tick with negligible 165-360Hz snare body -> Reclassify to Hi-Hat (42)!
+        role = 'hat';
+        midiNote = 42;
+        subRoleLabel = 'Closed Hi-Hat (42)';
         articulation = 'closed';
         pitchOffsetSemis = 0;
       }
@@ -685,8 +734,15 @@ export function fuseMidiWithAcousticDrumAudio(params: {
   // Hybrid Acoustic Fallback: merge high-confidence acoustic hits that had no MIDI hit within ±42ms
   if (includeAcousticFallback && sourceEngine === 'replicate-mt3') {
     for (const acHit of acousticAnalysis.drumHits) {
+      // Lower threshold for Kicks (0.34) so zero acoustic Kicks are missed; stricter for Snares (0.52) to prevent excess false Snares
       const minVelocityForFallback =
-        acHit.role === 'kick' || acHit.role === 'snare' || acHit.role === 'tom' ? 0.42 : 0.48;
+        acHit.role === 'kick'
+          ? 0.34
+          : acHit.role === 'tom'
+          ? 0.42
+          : acHit.role === 'snare'
+          ? 0.52
+          : 0.48;
       if (acHit.velocity < minVelocityForFallback) continue;
       // Avoid injecting a fallback Kick on top of an already-verified Tom (or vice versa) within ±42ms
       const alreadyCovered = rawRefined.some(

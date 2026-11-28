@@ -969,6 +969,7 @@ export function analyzeDrumStemFull(
   }
 
   // 500Hz (2ms) band RMS envelopes smoothed with cycle-spanning windows (eliminates 50Hz bass zero-crossing ripple!)
+  const psSubK = new Float64Array(numEnv + 1);
   const psK = new Float64Array(numEnv + 1);
   const psT = new Float64Array(numEnv + 1);
   const psS = new Float64Array(numEnv + 1);
@@ -980,14 +981,16 @@ export function analyzeDrumStemFull(
     const st = f * envHop;
     const en = Math.min(workMono.length, st + envHop);
     const inv = 1 / Math.max(1, en - st);
-    let sqK = 0, sqT = 0, sqS = 0, sqC = 0, sqY = 0, sqH = 0;
+    let sqSubK = 0, sqK = 0, sqT = 0, sqS = 0, sqC = 0, sqY = 0, sqH = 0;
     for (let i = st; i < en; i++) {
+      const sk = subKickSig[i];
       const k = kickSig[i];
       const tm = tomSig[i];
       const s = shellSig[i];
       const c = crackSig[i];
       const y = cymbalSig[i];
       const h = hatSig[i];
+      sqSubK += sk * sk;
       sqK += k * k;
       sqT += tm * tm;
       sqS += s * s;
@@ -995,6 +998,7 @@ export function analyzeDrumStemFull(
       sqY += y * y;
       sqH += h * h;
     }
+    psSubK[f + 1] = psSubK[f] + sqSubK * inv;
     psK[f + 1] = psK[f] + sqK * inv;
     psT[f + 1] = psT[f] + sqT * inv;
     psS[f + 1] = psS[f] + sqS * inv;
@@ -1013,14 +1017,16 @@ export function analyzeDrumStemFull(
     return out;
   };
 
-  // Strict causal/short-forward RMS envelopes (zero early pre-smearing before transient attacks!)
-  const envKick = buildCausalRms(psK, 8, 2);   // ~22ms span, max +4ms lookahead
-  const envTom = buildCausalRms(psT, 6, 2);    // ~18ms span for Floor/Mid/High Toms (84..340Hz)
-  const envShell = buildCausalRms(psS, 5, 1);  // ~14ms span, max +2ms lookahead
-  const envCrack = buildCausalRms(psC, 2, 1);  // ~8ms span
-  const envCymbal = buildCausalRms(psY, 3, 1); // ~10ms span for Crash/Ride wash
+  // 22ms cycle-spanning RMS envelopes (eliminates 48Hz sub-kick zero-crossing tail ripple while keeping tight attack alignment)
+  const envSubKick = buildCausalRms(psSubK, 6, 4); // ~22ms span for 28..76Hz sub-kick fundamental
+  const envKick = buildCausalRms(psK, 6, 4);       // ~22ms span for 32..132Hz kick body+punch
+  const envTom = buildCausalRms(psT, 5, 3);        // ~18ms span for Floor/Mid/High Toms (80..340Hz)
+  const envShell = buildCausalRms(psS, 4, 2);      // ~14ms span for Snare shell (155..360Hz)
+  const envCrack = buildCausalRms(psC, 2, 1);      // ~8ms span
+  const envCymbal = buildCausalRms(psY, 3, 1);     // ~10ms span for Crash/Ride wash
   const envHat = buildCausalRms(psH, 2, 1);
 
+  const refSubKickEnv = computePercentileFloat(envSubKick, 0.92);
   const refKickEnv = computePercentileFloat(envKick, 0.92);
   const refTomEnv = computePercentileFloat(envTom, 0.92);
   const refShellEnv = computePercentileFloat(envShell, 0.92);
@@ -1035,28 +1041,36 @@ export function analyzeDrumStemFull(
     snapToZeroCrossing: false,
   });
 
-  const bandCandidates: number[] = [];
+  const bandCandidates: Array<{ t: number; isKickBand: boolean }> = [];
   if (
-    envKick[0] > refKickEnv * 0.26 ||
+    envSubKick[0] > refSubKickEnv * 0.24 ||
+    envKick[0] > refKickEnv * 0.24 ||
     envTom[0] > refTomEnv * 0.26 ||
     envCrack[0] > refCrackEnv * 0.26 ||
     envHat[0] > refHatEnv * 0.26
   ) {
-    bandCandidates.push(0);
+    bandCandidates.push({ t: 0, isKickBand: envKick[0] > refKickEnv * 0.24 });
   }
-  const collectBandPeaks = (env: Float32Array, refLevel: number, minRatio: number, minGapSec: number) => {
+  const collectBandPeaks = (
+    env: Float32Array,
+    refLevel: number,
+    minRatio: number,
+    minGapSec: number,
+    postFrames = 3,
+    isKickBand = false
+  ) => {
     const stepEnv = new Float32Array(numEnv);
-    for (let f = 10; f < numEnv - 4; f++) {
+    for (let f = 12; f < numEnv - postFrames - 1; f++) {
       let pre = Infinity;
-      for (let p = f - 10; p <= f - 3; p++) if (env[p] < pre) pre = env[p];
+      for (let p = f - 12; p <= f - 4; p++) if (env[p] < pre) pre = env[p];
       let post = 0;
-      for (let q = f; q <= f + 3; q++) if (env[q] > post) post = env[q];
-      stepEnv[f] = Math.max(0, post - pre * 1.22);
+      for (let q = f; q <= f + postFrames; q++) if (env[q] > post) post = env[q];
+      stepEnv[f] = Math.max(0, post - pre * 1.18);
     }
-    const thresh = refLevel * (0.28 - sensitivity * 0.12);
+    const thresh = refLevel * ((isKickBand ? 0.23 : 0.28) - sensitivity * 0.12);
     const minGapFrames = Math.round(minGapSec * envHz);
     let lastF = -minGapFrames;
-    for (let f = 10; f < numEnv - 4; f++) {
+    for (let f = 12; f < numEnv - postFrames - 1; f++) {
       if (
         stepEnv[f] >= thresh &&
         stepEnv[f] >= stepEnv[f - 1] &&
@@ -1064,9 +1078,9 @@ export function analyzeDrumStemFull(
         f - lastF >= minGapFrames
       ) {
         let pre = Infinity;
-        for (let p = f - 10; p <= f - 3; p++) if (env[p] < pre) pre = env[p];
+        for (let p = f - 12; p <= f - 4; p++) if (env[p] < pre) pre = env[p];
         let post = 0;
-        for (let q = f; q <= f + 3; q++) if (env[q] > post) post = env[q];
+        for (let q = f; q <= f + postFrames; q++) if (env[q] > post) post = env[q];
         if (post / Math.max(1e-5, pre) >= minRatio) {
           // Refine forward from [f - 2 .. f + 2] to exact 45% rising edge so we never jump early before the drum hit
           const targetMid = pre + (post - pre) * 0.45;
@@ -1077,26 +1091,26 @@ export function analyzeDrumStemFull(
               break;
             }
           }
-          bandCandidates.push(Number((onsetF / envHz).toFixed(4)));
+          bandCandidates.push({ t: Number((onsetF / envHz).toFixed(4)), isKickBand });
           lastF = f;
         }
       }
     }
   };
 
-  collectBandPeaks(envKick, refKickEnv, 1.45, 0.10);
-  collectBandPeaks(envCrack, refCrackEnv, 1.55, 0.10);
-  collectBandPeaks(envHat, refHatEnv, isFullMix ? 1.62 : 1.44, 0.068);
-  collectBandPeaks(envCymbal, refCymbalEnv, 1.58, 0.14);
+  collectBandPeaks(envKick, refKickEnv, 1.42, 0.095, 5, true);
+  collectBandPeaks(envCrack, refCrackEnv, 1.55, 0.10, 3, false);
+  collectBandPeaks(envHat, refHatEnv, isFullMix ? 1.62 : 1.44, 0.068, 3, false);
+  collectBandPeaks(envCymbal, refCymbalEnv, 1.58, 0.14, 4, false);
   if (!isFullMix) {
-    collectBandPeaks(envShell, refShellEnv, 1.52, 0.095);
-    collectBandPeaks(envTom, refTomEnv, 1.44, 0.085);
+    collectBandPeaks(envShell, refShellEnv, 1.52, 0.095, 4, false);
+    collectBandPeaks(envTom, refTomEnv, 1.44, 0.085, 5, false);
   }
 
   // Cluster candidates within 26ms so separate beats/offbeat hits stay distinct while collapsing double-triggers
-  const tagged: Array<{ t: number; isFlux: boolean }> = [
-    ...res.onsetTimesSec.map((t) => ({ t, isFlux: true })),
-    ...bandCandidates.map((t) => ({ t, isFlux: false })),
+  const tagged: Array<{ t: number; isFlux: boolean; isKickBand: boolean }> = [
+    ...res.onsetTimesSec.map((t) => ({ t, isFlux: true, isKickBand: false })),
+    ...bandCandidates.map((c) => ({ t: c.t, isFlux: false, isKickBand: c.isKickBand })),
   ].sort((a, b) => a.t - b.t);
   const candidateTimes: number[] = [];
   for (let i = 0; i < tagged.length; i++) {
@@ -1150,10 +1164,10 @@ export function analyzeDrumStemFull(
   const preGapSamples = Math.round(sampleRate * 0.005);
   let lastCrashSec = -10;
 
-  // Measure pre [-28ms..-6ms] vs post [0..+24ms] band step-ups (handling t=0 head onset where pre-region is empty!)
-  const getStep = (arr: Float32Array, eIdx: number) => {
-    const preS = Math.max(0, eIdx - 14);
-    const preE = Math.max(preS + 1, eIdx - 2);
+  // Measure pre [-30ms..-8ms] vs post [0..+postFrames] band step-ups (handling t=0 head onset where pre-region is empty!)
+  const getStep = (arr: Float32Array, eIdx: number, postLookahead = 12) => {
+    const preS = Math.max(0, eIdx - 15);
+    const preE = Math.max(preS + 1, eIdx - 4);
     let preMin = Infinity;
     if (eIdx < 6) {
       preMin = 0;
@@ -1161,7 +1175,7 @@ export function analyzeDrumStemFull(
       for (let k = preS; k < preE; k++) if (arr[k] < preMin) preMin = arr[k];
       if (!Number.isFinite(preMin)) preMin = 0;
     }
-    const postE = Math.min(numEnv, eIdx + 12);
+    const postE = Math.min(numEnv, eIdx + postLookahead);
     let postMax = 0;
     for (let k = eIdx; k < postE; k++) if (arr[k] > postMax) postMax = arr[k];
     return {
@@ -1177,12 +1191,14 @@ export function analyzeDrumStemFull(
     const sampleIdx = Math.max(0, Math.round(timeSec * sampleRate));
     const envIdx = Math.min(numEnv - 1, Math.round(timeSec * envHz));
 
-    const kSt = getStep(envKick, envIdx);
-    const tSt = getStep(envTom, envIdx);
-    const sSt = getStep(envShell, envIdx);
-    const cSt = getStep(envCrack, envIdx);
-    const ySt = getStep(envCymbal, envIdx);
-    const hSt = getStep(envHat, envIdx);
+    // Low-frequency Kick / Sub-Kick waves peak over 0..+32ms (16 frames), whereas HF Crack/Hat peak in 0..+20ms
+    const subKSt = getStep(envSubKick, envIdx, 16);
+    const kSt = getStep(envKick, envIdx, 16);
+    const tSt = getStep(envTom, envIdx, 14);
+    const sSt = getStep(envShell, envIdx, 12);
+    const cSt = getStep(envCrack, envIdx, 10);
+    const ySt = getStep(envCymbal, envIdx, 12);
+    const hSt = getStep(envHat, envIdx, 10);
 
     // Measure post-kick sustain tail (+66ms..+112ms) to distinguish fast-decaying Kicks from sustained Bass notes/Pads!
     let kTailAvg = kSt.post;
@@ -1252,7 +1268,8 @@ export function analyzeDrumStemFull(
       const dMag = Math.max(0, mPost - 0.8 * mPre);
       const p = dMag * dMag;
 
-      if (f <= 135) dSubKick += p;
+      // Include up to 148 Hz in dSubKick so bin k=3 at 48kHz (140.6 Hz upper Kick punch) is counted as Kick energy
+      if (f <= 148) dSubKick += p;
       else if (f <= 340) dTomBody += p;
       else if (f <= 1800) dSnareMid += p;
       else if (f <= 6000) {
@@ -1285,24 +1302,47 @@ export function analyzeDrumStemFull(
       crackFlatness = Math.exp(logSum / crackBinsTotal) / meanP;
     }
 
-    const kickStrength = kSt.step / Math.max(1e-4, refKickEnv);
+    const subKickStrength = subKSt.step / Math.max(1e-4, refSubKickEnv);
+    const rawKickStrength = kSt.step / Math.max(1e-4, refKickEnv);
+    const kickStrength = Math.max(rawKickStrength, subKickStrength * 1.06);
+    const effKickRatio = Math.max(kSt.ratio, subKSt.ratio);
     const tomStrength = tSt.step / Math.max(1e-4, refTomEnv);
     const shellStrength = sSt.step / Math.max(1e-4, refShellEnv);
     const crackStrength = cSt.step / Math.max(1e-4, refCrackEnv);
     const cymbalStrength = ySt.step / Math.max(1e-4, refCymbalEnv);
     const hatStrength = hSt.step / Math.max(1e-4, refHatEnv);
 
-    const hasSnareWireNoise =
-      crackStrength >= 0.22 &&
-      cSt.ratio >= 1.28 &&
-      crackFlatness >= 0.082 &&
-      (rCrack >= 0.10 || crackStrength > tomStrength * 0.52 || shellStrength >= 0.26);
+    // Discriminate metallic Hi-Hat ticks (>6kHz dominant, weak 165-360Hz snare shell) so Hi-Hats are never misclassified as Snares!
+    const isHatDominated =
+      hatStrength >= 0.22 &&
+      hSt.ratio >= 1.32 &&
+      shellStrength < 0.23 &&
+      (dHat > (dTomBody + dSnareMid) * 1.15 || hatStrength > shellStrength * 1.65) &&
+      sSt.post < hSt.post * 0.88;
 
-    // Evaluate Kick pitch-chirp signature (150Hz beater -> 50Hz sub body) to distinguish Kicks from Bass notes
+    const hasSnareWireNoise =
+      !isHatDominated &&
+      crackStrength >= 0.23 &&
+      cSt.ratio >= 1.30 &&
+      crackFlatness >= 0.084 &&
+      (shellStrength >= 0.22 || (shellStrength >= 0.16 && rSnareMid + rTom >= 0.14 && crackStrength > tomStrength * 0.55));
+
+    // Evaluate Kick pitch-chirp signature (150Hz beater -> 50Hz sub body) to distinguish Kicks from Bass notes & Snares
     const kickChirp =
-      kickStrength >= 0.22 && kSt.ratio >= 1.32
+      kickStrength >= 0.18 && effKickRatio >= 1.26
         ? evaluateKickChirpSignature(sampleIdx, sampleRate, lowBodySig, subKickSig)
         : { isKickChirp: false, earlyFreqHz: 60, lateFreqHz: 60, subCrest: 1 };
+
+    // Time-domain Sub-Kick / Low-Punch confirmation: resists loss when a loud Hi-Hat or beater click co-occurs in the 21ms FFT!
+    const hasTrueSubKickImpact =
+      (subKickStrength >= 0.22 &&
+        subKSt.ratio >= 1.32 &&
+        (subKSt.post >= sSt.post * 0.76 ||
+          (subKickStrength >= shellStrength * 0.92 && subKSt.post >= sSt.post * 0.62))) ||
+      (rawKickStrength >= 0.25 &&
+        kSt.ratio >= 1.35 &&
+        kSt.post >= sSt.post * 0.96 &&
+        rawKickStrength >= shellStrength * 0.95);
 
     // When Master-Guided Hybrid is used, check if the target Drum Stem has any percussive confirmation
     // (or if the Master hit itself is an unmistakable high-crest drum transient that was dropped by AI stem splitting)
@@ -1314,7 +1354,7 @@ export function analyzeDrumStemFull(
     // Always evaluated regardless of isFullMix so Tom fills are never misclassified as Kick Drums!
     const rawTomInfo: TomResonanceEvaluation =
       (tomStrength >= 0.22 || shellStrength >= 0.22 || kickStrength >= 0.24) &&
-      Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.32
+      Math.max(tSt.ratio, sSt.ratio, effKickRatio) >= 1.32
         ? measureTomResonance(sampleIdx)
         : {
             isPitchedTom: false,
@@ -1337,33 +1377,35 @@ export function analyzeDrumStemFull(
     // Dirty stem & Full-mix gating: reject intro pads, solo bass plucks, vocal syllables, and non-percussive bleed!
     if (isFullMix) {
       const hasKickPulse =
-        kickStrength >= 0.32 - sensitivity * 0.12 &&
-        kSt.ratio >= 1.42 &&
-        dSubKick > totalDelta * 0.07 &&
-        (kickChirp.isKickChirp || kTailDrop >= 1.28 || sSt.ratio >= 1.45 || cSt.ratio >= 1.42);
+        kickStrength >= 0.28 - sensitivity * 0.11 &&
+        effKickRatio >= 1.36 &&
+        (dSubKick > totalDelta * 0.055 || hasTrueSubKickImpact) &&
+        (kickChirp.isKickChirp || kTailDrop >= 1.24 || subKSt.ratio >= 1.42 || sSt.ratio >= 1.45 || cSt.ratio >= 1.42);
       const hasSnarePulse =
-        (crackStrength >= 0.26 - sensitivity * 0.10 &&
+        !isHatDominated &&
+        ((crackStrength >= 0.26 - sensitivity * 0.09 &&
           cSt.ratio >= 1.35 &&
           crackFlatness >= 0.088 &&
-          (shellStrength >= 0.20 || (dSnareMid + dTomBody > dHat * 0.62 && rKick < 0.28))) ||
-        // Rescue hollow/muffled snares when confirmed by drum stem energy
-        (stemConfirmLevel >= 0.22 &&
-          shellStrength >= 0.28 &&
-          sSt.ratio >= 1.45 &&
-          crackStrength >= 0.16 &&
-          !tomInfo.isPitchedTom);
+          (shellStrength >= 0.22 || (shellStrength >= 0.16 && dSnareMid + dTomBody > dHat * 0.72 && rKick < 0.28))) ||
+          // Rescue hollow/muffled snares when confirmed by drum stem energy
+          (stemConfirmLevel >= 0.22 &&
+            shellStrength >= 0.30 &&
+            sSt.ratio >= 1.45 &&
+            crackStrength >= 0.17 &&
+            sSt.post > kSt.post * 0.90 &&
+            !tomInfo.isPitchedTom));
       const hasHatOrCrashPulse =
         (hatStrength >= 0.28 - sensitivity * 0.11 && hSt.ratio >= 1.40 && (rHat >= 0.16 || stemConfirmLevel >= 0.18)) ||
         (cymbalStrength >= 0.36 - sensitivity * 0.12 && ySt.ratio >= 1.48 && rCrackHat >= 0.25 && crackFlatness >= 0.095 && cymHoldRatio >= 0.21);
       const hasTomPulse =
-        (tomInfo.isPitchedTom && Math.max(tSt.ratio, sSt.ratio, kSt.ratio) >= 1.38) ||
+        (tomInfo.isPitchedTom && Math.max(tSt.ratio, sSt.ratio, effKickRatio) >= 1.38) ||
         (shellStrength >= 0.36 && sSt.ratio >= 1.65 && rTom >= 0.34 && crackFlatness < 0.095);
       if (!hasKickPulse && !hasSnarePulse && !hasHatOrCrashPulse && !hasTomPulse) {
         continue;
       }
     } else {
       // Dirty isolated drum stem / Hybrid Master+Stem bleed filter:
-      const maxBandRatio = Math.max(kSt.ratio, tSt.ratio, sSt.ratio, cSt.ratio, ySt.ratio, hSt.ratio);
+      const maxBandRatio = Math.max(effKickRatio, tSt.ratio, sSt.ratio, cSt.ratio, ySt.ratio, hSt.ratio);
       const maxBandStrength = Math.max(kickStrength, tomStrength, shellStrength, crackStrength, cymbalStrength, hatStrength);
       if (maxBandRatio < 1.22 || maxBandStrength < 0.15 - sensitivity * 0.08) {
         continue;
@@ -1378,7 +1420,7 @@ export function analyzeDrumStemFull(
         continue;
       }
       // Reject sustained bass guitar bleed (high low-end with flat tail and zero beater/shell attack)
-      if (!tomInfo.isPitchedTom && !kickChirp.isKickChirp && rKick > 0.65 && kTailDrop < 1.12 && kSt.ratio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
+      if (!tomInfo.isPitchedTom && !kickChirp.isKickChirp && rKick > 0.65 && kTailDrop < 1.12 && effKickRatio < 1.55 && cSt.ratio < 1.3 && hSt.ratio < 1.3) {
         continue;
       }
     }
@@ -1395,27 +1437,37 @@ export function analyzeDrumStemFull(
       cymTailAvg >= refCymbalEnv * 0.11 &&
       (!isFullMix || crackFlatness >= 0.075);
 
-    let role: DrumPieceRole = 'snare';
+    let role: DrumPieceRole = 'hat';
     const strongKickRise =
-      kickStrength >= 0.29 &&
-      kSt.ratio >= 1.40 &&
-      dSubKick > totalDelta * 0.07 &&
       !tomInfo.isPitchedTom &&
-      (kickChirp.isKickChirp || !isFullMix || kTailDrop >= 1.26 || cSt.ratio >= 1.40);
-    // Rescue muffled snares from AI stem separation (where vocal carving weakened >2kHz wire crack but left 160-350Hz shell + broadband burst)
+      ((kickStrength >= 0.23 - sensitivity * 0.05 &&
+        effKickRatio >= 1.32 &&
+        (dSubKick > totalDelta * 0.045 || hasTrueSubKickImpact) &&
+        (kickChirp.isKickChirp || !isFullMix || kTailDrop >= 1.20 || subKSt.ratio >= 1.40 || cSt.ratio >= 1.38)) ||
+        (kickChirp.isKickChirp && kickStrength >= 0.18 && effKickRatio >= 1.25));
+
+    // Rescue muffled snares from AI stem separation ONLY when 165-360Hz Snare Shell clearly outweighs Kick low-end!
     const hollowStemSnare =
       !tomInfo.isPitchedTom &&
-      shellStrength >= 0.26 &&
-      sSt.ratio >= 1.40 &&
-      (crackStrength >= 0.15 || cSt.ratio >= 1.20) &&
-      (crackFlatness >= 0.068 || rSnareMid + rCrack >= 0.22) &&
-      sSt.post > kSt.post * 0.72;
+      !isHatDominated &&
+      shellStrength >= 0.29 &&
+      sSt.ratio >= 1.44 &&
+      crackStrength >= 0.18 &&
+      cSt.ratio >= 1.24 &&
+      (crackFlatness >= 0.074 || rSnareMid + rCrack >= 0.25) &&
+      sSt.post > kSt.post * 0.92 &&
+      sSt.post > subKSt.post * 1.35;
+
+    // Strict Snare verification: requires BOTH wire crack (1.8-6.5kHz) AND genuine Snare Shell/Mid body (165-1800Hz)
+    // (Eliminates the bug where `|| rCrack >= 0.18` turned Hi-Hats and Kick beater clicks into Snares!)
     const strongSnareCrack =
-      (crackStrength >= 0.23 &&
-        cSt.ratio >= 1.30 &&
-        crackFlatness >= 0.082 &&
-        !tomInfo.isPitchedTom &&
-        (shellStrength >= 0.17 || dSnareMid + dTomBody > dHat * 0.62 || rCrack >= 0.18)) ||
+      (!tomInfo.isPitchedTom &&
+        !isHatDominated &&
+        crackStrength >= 0.24 &&
+        cSt.ratio >= 1.32 &&
+        crackFlatness >= 0.084 &&
+        ((shellStrength >= 0.21 && sSt.ratio >= 1.28) ||
+          (shellStrength >= 0.15 && dSnareMid + dTomBody > dHat * 0.82 && rSnareMid + rTom >= 0.15))) ||
       hollowStemSnare;
 
     // Standalone Crash vs Snare distinction:
@@ -1425,25 +1477,44 @@ export function analyzeDrumStemFull(
       !strongKickRise &&
       (rCrackHat >= 0.46 || (cymHoldRatio >= 0.32 && shellStrength < cymbalStrength * 0.85));
 
-    if (strongKickRise && (dSubKick >= dCrack * 0.28 || rKick >= 0.24 || !strongSnareCrack)) {
+    // Kick vs Snare priority: if a genuine Sub/Low Kick transient is present, classify as Kick
+    // unless Snare shell (165-360Hz) + wire crack clearly overpower the Sub-Kick
+    const kickDominatesSnare =
+      !strongSnareCrack ||
+      hasTrueSubKickImpact ||
+      (kickChirp.isKickChirp && subKSt.post >= sSt.post * 0.65) ||
+      dSubKick >= dCrack * 0.26 ||
+      rKick >= 0.22;
+
+    if (strongKickRise && kickDominatesSnare) {
       role = 'kick';
     } else if (isStandaloneCrash) {
       role = 'crash';
     } else if (tomInfo.isPitchedTom && !isCrashCandidate) {
       role = 'tom';
-    } else if (strongSnareCrack || (!isFullMix && rCrack >= 0.13 && rSnareMid + rCrack > rKick && shellStrength >= 0.15 && !tomInfo.isPitchedTom)) {
+    } else if (
+      strongSnareCrack ||
+      (!isFullMix &&
+        !isHatDominated &&
+        rCrack >= 0.15 &&
+        rSnareMid + rCrack > rKick * 1.25 &&
+        shellStrength >= 0.22 &&
+        sSt.ratio >= 1.32 &&
+        sSt.post > kSt.post * 0.88 &&
+        !tomInfo.isPitchedTom)
+    ) {
       role = 'snare';
     } else if (rTom > 0.35 && rKick < 0.24 && rCrackHat < 0.24 && shellStrength >= 0.34) {
       role = 'tom';
     } else if (isCrashCandidate) {
       role = 'crash';
-    } else if (hatStrength >= 0.20 && (rHat >= 0.14 || hSt.ratio >= 1.34)) {
+    } else if (hatStrength >= 0.18 && (rHat >= 0.12 || hSt.ratio >= 1.30 || isHatDominated)) {
       role = 'hat';
     } else {
-      role = kickStrength > Math.max(crackStrength, hatStrength) * 1.15 ? 'kick' : 'hat';
+      role = kickStrength >= Math.max(crackStrength, hatStrength) * 0.95 ? 'kick' : 'hat';
     }
 
-    // Measure exact band-filtered transient peak inside [sampleIdx - 2ms .. sampleIdx + 22ms]
+    // Measure exact band-filtered transient peak inside [sampleIdx - 2ms .. sampleIdx + 24ms]
     const bandSig =
       role === 'kick'
         ? kickSig
@@ -1455,7 +1526,7 @@ export function analyzeDrumStemFull(
         ? tomSig
         : crackSig;
     const pSearchStart = Math.max(0, sampleIdx - Math.round(sampleRate * 0.002));
-    const pSearchEnd = Math.min(workMono.length, sampleIdx + Math.round(sampleRate * 0.022));
+    const pSearchEnd = Math.min(workMono.length, sampleIdx + Math.round(sampleRate * 0.024));
     let peakIdx = sampleIdx;
     let bandPeakAmp = 0;
     let monoPeakAmp = 0;
@@ -1471,7 +1542,7 @@ export function analyzeDrumStemFull(
 
     const roleAmp =
       role === 'kick'
-        ? Math.max(kSt.post, bandPeakAmp)
+        ? Math.max(kSt.post, subKSt.post, bandPeakAmp)
         : role === 'snare'
         ? Math.max(cSt.post + sSt.post * 0.5, bandPeakAmp)
         : role === 'crash'
@@ -1480,10 +1551,32 @@ export function analyzeDrumStemFull(
         ? Math.max(hSt.post, bandPeakAmp)
         : Math.max(tSt.post, sSt.post, bandPeakAmp);
 
-    // Tail ripple / bass-rebound guard against decaying resonance inside 145ms of same non-hat hit
+    // Tail ripple / bass-rebound guard against decaying resonance of the SAME role
+    // Allows genuine double-kick pedal strokes (which have a fresh beater click cSt.ratio >= 1.32 or strong re-attack kSt.ratio >= 1.55)
+    // down to 95ms while blocking smooth 48Hz sub-bass decay ripple within 148ms!
     const prevSame = [...rawHits].reverse().find((h) => h.role === role);
-    const sameRoleThresh = role === 'kick' ? 0.72 : role === 'crash' ? 0.78 : role === 'tom' ? 0.44 : 0.48;
-    const minSameRoleGap = role === 'crash' ? 0.32 : role === 'tom' ? 0.088 : 0.145;
+    const hasFreshDoubleKickAttack =
+      role === 'kick' && (cSt.ratio >= 1.32 || effKickRatio >= 1.58);
+    const sameRoleThresh =
+      role === 'kick'
+        ? hasFreshDoubleKickAttack
+          ? 0.48
+          : 0.74
+        : role === 'crash'
+        ? 0.78
+        : role === 'tom'
+        ? 0.44
+        : 0.52;
+    const minSameRoleGap =
+      role === 'crash'
+        ? 0.32
+        : role === 'tom'
+        ? 0.088
+        : role === 'kick'
+        ? hasFreshDoubleKickAttack
+          ? 0.095
+          : 0.148
+        : 0.135;
     if (prevSame && timeSec - prevSame.timeSec < minSameRoleGap && role !== 'hat') {
       if (roleAmp < prevSame.peakAmp * sameRoleThresh) {
         continue;
@@ -1520,19 +1613,30 @@ export function analyzeDrumStemFull(
       pitchOffsetSemis = tomInfo.pitchOffsetSemis;
     }
 
-    // Prevent spurious overlapping duplicate detections inside 55ms (preserving distinct co-occurring drum pieces)
-    const prevAny = rawHits[rawHits.length - 1];
-    if (
-      prevAny &&
-      timeSec > prevAny.timeSec &&
-      timeSec - prevAny.timeSec < 0.055 &&
-      prevAny.role !== 'crash' &&
-      !(role === 'tom' && prevAny.role === 'tom')
-    ) {
-      const curPercScore = Math.max(kickStrength, tomStrength, crackStrength, cymbalStrength, hatStrength);
-      if (prevAny.role === role || curPercScore > prevAny.percScore * 1.15) {
-        if (roleAmp > prevAny.peakAmp) {
-          rawHits[rawHits.length - 1] = {
+    // Prevent spurious overlapping duplicate detections of the SAME role (or mutually exclusive low/high pair) inside 52ms
+    // CRITICAL FIX: Never let an earlier Hi-Hat or Snare block a Kick drum within 52ms!
+    let mergedIntoExisting = false;
+    for (let rIdx = rawHits.length - 1; rIdx >= 0; rIdx--) {
+      const prevH = rawHits[rIdx];
+      const dt = timeSec - prevH.timeSec;
+      if (dt >= 0.052) break;
+      if (dt < 0) continue;
+
+      const isSameRole = prevH.role === role;
+      const isLowConflict =
+        dt < 0.042 &&
+        ((prevH.role === 'kick' && role === 'tom') || (prevH.role === 'tom' && role === 'kick'));
+      const isSnareHatEcho =
+        dt < 0.028 &&
+        ((prevH.role === 'snare' && role === 'hat') || (prevH.role === 'hat' && role === 'snare'));
+
+      if (isSameRole || isLowConflict || isSnareHatEcho) {
+        const curPercScore = Math.max(kickStrength, tomStrength, crackStrength, cymbalStrength, hatStrength);
+        if (
+          (isSameRole && roleAmp > prevH.peakAmp) ||
+          (!isSameRole && curPercScore > prevH.percScore * 1.15 && roleAmp > prevH.peakAmp * 0.9)
+        ) {
+          rawHits[rIdx] = {
             timeSec,
             peakTimeSec: Number((peakIdx / sampleRate).toFixed(5)),
             role,
@@ -1544,7 +1648,11 @@ export function analyzeDrumStemFull(
             pitchOffsetSemis,
           };
         }
+        mergedIntoExisting = true;
+        break;
       }
+    }
+    if (mergedIntoExisting) {
       continue;
     }
 
@@ -1563,6 +1671,45 @@ export function analyzeDrumStemFull(
       articulation,
       pitchOffsetSemis,
     });
+
+    // Co-occurring Simultaneous Kick + Snare detection (e.g., 4-on-the-floor beats 2 & 4 where Kick and Snare strike together):
+    if (
+      role === 'kick' &&
+      strongSnareCrack &&
+      shellStrength >= 0.38 &&
+      sSt.ratio >= 1.52 &&
+      crackStrength >= 0.36 &&
+      cSt.ratio >= 1.52 &&
+      crackFlatness >= 0.095 &&
+      sSt.post >= kSt.post * 0.58 &&
+      dSnareMid + dCrack > dSubKick * 0.65
+    ) {
+      const recentSnare = rawHits.some(
+        (h) => h.role === 'snare' && Math.abs(h.timeSec - timeSec) < 0.075
+      );
+      if (!recentSnare) {
+        let snPeakIdx = sampleIdx;
+        let snPeakAmp = 0;
+        for (let k = pSearchStart; k < pSearchEnd; k++) {
+          const sa = Math.abs(crackSig[k]);
+          if (sa > snPeakAmp) {
+            snPeakAmp = sa;
+            snPeakIdx = k;
+          }
+        }
+        rawHits.push({
+          timeSec,
+          peakTimeSec: Number((snPeakIdx / sampleRate).toFixed(5)),
+          role: 'snare',
+          peakAmp: Math.max(cSt.post + sSt.post * 0.5, snPeakAmp),
+          percScore: Math.max(crackStrength, shellStrength),
+          midiNote: 38,
+          subRoleLabel: 'Acoustic Snare (38)',
+          articulation: 'closed',
+          pitchOffsetSemis: 0,
+        });
+      }
+    }
 
     // Co-occurring Downbeat Crash detection:
     // In real drum stems, Crash cymbals are most often struck SIMULTANEOUSLY with a Kick (or Snare) on beat 1!

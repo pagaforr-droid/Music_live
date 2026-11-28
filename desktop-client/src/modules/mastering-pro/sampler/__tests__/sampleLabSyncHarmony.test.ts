@@ -1035,4 +1035,120 @@ describe('Sample Lab — Pitch, Tempo/Phase, Chord Harmony & Drum Layering', () 
     expect(highTom.rootMidi).toBe(50);
     expect(floorTom.rootMidi).toBe(43);
   });
+
+  it('accurately separates Kicks (with loud beater click + simultaneous Hi-Hat + double kicks) from Snares without creating excess false Snares', () => {
+    const sr = 48000;
+    const bpm = 120;
+    const beatSec = 60 / bpm; // 0.5s
+    const eighthSec = beatSec * 0.5; // 0.25s
+    const len = Math.floor((16 * eighthSec + 0.5) * sr);
+    const mono = new Float32Array(len);
+
+    let seed = 0xabcdef12;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    // 2 bars (16 eighth notes):
+    // Kicks on e = 0, 3, 4, 7, 8, 11, 12 (7 kicks total), each with a strong 2.8kHz beater click + 140Hz knock + simultaneous 2-10kHz metallic Hi-Hat!
+    // Plus a pickup double-kick 110ms after e=4 (at e=4 + 0.11s -> 8th kick total!)
+    // Snares ONLY on backbeats e = 2, 6, 10, 14 (4 snares total)
+    // Metallic Hi-Hats on every 8th note e = 0..15 with broadband 2.2kHz..11kHz energy (zero 185Hz snare shell)
+    const kickEighths = new Set([0, 3, 4, 7, 8, 11, 12]);
+    const snareEighths = new Set([2, 6, 10, 14]);
+
+    const addClickyKick = (startSample: number, gain = 0.78) => {
+      let ph = 0;
+      for (let i = 0; i < Math.floor(sr * 0.22) && startSample + i < len; i++) {
+        const t = i / sr;
+        ph += (2 * Math.PI * (52 + 105 * Math.exp(-t * 38))) / sr;
+        const subBody = Math.sin(ph) * Math.exp(-t * 14);
+        // Strong 2.2-4.8 kHz beater click in the first 12ms
+        const beaterClick =
+          (Math.sin(2 * Math.PI * 2950 * t) * 0.5 + rnd() * 0.5) * Math.exp(-t * 165) * 0.48;
+        mono[startSample + i] += (subBody + beaterClick) * gain;
+      }
+    };
+
+    for (let e = 0; e < 16; e++) {
+      const s0 = Math.floor(e * eighthSec * sr);
+
+      // Loud metallic Hi-Hat on every 8th note (includes 2.2-6kHz mid-high sizzle + >6kHz air, but no 185Hz snare shell)
+      let prev1 = 0;
+      let prev2 = 0;
+      for (let i = 0; i < Math.floor(sr * 0.065) && s0 + i < len; i++) {
+        const t = i / sr;
+        const n = rnd();
+        const hp1 = n - 0.78 * prev1;
+        prev1 = n;
+        const hp2 = hp1 - 0.72 * prev2;
+        prev2 = hp1;
+        const metallic =
+          (hp2 * 0.7 +
+            Math.sin(2 * Math.PI * 3850 * t) * 0.16 +
+            Math.sin(2 * Math.PI * 7400 * t) * 0.14) *
+          Math.exp(-t * 68) *
+          0.32;
+        mono[s0 + i] += metallic;
+      }
+
+      if (kickEighths.has(e)) {
+        addClickyKick(s0, 0.78);
+      }
+      if (e === 4) {
+        // Fast double-kick stroke 115ms later
+        addClickyKick(s0 + Math.floor(0.115 * sr), 0.58);
+      }
+
+      if (snareEighths.has(e)) {
+        let ph = 0;
+        for (let i = 0; i < Math.floor(sr * 0.19) && s0 + i < len; i++) {
+          const t = i / sr;
+          ph += (2 * Math.PI * (198 + 65 * Math.exp(-t * 48))) / sr;
+          const shell = Math.sin(ph) * Math.exp(-t * 21) * 0.52;
+          const wires =
+            (rnd() * 0.55 + Math.sin(2 * Math.PI * 2450 * t) * 0.28) * Math.exp(-t * 19);
+          mono[s0 + i] += (shell + wires) * 0.68;
+        }
+      }
+    }
+
+    const res = analyzeDrumStemFull(mono, sr, {
+      sensitivity: 0.65,
+      lockedBpm: bpm,
+      quantizeMode: 'off',
+    });
+
+    // Must detect at least 7 of the 8 kicks, and exactly 4 snares (never turning the 16 metallic hi-hats or 8 clicky kicks into snares!)
+    expect(res.counts.kick).toBeGreaterThanOrEqual(7);
+    expect(res.counts.snare).toBe(4);
+    expect(res.counts.kick).toBeGreaterThan(res.counts.snare);
+
+    // Also verify fuseMidiWithAcousticDrumAudio corrects a false MIDI Snare (38) placed on a Kick timestamp back to Kick (36)
+    const corruptedMidiAnalysis = {
+      ...res,
+      drumHits: res.drumHits.map((h, idx) =>
+        h.role === 'kick' && idx < 3
+          ? {
+              ...h,
+              role: 'snare' as const,
+              midiNote: 38,
+              subRoleLabel: 'Acoustic Snare (38)',
+            }
+          : h
+      ),
+    };
+    const midiBytes = encodeAnalysisToStandardMidi(corruptedMidiAnalysis);
+    const fused = fuseMidiWithAcousticDrumAudio({
+      midiBytes,
+      mono,
+      sampleRate: sr,
+      lockedBpm: bpm,
+      quantizeMode: 'off',
+      sourceEngine: 'replicate-mt3',
+    });
+    expect(fused.counts.kick).toBeGreaterThanOrEqual(7);
+    expect(fused.counts.snare).toBe(4);
+  });
 });

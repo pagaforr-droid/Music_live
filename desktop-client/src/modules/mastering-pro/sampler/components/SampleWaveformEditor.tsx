@@ -7,6 +7,8 @@ import {
   ZoomOut,
   Maximize2,
   Play,
+  Rewind,
+  SkipBack,
   Square,
   Repeat,
   Scissors,
@@ -401,19 +403,61 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
     <div className="rounded-2xl bg-[#121215] border border-white/[0.08] p-4 flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onToggleAudition}
-            disabled={!selectedRegion}
-            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 ${
-              isAuditioning
-                ? 'bg-zinc-100 text-zinc-950'
-                : 'bg-[#24242A] hover:bg-[#313139] border border-white/[0.12] text-zinc-100'
-            }`}
-          >
-            {isAuditioning ? <Square size={12} className="fill-current" /> : <Play size={12} className="fill-current" />}
-            <span>{isAuditioning ? 'Detener Región' : 'Escuchar Región (Espacio)'}</span>
-          </button>
+          <div className="flex items-center gap-1 bg-[#0B0B0D] border border-white/[0.09] rounded-full p-1">
+            <button
+              type="button"
+              disabled={!source || regions.length === 0}
+              onClick={() => {
+                setScrollNorm(0);
+                if (regions.length > 0) {
+                  onSelectRegion(regions[0].id);
+                }
+              }}
+              className="px-2.5 py-1 rounded-full bg-[#18181E] hover:bg-[#272730] text-zinc-200 hover:text-white text-xs font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Ir al inicio del audio (00:00.0)"
+            >
+              <SkipBack size={12} />
+              <span>Inicio</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={!source || regions.length === 0}
+              onClick={() => {
+                if (regions.length > 0 && selectedRegion) {
+                  const curIdx = regions.findIndex((rg) => rg.id === selectedRegion.id);
+                  const prevIdx = Math.max(0, curIdx - 1);
+                  const prevReg = regions[prevIdx];
+                  onSelectRegion(prevReg.id);
+                  if (duration > 0 && prevReg.startSec < viewStartSec) {
+                    setScrollNorm(Math.max(0, prevReg.startSec / duration));
+                  }
+                } else {
+                  setScrollNorm((s) => Math.max(0, s - 0.15 / zoom));
+                }
+              }}
+              className="px-2.5 py-1 rounded-full bg-[#18181E] hover:bg-[#272730] text-zinc-200 hover:text-white text-xs font-medium flex items-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
+              title="Retroceder a la región anterior"
+            >
+              <Rewind size={12} />
+              <span>Retroceso</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleAudition}
+              disabled={!selectedRegion}
+              className={`px-3.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 ${
+                isAuditioning
+                  ? 'bg-zinc-100 text-zinc-950'
+                  : 'bg-[#24242A] hover:bg-[#313139] border border-white/[0.12] text-zinc-100'
+              }`}
+              title="Reproducir o detener región activa (Atajo predeterminado: Barra Espaciadora)"
+            >
+              {isAuditioning ? <Square size={12} className="fill-current" /> : <Play size={12} className="fill-current" />}
+              <span>{isAuditioning ? 'Detener (Espacio)' : 'Play Región (Espacio)'}</span>
+            </button>
+          </div>
 
           <button
             type="button"

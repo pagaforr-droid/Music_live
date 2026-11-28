@@ -31,7 +31,14 @@ export function useSamplerKeyboard(options: UseSamplerKeyboardOptions) {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const isTextInput =
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        Boolean(target?.isContentEditable) ||
+        (tag === 'INPUT' &&
+          (target as HTMLInputElement).type !== 'range' &&
+          (target as HTMLInputElement).type !== 'checkbox');
+      if (isTextInput) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       const o = optsRef.current;

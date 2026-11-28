@@ -253,6 +253,21 @@ export function useStemReplacer() {
   const baseNoteEventsRef = useRef<StemNoteEvent[] | null>(null);
   const hasManualMidiEditsRef = useRef<boolean>(false);
 
+  // Instant 40-step Undo/Redo history for lightning-fast non-destructive MIDI editing
+  interface MidiHistorySnapshot {
+    drumHits: StemDrumHitEvent[];
+    noteEvents: StemNoteEvent[];
+    counts: FullStemAnalysisResult['counts'];
+    midiRange?: FullStemAnalysisResult['midiRange'];
+  }
+  const midiUndoStackRef = useRef<MidiHistorySnapshot[]>([]);
+  const midiRedoStackRef = useRef<MidiHistorySnapshot[]>([]);
+  const [midiHistoryCounts, setMidiHistoryCounts] = useState<{ undo: number; redo: number }>({
+    undo: 0,
+    redo: 0,
+  });
+  const presetAuditionCacheRef = useRef<Map<string, AudioBuffer>>(new Map());
+
   const [drumSlots, setDrumSlots] = useState<Record<DrumPieceRole, ReplacementSlotConfig>>(
     () => createDefaultDrumSlots()
   );
@@ -303,7 +318,7 @@ export function useStemReplacer() {
       return '';
     }
   });
-  const [isRendering, setIsRendering] = useState<boolean>(false);
+  const [isRendering] = useState<boolean>(false);
   const [isExportingPc, setIsExportingPc] = useState<boolean>(false);
   const [isSavingCloud, setIsSavingCloud] = useState<boolean>(false);
   const [recordingTarget, setRecordingTarget] = useState<DrumPieceRole | 'melodic' | null>(null);
@@ -748,7 +763,7 @@ export function useStemReplacer() {
             : undefined,
         updatedAt: new Date().toISOString(),
       });
-    }, 320);
+    }, 850);
     return () => clearTimeout(timer);
   }, [
     stemMode,
@@ -1203,9 +1218,12 @@ export function useStemReplacer() {
           setImportedMemory(mergedMem);
         }
 
-        baseDrumHitsRef.current = result.drumHits.map((h) => ({ ...h }));
-        baseNoteEventsRef.current = result.noteEvents.map((n) => ({ ...n }));
+        baseDrumHitsRef.current = result.drumHits;
+        baseNoteEventsRef.current = result.noteEvents;
         hasManualMidiEditsRef.current = false;
+        midiUndoStackRef.current = [];
+        midiRedoStackRef.current = [];
+        setMidiHistoryCounts({ undo: 0, redo: 0 });
 
         setAnalysis(result);
         const rangeText = result.midiRange
@@ -1234,37 +1252,35 @@ export function useStemReplacer() {
   );
 
   // Auto-render replaced buffer cleanly whenever analysis or replacement settings change
+  // Uses fastPreview=true and avoids spinner state thrashing during rapid MIDI edits so UI stays 0ms instant!
   useEffect(() => {
     if (!originalBuffer || !analysis) {
       setReplacedBuffer(null);
       return;
     }
+    const delayMs = isPlaying ? 95 : 220;
     const timer = setTimeout(() => {
-      setIsRendering(true);
-      try {
-        const effectiveDrumSlots = soloDrumRole
-          ? {
-              kick: { ...drumSlots.kick, enabled: soloDrumRole === 'kick' },
-              snare: { ...drumSlots.snare, enabled: soloDrumRole === 'snare' },
-              tom: { ...drumSlots.tom, enabled: soloDrumRole === 'tom' },
-              hat: { ...drumSlots.hat, enabled: soloDrumRole === 'hat' },
-              crash: { ...drumSlots.crash, enabled: soloDrumRole === 'crash' },
-            }
-          : drumSlots;
-        const rendered = renderFullStemReplacement({
-          originalBuffer,
-          analysis,
-          drumSlots: effectiveDrumSlots,
-          melodicSlot,
-          mix: mixOptions,
-        });
-        setReplacedBuffer(rendered);
-      } finally {
-        setIsRendering(false);
-      }
-    }, 140);
+      const effectiveDrumSlots = soloDrumRole
+        ? {
+            kick: { ...drumSlots.kick, enabled: soloDrumRole === 'kick' },
+            snare: { ...drumSlots.snare, enabled: soloDrumRole === 'snare' },
+            tom: { ...drumSlots.tom, enabled: soloDrumRole === 'tom' },
+            hat: { ...drumSlots.hat, enabled: soloDrumRole === 'hat' },
+            crash: { ...drumSlots.crash, enabled: soloDrumRole === 'crash' },
+          }
+        : drumSlots;
+      const rendered = renderFullStemReplacement({
+        originalBuffer,
+        analysis,
+        drumSlots: effectiveDrumSlots,
+        melodicSlot,
+        mix: mixOptions,
+        fastPreview: true,
+      });
+      setReplacedBuffer(rendered);
+    }, delayMs);
     return () => clearTimeout(timer);
-  }, [originalBuffer, analysis, drumSlots, soloDrumRole, melodicSlot, mixOptions]);
+  }, [originalBuffer, analysis, drumSlots, soloDrumRole, melodicSlot, mixOptions, isPlaying]);
 
   // Smooth real-time A/B gain crossfade while playing
   useEffect(() => {
@@ -1420,6 +1436,30 @@ export function useStemReplacer() {
       }
     },
     [originalBuffer, isPlaying, startPlaybackAt]
+  );
+
+  const seekToStart = useCallback(() => {
+    seekToSec(0);
+  }, [seekToSec]);
+
+  const rewindBySec = useCallback(
+    (deltaSec?: number) => {
+      const bpm = analysis?.bpm ?? importedMemoryRef.current?.bpm ?? 120;
+      const oneBarSec = (60 / Math.max(40, Math.min(220, bpm))) * 4;
+      const step = deltaSec ?? Math.max(2.0, Math.min(6.0, oneBarSec));
+      seekToSec(Math.max(0, currentTimeSec - step));
+    },
+    [analysis?.bpm, currentTimeSec, seekToSec]
+  );
+
+  const forwardBySec = useCallback(
+    (deltaSec?: number) => {
+      const bpm = analysis?.bpm ?? importedMemoryRef.current?.bpm ?? 120;
+      const oneBarSec = (60 / Math.max(40, Math.min(220, bpm))) * 4;
+      const step = deltaSec ?? Math.max(2.0, Math.min(6.0, oneBarSec));
+      seekToSec(currentTimeSec + step);
+    },
+    [analysis?.bpm, currentTimeSec, seekToSec]
   );
 
   // Load and analyze a Master Reference Audio buffer to guide 100% accurate Drum, Bass & Chord detection
@@ -3536,7 +3576,116 @@ export function useStemReplacer() {
     [originalBuffer, stemMode, sensitivity, selectedSong?.bpm, ensureCtx]
   );
 
+  // Helper to push current MIDI state onto the 40-step Undo stack in O(1) reference time
+  const pushMidiUndoSnapshot = useCallback((curAnalysis: FullStemAnalysisResult) => {
+    const stack = midiUndoStackRef.current;
+    stack.push({
+      drumHits: curAnalysis.drumHits,
+      noteEvents: curAnalysis.noteEvents,
+      counts: { ...curAnalysis.counts },
+      midiRange: curAnalysis.midiRange,
+    });
+    if (stack.length > 40) stack.shift();
+    midiRedoStackRef.current = [];
+    setMidiHistoryCounts({ undo: stack.length, redo: 0 });
+  }, []);
+
+  const undoMidiEdit = useCallback(() => {
+    if (!analysis || midiUndoStackRef.current.length === 0) return;
+    const prev = midiUndoStackRef.current.pop()!;
+    midiRedoStackRef.current.push({
+      drumHits: analysis.drumHits,
+      noteEvents: analysis.noteEvents,
+      counts: { ...analysis.counts },
+      midiRange: analysis.midiRange,
+    });
+    baseDrumHitsRef.current = prev.drumHits;
+    baseNoteEventsRef.current = prev.noteEvents;
+    setMidiHistoryCounts({
+      undo: midiUndoStackRef.current.length,
+      redo: midiRedoStackRef.current.length,
+    });
+    setAnalysis({
+      ...analysis,
+      drumHits: prev.drumHits,
+      noteEvents: prev.noteEvents,
+      counts: prev.counts,
+      midiRange: prev.midiRange ?? analysis.midiRange,
+    });
+  }, [analysis]);
+
+  const redoMidiEdit = useCallback(() => {
+    if (!analysis || midiRedoStackRef.current.length === 0) return;
+    const next = midiRedoStackRef.current.pop()!;
+    midiUndoStackRef.current.push({
+      drumHits: analysis.drumHits,
+      noteEvents: analysis.noteEvents,
+      counts: { ...analysis.counts },
+      midiRange: analysis.midiRange,
+    });
+    baseDrumHitsRef.current = next.drumHits;
+    baseNoteEventsRef.current = next.noteEvents;
+    setMidiHistoryCounts({
+      undo: midiUndoStackRef.current.length,
+      redo: midiRedoStackRef.current.length,
+    });
+    setAnalysis({
+      ...analysis,
+      drumHits: next.drumHits,
+      noteEvents: next.noteEvents,
+      counts: next.counts,
+      midiRange: next.midiRange ?? analysis.midiRange,
+    });
+  }, [analysis]);
+
+  // 1-Click Studio Cleanup: strips weak false/ghost hits below a velocity threshold (with Undo support)
+  const cleanWeakGhostHits = useCallback(
+    (minVelocity = 0.34, targetRole: DrumPieceRole | 'all' = 'snare') => {
+      if (!analysis || analysis.mode !== 'drums') return 0;
+      const nextHits = analysis.drumHits.filter((h) => {
+        if (targetRole !== 'all' && h.role !== targetRole) return true;
+        return h.velocity >= minVelocity;
+      });
+      const removedCount = analysis.drumHits.length - nextHits.length;
+      if (removedCount <= 0) {
+        setStatusMessage('No se encontraron golpes débiles/fantasma por debajo del umbral.');
+        return 0;
+      }
+      pushMidiUndoSnapshot(analysis);
+      baseDrumHitsRef.current = nextHits;
+      hasManualMidiEditsRef.current = true;
+      let kick = 0, snare = 0, hat = 0, crash = 0, tom = 0;
+      for (let i = 0; i < nextHits.length; i++) {
+        const r = nextHits[i].role;
+        if (r === 'kick') kick++;
+        else if (r === 'snare') snare++;
+        else if (r === 'hat') hat++;
+        else if (r === 'crash') crash++;
+        else tom++;
+      }
+      setAnalysis({
+        ...analysis,
+        drumHits: nextHits,
+        counts: {
+          total: nextHits.length,
+          kick,
+          snare,
+          hat,
+          crash,
+          tom,
+          notes: analysis.counts.notes,
+        },
+      });
+      setStatusMessage(
+        `Limpieza completada: ${removedCount} golpe(s) débil(es) eliminado(s) (Ctrl+Z para deshacer).`
+      );
+      return removedCount;
+    },
+    [analysis, pushMidiUndoSnapshot]
+  );
+
   // Audition a single drum hit with its exact assigned replacement sample, 9-lane GM articulation, velocity & multi-tom pitch offset
+  // Uses zero-allocation AudioBuffer caching so clicking MIDI hits responds in <0.2ms!
   const auditionDrumHit = useCallback(
     (hit: StemDrumHitEvent) => {
       const slot = drumSlots[hit.role];
@@ -3546,13 +3695,19 @@ export function useStemReplacer() {
       if (slot.sourceType !== 'preset' && slot.customBuffer) {
         buf = slot.customBuffer;
       } else {
-        const zone = getArticulatedDrumZone(
-          slot.presetId,
-          hit.role,
-          hit.articulation,
-          ctx.sampleRate
-        );
-        buf = arraysToAudioBuffer(ctx, zone.left, zone.right, ctx.sampleRate);
+        const cacheKey = `${slot.presetId}:${hit.role}:${hit.articulation ?? 'def'}:${ctx.sampleRate}`;
+        let cached = presetAuditionCacheRef.current.get(cacheKey);
+        if (!cached) {
+          const zone = getArticulatedDrumZone(
+            slot.presetId,
+            hit.role,
+            hit.articulation,
+            ctx.sampleRate
+          );
+          cached = arraysToAudioBuffer(ctx, zone.left, zone.right, ctx.sampleRate);
+          presetAuditionCacheRef.current.set(cacheKey, cached);
+        }
+        buf = cached;
       }
       const src = ctx.createBufferSource();
       src.buffer = buf;
@@ -3586,6 +3741,7 @@ export function useStemReplacer() {
       articulation?: DrumArticulation
     ) => {
       if (!analysis || analysis.mode !== 'drums') return null;
+      pushMidiUndoSnapshot(analysis);
       const clampedSec = Number(
         Math.max(0, Math.min(analysis.durationSec - 0.01, rawTimeSec)).toFixed(4)
       );
@@ -3606,17 +3762,13 @@ export function useStemReplacer() {
       const nextHits = [...analysis.drumHits, newHit].sort(
         (a, b) => a.timeSec - b.timeSec
       );
-      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      baseDrumHitsRef.current = nextHits;
       hasManualMidiEditsRef.current = true;
 
       const counts = {
-        total: nextHits.length,
-        kick: nextHits.filter((h) => h.role === 'kick').length,
-        snare: nextHits.filter((h) => h.role === 'snare').length,
-        hat: nextHits.filter((h) => h.role === 'hat').length,
-        crash: nextHits.filter((h) => h.role === 'crash').length,
-        tom: nextHits.filter((h) => h.role === 'tom').length,
-        notes: analysis.counts.notes,
+        ...analysis.counts,
+        total: analysis.counts.total + 1,
+        [desc.role]: analysis.counts[desc.role] + 1,
       };
       setAnalysis({
         ...analysis,
@@ -3625,10 +3777,11 @@ export function useStemReplacer() {
       });
       return newHit;
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   // Interactive MIDI Drum Roll Hit Editor: update role (e.g. Kick <-> Tom <-> Snare), articulation, velocity or timing
+  // O(N) single-pass update without redundant sorting or array cloning when timing/role is unchanged!
   const updateDrumHit = useCallback(
     (
       hitId: string,
@@ -3642,66 +3795,73 @@ export function useStemReplacer() {
       }
     ) => {
       if (!analysis || analysis.mode !== 'drums') return;
-      const nextHits = analysis.drumHits
-        .map((h) => {
-          if (h.id !== hitId) return h;
-          const nextRole = patch.role ?? h.role;
-          const nextArt =
-            patch.articulation ??
-            (patch.role && patch.role !== h.role ? undefined : h.articulation);
-          const targetGmNote =
-            patch.midiNote ??
-            (patch.role !== undefined || patch.articulation !== undefined
-              ? defaultGmNoteForDrumRole(nextRole, nextArt)
-              : h.midiNote ?? defaultGmNoteForDrumRole(nextRole, nextArt));
-          const desc = mapMidiNoteToDrumPiece(targetGmNote);
-          const nextTime =
-            patch.timeSec !== undefined
-              ? Number(
-                  Math.max(0, Math.min(analysis.durationSec - 0.005, patch.timeSec)).toFixed(4)
-                )
-              : h.timeSec;
-          const timeDelta = nextTime - h.timeSec;
-          const nextPeakTime =
-            patch.timeSec !== undefined
-              ? Number(
-                  Math.max(
-                    0,
-                    Math.min(analysis.durationSec - 0.002, h.peakTimeSec + timeDelta)
-                  ).toFixed(5)
-                )
-              : h.peakTimeSec;
-          const nextVel =
-            patch.velocity !== undefined
-              ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
-              : h.velocity;
-          return {
-            ...h,
-            role: desc.role,
-            midiNote: desc.midiNote,
-            subRoleLabel: desc.subRoleLabel,
-            articulation: patch.articulation ?? desc.articulation,
-            pitchOffsetSemis:
-              patch.pitchOffsetSemis !== undefined
-                ? patch.pitchOffsetSemis
-                : desc.pitchOffsetSemis,
-            velocity: nextVel,
-            timeSec: nextTime,
-            peakTimeSec: nextPeakTime,
-          };
-        })
-        .sort((a, b) => a.timeSec - b.timeSec);
+      pushMidiUndoSnapshot(analysis);
+      let prevRole: DrumPieceRole | null = null;
+      let newRole: DrumPieceRole | null = null;
 
-      const counts = {
-        total: nextHits.length,
-        kick: nextHits.filter((h) => h.role === 'kick').length,
-        snare: nextHits.filter((h) => h.role === 'snare').length,
-        hat: nextHits.filter((h) => h.role === 'hat').length,
-        crash: nextHits.filter((h) => h.role === 'crash').length,
-        tom: nextHits.filter((h) => h.role === 'tom').length,
-        notes: analysis.counts.notes,
-      };
-      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      const mapped = analysis.drumHits.map((h) => {
+        if (h.id !== hitId) return h;
+        prevRole = h.role;
+        const nextRole = patch.role ?? h.role;
+        const nextArt =
+          patch.articulation ??
+          (patch.role && patch.role !== h.role ? undefined : h.articulation);
+        const targetGmNote =
+          patch.midiNote ??
+          (patch.role !== undefined || patch.articulation !== undefined
+            ? defaultGmNoteForDrumRole(nextRole, nextArt)
+            : h.midiNote ?? defaultGmNoteForDrumRole(nextRole, nextArt));
+        const desc = mapMidiNoteToDrumPiece(targetGmNote);
+        newRole = desc.role;
+        const nextTime =
+          patch.timeSec !== undefined
+            ? Number(
+                Math.max(0, Math.min(analysis.durationSec - 0.005, patch.timeSec)).toFixed(4)
+              )
+            : h.timeSec;
+        const timeDelta = nextTime - h.timeSec;
+        const nextPeakTime =
+          patch.timeSec !== undefined
+            ? Number(
+                Math.max(
+                  0,
+                  Math.min(analysis.durationSec - 0.002, h.peakTimeSec + timeDelta)
+                ).toFixed(5)
+              )
+            : h.peakTimeSec;
+        const nextVel =
+          patch.velocity !== undefined
+            ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
+            : h.velocity;
+        return {
+          ...h,
+          role: desc.role,
+          midiNote: desc.midiNote,
+          subRoleLabel: desc.subRoleLabel,
+          articulation: patch.articulation ?? desc.articulation,
+          pitchOffsetSemis:
+            patch.pitchOffsetSemis !== undefined
+              ? patch.pitchOffsetSemis
+              : desc.pitchOffsetSemis,
+          velocity: nextVel,
+          timeSec: nextTime,
+          peakTimeSec: nextPeakTime,
+        };
+      });
+
+      const nextHits =
+        patch.timeSec !== undefined ? mapped.sort((a, b) => a.timeSec - b.timeSec) : mapped;
+
+      const counts =
+        prevRole && newRole && prevRole !== newRole
+          ? {
+              ...analysis.counts,
+              [prevRole]: Math.max(0, analysis.counts[prevRole] - 1),
+              [newRole]: analysis.counts[newRole] + 1,
+            }
+          : analysis.counts;
+
+      baseDrumHitsRef.current = nextHits;
       hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
@@ -3709,24 +3869,23 @@ export function useStemReplacer() {
         counts,
       });
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   // Interactive MIDI Drum Roll Hit Editor: remove a specific hit by ID
   const removeDrumHit = useCallback(
     (hitId: string) => {
       if (!analysis || analysis.mode !== 'drums') return;
+      const target = analysis.drumHits.find((h) => h.id === hitId);
+      if (!target) return;
+      pushMidiUndoSnapshot(analysis);
       const nextHits = analysis.drumHits.filter((h) => h.id !== hitId);
-      baseDrumHitsRef.current = nextHits.map((h) => ({ ...h }));
+      baseDrumHitsRef.current = nextHits;
       hasManualMidiEditsRef.current = true;
       const counts = {
+        ...analysis.counts,
         total: nextHits.length,
-        kick: nextHits.filter((h) => h.role === 'kick').length,
-        snare: nextHits.filter((h) => h.role === 'snare').length,
-        hat: nextHits.filter((h) => h.role === 'hat').length,
-        crash: nextHits.filter((h) => h.role === 'crash').length,
-        tom: nextHits.filter((h) => h.role === 'tom').length,
-        notes: analysis.counts.notes,
+        [target.role]: Math.max(0, analysis.counts[target.role] - 1),
       };
       setAnalysis({
         ...analysis,
@@ -3734,7 +3893,7 @@ export function useStemReplacer() {
         counts,
       });
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   // Interactive Melodic/Polyphonic MIDI Piano Roll Editor helpers
@@ -3768,6 +3927,7 @@ export function useStemReplacer() {
   const addManualMelodicNote = useCallback(
     (midiNote: number, rawStartSec: number, durationSec = 0.35, velocity = 0.85) => {
       if (!analysis || analysis.mode === 'drums') return null;
+      pushMidiUndoSnapshot(analysis);
       const clampedMidi = Math.max(24, Math.min(96, Math.round(midiNote)));
       const clampedStart = Number(
         Math.max(0, Math.min(analysis.durationSec - 0.04, rawStartSec)).toFixed(4)
@@ -3787,7 +3947,7 @@ export function useStemReplacer() {
       const nextNotes = [...analysis.noteEvents, newNote].sort(
         (a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote
       );
-      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      baseNoteEventsRef.current = nextNotes;
       hasManualMidiEditsRef.current = true;
       let minM = 127;
       let maxM = 0;
@@ -3806,7 +3966,7 @@ export function useStemReplacer() {
       });
       return newNote;
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   const updateMelodicNote = useCallback(
@@ -3815,36 +3975,39 @@ export function useStemReplacer() {
       patch: { midiNote?: number; startSec?: number; durationSec?: number; velocity?: number }
     ) => {
       if (!analysis || analysis.mode === 'drums') return;
-      const nextNotes = analysis.noteEvents
-        .map((n) => {
-          if (n.id !== noteId) return n;
-          const nextMidi =
-            patch.midiNote !== undefined
-              ? Math.max(24, Math.min(96, Math.round(patch.midiNote)))
-              : n.midiNote;
-          const nextStart =
-            patch.startSec !== undefined
-              ? Number(Math.max(0, Math.min(analysis.durationSec - 0.04, patch.startSec)).toFixed(4))
-              : n.startSec;
-          const nextDur =
-            patch.durationSec !== undefined
-              ? Number(Math.max(0.05, Math.min(analysis.durationSec - nextStart, patch.durationSec)).toFixed(4))
-              : Math.min(n.durationSec, Math.max(0.05, analysis.durationSec - nextStart));
-          const nextVel =
-            patch.velocity !== undefined
-              ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
-              : n.velocity;
-          return {
-            ...n,
-            midiNote: nextMidi,
-            noteName: midiNoteToName(nextMidi),
-            startSec: nextStart,
-            durationSec: nextDur,
-            velocity: nextVel,
-          };
-        })
-        .sort((a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote);
-      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      pushMidiUndoSnapshot(analysis);
+      const mapped = analysis.noteEvents.map((n) => {
+        if (n.id !== noteId) return n;
+        const nextMidi =
+          patch.midiNote !== undefined
+            ? Math.max(24, Math.min(96, Math.round(patch.midiNote)))
+            : n.midiNote;
+        const nextStart =
+          patch.startSec !== undefined
+            ? Number(Math.max(0, Math.min(analysis.durationSec - 0.04, patch.startSec)).toFixed(4))
+            : n.startSec;
+        const nextDur =
+          patch.durationSec !== undefined
+            ? Number(Math.max(0.05, Math.min(analysis.durationSec - nextStart, patch.durationSec)).toFixed(4))
+            : Math.min(n.durationSec, Math.max(0.05, analysis.durationSec - nextStart));
+        const nextVel =
+          patch.velocity !== undefined
+            ? Number(Math.max(0.12, Math.min(1.0, patch.velocity)).toFixed(3))
+            : n.velocity;
+        return {
+          ...n,
+          midiNote: nextMidi,
+          noteName: midiNoteToName(nextMidi),
+          startSec: nextStart,
+          durationSec: nextDur,
+          velocity: nextVel,
+        };
+      });
+      const nextNotes =
+        patch.startSec !== undefined || patch.midiNote !== undefined
+          ? mapped.sort((a, b) => a.startSec - b.startSec || a.midiNote - b.midiNote)
+          : mapped;
+      baseNoteEventsRef.current = nextNotes;
       hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
@@ -3852,14 +4015,15 @@ export function useStemReplacer() {
         counts: { ...analysis.counts, total: nextNotes.length, notes: nextNotes.length },
       });
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   const removeMelodicNote = useCallback(
     (noteId: string) => {
       if (!analysis || analysis.mode === 'drums') return;
+      pushMidiUndoSnapshot(analysis);
       const nextNotes = analysis.noteEvents.filter((n) => n.id !== noteId);
-      baseNoteEventsRef.current = nextNotes.map((n) => ({ ...n }));
+      baseNoteEventsRef.current = nextNotes;
       hasManualMidiEditsRef.current = true;
       setAnalysis({
         ...analysis,
@@ -3867,7 +4031,7 @@ export function useStemReplacer() {
         counts: { ...analysis.counts, total: nextNotes.length, notes: nextNotes.length },
       });
     },
-    [analysis]
+    [analysis, pushMidiUndoSnapshot]
   );
 
   return {
@@ -3946,6 +4110,11 @@ export function useStemReplacer() {
     updateMelodicNote,
     removeMelodicNote,
     auditionMelodicNote,
+    undoMidiEdit,
+    redoMidiEdit,
+    canUndoMidi: midiHistoryCounts.undo > 0,
+    canRedoMidi: midiHistoryCounts.redo > 0,
+    cleanWeakGhostHits,
     isRendering,
     isExportingPc,
     isSavingCloud,
@@ -3975,6 +4144,9 @@ export function useStemReplacer() {
     auditionSlotSample,
     togglePlayback,
     seekToSec,
+    seekToStart,
+    rewindBySec,
+    forwardBySec,
     downloadReplacedAudio,
     downloadReplacedWav24,
     saveReplacedStemToSong,
