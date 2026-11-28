@@ -1,27 +1,39 @@
 /* ==========================================================================
-   LA NACIÓN DEL LEÓN · Editorial Rock System
-   Typography inspired by jeremycamp.com (Anton + Atkinson Hyperlegible Next)
-   Palette: Obsidian Black (#060505 / #0d0b0a) & Molten Ember Orange (#ff5412)
-   Motion: Emil Kowalski spring / cubic-bezier discipline (zero linear UI)
+   LA NACIÓN DEL LEÓN · Pro-Audio Dark Editorial System
+   Typography inspired by Toontrack Black Friday (Conduit ITC -> Barlow Condensed
+   Light 300 / Bold 700 / ExtraBold 800 + Helvetica Neue 45 Light / 75 Bold -> Inter)
+   Surfaces: Studio Pitch (#09090b) & Matte Charcoal Containers (#18181b / #202024)
+   Ink: Warm Cream (#f4efe6) & Warm Ash (#b5afa5) | Accent: Crimson Ember (#c92a22 / #e04826)
    ========================================================================== */
 
 .lion-root {
-  --lion-void: #060505;
-  --lion-obsidian: #0d0b0a;
-  --lion-charcoal: #15110e;
-  --lion-surface: #1b1511;
-  --lion-ember: #ff5412;
-  --lion-flame: #ff7324;
-  --lion-amber: #ffaa3b;
-  --lion-bone: #f4efe6;
-  --lion-ash: #b3a89a;
-  --lion-smoke: #72675d;
-  --lion-hair: rgba(244, 239, 230, 0.14);
-  --lion-hair-ember: rgba(255, 84, 18, 0.38);
+  --lion-void: #09090b;
+  --lion-obsidian: #111114;
+  --lion-panel: #1a1a1d;
+  --lion-panel-elevated: #222226;
+  --lion-panel-hover: #29292e;
 
-  --lion-f-display: 'Anton', Impact, 'Arial Narrow Bold', sans-serif;
-  --lion-f-label: 'Atkinson Hyperlegible Next', -apple-system, BlinkMacSystemFont, sans-serif;
-  --lion-f-body: 'Atkinson Hyperlegible Next', -apple-system, BlinkMacSystemFont, sans-serif;
+  --lion-accent: #d43822;
+  --lion-accent-bright: #e6522e;
+  --lion-crimson: #b91d1d;
+  --lion-crimson-deep: #9e1818;
+  --lion-amber: #e28b3b;
+
+  --lion-bone: #f4efe6;
+  --lion-cream-soft: #ebe6dc;
+  --lion-ash: #b8b2a8;
+  --lion-smoke: #7c7770;
+
+  --lion-hair: rgba(244, 239, 230, 0.1);
+  --lion-hair-strong: rgba(244, 239, 230, 0.18);
+  --lion-hair-accent: rgba(212, 56, 34, 0.42);
+
+  /* Toontrack Typography Stack:
+     - Display / Section Headings / Badges: Barlow Condensed (Conduit ITC geometric twin)
+     - UI / Navigation / Card Titles / Body: Helvetica Neue (45 Light / 55 Roman / 75 Bold) + Inter */
+  --lion-f-display: 'Barlow Condensed', 'DIN Condensed', 'Arial Narrow', sans-serif;
+  --lion-f-ui: 'Helvetica Neue', 'Inter', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+  --lion-f-body: 'Helvetica Neue', 'Inter', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
 
   --lion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --lion-spring: cubic-bezier(0.16, 1, 0.3, 1);
@@ -29,93 +41,249 @@
   background-color: var(--lion-void);
   color: var(--lion-bone);
   font-family: var(--lion-f-body);
-  font-size: 17px;
-  line-height: 1.62;
-  letter-spacing: 0;
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.55;
+  letter-spacing: 0.012em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   scroll-behavior: smooth;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .lion-root ::selection {
-  background-color: var(--lion-ember);
-  color: var(--lion-void);
+  background-color: var(--lion-accent);
+  color: var(--lion-bone);
 }
 
-/* Display typography — jeremycamp.com Anton spec */
+/* Override global App.css .tnum Geist Mono so numbers stay in Toontrack typography with tabular figures */
+.lion-root .tnum {
+  font-family: inherit;
+  font-feature-settings: 'tnum' 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Accessible keyboard focus indicators */
+.lion-root :is(a, button, input, [tabindex='0']):focus-visible {
+  outline: 2px solid var(--lion-accent-bright);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   TYPOGRAPHY CLASSES (Toontrack Conduit ITC + Helvetica Neue Hierarchy)
+   -------------------------------------------------------------------------- */
+
+/* Sleek Condensed Display — Conduit ITC Light (300) default, <b>/<strong> snaps to ExtraBold (800) */
 .lion-display {
   font-family: var(--lion-f-display);
-  font-weight: 400;
+  font-weight: 300;
   font-style: normal;
   text-transform: uppercase;
-  letter-spacing: 0.012em;
+  letter-spacing: 0.032em;
   line-height: 0.94;
   font-variant-numeric: tabular-nums;
   text-wrap: balance;
 }
 
-.lion-display-xl {
-  font-family: var(--lion-f-display);
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.01em;
-  line-height: 0.9;
-  font-size: clamp(3.6rem, 9.2vw, 9.25rem);
-  font-variant-numeric: tabular-nums;
-  text-wrap: balance;
+.lion-display strong,
+.lion-display b {
+  font-weight: 700;
+  letter-spacing: 0.018em;
 }
 
-.lion-display-l {
+/* Condensed Bold/ExtraBold Variant — Toontrack Impact Lockups & Badges */
+.lion-display-bold {
   font-family: var(--lion-f-display);
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.012em;
-  line-height: 0.96;
-  font-size: clamp(2.4rem, 4.8vw, 4.75rem);
-  font-variant-numeric: tabular-nums;
-  text-wrap: balance;
-}
-
-/* Uppercase tracked labels, nav & buttons — jeremycamp.com Atkinson spec */
-.lion-label {
-  font-family: var(--lion-f-label);
   font-weight: 700;
   font-style: normal;
   text-transform: uppercase;
-  letter-spacing: 0.085em;
+  letter-spacing: 0.02em;
+  line-height: 0.92;
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+/* Hero Monumental Lockup — Crisp Light + Heavy Architectural Contrast */
+.lion-display-xl {
+  font-family: var(--lion-f-display);
+  font-weight: 300;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  line-height: 0.88;
+  font-size: clamp(3.35rem, 8.2vw, 7.75rem);
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+.lion-display-xl strong,
+.lion-display-xl b {
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+/* Section Heading (Matches Toontrack h2/h3 "EZX EXPANSIONS" / "SOFTWARE" Conduit Light) */
+.lion-display-l {
+  font-family: var(--lion-f-display);
+  font-weight: 300;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 0.92;
+  font-size: clamp(2.35rem, 4.4vw, 4.1rem);
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
+.lion-display-l strong,
+.lion-display-l b {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Card & Track Titles (Matches Toontrack .product-name Helvetica Neue 75 Bold) */
+.lion-title {
+  font-family: var(--lion-f-ui);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--lion-bone);
+  text-wrap: balance;
+}
+
+/* Crisp Uppercase Navigation & Metadata Labels (Matches Toontrack Helvetica Neue Light/Roman) */
+.lion-label {
+  font-family: var(--lion-f-ui);
+  font-weight: 500;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
   line-height: 1.3;
 }
 
+/* Compact Pro-Audio Tag / Badge (Matches Toontrack "EZDRUMMER EXPANSION" / "56% OFF" Conduit ExtraBold) */
+.lion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--lion-f-display);
+  font-weight: 700;
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  padding: 5px 11px;
+  border-radius: 5px;
+  background-color: var(--lion-crimson);
+  color: var(--lion-bone);
+}
+
+.lion-badge-ember {
+  background-color: var(--lion-accent);
+  color: var(--lion-bone);
+}
+
+.lion-badge-subtle {
+  background-color: rgba(244, 239, 230, 0.09);
+  border: 1px solid rgba(244, 239, 230, 0.14);
+  color: var(--lion-cream-soft);
+}
+
+/* Editorial Body Copy (Matches Toontrack p HelveticaNeue 45 Light 16px/24px, .3px tracking) */
 .lion-body {
   font-family: var(--lion-f-body);
-  font-size: 17px;
-  line-height: 1.65;
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.62;
+  letter-spacing: 0.018em;
   color: var(--lion-ash);
+  text-wrap: pretty;
 }
 
 .lion-lead {
   font-family: var(--lion-f-body);
-  font-size: clamp(1.0625rem, 1.35vw, 1.25rem);
-  line-height: 1.55;
-  color: var(--lion-ash);
+  font-weight: 300;
+  font-size: clamp(1rem, 1.25vw, 1.1875rem);
+  line-height: 1.56;
+  letter-spacing: 0.015em;
+  color: #cbc5bb;
+  text-wrap: pretty;
+}
+
+/* --------------------------------------------------------------------------
+   SURFACES & ARCHITECTURAL CONTAINERS (Toontrack .tt-rounded #222222 panels)
+   -------------------------------------------------------------------------- */
+
+.lion-panel {
+  background-color: var(--lion-panel);
+  border: 1px solid rgba(244, 239, 230, 0.075);
+  border-radius: 24px;
+  box-shadow:
+    inset 0 1px 0 rgba(244, 239, 230, 0.06),
+    0 24px 64px -30px rgba(0, 0, 0, 0.85);
+}
+
+@media (min-width: 1024px) {
+  .lion-panel {
+    border-radius: 32px;
+  }
+}
+
+.lion-card {
+  background-color: var(--lion-panel-elevated);
+  border: 1px solid rgba(244, 239, 230, 0.075);
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(244, 239, 230, 0.045);
+  transition:
+    border-color 240ms var(--lion-ease),
+    background-color 240ms var(--lion-ease),
+    transform 240ms var(--lion-spring);
+}
+
+.lion-card:hover {
+  border-color: rgba(244, 239, 230, 0.16);
+  background-color: var(--lion-panel-hover);
 }
 
 /* Subtle analog 35mm film grain overlay */
 .lion-grain {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.88' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   background-size: 180px 180px;
-  opacity: 0.075;
+  opacity: 0.055;
   mix-blend-mode: overlay;
   pointer-events: none;
 }
 
-/* Masthead animated underline (jeremycamp.com .masthead__nav a) */
+/* --------------------------------------------------------------------------
+   NAVIGATION & TOONTRACK FROSTED SUBMENU BAR
+   -------------------------------------------------------------------------- */
+
+.lion-header-glass {
+  background-color: rgba(11, 11, 14, 0.82);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid rgba(244, 239, 230, 0.09);
+  transition:
+    background-color 220ms var(--lion-ease),
+    border-color 220ms var(--lion-ease);
+}
+
+.lion-header-glass[data-scrolled='true'] {
+  background-color: rgba(9, 9, 11, 0.92);
+  border-bottom-color: rgba(244, 239, 230, 0.14);
+}
+
 .lion-nav-link {
   position: relative;
   display: inline-flex;
   align-items: center;
-  padding: 10px 0;
-  color: rgba(244, 239, 230, 0.86);
-  transition: color 220ms var(--lion-ease);
+  padding: 8px 2px;
+  font-family: var(--lion-f-ui);
+  font-weight: 400;
+  font-size: 12.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: rgba(244, 239, 230, 0.78);
+  transition: color 200ms var(--lion-ease);
 }
 
 .lion-nav-link::after {
@@ -123,11 +291,11 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 2px;
-  height: 2px;
-  background-color: var(--lion-ember);
+  bottom: 0;
+  height: 1.5px;
+  background-color: var(--lion-accent-bright);
   transform: scaleX(0);
-  transform-origin: left center;
+  transform-origin: center;
   transition: transform 240ms var(--lion-ease);
 }
 
@@ -141,28 +309,44 @@
   transform: scaleX(1);
 }
 
-/* Solid Ember CTA Button (sharp architectural geometry, zero generic rounded pill) */
+/* --------------------------------------------------------------------------
+   BUTTONS (Toontrack Pill Geometry: border-radius 9999px, Helvetica Neue Roman)
+   -------------------------------------------------------------------------- */
+
+/* Primary Pill CTA — Studio Crimson-Ember */
 .lion-btn-ember {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   min-height: 48px;
-  padding: 12px 26px;
-  background-color: var(--lion-ember);
-  color: var(--lion-void);
-  border: 0;
+  padding: 12px 30px;
+  border-radius: 9999px;
+  background-color: var(--lion-accent);
+  color: var(--lion-bone);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--lion-f-ui);
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
   cursor: pointer;
+  box-shadow: 0 12px 28px -12px rgba(212, 56, 34, 0.55);
   transition:
     background-color 220ms var(--lion-ease),
+    box-shadow 220ms var(--lion-ease),
     transform 180ms var(--lion-spring);
 }
 
 .lion-btn-ember:hover:not(:disabled) {
-  background-color: var(--lion-amber);
+  background-color: var(--lion-accent-bright);
+  box-shadow: 0 14px 32px -10px rgba(230, 82, 46, 0.65);
+  transform: translateY(-1px);
 }
 
 .lion-btn-ember:active:not(:disabled) {
+  background-color: var(--lion-crimson-deep);
   transform: scale(0.975);
 }
 
@@ -171,17 +355,24 @@
   cursor: not-allowed;
 }
 
-/* Wireframe Hairline Button */
+/* Secondary Neutral Pill CTA (Inspired by Toontrack #707070 -> #b91d1d hover pill) */
 .lion-btn-wire {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  min-height: 48px;
-  padding: 12px 24px;
-  background-color: transparent;
+  min-height: 46px;
+  padding: 11px 26px;
+  border-radius: 9999px;
+  background-color: rgba(244, 239, 230, 0.07);
   color: var(--lion-bone);
-  border: 1px solid rgba(244, 239, 230, 0.28);
+  border: 1px solid rgba(244, 239, 230, 0.18);
+  font-family: var(--lion-f-ui);
+  font-weight: 400;
+  font-size: 13.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
   cursor: pointer;
   transition:
     border-color 220ms var(--lion-ease),
@@ -191,16 +382,21 @@
 }
 
 .lion-btn-wire:hover:not(:disabled) {
-  border-color: var(--lion-ember);
-  color: var(--lion-ember);
-  background-color: rgba(255, 84, 18, 0.08);
+  border-color: var(--lion-crimson);
+  color: var(--lion-bone);
+  background-color: var(--lion-crimson);
+  transform: translateY(-1px);
 }
 
 .lion-btn-wire:active:not(:disabled) {
+  background-color: var(--lion-crimson-deep);
   transform: scale(0.975);
 }
 
-/* Vinyl sleeve + protruding spinning LP (jeremycamp.com cv--record pattern) */
+/* --------------------------------------------------------------------------
+   VINYL SLEEVE + PROTRUDING SPINNING LP
+   -------------------------------------------------------------------------- */
+
 .lion-vinyl-wrap {
   position: relative;
   display: inline-block;
@@ -217,23 +413,23 @@
     conic-gradient(
       from 30deg,
       rgba(255, 255, 255, 0) 0deg,
-      rgba(255, 255, 255, 0.1) 30deg,
+      rgba(255, 255, 255, 0.09) 30deg,
       rgba(255, 255, 255, 0) 68deg 180deg,
-      rgba(255, 84, 18, 0.14) 212deg,
+      rgba(212, 56, 34, 0.16) 212deg,
       rgba(255, 255, 255, 0) 252deg
     ),
-    repeating-radial-gradient(circle, #0d0b0a 0 1.5px, #1a1512 1.5px 4px);
+    repeating-radial-gradient(circle, #0d0d10 0 1.5px, #1c1c20 1.5px 4px);
   box-shadow:
-    0 0 0 1px rgba(255, 84, 18, 0.22),
+    0 0 0 1px rgba(244, 239, 230, 0.12),
     0 28px 54px -18px rgba(0, 0, 0, 0.9);
-  transform: translateX(30%);
+  transform: translateX(28%);
   transition: transform 680ms var(--lion-spring);
   z-index: 1;
 }
 
 .lion-vinyl-wrap:hover .lion-vinyl-disc,
 .lion-vinyl-wrap[data-playing='true'] .lion-vinyl-disc {
-  transform: translateX(46%);
+  transform: translateX(44%);
 }
 
 @keyframes lionVinylSpin {
@@ -254,7 +450,10 @@
   animation-play-state: running;
 }
 
-/* Continuous Tour Marquee (strict single-line nowrap ribbon) */
+/* --------------------------------------------------------------------------
+   CONTINUOUS TOUR MARQUEE (Condensed Light + Bold Pro-Audio Ribbon)
+   -------------------------------------------------------------------------- */
+
 @keyframes lionTicker {
   0% {
     transform: translate3d(0, 0, 0);
@@ -275,9 +474,9 @@
   font-family: var(--lion-f-display);
   font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: 0.025em;
+  letter-spacing: 0.06em;
   line-height: 1;
-  animation: lionTicker 28s linear infinite;
+  animation: lionTicker 32s linear infinite;
 }
 
 .lion-ticker-item {
@@ -288,11 +487,19 @@
   text-wrap: nowrap;
 }
 
+.lion-ticker-wrap {
+  mask-image: linear-gradient(90deg, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+}
+
 .lion-ticker-wrap:hover .lion-ticker-track {
   animation-play-state: paused;
 }
 
-/* Precision Scrubber Sliders scoped to .lion-root (overrides global rose thumb) */
+/* --------------------------------------------------------------------------
+   PRECISION SCRUBBER SLIDERS & SCROLLBAR
+   -------------------------------------------------------------------------- */
+
 .lion-root input[type='range'].lion-scrubber {
   -webkit-appearance: none;
   appearance: none;
@@ -309,32 +516,34 @@
   width: 12px;
   height: 12px;
   border-radius: 9999px;
-  background: var(--lion-ember);
+  background: var(--lion-accent-bright);
   border: 2px solid var(--lion-bone);
-  box-shadow: 0 0 12px rgba(255, 84, 18, 0.72);
+  box-shadow: 0 0 10px rgba(212, 56, 34, 0.65);
   cursor: pointer;
-  transition: transform 160ms var(--lion-spring), background-color 160ms var(--lion-ease);
+  transition:
+    transform 160ms var(--lion-spring),
+    background-color 160ms var(--lion-ease);
 }
 
 .lion-root input[type='range'].lion-scrubber::-webkit-slider-thumb:hover {
-  transform: scale(1.28);
-  background: var(--lion-amber);
+  transform: scale(1.25);
+  background: var(--lion-bone);
 }
 
 .lion-root input[type='range'].lion-scrubber::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border-radius: 9999px;
-  background: var(--lion-ember);
+  background: var(--lion-accent-bright);
   border: 2px solid var(--lion-bone);
-  box-shadow: 0 0 12px rgba(255, 84, 18, 0.72);
+  box-shadow: 0 0 10px rgba(212, 56, 34, 0.65);
   cursor: pointer;
 }
 
-/* Scrollbar harmonized in Obsidian & Ember */
 .lion-root ::-webkit-scrollbar-thumb {
-  background: rgba(255, 84, 18, 0.35);
+  background: rgba(244, 239, 230, 0.22);
 }
+
 .lion-root ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 84, 18, 0.75);
+  background: rgba(212, 56, 34, 0.72);
 }
