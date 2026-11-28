@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import type { SampleRegion, SampleSource } from '../types/sampler.types';
 import type { WaveformPyramid } from '../workers/waveformPeaks.worker';
+import { buildAdaptiveMidiGrid } from '../engine/adaptiveMidiGrid';
 import { midiNoteToName } from '../engine/PitchDetector';
 
 interface SampleWaveformEditorProps {
@@ -122,52 +123,55 @@ export const SampleWaveformEditor: React.FC<SampleWaveformEditorProps> = ({
 
     const secToX = (sec: number) => ((sec - viewStartSec) / viewSpanSec) * w;
 
-    // Stem Studio Beat Grid (`beatTimes` & `downbeats`, fallback to regular offset+bpm)
+    // High-Contrast Adaptive White Musical Grid (Bars, Beats, 1/8, 1/16, 1/32, 1/64 as you zoom in)
     if (showBpmGrid && source.bpm > 0) {
-      const beats = source.preAnalysis?.beatTimes;
-      const downbeats = source.preAnalysis?.downbeats;
-      if (beats && beats.length >= 2) {
-        const downSet = new Set((downbeats ?? []).map((d) => Math.round(d * 20)));
-        let lastBarX = -999;
-        beats.forEach((bt, idx) => {
-          if (bt < viewStartSec - 0.01 || bt > viewEndSec + 0.01) return;
-          const x = secToX(bt);
-          const isDown = downbeats
-            ? downSet.has(Math.round(bt * 20))
-            : idx % 4 === 0;
-          ctx.strokeStyle = isDown
-            ? 'rgba(255, 255, 255, 0.16)'
-            : 'rgba(255, 255, 255, 0.05)';
-          ctx.lineWidth = isDown ? 1.2 : 1;
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
-          ctx.stroke();
-          if (isDown && x - lastBarX >= 28 && x < w - 18) {
-            const barNum = downbeats
-              ? Math.max(1, downbeats.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
-              : Math.floor(idx / 4) + 1;
-            ctx.fillStyle = 'rgba(212, 212, 216, 0.72)';
-            ctx.font = 'bold 9px monospace';
-            ctx.fillText(`C${barNum}`, x + 3, h - 6);
-            lastBarX = x;
-          }
-        });
-        ctx.lineWidth = 1;
-      } else {
-        const beatSec = 60 / source.bpm;
-        const offset = source.preAnalysis?.beatOffsetSec ?? 0;
-        const firstBeat = offset + Math.floor((viewStartSec - offset) / beatSec) * beatSec;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        for (let t = firstBeat; t <= viewEndSec; t += beatSec) {
-          if (t < viewStartSec) continue;
-          const x = secToX(t);
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
+      const grid = buildAdaptiveMidiGrid({
+        duration,
+        viewStartSec,
+        viewEndSec,
+        viewportWidthPx: w,
+        bpm: source.bpm,
+        beatOffsetSec: source.preAnalysis?.beatOffsetSec ?? 0,
+        beatTimes: source.preAnalysis?.beatTimes,
+        downbeats: source.preAnalysis?.downbeats,
+        resolutionMode: 'auto',
+      });
+      let lastBarX = -999;
+      for (const gl of grid.lines) {
+        const x = Math.round(secToX(gl.sec)) + 0.5;
+        if (x < -1 || x > w + 1) continue;
+        if (gl.level === 'bar') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+          ctx.lineWidth = 1.5;
+        } else if (gl.level === 'beat') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'eighth') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'sixteenth') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'thirtysecond') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)';
+          ctx.lineWidth = 1;
+        } else {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.lineWidth = 1;
         }
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
         ctx.stroke();
+
+        if (gl.isDownbeat && gl.barNum !== undefined && x - lastBarX >= 28 && x < w - 18) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.font = 'bold 9.5px monospace';
+          ctx.fillText(`C${gl.barNum}`, x + 3, h - 6);
+          lastBarX = x;
+        }
       }
+      ctx.lineWidth = 1;
     }
 
     // Stored Pre-Import Chord Progression Overlay

@@ -5,9 +5,11 @@ import {
   ChevronDown,
   ChevronUp,
   Crosshair,
+  Grid3X3,
   Hand,
   Headphones,
   Layers,
+  Magnet,
   Maximize2,
   Minimize2,
   MousePointer,
@@ -21,6 +23,12 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import {
+  buildAdaptiveMidiGrid,
+  snapSecToAdaptiveGrid,
+  type MidiGridLine,
+  type MidiGridResolutionMode,
+} from '../engine/adaptiveMidiGrid';
 import { midiNoteToName } from '../engine/PitchDetector';
 import type { useStemReplacer } from '../hooks/useStemReplacer';
 import type {
@@ -30,18 +38,30 @@ import type {
   StemNoteEvent,
 } from '../types/sampler.types';
 import {
+  MAX_HORIZONTAL_ZOOM,
   TimelineHorizontalScrollbar,
   clampHorizontalScrollNorm,
   computeAnchoredHorizontalZoom,
 } from './TimelineHorizontalScrollbar';
 
-export interface MidiGridLine {
-  sec: number;
-  leftPct: number;
-  isDownbeat: boolean;
-  barNum?: number;
-  beatInBar: number;
-}
+export type { MidiGridLine, MidiGridResolutionMode };
+
+const getLaneGridLineClass = (level: MidiGridLine['level']): string => {
+  switch (level) {
+    case 'bar':
+      return 'border-l-[1.5px] border-white/80';
+    case 'beat':
+      return 'border-l border-white/45';
+    case 'eighth':
+      return 'border-l border-white/28';
+    case 'sixteenth':
+      return 'border-l border-white/20';
+    case 'thirtysecond':
+      return 'border-l border-white/14';
+    case 'sixtyfourth':
+      return 'border-l border-white/10';
+  }
+};
 
 interface DrumLaneDescriptor {
   id: string;
@@ -311,6 +331,9 @@ export interface MidiTimelineWorkstationProps {
   viewEndSec: number;
   viewSpanSec: number;
   visibleGridLines: MidiGridLine[];
+  showBeatGrid?: boolean;
+  gridResolutionMode?: MidiGridResolutionMode;
+  onChangeGridResolutionMode?: (mode: MidiGridResolutionMode) => void;
   editorSizeMode: 'compact' | 'large' | 'fullscreen';
   setEditorSizeMode: (mode: 'compact' | 'large' | 'fullscreen') => void;
   selectedHitId: string | null;
@@ -333,6 +356,9 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   viewEndSec,
   viewSpanSec,
   visibleGridLines,
+  showBeatGrid = true,
+  gridResolutionMode: controlledGridMode,
+  onChangeGridResolutionMode,
   editorSizeMode,
   setEditorSizeMode,
   selectedHitId,
@@ -356,6 +382,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [internalAutoFollow, setInternalAutoFollow] = useState(true);
   const autoFollowPlayhead = controlledAutoFollow ?? internalAutoFollow;
+  const [internalGridMode, setInternalGridMode] = useState<MidiGridResolutionMode>('auto');
+  const gridResolutionMode = controlledGridMode ?? internalGridMode;
+  const setGridResolutionMode = onChangeGridResolutionMode ?? setInternalGridMode;
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const [laneViewportWidthPx, setLaneViewportWidthPx] = useState<number>(960);
   const [minimapResizeTick, setMinimapResizeTick] = useState(0);
 
   // Vertical Zoom (scales lane height dynamically from 0.65x to 2.6x)
@@ -520,7 +551,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
 
   const handleMidiScrollbarZoomAndScroll = useCallback(
     (nextZoomRaw: number, nextScrollNorm: number, isManual = false) => {
-      const clampedZoom = Math.max(1, Math.min(48, nextZoomRaw));
+      const clampedZoom = Math.max(1, Math.min(MAX_HORIZONTAL_ZOOM, nextZoomRaw));
       setZoom(clampedZoom);
       setScrollNorm(clampHorizontalScrollNorm(nextScrollNorm, clampedZoom));
       if (isManual) notifyManualHorizontalScroll();
@@ -528,16 +559,66 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     [setZoom, setScrollNorm, notifyManualHorizontalScroll]
   );
 
-  // Sync vertical scroll metrics whenever container resizes, lanes change, or verticalZoom changes
+  // Adaptive high-precision white grid computed directly against the actual MIDI lane viewport width
+  // so zooming in OR expanding to Large/Fullscreen automatically reveals denser subdivisions (1/8..1/64).
+  const adaptiveMidiGrid = useMemo(() => {
+    if (!showBeatGrid || duration <= 0) {
+      return {
+        lines: [] as MidiGridLine[],
+        effectiveSubdivisionsPerBeat: 1,
+        effectiveResolutionLabel: '1/4',
+        pxPerBeat: 0,
+      };
+    }
+    const mem = r.importedMemory;
+    const bpm = mem?.bpm ?? r.analysis?.bpm ?? 120;
+    const built = buildAdaptiveMidiGrid({
+      duration,
+      viewStartSec,
+      viewEndSec,
+      viewportWidthPx: laneViewportWidthPx,
+      bpm,
+      beatOffsetSec: mem?.beatOffsetSec ?? r.analysis?.beatOffsetSec ?? 0,
+      beatTimes: mem?.beatTimes,
+      downbeats: mem?.downbeats ?? r.analysis?.downbeats,
+      resolutionMode: gridResolutionMode,
+    });
+    if (built.lines.length === 0 && visibleGridLines.length > 0) {
+      return {
+        ...built,
+        lines: visibleGridLines,
+      };
+    }
+    return built;
+  }, [
+    showBeatGrid,
+    duration,
+    r.importedMemory,
+    r.analysis?.bpm,
+    r.analysis?.beatOffsetSec,
+    r.analysis?.downbeats,
+    viewStartSec,
+    viewEndSec,
+    laneViewportWidthPx,
+    gridResolutionMode,
+    visibleGridLines,
+  ]);
+
+  const activeGridLines = adaptiveMidiGrid.lines;
+
+  // Sync vertical scroll metrics AND actual horizontal lane viewport width on resize/expand
   const syncVerticalMetrics = useCallback(() => {
     const el = verticalScrollRef.current;
     if (!el) return;
+    const headerOffset = isDrums ? (window.innerWidth >= 640 ? 256 : 208) : 112;
+    const measuredLaneW = Math.max(240, Math.round(el.clientWidth - headerOffset));
+    setLaneViewportWidthPx((prev) => (Math.abs(prev - measuredLaneW) >= 8 ? measuredLaneW : prev));
     setVScrollMetrics({
       scrollTop: el.scrollTop,
       scrollHeight: Math.max(1, el.scrollHeight),
       clientHeight: Math.max(1, el.clientHeight),
     });
-  }, []);
+  }, [isDrums]);
 
   useEffect(() => {
     const el = verticalScrollRef.current;
@@ -852,7 +933,15 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
       // Keep both timeSec >= 0 and peakTimeSec <= duration - 0.005 locked in phase
       const minDelta = -Math.min(st.startTimeSec, st.startPeakTimeSec);
       const maxDelta = Math.max(0, duration - 0.005 - Math.max(st.startTimeSec, st.startPeakTimeSec));
-      const clampedDelta = Math.max(minDelta, Math.min(maxDelta, rawDeltaSec));
+      let clampedDelta = Math.max(minDelta, Math.min(maxDelta, rawDeltaSec));
+
+      // Magnetic snap to active adaptive grid when enabled (holding Shift temporarily bypasses for free micro-nudge)
+      if (snapToGrid && !e.shiftKey && activeGridLines.length > 0) {
+        const candidatePeak = st.startPeakTimeSec + clampedDelta;
+        const snappedPeak = snapSecToAdaptiveGrid(candidatePeak, activeGridLines);
+        const snappedDelta = snappedPeak - st.startPeakTimeSec;
+        clampedDelta = Math.max(minDelta, Math.min(maxDelta, snappedDelta));
+      }
 
       const nextTimeSec = Number((st.startTimeSec + clampedDelta).toFixed(4));
       const nextPeakTimeSec = Number((st.startPeakTimeSec + clampedDelta).toFixed(5));
@@ -992,9 +1081,14 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
     const deltaSec = (dx / st.laneWidth) * st.viewSpanSecSnapshot * speed;
 
     if (st.mode === 'move') {
-      const nextStart = Number(
-        Math.max(0, Math.min(duration - 0.05, st.startSec + deltaSec)).toFixed(4)
-      );
+      let rawNextStart = Math.max(0, Math.min(duration - 0.05, st.startSec + deltaSec));
+      if (snapToGrid && !e.shiftKey && activeGridLines.length > 0) {
+        rawNextStart = Math.max(
+          0,
+          Math.min(duration - 0.05, snapSecToAdaptiveGrid(rawNextStart, activeGridLines))
+        );
+      }
+      const nextStart = Number(rawNextStart.toFixed(4));
       const preview: MelodicNoteDragPreview = {
         noteId: st.noteId,
         mode: 'move',
@@ -1005,9 +1099,17 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
       noteDragPreviewRef.current = preview;
       setNoteDragPreview(preview);
     } else {
-      const nextDur = Number(
-        Math.max(0.05, Math.min(duration - st.startSec, st.startDurationSec + deltaSec)).toFixed(4)
+      let rawNextEnd = Math.max(
+        st.startSec + 0.05,
+        Math.min(duration, st.startSec + st.startDurationSec + deltaSec)
       );
+      if (snapToGrid && !e.shiftKey && activeGridLines.length > 0) {
+        rawNextEnd = Math.max(
+          st.startSec + 0.05,
+          Math.min(duration, snapSecToAdaptiveGrid(rawNextEnd, activeGridLines))
+        );
+      }
+      const nextDur = Number((rawNextEnd - st.startSec).toFixed(4));
       const preview: MelodicNoteDragPreview = {
         noteId: st.noteId,
         mode: 'resize-right',
@@ -1358,6 +1460,50 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
             </div>
           )}
 
+          {/* Adaptive Grid Precision Selector & Magnetic Snap */}
+          <div className="flex items-center gap-1 bg-[#18181C] border border-white/[0.12] rounded-xl px-2 py-1 text-[10.5px]">
+            <Grid3X3 size={11} className="text-white/80 shrink-0" />
+            <span className="text-zinc-300 hidden xl:inline">Grilla</span>
+            <select
+              value={gridResolutionMode}
+              onChange={(e) => setGridResolutionMode(e.target.value as MidiGridResolutionMode)}
+              className="bg-transparent text-white font-mono font-semibold focus:outline-none cursor-pointer"
+              title="Resolución de la grilla musical blanca (Auto aumenta subdivisiones automáticamente al expandir o hacer zoom)"
+            >
+              <option value="auto" className="bg-[#121215]">
+                Auto ({adaptiveMidiGrid.effectiveResolutionLabel})
+              </option>
+              <option value="1/4" className="bg-[#121215]">
+                1/4 (Negras)
+              </option>
+              <option value="1/8" className="bg-[#121215]">
+                1/8 (Corcheas)
+              </option>
+              <option value="1/16" className="bg-[#121215]">
+                1/16 (Semicorcheas)
+              </option>
+              <option value="1/32" className="bg-[#121215]">
+                1/32 (Fusas)
+              </option>
+              <option value="1/64" className="bg-[#121215]">
+                1/64 (Semifusas)
+              </option>
+            </select>
+            <button
+              type="button"
+              onClick={() => setSnapToGrid((s) => !s)}
+              className={`ml-0.5 px-1.5 py-0.5 rounded-md border text-[9.5px] font-medium flex items-center gap-1 cursor-pointer transition-colors ${
+                snapToGrid
+                  ? 'bg-white text-zinc-950 border-white font-semibold'
+                  : 'bg-[#0E0E11] border-white/[0.12] text-zinc-400 hover:text-white'
+              }`}
+              title="Ajuste magnético (Snap) a las líneas de la grilla al mover o añadir golpes (mantén Shift para movimiento libre)"
+            >
+              <Magnet size={10} />
+              <span>Imán</span>
+            </button>
+          </div>
+
           {/* Vertical Zoom Stepper (Image 3 segmented stepper style) */}
           <div
             className="flex items-center gap-1 bg-[#18181C] border border-white/[0.08] rounded-xl px-2 py-1 text-[10.5px]"
@@ -1409,16 +1555,20 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
       </div>
 
       {/* PINNED TOP MUSICAL BAR & BEAT RULER (Aligned 1:1 with Lanes & Right Vertical Scrollbar) */}
-      <div className="flex items-stretch h-7 bg-[#0E0E11] border-b border-white/[0.07] text-[10px] font-mono select-none shrink-0">
+      <div className="flex items-stretch h-7 bg-[#111115] border-b border-white/25 text-[10px] font-mono select-none shrink-0">
         <div
           className={`${
             isDrums ? 'w-52 sm:w-64' : 'w-24 sm:w-28'
-          } shrink-0 px-3 border-r border-white/[0.07] flex items-center justify-between text-zinc-500`}
+          } shrink-0 px-3 border-r border-white/20 flex items-center justify-between text-zinc-400`}
         >
-          <span className="font-semibold text-zinc-400 truncate font-sans text-[10.5px]">
+          <span className="font-semibold text-zinc-200 truncate font-sans text-[10.5px]">
             {isDrums ? 'Pistas · Mix' : 'Notas'}
           </span>
-          {isDrums && <span className="text-[9px] text-zinc-500">ON · S · 🔊</span>}
+          {isDrums && (
+            <span className="text-[9px] text-zinc-300 font-mono tabular-nums">
+              {adaptiveMidiGrid.effectiveResolutionLabel}
+            </span>
+          )}
         </div>
 
         <div
@@ -1431,42 +1581,61 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
             r.seekToSec(viewStartSec + norm * viewSpanSec);
           }}
           className="relative flex-1 overflow-hidden cursor-pointer"
-          title="Regla de Compases y Tiempo · Clic para saltar al segundo exacto"
+          title="Regla de Compases y Subdivisiones · Clic para saltar al segundo exacto"
         >
-          {visibleGridLines.map((gl, idx) => (
-            <div
-              key={`ruler-g-${idx}`}
-              style={{ left: `${gl.leftPct}%` }}
-              className={`absolute top-0 bottom-0 pointer-events-none ${
-                gl.isDownbeat
-                  ? 'border-l border-white/[0.22]'
-                  : 'border-l border-white/[0.07]'
-              }`}
-            >
-              {gl.isDownbeat && gl.barNum !== undefined && (
-                <span className="pl-1.5 text-[9.5px] font-semibold text-zinc-300 tabular-nums">
-                  C{gl.barNum}
-                </span>
-              )}
-              {!gl.isDownbeat && zoom >= 2.2 && (
-                <span className="pl-1 text-[8.5px] text-zinc-500 tabular-nums">
-                  .{gl.beatInBar}
-                </span>
-              )}
-            </div>
-          ))}
+          {activeGridLines.map((gl, idx) => {
+            const isMajor = gl.level === 'bar' || gl.level === 'beat';
+            const tickClass =
+              gl.level === 'bar'
+                ? 'top-0 bottom-0 border-l-[1.5px] border-white/90'
+                : gl.level === 'beat'
+                ? 'top-0 bottom-0 border-l border-white/55'
+                : gl.level === 'eighth'
+                ? 'top-2 bottom-0 border-l border-white/38'
+                : gl.level === 'sixteenth'
+                ? 'top-3.5 bottom-0 border-l border-white/28'
+                : gl.level === 'thirtysecond'
+                ? 'top-4 bottom-0 border-l border-white/20'
+                : 'top-5 bottom-0 border-l border-white/15';
+
+            return (
+              <div
+                key={`ruler-g-${idx}`}
+                style={{ left: `${gl.leftPct}%` }}
+                className={`absolute pointer-events-none ${tickClass}`}
+              >
+                {gl.level === 'bar' && gl.barNum !== undefined && (
+                  <span className="pl-1.5 text-[10px] font-bold text-white tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+                    C{gl.barNum}
+                  </span>
+                )}
+                {gl.level === 'beat' && gl.subLabel && (
+                  <span className="pl-1 text-[9px] font-semibold text-zinc-200 tabular-nums">
+                    {gl.subLabel}
+                  </span>
+                )}
+                {!isMajor && gl.subLabel && (
+                  <span className="pl-1 text-[8px] text-zinc-300/85 tabular-nums leading-none block -mt-1">
+                    {gl.subLabel}
+                  </span>
+                )}
+              </div>
+            );
+          })}
           {r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec && (
             <div
               style={{
                 left: `${((r.currentTimeSec - viewStartSec) / viewSpanSec) * 100}%`,
               }}
-              className="absolute top-0 bottom-0 w-0.5 bg-zinc-100 z-20 pointer-events-none"
-            />
+              className="absolute top-0 bottom-0 w-[2px] bg-[#00E5FF] shadow-[0_0_8px_rgba(0,229,255,0.9)] z-20 pointer-events-none"
+            >
+              <span className="absolute -top-0.5 -left-[4px] w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#00E5FF]" />
+            </div>
           )}
         </div>
 
         {/* Right Top Corner above Vertical Scrollbar */}
-        <div className="w-7 shrink-0 border-l border-white/[0.07] bg-[#121215] flex items-center justify-center text-[9px] text-zinc-500 font-semibold">
+        <div className="w-7 shrink-0 border-l border-white/20 bg-[#121215] flex items-center justify-center text-[9px] text-zinc-400 font-semibold">
           V
         </div>
       </div>
@@ -1491,7 +1660,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
           }`}
         >
           {isDrums ? (
-            <div className="divide-y divide-white/[0.06]">
+            <div className="divide-y divide-white/25">
               {activeDrumLanes.map((lane) => {
                 const slot = r.drumSlots[lane.role];
                 const isSolo = r.soloDrumRole === lane.role;
@@ -1616,7 +1785,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           0,
                           Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
                         );
-                        const clickedSec = viewStartSec + norm * viewSpanSec;
+                        const rawClickedSec = viewStartSec + norm * viewSpanSec;
+                        const clickedSec =
+                          snapToGrid && activeGridLines.length > 0 && editTool === 'add'
+                            ? snapSecToAdaptiveGrid(rawClickedSec, activeGridLines)
+                            : rawClickedSec;
                         if (editTool === 'add') {
                           const art = lane.isSubLane
                             ? lane.defaultArticulation
@@ -1629,7 +1802,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                             r.auditionDrumHit(added);
                           }
                         } else {
-                          r.seekToSec(clickedSec);
+                          r.seekToSec(rawClickedSec);
                         }
                       }}
                       onDoubleClick={(e) => {
@@ -1640,7 +1813,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           0,
                           Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
                         );
-                        const clickedSec = viewStartSec + norm * viewSpanSec;
+                        const rawClickedSec = viewStartSec + norm * viewSpanSec;
+                        const clickedSec =
+                          snapToGrid && activeGridLines.length > 0
+                            ? snapSecToAdaptiveGrid(rawClickedSec, activeGridLines)
+                            : rawClickedSec;
                         const art = lane.isSubLane
                           ? lane.defaultArticulation
                           : lane.role === 'tom'
@@ -1662,31 +1839,29 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           : 'cursor-pointer'
                       }`}
                     >
-                      {/* Beat & Downbeat Grid Lines */}
-                      {visibleGridLines.map((gl, idx) => (
+                      {/* High-Contrast Adaptive White Musical Grid (Bars, Beats, 1/8, 1/16, 1/32, 1/64) */}
+                      {activeGridLines.map((gl, idx) => (
                         <div
                           key={`${lane.id}-g-${idx}`}
                           style={{ left: `${gl.leftPct}%` }}
-                          className={`absolute top-0 bottom-0 pointer-events-none ${
-                            gl.isDownbeat
-                              ? 'border-l border-white/[0.12]'
-                              : 'border-l border-white/[0.045]'
-                          }`}
+                          className={`absolute top-0 bottom-0 pointer-events-none ${getLaneGridLineClass(
+                            gl.level
+                          )}`}
                         />
                       ))}
 
-                      {/* Velocity Reference Midline (50% guide) */}
+                      {/* Velocity Reference Midline (50% white dashed guide) */}
                       {laneHeightPx >= 64 && (
-                        <div className="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/[0.06] pointer-events-none" />
+                        <div className="absolute left-0 right-0 top-1/2 border-t border-dashed border-white/15 pointer-events-none" />
                       )}
 
                       {/* Sub-Tier Guide Rows in 5-Bus mode for TOMS */}
                       {!lane.isSubLane && lane.role === 'tom' && laneHeightPx >= 64 && (
-                        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between py-1 px-2 text-[8.5px] font-mono text-emerald-400/35">
-                          <div className="border-b border-dashed border-emerald-500/15 pb-0.5">
+                        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between py-1 px-2 text-[8.5px] font-mono text-emerald-400/45">
+                          <div className="border-b border-dashed border-emerald-400/25 pb-0.5">
                             HIGH TOM (GM 50 · +3st)
                           </div>
-                          <div className="border-b border-dashed border-emerald-500/15 pb-0.5">
+                          <div className="border-b border-dashed border-emerald-400/25 pb-0.5">
                             MID TOM (GM 47 · 0st)
                           </div>
                           <div>FLOOR TOM (GM 43 · -3st)</div>
@@ -1696,7 +1871,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                       {/* Live Vertical Alignment Hairline while dragging a hit horizontally */}
                       {activeDragInLane && activeDragInLane.mode === 'move' && (
                         <div
-                          className="absolute top-0 bottom-0 w-px bg-white/70 pointer-events-none z-20"
+                          className="absolute top-0 bottom-0 w-px bg-white pointer-events-none z-20 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
                           style={{
                             left: `${
                               ((activeDragInLane.peakTimeSec - viewStartSec) / viewSpanSec) * 100
@@ -1705,10 +1880,10 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                         />
                       )}
 
-                      {/* Playhead */}
+                      {/* Playhead (Cyan-White high-contrast cursor so it never blends with white bar grid lines) */}
                       {r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec && (
                         <div
-                          className="absolute top-0 bottom-0 w-0.5 bg-zinc-100/90 pointer-events-none z-20 shadow-[0_0_8px_rgba(255,255,255,0.4)]"
+                          className="absolute top-0 bottom-0 w-[2px] bg-[#00E5FF] pointer-events-none z-20 shadow-[0_0_10px_rgba(0,229,255,0.85)]"
                           style={{
                             left: `${((r.currentTimeSec - viewStartSec) / viewSpanSec) * 100}%`,
                           }}
@@ -1884,7 +2059,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
             </div>
           ) : (
             /* MELODIC / POLYPHONIC CHROMATIC MIDI PIANO ROLL WITH FULL HORIZONTAL & VERTICAL SCROLL */
-            <div className="divide-y divide-white/[0.04]">
+            <div className="divide-y divide-white/[0.14]">
               {melodicRows.map((midiNote) => {
                 const black = isBlackKey(midiNote);
                 const isC = midiNote % 12 === 0;
@@ -1934,7 +2109,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           0,
                           Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
                         );
-                        const clickedSec = viewStartSec + norm * viewSpanSec;
+                        const rawClickedSec = viewStartSec + norm * viewSpanSec;
+                        const clickedSec =
+                          snapToGrid && activeGridLines.length > 0 && editTool === 'add'
+                            ? snapSecToAdaptiveGrid(rawClickedSec, activeGridLines)
+                            : rawClickedSec;
                         if (editTool === 'add') {
                           const stepSec = 60 / Math.max(40, r.analysis!.bpm || 120) / 2;
                           const added = r.addManualMelodicNote(midiNote, clickedSec, stepSec, 0.86);
@@ -1943,7 +2122,7 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                             r.auditionMelodicNote(midiNote, 0.86);
                           }
                         } else {
-                          r.seekToSec(clickedSec);
+                          r.seekToSec(rawClickedSec);
                         }
                       }}
                       onDoubleClick={(e) => {
@@ -1954,7 +2133,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           0,
                           Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
                         );
-                        const clickedSec = viewStartSec + norm * viewSpanSec;
+                        const rawClickedSec = viewStartSec + norm * viewSpanSec;
+                        const clickedSec =
+                          snapToGrid && activeGridLines.length > 0
+                            ? snapSecToAdaptiveGrid(rawClickedSec, activeGridLines)
+                            : rawClickedSec;
                         const stepSec = 60 / Math.max(40, r.analysis!.bpm || 120) / 2;
                         const added = r.addManualMelodicNote(midiNote, clickedSec, stepSec, 0.86);
                         if (added) {
@@ -1963,7 +2146,11 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                         }
                       }}
                       className={`relative flex-1 overflow-hidden ${
-                        black ? 'bg-[#08080A]' : isC ? 'bg-[#101014]' : 'bg-[#0B0B0E]'
+                        black
+                          ? 'bg-[#08080A]'
+                          : isC
+                          ? 'bg-[#121217] border-b border-white/25'
+                          : 'bg-[#0B0B0E]'
                       } ${
                         editTool === 'pan'
                           ? isPanning2D
@@ -1974,21 +2161,19 @@ export const MidiTimelineWorkstation: React.FC<MidiTimelineWorkstationProps> = (
                           : 'cursor-pointer'
                       }`}
                     >
-                      {visibleGridLines.map((gl, idx) => (
+                      {activeGridLines.map((gl, idx) => (
                         <div
                           key={`pr-${midiNote}-g-${idx}`}
                           style={{ left: `${gl.leftPct}%` }}
-                          className={`absolute top-0 bottom-0 pointer-events-none ${
-                            gl.isDownbeat
-                              ? 'border-l border-white/[0.12]'
-                              : 'border-l border-white/[0.04]'
-                          }`}
+                          className={`absolute top-0 bottom-0 pointer-events-none ${getLaneGridLineClass(
+                            gl.level
+                          )}`}
                         />
                       ))}
 
                       {r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec && (
                         <div
-                          className="absolute top-0 bottom-0 w-0.5 bg-zinc-100/90 pointer-events-none z-20"
+                          className="absolute top-0 bottom-0 w-[2px] bg-[#00E5FF] shadow-[0_0_8px_rgba(0,229,255,0.85)] pointer-events-none z-20"
                           style={{
                             left: `${((r.currentTimeSec - viewStartSec) / viewSpanSec) * 100}%`,
                           }}
@@ -2598,7 +2783,7 @@ onClick={handleToggleFollow}
 
           <div className="flex items-center gap-1.5">
             <div className="flex items-center gap-1 bg-[#0B0B0D] border border-white/[0.07] rounded-xl p-1 text-[10.5px] font-mono">
-              {[1, 2, 4, 8, 16].map((presetZ) => (
+              {[1, 2, 4, 8, 16, 32, 64].map((presetZ) => (
                 <button
                   key={`fs-z-${presetZ}`}
                   type="button"

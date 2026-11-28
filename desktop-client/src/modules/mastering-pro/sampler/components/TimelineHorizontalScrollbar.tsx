@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 export const MIN_HORIZONTAL_ZOOM = 1;
-export const MAX_HORIZONTAL_ZOOM = 48;
+export const MAX_HORIZONTAL_ZOOM = 64;
 export const MIN_THUMB_WIDTH_PCT = 6;
 
 export interface HorizontalThumbMetrics {

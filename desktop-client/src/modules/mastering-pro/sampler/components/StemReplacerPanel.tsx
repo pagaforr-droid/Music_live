@@ -53,9 +53,14 @@ import type {
   SamplePad,
   StemAnalysisMode,
 } from '../types/sampler.types';
+import {
+  buildAdaptiveMidiGrid,
+  type MidiGridResolutionMode,
+} from '../engine/adaptiveMidiGrid';
 import { DrumKit1400BrowserModal } from './DrumKit1400BrowserModal';
 import { MidiTimelineWorkstation } from './MidiTimelineWorkstation';
 import {
+  MAX_HORIZONTAL_ZOOM,
   TimelineHorizontalScrollbar,
   clampHorizontalScrollNorm,
   computeAnchoredHorizontalZoom,
@@ -136,6 +141,8 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const [melodicCategoryFilter, setMelodicCategoryFilter] = useState<'all' | 'bass' | 'keys-guitar'>('all');
   const [dragOverTarget, setDragOverTarget] = useState<DrumPieceRole | 'melodic' | 'bank' | 'stem-local' | 'master-ref' | null>(null);
   const [showBeatGrid, setShowBeatGrid] = useState(true);
+  const [gridResolutionMode, setGridResolutionMode] = useState<MidiGridResolutionMode>('auto');
+  const [waveformWidthPx, setWaveformWidthPx] = useState<number>(1080);
   const [showMidiRoll, setShowMidiRoll] = useState(true);
   const [editorSizeMode, setEditorSizeMode] = useState<'compact' | 'large' | 'fullscreen'>('large');
   const [selectedHitId, setSelectedHitId] = useState<string | null>(null);
@@ -260,53 +267,29 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   const viewStartSec = Math.max(0, Math.min(maxViewStart, scrollNorm * duration));
   const viewEndSec = viewStartSec + viewSpanSec;
 
-  // Compute visible bar & beat grid markers for synchronized rendering inside the 5-lane Drum Editor
-  const visibleGridLines = useMemo(() => {
-    if (!showBeatGrid || duration <= 0) return [];
+  // Compute adaptive bar/beat/subdivision grid markers (1/4 -> 1/8 -> 1/16 -> 1/32 -> 1/64 as zoom/width expands)
+  const adaptiveWaveformGrid = useMemo(() => {
+    if (!showBeatGrid || duration <= 0) {
+      return {
+        lines: [],
+        effectiveSubdivisionsPerBeat: 1,
+        effectiveResolutionLabel: '1/4',
+        pxPerBeat: 0,
+      };
+    }
     const mem = r.importedMemory;
     const bpm = mem?.bpm ?? r.analysis?.bpm ?? 120;
-    const gridBeats =
-      mem?.beatTimes && mem.beatTimes.length >= 2
-        ? mem.beatTimes
-        : (() => {
-            const step = 60 / Math.max(40, bpm || 120);
-            const off = mem?.beatOffsetSec ?? r.analysis?.beatOffsetSec ?? 0;
-            const arr: number[] = [];
-            let t = off;
-            while (t <= duration + step) {
-              arr.push(t);
-              t += step;
-            }
-            return arr;
-          })();
-    const dbs = mem?.downbeats ?? r.analysis?.downbeats;
-    const downSet = new Set((dbs ?? []).map((d) => Math.round(d * 20)));
-    const lines: Array<{
-      sec: number;
-      leftPct: number;
-      isDownbeat: boolean;
-      barNum?: number;
-      beatInBar: number;
-    }> = [];
-    for (let idx = 0; idx < gridBeats.length; idx++) {
-      const bt = gridBeats[idx];
-      if (bt < viewStartSec - 0.005 || bt > viewEndSec + 0.005) continue;
-      const leftPct = ((bt - viewStartSec) / Math.max(0.01, viewSpanSec)) * 100;
-      const isDownbeat = dbs ? downSet.has(Math.round(bt * 20)) : idx % 4 === 0;
-      const barNum = isDownbeat
-        ? dbs
-          ? Math.max(1, dbs.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
-          : Math.floor(idx / 4) + 1
-        : undefined;
-      lines.push({
-        sec: bt,
-        leftPct,
-        isDownbeat,
-        barNum,
-        beatInBar: (idx % 4) + 1,
-      });
-    }
-    return lines;
+    return buildAdaptiveMidiGrid({
+      duration,
+      viewStartSec,
+      viewEndSec,
+      viewportWidthPx: waveformWidthPx,
+      bpm,
+      beatOffsetSec: mem?.beatOffsetSec ?? r.analysis?.beatOffsetSec ?? 0,
+      beatTimes: mem?.beatTimes,
+      downbeats: mem?.downbeats ?? r.analysis?.downbeats,
+      resolutionMode: gridResolutionMode,
+    });
   }, [
     showBeatGrid,
     duration,
@@ -316,8 +299,10 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     r.analysis?.downbeats,
     viewStartSec,
     viewEndSec,
-    viewSpanSec,
+    waveformWidthPx,
+    gridResolutionMode,
   ]);
+  const visibleGridLines = adaptiveWaveformGrid.lines;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -396,61 +381,58 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       }
     }
 
-    // 1B. Overlay Stem Studio Beat Grid (`beatTimes` + `downbeats`) & Chord Progression Guide
-    if (showBeatGrid && (r.importedMemory?.beatTimes?.length || (r.importedMemory?.bpm ?? 0) > 0)) {
-      const mem = r.importedMemory!;
-      const gridBeats =
-        mem.beatTimes && mem.beatTimes.length >= 2
-          ? mem.beatTimes
-          : (() => {
-              const step = 60 / Math.max(40, mem.bpm || 120);
-              const off = mem.beatOffsetSec ?? 0;
-              const arr: number[] = [];
-              let t = off;
-              while (t <= duration + step) {
-                arr.push(t);
-                t += step;
-              }
-              return arr;
-            })();
-      const dbs = mem.downbeats;
-      const downSet = new Set((dbs ?? []).map((d) => Math.round(d * 20)));
+    // 1B. Overlay High-Contrast White Adaptive Musical Grid (Bars, Beats, 1/8, 1/16, 1/32, 1/64) & Chords
+    if (showBeatGrid && visibleGridLines.length > 0) {
       let lastBarLabelX = -999;
 
-      for (let idx = 0; idx < gridBeats.length; idx++) {
-        const bt = gridBeats[idx];
-        if (bt < viewStartSec - 0.01 || bt > viewEndSec + 0.01) continue;
-        const x = secToX(bt);
-        const isDownbeat = dbs ? downSet.has(Math.round(bt * 20)) : idx % 4 === 0;
-        ctx.strokeStyle = isDownbeat
-          ? 'rgba(255, 255, 255, 0.16)'
-          : 'rgba(255, 255, 255, 0.055)';
-        ctx.lineWidth = isDownbeat ? 1.2 : 1;
+      for (let idx = 0; idx < visibleGridLines.length; idx++) {
+        const gl = visibleGridLines[idx];
+        const x = Math.round(secToX(gl.sec)) + 0.5;
+        if (x < -1 || x > w + 1) continue;
+
+        if (gl.level === 'bar') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+          ctx.lineWidth = 1.5;
+        } else if (gl.level === 'beat') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'eighth') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'sixteenth') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+          ctx.lineWidth = 1;
+        } else if (gl.level === 'thirtysecond') {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)';
+          ctx.lineWidth = 1;
+        } else {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.lineWidth = 1;
+        }
+
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, h);
         ctx.stroke();
 
-        if (isDownbeat && x - lastBarLabelX >= 28 && x >= 2 && x < w - 22) {
-          const barNum = dbs
-            ? Math.max(1, dbs.findIndex((d) => Math.abs(d - bt) < 0.06) + 1)
-            : Math.floor(idx / 4) + 1;
-          ctx.fillStyle = 'rgba(212, 212, 216, 0.75)';
-          ctx.font = 'bold 9px monospace';
-          ctx.fillText(`C${barNum}`, x + 3, 11);
+        if (gl.isDownbeat && gl.barNum !== undefined && x - lastBarLabelX >= 28 && x >= 2 && x < w - 22) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.font = 'bold 9.5px monospace';
+          ctx.fillText(`C${gl.barNum}`, x + 3, 11);
           lastBarLabelX = x;
         }
       }
       ctx.lineWidth = 1;
 
-      if (mem.chords?.length) {
+      const mem = r.importedMemory;
+      if (mem?.chords?.length) {
         let lastChordX = -999;
         for (const ch of mem.chords) {
           const cx0 = secToX(ch.startSec);
           const cx1 = secToX(ch.endSec);
           if (cx1 < 0 || cx0 > w) continue;
           if (cx0 >= 0 && cx0 <= w) {
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
             ctx.setLineDash([3, 3]);
             ctx.beginPath();
             ctx.moveTo(cx0, 0);
@@ -462,7 +444,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             const boxW = Math.min(48, Math.max(20, ch.chord.length * 7 + 8));
             ctx.fillStyle = 'rgba(39, 39, 42, 0.92)';
             ctx.fillRect(Math.max(2, cx0 + 2), 14, boxW, 13);
-            ctx.fillStyle = '#E4E4E7';
+            ctx.fillStyle = '#FFFFFF';
             ctx.font = 'bold 9px monospace';
             ctx.fillText(ch.chord, Math.max(5, cx0 + 5), 24);
             lastChordX = cx0;
@@ -528,11 +510,15 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
       }
     }
 
-    // 3. Playhead
+    // 3. Playhead (high-contrast cyan-white cursor so it stands out cleanly over white grid bars)
     if (r.currentTimeSec >= viewStartSec && r.currentTimeSec <= viewEndSec) {
       const px = secToX(r.currentTimeSec);
-      ctx.fillStyle = '#FFFFFF';
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 229, 255, 0.85)';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = '#00E5FF';
       ctx.fillRect(px - 1, 0, 2, h);
+      ctx.restore();
     }
   }, [
     r.originalBuffer,
@@ -542,6 +528,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
     r.currentTimeSec,
     r.abMode,
     showBeatGrid,
+    visibleGridLines,
     editorSizeMode,
     selectedHitId,
     duration,
@@ -555,9 +542,15 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
   useEffect(() => {
     const el = canvasRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
+    const syncWidth = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 40) {
+        setWaveformWidthPx(Math.round(rect.width));
+      }
       setCanvasResizeTick((t) => (t + 1) & 0xffff);
-    });
+    };
+    syncWidth();
+    const ro = new ResizeObserver(syncWidth);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -667,7 +660,7 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
 
   const handleHorizontalZoomAndScroll = useCallback(
     (nextZoomRaw: number, nextScrollNorm: number, isManualUserAction = false) => {
-      const clampedZoom = Math.max(1, Math.min(48, nextZoomRaw));
+      const clampedZoom = Math.max(1, Math.min(MAX_HORIZONTAL_ZOOM, nextZoomRaw));
       setZoom(clampedZoom);
       setScrollNorm(clampHorizontalScrollNorm(nextScrollNorm, clampedZoom));
       if (isManualUserAction && r.isPlaying) {
@@ -1964,6 +1957,9 @@ export const StemReplacerPanel: React.FC<StemReplacerPanelProps> = ({
             viewEndSec={viewEndSec}
             viewSpanSec={viewSpanSec}
             visibleGridLines={visibleGridLines}
+            showBeatGrid={showBeatGrid}
+            gridResolutionMode={gridResolutionMode}
+            onChangeGridResolutionMode={setGridResolutionMode}
             editorSizeMode={editorSizeMode}
             setEditorSizeMode={setEditorSizeMode}
             selectedHitId={selectedHitId}
@@ -2099,7 +2095,7 @@ onClick={() => applyHorizontalZoom(zoom * 1.5)}
             >
               <ZoomIn size={13} />
             </button>
-            {[2, 4, 8, 16].map((presetZ) => (
+            {[2, 4, 8, 16, 32].map((presetZ) => (
               <button
                 key={presetZ}
                 type="button"
